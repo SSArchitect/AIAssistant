@@ -4,6 +4,8 @@ const MODE_STORAGE_KEY = 'super_chat_mode_ids';
 const CURRENT_CONVERSATION_STORAGE_KEY = 'agent_assistant_current_conversation_id';
 const SIDEBAR_COLLAPSE_STORAGE_KEY = 'agent_assistant_sidebar_collapsed_sections';
 const CURRENT_USER_ID_STORAGE_KEY = 'agent_assistant_current_user_id';
+const ACCOUNT_SESSION_STORAGE_KEY = 'agent_assistant_account_session';
+const MOBILE_BREAKPOINT_QUERY = '(max-width: 720px)';
 
 const VIEW_COPY = {
     chat: ['views.chat.title', 'views.chat.subtitle'],
@@ -29,6 +31,23 @@ const I18N = {
             emptyPinned: '在 Agents 中固定常用功能',
         },
         topbar: { agent: 'Agent' },
+        account: {
+            label: '帐号',
+            add: '新帐号',
+            loginTitle: '选择帐号',
+            existing: '已有帐号',
+            enter: '进入',
+            newName: '新帐号',
+            password: '密码',
+            namePlaceholder: '输入帐号名',
+            passwordPlaceholder: '输入密码',
+            create: '创建并进入',
+            createFailed: '创建帐号失败：{message}',
+            loginFailed: '登录失败：{message}',
+            loadFailed: '加载帐号失败：{message}',
+            emptyName: '请输入帐号名',
+            emptyPassword: '请输入至少 4 位密码',
+        },
         actions: {
             newChat: '新话题',
             toggleSidebar: '切换侧边栏',
@@ -306,6 +325,23 @@ const I18N = {
             emptyPinned: 'Pin frequent agents from Agents',
         },
         topbar: { agent: 'Agent' },
+        account: {
+            label: 'Account',
+            add: 'New account',
+            loginTitle: 'Choose Account',
+            existing: 'Existing account',
+            enter: 'Enter',
+            newName: 'New account',
+            password: 'Password',
+            namePlaceholder: 'Account name',
+            passwordPlaceholder: 'Password',
+            create: 'Create and enter',
+            createFailed: 'Failed to create account: {message}',
+            loginFailed: 'Failed to log in: {message}',
+            loadFailed: 'Failed to load accounts: {message}',
+            emptyName: 'Enter an account name',
+            emptyPassword: 'Enter a password with at least 4 characters',
+        },
         actions: {
             newChat: 'New Topic',
             toggleSidebar: 'Toggle sidebar',
@@ -643,7 +679,7 @@ const AUDIO_ATTACHMENT_EXTENSIONS = new Set(['mp3', 'wav', 'm4a', 'aac', 'ogg', 
 const VIDEO_ATTACHMENT_EXTENSIONS = new Set(['mp4', 'mov', 'webm', 'm4v', 'avi', 'mkv', 'ogv']);
 
 let activeView = 'chat';
-let currentConversationId = loadCurrentConversationId();
+let currentConversationId = null;
 let conversations = [];
 let agents = [];
 let tools = [];
@@ -653,6 +689,8 @@ let health = null;
 let pulse = { date: '', generated_at: '', topics: [], items: [] };
 let currentLanguage = localStorage.getItem(LANGUAGE_KEY) || 'zh';
 let currentUserId = loadCurrentUserId();
+let currentAccountToken = '';
+let accounts = [];
 let currentAgentId = 'super_chat';
 let selectedRunId = '';
 let selectedTraceNodeId = '';
@@ -680,6 +718,17 @@ let questionHistoryDraft = '';
 let applyingQuestionHistory = false;
 
 const sidebar = document.getElementById('sidebar');
+const sidebarBackdrop = document.getElementById('sidebar-backdrop');
+const accountSelect = document.getElementById('account-select');
+const btnAddAccount = document.getElementById('btn-add-account');
+const accountLogin = document.getElementById('account-login');
+const loginAccountSelect = document.getElementById('login-account-select');
+const loginPasswordInput = document.getElementById('login-password-input');
+const btnAccountLogin = document.getElementById('btn-account-login');
+const accountCreateForm = document.getElementById('account-create-form');
+const accountNameInput = document.getElementById('account-name-input');
+const accountPasswordInput = document.getElementById('account-password-input');
+const accountLoginError = document.getElementById('account-login-error');
 const conversationList = document.getElementById('conversation-list');
 const messagesContainer = document.getElementById('messages');
 const messageInput = document.getElementById('message-input');
@@ -728,10 +777,61 @@ const mediaLightboxStatus = document.getElementById('media-lightbox-status');
 const mediaLightboxStage = document.getElementById('media-lightbox-stage');
 const mediaLightboxImage = document.getElementById('media-lightbox-image');
 const mediaLightboxClose = document.querySelector('[data-media-preview-close].media-tool-button');
+const mobileLayoutQuery = window.matchMedia(MOBILE_BREAKPOINT_QUERY);
+let wasMobileLayout = mobileLayoutQuery.matches;
 
-if (window.matchMedia('(max-width: 720px)').matches) {
+if (mobileLayoutQuery.matches) {
     sidebar.classList.add('hidden');
 }
+
+function isMobileLayout() {
+    return mobileLayoutQuery.matches;
+}
+
+function isSidebarOpen() {
+    return !sidebar.classList.contains('hidden');
+}
+
+function isMobileSidebarOpen() {
+    return isMobileLayout() && isSidebarOpen();
+}
+
+function syncMobileSidebarState() {
+    const open = isMobileSidebarOpen();
+    document.body.classList.toggle('mobile-sidebar-open', open);
+    if (sidebarBackdrop) sidebarBackdrop.hidden = !open;
+    if (btnToggleSidebar) btnToggleSidebar.setAttribute('aria-expanded', String(open));
+    sidebar.setAttribute('aria-hidden', String(isMobileLayout() && !open));
+}
+
+function setSidebarOpen(open) {
+    sidebar.classList.toggle('hidden', !open);
+    syncMobileSidebarState();
+}
+
+function closeMobileSidebar() {
+    if (isMobileLayout()) setSidebarOpen(false);
+}
+
+function handleMobileLayoutChange() {
+    const mobile = isMobileLayout();
+    if (mobile && !wasMobileLayout) {
+        sidebar.classList.add('hidden');
+    }
+    if (!mobile && wasMobileLayout) {
+        sidebar.classList.remove('hidden');
+    }
+    wasMobileLayout = mobile;
+    syncMobileSidebarState();
+}
+
+if (mobileLayoutQuery.addEventListener) {
+    mobileLayoutQuery.addEventListener('change', handleMobileLayoutChange);
+} else if (mobileLayoutQuery.addListener) {
+    mobileLayoutQuery.addListener(handleMobileLayoutChange);
+}
+
+syncMobileSidebarState();
 
 function t(key, vars = {}) {
     const parts = key.split('.');
@@ -774,6 +874,7 @@ function setLanguage(language) {
     renderRuns();
     renderSettings();
     renderPulse();
+    renderAccountControls();
     renderModelSelect();
     updateTopbar();
     refreshWelcomeIfEmpty();
@@ -785,6 +886,8 @@ async function apiCall(method, path, body = null) {
         method,
         headers: { 'Content-Type': 'application/json' },
     };
+    if (currentAccountToken) opts.headers['X-Account-Session'] = currentAccountToken;
+    if (currentUserId) opts.headers['X-User-ID'] = currentUserId;
     if (body) opts.body = JSON.stringify(body);
 
     const resp = await fetch(API_BASE + path, opts);
@@ -863,19 +966,171 @@ function saveSelectedModes() {
 }
 
 function loadCurrentConversationId() {
-    const value = localStorage.getItem(CURRENT_CONVERSATION_STORAGE_KEY);
+    if (!currentUserId) return null;
+    const value = localStorage.getItem(accountStorageKey(CURRENT_CONVERSATION_STORAGE_KEY));
     return value || null;
 }
 
 function loadCurrentUserId() {
     const value = localStorage.getItem(CURRENT_USER_ID_STORAGE_KEY);
     if (value && String(value).trim()) return String(value).trim();
-    localStorage.setItem(CURRENT_USER_ID_STORAGE_KEY, '0');
-    return '0';
+    return '';
 }
 
 function saveCurrentConversationId(id) {
-    localStorage.setItem(CURRENT_CONVERSATION_STORAGE_KEY, id || '');
+    if (!currentUserId) return;
+    localStorage.setItem(accountStorageKey(CURRENT_CONVERSATION_STORAGE_KEY), id || '');
+}
+
+function saveCurrentUserId(id) {
+    if (id) {
+        localStorage.setItem(CURRENT_USER_ID_STORAGE_KEY, id);
+    } else {
+        localStorage.removeItem(CURRENT_USER_ID_STORAGE_KEY);
+    }
+}
+
+function loadAccountSessionToken(userId = currentUserId) {
+    const id = String(userId || '').trim();
+    if (!id) return '';
+    return localStorage.getItem(`${ACCOUNT_SESSION_STORAGE_KEY}:${id}`) || '';
+}
+
+function saveAccountSessionToken(userId, token) {
+    const id = String(userId || '').trim();
+    if (!id) return;
+    const key = `${ACCOUNT_SESSION_STORAGE_KEY}:${id}`;
+    if (token) {
+        localStorage.setItem(key, token);
+    } else {
+        localStorage.removeItem(key);
+    }
+}
+
+function accountStorageKey(key) {
+    return `${key}:${currentUserId || 'anonymous'}`;
+}
+
+async function loadAccounts() {
+    const data = await publicApiCall('GET', '/api/accounts');
+    accounts = Array.isArray(data.accounts) ? data.accounts : [];
+    renderAccountControls();
+    return accounts;
+}
+
+async function createAccount(name, password) {
+    const data = await publicApiCall('POST', '/api/accounts', { name, password });
+    const account = data.account;
+    if (account && account.id) {
+        accounts = [...accounts.filter((item) => item.id !== account.id), account];
+        renderAccountControls();
+    }
+    return data;
+}
+
+async function loginAccount(userId, password) {
+    return publicApiCall('POST', '/api/accounts/login', { id: userId, password });
+}
+
+async function publicApiCall(method, path, body = null) {
+    const opts = {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+    };
+    if (body) opts.body = JSON.stringify(body);
+
+    const resp = await fetch(API_BASE + path, opts);
+    if (!resp.ok) {
+        const err = await resp.json().catch(() => ({ error: resp.statusText }));
+        throw new Error(err.error || err.detail || 'Request failed');
+    }
+    return resp.json();
+}
+
+function renderAccountControls() {
+    const options = accounts.length
+        ? accounts.map((account) => `<option value="${escapeAttr(account.id)}">${escapeHtml(account.name || account.id)}</option>`).join('')
+        : `<option value="">${escapeHtml(t('account.loginTitle'))}</option>`;
+
+    if (accountSelect) {
+        accountSelect.innerHTML = options;
+        accountSelect.value = accounts.some((account) => account.id === currentUserId) ? currentUserId : '';
+    }
+    if (loginAccountSelect) {
+        loginAccountSelect.innerHTML = options;
+        loginAccountSelect.value = accounts.some((account) => account.id === currentUserId) ? currentUserId : (accounts[0]?.id || '');
+        loginAccountSelect.disabled = accounts.length === 0;
+    }
+    if (btnAccountLogin) btnAccountLogin.disabled = accounts.length === 0;
+}
+
+function showAccountLogin(message = '', selectedUserId = '') {
+    if (!accountLogin) return;
+    accountLogin.classList.remove('hidden');
+    document.body.classList.add('account-login-open');
+    if (accountLoginError) accountLoginError.textContent = message || '';
+    renderAccountControls();
+    if (selectedUserId && loginAccountSelect && accounts.some((account) => account.id === selectedUserId)) {
+        loginAccountSelect.value = selectedUserId;
+    }
+    if (loginPasswordInput) loginPasswordInput.value = '';
+    requestAnimationFrame(() => {
+        if (accounts.length && loginPasswordInput) {
+            loginPasswordInput.focus({ preventScroll: true });
+        } else if (accounts.length && loginAccountSelect) {
+            loginAccountSelect.focus({ preventScroll: true });
+        } else {
+            accountNameInput?.focus({ preventScroll: true });
+        }
+    });
+}
+
+function hideAccountLogin() {
+    if (!accountLogin) return;
+    accountLogin.classList.add('hidden');
+    document.body.classList.remove('account-login-open');
+    if (accountLoginError) accountLoginError.textContent = '';
+}
+
+async function switchAccount(userId, options = {}) {
+    const nextUserId = String(userId || '').trim();
+    if (!nextUserId) {
+        showAccountLogin();
+        return;
+    }
+
+    stopActiveRunWatcher();
+    activeConversationRequests.clear();
+    currentUserId = nextUserId;
+    currentAccountToken = options.token || loadAccountSessionToken(nextUserId);
+    if (options.token) saveAccountSessionToken(nextUserId, options.token);
+    saveCurrentUserId(currentUserId);
+    currentConversationId = loadCurrentConversationId();
+    conversations = [];
+    runs = [];
+    pulse = { date: '', generated_at: '', topics: [], items: [] };
+    runsError = '';
+    pulseError = '';
+    selectedRunId = '';
+    selectedTraceNodeId = '';
+    selectedTraceRunId = '';
+    expandedPulseItemIds = new Set();
+    clearQuestionHistory();
+    clearAttachments();
+    messageInput.value = '';
+    autoResizeInput();
+    updateSendState();
+    renderAccountControls();
+    renderConversationList();
+    renderPulse();
+    renderRuns();
+    showWelcome();
+
+    if (options.refresh !== false) {
+        await refreshAll();
+        await restoreInitialConversation();
+    }
+    hideAccountLogin();
 }
 
 function displayConversationTitle(conv) {
@@ -1243,7 +1498,7 @@ async function handleImagePaste(event) {
     if (!files.length) return;
     event.preventDefault();
     await handleAttachmentSelection(files);
-    messageInput.focus();
+    focusMessageInput();
 }
 
 async function parseAttachmentFile(file, item = null) {
@@ -1461,7 +1716,7 @@ async function loadConversations() {
 }
 
 async function createConversation() {
-    const conv = await apiCall('POST', '/api/conversations');
+    const conv = await apiCall('POST', '/api/conversations', { user_id: currentUserId });
     conversations.unshift(conv);
     currentConversationId = conv.id;
     saveCurrentConversationId(currentConversationId);
@@ -1639,6 +1894,7 @@ async function loadHealth() {
 }
 
 async function refreshAll() {
+    if (!currentUserId) return;
     await Promise.allSettled([
         loadHealth(),
         loadConversations(),
@@ -1650,6 +1906,36 @@ async function refreshAll() {
     ]);
     renderModes();
     updateTopbar();
+}
+
+async function bootApp() {
+    try {
+        await loadAccounts();
+    } catch (err) {
+        showAccountLogin(t('account.loadFailed', { message: err.message }));
+        return;
+    }
+
+    const storedUserId = loadCurrentUserId();
+    const selectedAccount = accounts.find((account) => account.id === storedUserId) || null;
+    const storedToken = selectedAccount ? loadAccountSessionToken(selectedAccount.id) : '';
+    if (!selectedAccount || !storedToken) {
+        currentUserId = '';
+        currentAccountToken = '';
+        currentConversationId = null;
+        if (!selectedAccount) saveCurrentUserId('');
+        renderAccountControls();
+        showAccountLogin('', selectedAccount?.id || '');
+        return;
+    }
+
+    currentUserId = selectedAccount.id;
+    currentAccountToken = storedToken;
+    currentConversationId = loadCurrentConversationId();
+    renderAccountControls();
+    await refreshAll();
+    await restoreInitialConversation();
+    focusMessageInput({ allowMobile: false });
 }
 
 function setView(view, options = {}) {
@@ -1673,6 +1959,7 @@ function setView(view, options = {}) {
         if (!pulse.items.length && !pulseError) loadPulse();
     }
     if (view === 'chat' && options.restore !== false) ensureCurrentConversationVisible();
+    if (options.closeSidebar !== false) closeMobileSidebar();
 }
 
 function updateTopbar() {
@@ -3695,7 +3982,7 @@ async function renderConversationMessages(id, options = {}) {
     }
 
     updateTopbar();
-    messageInput.focus();
+    focusMessageInput();
 }
 
 async function loadConversationRunMatches(id, messages = []) {
@@ -4013,7 +4300,7 @@ async function startAgentTask(agentId) {
     clearAttachments();
     updateSendState();
     autoResizeInput();
-	messageInput.focus();
+	focusMessageInput();
 }
 
 function openPulseChat(query = '') {
@@ -4029,7 +4316,7 @@ function openPulseChat(query = '') {
 	messageInput.value = query;
 	autoResizeInput();
 	updateSendState();
-	messageInput.focus();
+	focusMessageInput();
 }
 
 async function startNewTopic() {
@@ -4052,10 +4339,14 @@ async function startNewTopic() {
         appendMessage('assistant', t('chat.createConversationFailed', { message: err.message }), [], '', 'error');
     }
 
-    messageInput.focus();
+    focusMessageInput();
 }
 
 async function handleSend(queryOverride = '') {
+    if (!currentUserId) {
+        showAccountLogin();
+        return;
+    }
     const typedQuery = (queryOverride || messageInput.value).trim();
     if (hasPendingAttachments()) return;
 
@@ -4105,7 +4396,7 @@ async function handleSend(queryOverride = '') {
         updateSendState();
         if (currentConversationId === conversationId) {
             scrollToBottom();
-            messageInput.focus();
+            focusMessageInput();
         }
     }
 }
@@ -4131,7 +4422,11 @@ async function sendMessageStream(conversationId, query, streamView, attachmentCo
     const modePayload = selectedModePayload();
     const resp = await fetch(API_BASE + '/api/chat', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+            'Content-Type': 'application/json',
+            ...(currentAccountToken ? { 'X-Account-Session': currentAccountToken } : {}),
+            ...(currentUserId ? { 'X-User-ID': currentUserId } : {}),
+        },
         body: JSON.stringify({
             conversation_id: conversationId,
             user_id: currentUserId,
@@ -5490,6 +5785,16 @@ function autoResizeInput() {
     messageInput.style.height = `${Math.min(messageInput.scrollHeight, 150)}px`;
 }
 
+function focusMessageInput(options = {}) {
+    const { allowMobile = true } = options;
+    if (!messageInput || (!allowMobile && isMobileLayout())) return;
+    try {
+        messageInput.focus({ preventScroll: true });
+    } catch {
+        messageInput.focus();
+    }
+}
+
 function scrollToBottom() {
     requestAnimationFrame(() => {
         messagesContainer.scrollTop = messagesContainer.scrollHeight;
@@ -5507,6 +5812,12 @@ function escapeAttr(text) {
 }
 
 document.addEventListener('click', async (event) => {
+    if (event.target === sidebarBackdrop) {
+        event.preventDefault();
+        setSidebarOpen(false);
+        return;
+    }
+
     const mediaCloseButton = event.target.closest('[data-media-preview-close]');
     if (mediaCloseButton) {
         event.preventDefault();
@@ -5643,7 +5954,7 @@ document.addEventListener('click', async (event) => {
         messageInput.value = quickAction.dataset.query;
         autoResizeInput();
         updateSendState();
-        messageInput.focus();
+        focusMessageInput();
         if (messageInput.setSelectionRange) {
             messageInput.setSelectionRange(messageInput.value.length, messageInput.value.length);
         }
@@ -5737,6 +6048,12 @@ document.addEventListener('click', async (event) => {
 });
 
 document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && isMobileSidebarOpen()) {
+        event.preventDefault();
+        setSidebarOpen(false);
+        return;
+    }
+
     if (!mediaPreviewIsOpen()) return;
 
     if (event.key === 'Escape') {
@@ -5831,14 +6148,85 @@ if (btnNewChat) {
 }
 
 btnToggleSidebar.addEventListener('click', () => {
-    sidebar.classList.toggle('hidden');
+    setSidebarOpen(sidebar.classList.contains('hidden'));
 });
 
 btnRefresh.addEventListener('click', async () => {
+    if (!currentUserId) {
+        showAccountLogin();
+        return;
+    }
     btnRefresh.classList.add('spinning');
     await refreshAll();
     btnRefresh.classList.remove('spinning');
 });
+
+if (accountSelect) {
+    accountSelect.addEventListener('change', () => {
+        const selectedUserId = accountSelect.value;
+        if (!selectedUserId || selectedUserId === currentUserId) return;
+        accountSelect.value = currentUserId || '';
+        showAccountLogin('', selectedUserId);
+    });
+}
+
+if (btnAddAccount) {
+    btnAddAccount.addEventListener('click', () => {
+        showAccountLogin();
+        accountNameInput?.focus({ preventScroll: true });
+    });
+}
+
+if (btnAccountLogin) {
+    btnAccountLogin.addEventListener('click', async () => {
+        const userId = loginAccountSelect?.value || '';
+        const password = loginPasswordInput?.value || '';
+        if (!userId) {
+            showAccountLogin();
+            return;
+        }
+        if (password.trim().length < 4) {
+            if (accountLoginError) accountLoginError.textContent = t('account.emptyPassword');
+            return;
+        }
+        btnAccountLogin.disabled = true;
+        try {
+            const data = await loginAccount(userId, password);
+            if (data.account) {
+                accounts = [...accounts.filter((item) => item.id !== data.account.id), data.account];
+            }
+            await switchAccount(data.account?.id || userId, { token: data.token });
+        } catch (err) {
+            if (accountLoginError) accountLoginError.textContent = t('account.loginFailed', { message: err.message });
+        } finally {
+            btnAccountLogin.disabled = accounts.length === 0;
+        }
+    });
+}
+
+if (accountCreateForm) {
+    accountCreateForm.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        const name = (accountNameInput?.value || '').trim();
+        const password = accountPasswordInput?.value || '';
+        if (!name) {
+            if (accountLoginError) accountLoginError.textContent = t('account.emptyName');
+            return;
+        }
+        if (password.trim().length < 4) {
+            if (accountLoginError) accountLoginError.textContent = t('account.emptyPassword');
+            return;
+        }
+        try {
+            const data = await createAccount(name, password);
+            if (accountNameInput) accountNameInput.value = '';
+            if (accountPasswordInput) accountPasswordInput.value = '';
+            await switchAccount(data.account.id, { token: data.token });
+        } catch (err) {
+            if (accountLoginError) accountLoginError.textContent = t('account.createFailed', { message: err.message });
+        }
+    });
+}
 
 if (languageToggle) {
     languageToggle.addEventListener('click', () => {
@@ -5867,12 +6255,9 @@ applySidebarCollapseState();
 renderAgentCommandBar();
 renderModes();
 renderPulse();
+renderAccountControls();
 updateCounts();
 renderHealth();
 updateSendState();
 
-refreshAll().then(() => {
-    restoreInitialConversation().finally(() => {
-        messageInput.focus();
-    });
-});
+bootApp();

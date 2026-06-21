@@ -25,6 +25,7 @@ class TraceStore:
         self,
         *,
         conversation_id: str,
+        user_id: str | None = None,
         input_text: str,
         agent_id: str,
         runtime: str,
@@ -34,6 +35,7 @@ class TraceStore:
         run = RunRecord(
             run_id=run_id,
             conversation_id=conversation_id,
+            user_id=self._normalize_user_id(user_id),
             agent_id=agent_id,
             runtime=runtime,
             status="running",
@@ -48,7 +50,11 @@ class TraceStore:
             type="run.started",
             status="running",
             title="Run started",
-            payload={"agent_id": agent_id, "runtime": runtime},
+            payload={
+                "agent_id": agent_id,
+                "runtime": runtime,
+                "user_id": self._normalize_user_id(user_id),
+            },
         )
         return run
 
@@ -150,14 +156,23 @@ class TraceStore:
         self,
         *,
         conversation_id: str | None = None,
+        user_id: str | None = None,
         limit: int = 50,
     ) -> list[RunRecord]:
         with self._lock:
             runs = list(self._runs.values())
         if conversation_id:
             runs = [r for r in runs if r.conversation_id == conversation_id]
+        if user_id is not None:
+            normalized_user_id = self._normalize_user_id(user_id)
+            runs = [r for r in runs if r.user_id == normalized_user_id]
         runs.sort(key=lambda r: r.started_at, reverse=True)
         return runs[:limit]
+
+    @staticmethod
+    def _normalize_user_id(value: str | int | None) -> str:
+        text = str(value if value not in (None, "") else "0").strip()
+        return text or "0"
 
     def _duration_ms(self, run_id: str) -> int:
         started = self._created_at.get(run_id)

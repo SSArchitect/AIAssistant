@@ -21,6 +21,7 @@ class RunEvent(BaseModel):
 class RunRecord(BaseModel):
     run_id: str
     conversation_id: str
+    user_id: str = "0"
     agent_id: str
     runtime: str
     status: str

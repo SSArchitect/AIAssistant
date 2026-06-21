@@ -162,6 +162,7 @@ async def list_role_memories(
     role_id: str,
     kind: Optional[MemoryKind] = None,
     agent_id: Optional[str] = None,
+    user_id: Optional[str] = None,
 ):
     if engine is None:
         raise HTTPException(status_code=503, detail="Agent engine not ready")
@@ -170,6 +171,7 @@ async def list_role_memories(
     return MemoryListResponse(
         memories=engine.role_memory.list_memories(
             role_id=role_id,
+            user_id=user_id,
             kind=kind,
             agent_id=agent_id,
         )
@@ -184,6 +186,7 @@ async def create_role_memory(role_id: str, request: MemoryCreateRequest):
         raise HTTPException(status_code=404, detail="role not found")
     memory = engine.role_memory.add_memory(
         role_id=role_id,
+        user_id=request.user_id,
         kind=request.kind,
         content=request.content,
         source=request.source,
@@ -196,11 +199,19 @@ async def create_role_memory(role_id: str, request: MemoryCreateRequest):
 
 
 @app.delete("/agent/roles/{role_id}/memories/{memory_id}")
-async def delete_role_memory(role_id: str, memory_id: str):
+async def delete_role_memory(
+    role_id: str,
+    memory_id: str,
+    user_id: Optional[str] = None,
+):
     if engine is None:
         raise HTTPException(status_code=503, detail="Agent engine not ready")
     try:
-        engine.role_memory.delete_memory(role_id=role_id, memory_id=memory_id)
+        engine.role_memory.delete_memory(
+            role_id=role_id,
+            memory_id=memory_id,
+            user_id=user_id,
+        )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
     return {"status": "ok"}
@@ -383,11 +394,16 @@ async def chat_stream(request: ChatRequest):
 
 
 @app.get("/agent/runs", response_model=RunListResponse)
-async def list_runs(conversation_id: Optional[str] = None, limit: int = 50):
+async def list_runs(
+    conversation_id: Optional[str] = None,
+    user_id: Optional[str] = None,
+    limit: int = 50,
+):
     bounded_limit = max(1, min(limit, 200))
     return RunListResponse(
         runs=trace_store.list_runs(
             conversation_id=conversation_id,
+            user_id=user_id,
             limit=bounded_limit,
         )
     )

@@ -16,15 +16,28 @@ func NewConversationHandler() *ConversationHandler {
 	return &ConversationHandler{}
 }
 
+type conversationCreateRequest struct {
+	UserID string `json:"user_id,omitempty"`
+}
+
 func (h *ConversationHandler) List(c *gin.Context) {
+	userID := requestUserID(c)
 	var conversations []models.Conversation
-	database.DB.Order("updated_at desc").Find(&conversations)
+	database.DB.Where("user_id = ?", userID).Order("updated_at desc").Find(&conversations)
 	c.JSON(http.StatusOK, gin.H{"conversations": conversations})
 }
 
 func (h *ConversationHandler) Create(c *gin.Context) {
+	var req conversationCreateRequest
+	_ = c.ShouldBindJSON(&req)
+	userID := requestUserID(c)
+	if req.UserID != "" {
+		userID = normalizedUserID(req.UserID)
+	}
+
 	conv := models.Conversation{
 		ID:        uuid.New().String(),
+		UserID:    userID,
 		Title:     "New Conversation",
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),
@@ -40,15 +53,16 @@ func (h *ConversationHandler) Create(c *gin.Context) {
 
 func (h *ConversationHandler) Get(c *gin.Context) {
 	id := c.Param("id")
+	userID := requestUserID(c)
 
 	var conv models.Conversation
-	if err := database.DB.First(&conv, "id = ?", id).Error; err != nil {
+	if err := database.DB.First(&conv, "id = ? AND user_id = ?", id, userID).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "conversation not found"})
 		return
 	}
 
 	var messages []models.Message
-	database.DB.Where("conversation_id = ?", id).Order(messageChronologicalOrder).Find(&messages)
+	database.DB.Where("conversation_id = ? AND user_id = ?", id, userID).Order(messageChronologicalOrder).Find(&messages)
 
 	c.JSON(http.StatusOK, gin.H{
 		"conversation": conv,
@@ -58,9 +72,10 @@ func (h *ConversationHandler) Get(c *gin.Context) {
 
 func (h *ConversationHandler) Delete(c *gin.Context) {
 	id := c.Param("id")
+	userID := requestUserID(c)
 
-	database.DB.Where("conversation_id = ?", id).Delete(&models.Message{})
-	database.DB.Delete(&models.Conversation{}, "id = ?", id)
+	database.DB.Where("conversation_id = ? AND user_id = ?", id, userID).Delete(&models.Message{})
+	database.DB.Delete(&models.Conversation{}, "id = ? AND user_id = ?", id, userID)
 
 	c.JSON(http.StatusOK, gin.H{"status": "deleted"})
 }

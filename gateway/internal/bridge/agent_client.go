@@ -110,6 +110,7 @@ type MemoryRecord struct {
 
 type ChatResponse struct {
 	ConversationID string          `json:"conversation_id"`
+	UserID         string          `json:"user_id,omitempty"`
 	Response       string          `json:"response"`
 	SkillsUsed     []string        `json:"skills_used"`
 	Citations      []Citation      `json:"citations,omitempty"`
@@ -218,6 +219,7 @@ type RoleWriteRequest struct {
 type RunRecord struct {
 	RunID          string         `json:"run_id"`
 	ConversationID string         `json:"conversation_id"`
+	UserID         string         `json:"user_id,omitempty"`
 	AgentID        string         `json:"agent_id"`
 	Runtime        string         `json:"runtime"`
 	Status         string         `json:"status"`
@@ -472,10 +474,13 @@ func (c *AgentClient) writeRole(method string, path string, req RoleWriteRequest
 	return &role, nil
 }
 
-func (c *AgentClient) ListRuns(conversationID string, limit int) (*RunListResponse, error) {
+func (c *AgentClient) ListRuns(conversationID string, userID string, limit int) (*RunListResponse, error) {
 	params := url.Values{}
 	if conversationID != "" {
 		params.Set("conversation_id", conversationID)
+	}
+	if userID != "" {
+		params.Set("user_id", userID)
 	}
 	if limit > 0 {
 		params.Set("limit", strconv.Itoa(limit))

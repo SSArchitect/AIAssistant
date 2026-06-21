@@ -48,6 +48,7 @@ class RoleUpdateRequest(BaseModel):
 class MemoryRecord(BaseModel):
     id: str
     role_id: str
+    user_id: str = "0"
     kind: MemoryKind
     content: str
     source: str = "manual"
@@ -81,6 +82,7 @@ class MemoryCandidate(BaseModel):
 
 
 class MemoryCreateRequest(BaseModel):
+    user_id: Optional[str] = None
     kind: MemoryKind = "long_term"
     content: str
     source: str = "manual"

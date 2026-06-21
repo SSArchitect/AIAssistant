@@ -3,6 +3,7 @@ package database
 import (
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/aan/agent-assistant-gateway/internal/models"
 	"gorm.io/driver/sqlite"
@@ -26,12 +27,29 @@ func Init(dbPath string) error {
 		return err
 	}
 
-	return DB.AutoMigrate(
+	if err := DB.AutoMigrate(
+		&models.Account{},
+		&models.AccountSession{},
 		&models.Conversation{},
 		&models.Message{},
 		&models.Setting{},
 		&models.PulseTopic{},
 		&models.PulseItem{},
 		&models.PulseModule{},
-	)
+	); err != nil {
+		return err
+	}
+
+	return ensureDefaultAccount()
+}
+
+func ensureDefaultAccount() error {
+	now := time.Now()
+	account := models.Account{
+		ID:        "0",
+		Name:      "默认帐号",
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	return DB.FirstOrCreate(&account, models.Account{ID: "0"}).Error
 }

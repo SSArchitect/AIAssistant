@@ -227,6 +227,7 @@ class RoleMemoryStore:
         self,
         *,
         role_id: str,
+        user_id: str | None = None,
         kind: MemoryKind,
         content: str,
         source: str = "manual",
@@ -236,6 +237,7 @@ class RoleMemoryStore:
         metadata: dict | None = None,
     ) -> MemoryRecord:
         normalized_content = self._clean_content(content)
+        normalized_user_id = self._normalize_user_id(user_id)
         if not normalized_content:
             raise ValueError("memory content cannot be empty")
 
@@ -245,6 +247,7 @@ class RoleMemoryStore:
 
             duplicate = self._find_duplicate(
                 role_id=role_id,
+                user_id=normalized_user_id,
                 kind=kind,
                 content=normalized_content,
                 agent_id=agent_id,
@@ -261,6 +264,7 @@ class RoleMemoryStore:
             record = MemoryRecord(
                 id=f"mem_{uuid4().hex}",
                 role_id=role_id,
+                user_id=normalized_user_id,
                 kind=kind,
                 content=normalized_content,
                 source=source,
@@ -280,6 +284,7 @@ class RoleMemoryStore:
         self,
         *,
         role_id: str,
+        user_id: str | None = None,
         kind: MemoryKind | None = None,
         agent_id: str | None = None,
         include_shared: bool = True,
@@ -288,6 +293,8 @@ class RoleMemoryStore:
         with self._lock:
             records = list(self._records.get(role_id, []))
 
+        normalized_user_id = self._normalize_user_id(user_id)
+        records = [record for record in records if record.user_id == normalized_user_id]
         if kind is not None:
             records = [record for record in records if record.kind == kind]
         if agent_id is not None:
@@ -302,14 +309,23 @@ class RoleMemoryStore:
             return records[:limit]
         return records
 
-    def delete_memory(self, *, role_id: str, memory_id: str) -> None:
+    def delete_memory(
+        self,
+        *,
+        role_id: str,
+        memory_id: str,
+        user_id: str | None = None,
+    ) -> None:
+        normalized_user_id = self._normalize_user_id(user_id)
         with self._lock:
             if role_id not in self._roles:
                 raise ValueError(f"unknown role: {role_id}")
 
             records = self._records.get(role_id, [])
             next_records = [
-                record for record in records if record.id != memory_id
+                record
+                for record in records
+                if record.id != memory_id or record.user_id != normalized_user_id
             ]
             if len(next_records) == len(records):
                 raise ValueError(f"unknown memory: {memory_id}")
@@ -321,6 +337,7 @@ class RoleMemoryStore:
         self,
         *,
         role_id: str,
+        user_id: str | None = None,
         agent_id: str | None = None,
     ) -> MemoryContext | None:
         role = self.get_role(role_id)
@@ -328,12 +345,14 @@ class RoleMemoryStore:
             return None
         persona_memories = self.list_memories(
             role_id=role_id,
+            user_id=user_id,
             kind="persona",
             agent_id=agent_id,
             limit=self._max_context_records,
         )
         long_term_memories = self.list_memories(
             role_id=role_id,
+            user_id=user_id,
             kind="long_term",
             agent_id=agent_id,
             limit=self._max_context_records,
@@ -375,13 +394,18 @@ class RoleMemoryStore:
         self,
         *,
         role_id: str,
+        user_id: str,
         kind: MemoryKind,
         content: str,
         agent_id: str | None,
     ) -> MemoryRecord | None:
         normalized = self._normalize_for_dedupe(content)
         for record in self._records.get(role_id, []):
-            if record.kind != kind or record.agent_id != agent_id:
+            if (
+                record.user_id != user_id
+                or record.kind != kind
+                or record.agent_id != agent_id
+            ):
                 continue
             if self._normalize_for_dedupe(record.content) == normalized:
                 return record
@@ -438,6 +462,11 @@ class RoleMemoryStore:
             encoding="utf-8",
         )
         tmp_path.replace(self._storage_path)
+
+    @staticmethod
+    def _normalize_user_id(value: str | int | None) -> str:
+        text = str(value if value not in (None, "") else "0").strip()
+        return text or "0"
 
     @staticmethod
     def _clean_content(content: str) -> str:

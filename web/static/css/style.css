@@ -37,10 +37,17 @@
     --shadow: 0 10px 30px rgba(16, 24, 40, 0.09);
     --radius: 8px;
     --radius-sm: 6px;
+    --mobile-sidebar-width: min(88vw, 320px);
+}
+
+html {
+    height: 100%;
+    overflow-x: hidden;
 }
 
 body {
     height: 100vh;
+    height: 100dvh;
     overflow: hidden;
     background: var(--bg-page);
     color: var(--text);
@@ -58,6 +65,11 @@ button {
     color: inherit;
 }
 
+img,
+video {
+    max-width: 100%;
+}
+
 .visually-hidden {
     position: absolute;
     width: 1px;
@@ -73,6 +85,9 @@ button {
 .app {
     display: flex;
     height: 100vh;
+    height: 100dvh;
+    min-height: 0;
+    overflow: hidden;
 }
 
 .sidebar {
@@ -83,15 +98,23 @@ button {
     background: var(--bg-sidebar);
     border-right: 1px solid var(--line);
     box-shadow: 8px 0 26px rgba(32, 44, 66, 0.04);
-    transition: transform 0.2s ease;
+    transition: transform 0.2s ease, left 0.2s ease;
     overflow: hidden;
 }
 
 .sidebar.hidden {
-    transform: translateX(-292px);
+    transform: translateX(-100%);
     position: absolute;
     inset: 0 auto 0 0;
     z-index: 20;
+}
+
+.sidebar-backdrop {
+    display: none;
+}
+
+.sidebar-backdrop[hidden] {
+    display: none !important;
 }
 
 .sidebar-header {
@@ -105,7 +128,7 @@ button {
     align-items: center;
     gap: 10px;
     min-height: 28px;
-    margin-bottom: 0;
+    margin-bottom: 12px;
     color: var(--text);
     font-size: 14px;
     font-weight: 700;
@@ -114,6 +137,35 @@ button {
 .logo-icon {
     color: var(--violet);
     flex: 0 0 auto;
+}
+
+.account-picker {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 34px;
+    gap: 8px;
+    align-items: center;
+}
+
+.account-select {
+    min-width: 0;
+    height: 34px;
+    padding: 0 8px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+    color: var(--text);
+    outline: none;
+    font-size: 12px;
+    font-weight: 700;
+}
+
+.account-select:focus {
+    border-color: var(--primary);
+}
+
+.account-add-button {
+    width: 34px;
+    height: 34px;
 }
 
 .btn-primary,
@@ -514,6 +566,76 @@ button {
     display: flex;
     flex-direction: column;
     background: var(--bg-workspace);
+}
+
+.account-login {
+    position: fixed;
+    inset: 0;
+    z-index: 60;
+    display: grid;
+    place-items: center;
+    padding: 18px;
+    background: rgba(15, 23, 42, 0.42);
+    backdrop-filter: blur(4px);
+}
+
+.account-login.hidden {
+    display: none;
+}
+
+.account-login-panel {
+    width: min(100%, 360px);
+    padding: 18px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    background: var(--surface);
+    box-shadow: var(--shadow);
+    display: grid;
+    gap: 12px;
+}
+
+.account-login-panel h2 {
+    font-size: 18px;
+    line-height: 1.2;
+}
+
+.account-login-field {
+    display: grid;
+    gap: 6px;
+    color: var(--text-muted);
+    font-size: 12px;
+    font-weight: 700;
+}
+
+.account-login-field select,
+.account-login-field input {
+    width: 100%;
+    height: 36px;
+    padding: 0 10px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+    color: var(--text);
+    outline: none;
+    font-size: 14px;
+}
+
+.account-login-field select:focus,
+.account-login-field input:focus {
+    border-color: var(--primary);
+}
+
+.account-create-form {
+    display: grid;
+    gap: 10px;
+    padding-top: 4px;
+}
+
+.account-login-error {
+    min-height: 18px;
+    color: var(--red);
+    font-size: 12px;
+    line-height: 1.4;
 }
 
 .topbar {
@@ -3491,6 +3613,7 @@ button {
 
     .runs-layout {
         grid-template-columns: 1fr;
+        min-height: auto;
     }
 
     .runs-layout {
@@ -3503,6 +3626,7 @@ button {
 
     .trace-workbench {
         grid-template-columns: 1fr;
+        min-height: auto;
     }
 
     .trace-tree-panel {
@@ -3523,16 +3647,40 @@ button {
 }
 
 @media (max-width: 720px) {
+    body.mobile-sidebar-open {
+        overflow: hidden;
+    }
+
     .sidebar {
         position: absolute;
         inset: 0 auto 0 0;
+        width: var(--mobile-sidebar-width);
+        min-width: 0;
+        max-width: calc(100vw - 28px);
+        height: 100dvh;
         z-index: 20;
         box-shadow: var(--shadow);
     }
 
     .sidebar.hidden {
-        transform: translateX(-292px);
+        left: calc(-1 * var(--mobile-sidebar-width));
+        transform: none;
         box-shadow: none;
+    }
+
+    body.mobile-sidebar-open .sidebar-backdrop {
+        position: fixed;
+        inset: 0;
+        z-index: 19;
+        display: block;
+        border: 0;
+        background: rgba(15, 23, 42, 0.38);
+        backdrop-filter: blur(2px);
+        cursor: pointer;
+    }
+
+    .sidebar-footer {
+        padding-bottom: calc(12px + env(safe-area-inset-bottom));
     }
 
     .workspace {
@@ -3540,7 +3688,64 @@ button {
     }
 
     .topbar {
-        padding: 10px 12px;
+        min-height: auto;
+        padding: calc(8px + env(safe-area-inset-top)) 10px 8px;
+        display: grid;
+        grid-template-columns: 40px minmax(0, 1fr);
+        align-items: center;
+        gap: 8px;
+        flex-wrap: nowrap;
+    }
+
+    .topbar-title h1 {
+        font-size: 16px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    .topbar-title p {
+        display: none;
+    }
+
+    .topbar-actions {
+        grid-column: 1 / -1;
+        width: 100%;
+        min-width: 0;
+        gap: 6px;
+        flex-wrap: nowrap;
+        overflow-x: auto;
+        padding-bottom: 2px;
+        -webkit-overflow-scrolling: touch;
+        scrollbar-width: none;
+    }
+
+    .topbar-actions::-webkit-scrollbar {
+        display: none;
+    }
+
+    .topbar-actions .icon-button,
+    .topbar-actions .language-toggle,
+    .topbar-actions .btn-secondary {
+        min-width: 38px;
+        min-height: 38px;
+    }
+
+    .new-topic-button {
+        width: 38px;
+        min-width: 38px;
+        padding: 0;
+    }
+
+    .new-topic-button span {
+        display: none;
+    }
+
+    .model-pill {
+        max-width: min(48vw, 220px);
+        min-height: 28px;
+        overflow: hidden;
+        text-overflow: ellipsis;
     }
 
     .messages,
@@ -3549,15 +3754,55 @@ button {
     #view-settings,
     #view-pulse,
     #view-trace {
-        padding: 14px 12px;
+        padding: 12px 10px;
+        -webkit-overflow-scrolling: touch;
     }
 
     .input-area {
-        padding: 0 12px 14px;
+        padding: 0 10px calc(10px + env(safe-area-inset-bottom));
+    }
+
+    .input-container {
+        gap: 6px;
+        padding: 7px;
+    }
+
+    .mode-toggle,
+    .attachment-toggle,
+    .btn-send {
+        width: 38px;
+        height: 38px;
+    }
+
+    .mode-popover {
+        position: fixed;
+        left: 10px;
+        right: 10px;
+        bottom: calc(72px + env(safe-area-inset-bottom));
+        width: auto;
+        max-height: min(58vh, 420px);
+        overflow-y: auto;
+    }
+
+    #message-input,
+    .account-select,
+    .account-login-field select,
+    .account-login-field input,
+    .model-select,
+    #agent-select,
+    .pulse-topic-form input,
+    .aigc-field textarea,
+    .aigc-field select,
+    .aigc-field input {
+        font-size: 16px;
     }
 
     .message {
         gap: 8px;
+    }
+
+    .bubble {
+        padding: 11px 12px;
     }
 
     .avatar {
@@ -3568,10 +3813,17 @@ button {
 
     .content-grid {
         grid-template-columns: 1fr;
+        gap: 10px;
+    }
+
+    .data-card {
+        min-height: 0;
     }
 
     .agent-section-head {
         align-items: flex-start;
+        flex-direction: column;
+        gap: 8px;
     }
 
     .agent-card-list,
@@ -3585,10 +3837,84 @@ button {
 
     .quick-actions {
         flex-direction: column;
+        align-items: stretch;
+    }
+
+    .quick-action {
+        width: 100%;
     }
 
     .pulse-feed-toolbar {
         align-items: stretch;
+        flex-direction: column;
+    }
+
+    .pulse-topic-panel {
+        position: static;
+    }
+
+    .pulse-card-actions .btn-secondary,
+    .pulse-feed-toolbar .btn-secondary,
+    .pulse-question {
+        width: 100%;
+        justify-content: center;
+    }
+
+    .pulse-heat {
+        width: 100%;
+        margin-left: 0;
+    }
+
+    .aigc-control-grid,
+    .aigc-results {
+        grid-template-columns: 1fr;
+    }
+
+    .aigc-actions {
+        align-items: stretch;
+        flex-direction: column;
+    }
+
+    .aigc-actions .btn-primary,
+    .aigc-result-actions .btn-secondary {
+        width: 100%;
+    }
+
+    #view-trace {
+        overflow-y: auto;
+    }
+
+    .runs-layout {
+        width: 100%;
+        gap: 10px;
+        overflow: visible;
+    }
+
+    .run-list {
+        max-height: 34vh;
+        overflow-y: auto;
+    }
+
+    .run-detail {
+        overflow: visible;
+    }
+
+    .trace-page-panel {
+        height: auto;
+        display: grid;
+    }
+
+    .trace-tree-panel {
+        max-height: 36vh;
+    }
+
+    .trace-node-panel {
+        max-height: none;
+        overflow: visible;
+    }
+
+    .trace-detail-head,
+    .run-panel-head {
         flex-direction: column;
     }
 
@@ -3598,7 +3924,7 @@ button {
 
     .media-lightbox-panel {
         width: calc(100vw - 20px);
-        height: calc(100vh - 20px);
+        height: calc(100dvh - 20px);
     }
 
     .media-lightbox-toolbar {
@@ -3624,5 +3950,34 @@ button {
 
     .media-lightbox-stage {
         padding: 10px;
+    }
+}
+
+@media (max-width: 420px) {
+    .messages {
+        padding-inline: 8px;
+    }
+
+    .message {
+        gap: 6px;
+    }
+
+    .avatar {
+        display: none;
+    }
+
+    .bubble p,
+    .bubble ul,
+    .bubble ol {
+        font-size: 13px;
+    }
+
+    .attachment-name,
+    .attachment-image-chip .attachment-name {
+        max-width: 50vw;
+    }
+
+    .topbar-actions .model-pill {
+        max-width: 42vw;
     }
 }

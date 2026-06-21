@@ -4,6 +4,7 @@ import "time"
 
 type PulseTopic struct {
 	ID        string    `json:"id" gorm:"primaryKey"`
+	UserID    string    `json:"user_id" gorm:"index;not null;default:0"`
 	Name      string    `json:"name" gorm:"index"`
 	Keywords  string    `json:"keywords,omitempty"` // JSON array
 	Enabled   bool      `json:"enabled" gorm:"default:true"`
@@ -13,6 +14,7 @@ type PulseTopic struct {
 
 type PulseItem struct {
 	ID            string    `json:"id" gorm:"primaryKey"`
+	UserID        string    `json:"user_id" gorm:"index;not null;default:0"`
 	Date          string    `json:"date" gorm:"index"`
 	TopicID       string    `json:"topic_id,omitempty" gorm:"index"`
 	TopicName     string    `json:"topic_name,omitempty"`
@@ -29,6 +31,7 @@ type PulseItem struct {
 
 type PulseModule struct {
 	ID        string    `json:"id" gorm:"primaryKey"`
+	UserID    string    `json:"user_id" gorm:"index;not null;default:0"`
 	Date      string    `json:"date" gorm:"index"`
 	Key       string    `json:"key" gorm:"index"`
 	Title     string    `json:"title"`

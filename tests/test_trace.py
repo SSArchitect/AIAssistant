@@ -68,6 +68,29 @@ def test_trace_store_filters_and_orders_runs():
     assert other.run_id not in {run.run_id for run in same_conv_runs}
 
 
+def test_trace_store_filters_runs_by_user_id():
+    store = TraceStore()
+    run_a = store.start_run(
+        conversation_id="shared-conv",
+        user_id="a",
+        input_text="a",
+        agent_id="general_assistant",
+        runtime="self",
+    )
+    run_b = store.start_run(
+        conversation_id="shared-conv",
+        user_id="b",
+        input_text="b",
+        agent_id="general_assistant",
+        runtime="self",
+    )
+
+    user_a_runs = store.list_runs(conversation_id="shared-conv", user_id="a")
+
+    assert [run.run_id for run in user_a_runs] == [run_a.run_id]
+    assert run_b.run_id not in {run.run_id for run in user_a_runs}
+
+
 def test_trace_store_marks_failed_run():
     store = TraceStore()
     run = store.start_run(

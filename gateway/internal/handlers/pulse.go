@@ -31,10 +31,12 @@ type pulseTopicRequest struct {
 	Name     string   `json:"name"`
 	Keywords []string `json:"keywords"`
 	Enabled  *bool    `json:"enabled"`
+	UserID   string   `json:"user_id,omitempty"`
 }
 
 type pulseRefreshRequest struct {
-	Date string `json:"date"`
+	Date   string `json:"date"`
+	UserID string `json:"user_id,omitempty"`
 }
 
 type pulseNewsSource struct {
@@ -203,50 +205,73 @@ func (h *PulseHandler) StartScheduler() {
 
 func (h *PulseHandler) runScheduledPulse(reason string) {
 	date := time.Now().Format("2006-01-02")
-	needsRefresh, err := h.needsScheduledRefresh(date)
-	if err != nil {
-		slog.Warn("Pulse scheduled check failed", "reason", reason, "error", err)
-		return
+	for _, userID := range h.scheduledPulseUserIDs() {
+		needsRefresh, err := h.needsScheduledRefresh(date, userID)
+		if err != nil {
+			slog.Warn("Pulse scheduled check failed", "reason", reason, "user_id", userID, "error", err)
+			continue
+		}
+		if !needsRefresh {
+			continue
+		}
+		if err := h.ensureDailyPulse(date, userID, true); err != nil {
+			slog.Warn("Pulse scheduled generation failed", "reason", reason, "date", date, "user_id", userID, "error", err)
+			continue
+		}
+		slog.Info("Pulse scheduled generation completed", "reason", reason, "date", date, "user_id", userID)
 	}
-	if !needsRefresh {
-		return
-	}
-	if err := h.ensureDailyPulse(date, true); err != nil {
-		slog.Warn("Pulse scheduled generation failed", "reason", reason, "date", date, "error", err)
-		return
-	}
-	slog.Info("Pulse scheduled generation completed", "reason", reason, "date", date)
 }
 
-func (h *PulseHandler) needsScheduledRefresh(date string) (bool, error) {
-	ok, err := h.hasCurrentPulseShape(date)
+func (h *PulseHandler) scheduledPulseUserIDs() []string {
+	var accounts []models.Account
+	if err := database.DB.Order("created_at asc").Find(&accounts).Error; err != nil {
+		slog.Warn("Pulse account load failed; using default account", "error", err)
+		return []string{"0"}
+	}
+	if len(accounts) == 0 {
+		return []string{"0"}
+	}
+	userIDs := make([]string, 0, len(accounts))
+	for _, account := range accounts {
+		userIDs = append(userIDs, normalizedUserID(account.ID))
+	}
+	return userIDs
+}
+
+func (h *PulseHandler) needsScheduledRefresh(date string, userID string) (bool, error) {
+	ok, err := h.hasCurrentPulseShape(date, userID)
 	if err != nil || !ok {
 		return !ok, err
 	}
 
 	var item models.PulseItem
-	if err := database.DB.Where("date = ?", date).Order("updated_at desc").First(&item).Error; err != nil {
+	if err := database.DB.Where("date = ? AND user_id = ?", date, normalizedUserID(userID)).Order("updated_at desc").First(&item).Error; err != nil {
 		return true, nil
 	}
 	return time.Since(item.UpdatedAt) >= pulseScheduledRefreshInterval, nil
 }
 
 func (h *PulseHandler) Get(c *gin.Context) {
+	userID := requestUserID(c)
 	date, ok := requestedPulseDate(c.Query("date"))
 	if !ok {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid date, expected YYYY-MM-DD"})
 		return
 	}
-	if err := h.ensureDailyPulse(date, false); err != nil {
+	if err := h.ensureDailyPulse(date, userID, false); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to prepare pulse: " + err.Error()})
 		return
 	}
-	h.writePulse(c, date)
+	h.writePulse(c, date, userID)
 }
 
 func (h *PulseHandler) Refresh(c *gin.Context) {
 	var req pulseRefreshRequest
 	_ = c.ShouldBindJSON(&req)
+	userID := requestUserID(c)
+	if req.UserID != "" {
+		userID = normalizedUserID(req.UserID)
+	}
 
 	dateText := req.Date
 	if dateText == "" {
@@ -257,15 +282,16 @@ func (h *PulseHandler) Refresh(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid date, expected YYYY-MM-DD"})
 		return
 	}
-	if err := h.ensureDailyPulse(date, true); err != nil {
+	if err := h.ensureDailyPulse(date, userID, true); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to refresh pulse: " + err.Error()})
 		return
 	}
-	h.writePulse(c, date)
+	h.writePulse(c, date, userID)
 }
 
 func (h *PulseHandler) ListTopics(c *gin.Context) {
-	topics, err := h.loadTopics()
+	userID := requestUserID(c)
+	topics, err := h.loadTopics(userID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load topics"})
 		return
@@ -278,6 +304,10 @@ func (h *PulseHandler) CreateTopic(c *gin.Context) {
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request: " + err.Error()})
 		return
+	}
+	userID := requestUserID(c)
+	if req.UserID != "" {
+		userID = normalizedUserID(req.UserID)
 	}
 
 	name := normalizeTopicName(req.Name)
@@ -293,7 +323,7 @@ func (h *PulseHandler) CreateTopic(c *gin.Context) {
 
 	keywordsJSON := encodeKeywords(req.Keywords)
 	var existing models.PulseTopic
-	err := database.DB.Where("lower(name) = lower(?)", name).First(&existing).Error
+	err := database.DB.Where("user_id = ? AND lower(name) = lower(?)", userID, name).First(&existing).Error
 	if err == nil {
 		existing.Keywords = keywordsJSON
 		existing.Enabled = enabled
@@ -308,6 +338,7 @@ func (h *PulseHandler) CreateTopic(c *gin.Context) {
 
 	topic := models.PulseTopic{
 		ID:        uuid.NewString(),
+		UserID:    userID,
 		Name:      name,
 		Keywords:  keywordsJSON,
 		Enabled:   enabled,
@@ -323,8 +354,9 @@ func (h *PulseHandler) CreateTopic(c *gin.Context) {
 
 func (h *PulseHandler) UpdateTopic(c *gin.Context) {
 	id := c.Param("id")
+	userID := requestUserID(c)
 	var topic models.PulseTopic
-	if err := database.DB.First(&topic, "id = ?", id).Error; err != nil {
+	if err := database.DB.First(&topic, "id = ? AND user_id = ?", id, userID).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "topic not found"})
 		return
 	}
@@ -355,27 +387,29 @@ func (h *PulseHandler) UpdateTopic(c *gin.Context) {
 
 func (h *PulseHandler) DeleteTopic(c *gin.Context) {
 	id := c.Param("id")
-	if err := database.DB.Delete(&models.PulseTopic{}, "id = ?", id).Error; err != nil {
+	userID := requestUserID(c)
+	if err := database.DB.Delete(&models.PulseTopic{}, "id = ? AND user_id = ?", id, userID).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete topic"})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"status": "deleted"})
 }
 
-func (h *PulseHandler) writePulse(c *gin.Context, date string) {
-	topics, err := h.loadTopics()
+func (h *PulseHandler) writePulse(c *gin.Context, date string, userID string) {
+	userID = normalizedUserID(userID)
+	topics, err := h.loadTopics(userID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load topics"})
 		return
 	}
 
 	var items []models.PulseItem
-	if err := database.DB.Where("date = ?", date).Order("heat_score desc, created_at asc").Find(&items).Error; err != nil {
+	if err := database.DB.Where("date = ? AND user_id = ?", date, userID).Order("heat_score desc, created_at asc").Find(&items).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load pulse items"})
 		return
 	}
 	var modules []models.PulseModule
-	if err := database.DB.Where("date = ?", date).Find(&modules).Error; err != nil {
+	if err := database.DB.Where("date = ? AND user_id = ?", date, userID).Find(&modules).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load pulse modules"})
 		return
 	}
@@ -389,6 +423,7 @@ func (h *PulseHandler) writePulse(c *gin.Context, date string) {
 
 	c.JSON(http.StatusOK, gin.H{
 		"date":         date,
+		"user_id":      userID,
 		"generated_at": generatedAt,
 		"topics":       topicResponses(topics),
 		"items":        itemResponses(items),
@@ -396,44 +431,45 @@ func (h *PulseHandler) writePulse(c *gin.Context, date string) {
 	})
 }
 
-func (h *PulseHandler) ensureDailyPulse(date string, force bool) error {
+func (h *PulseHandler) ensureDailyPulse(date string, userID string, force bool) error {
+	userID = normalizedUserID(userID)
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
 	if force {
-		if err := database.DB.Delete(&models.PulseItem{}, "date = ?", date).Error; err != nil {
+		if err := database.DB.Delete(&models.PulseItem{}, "date = ? AND user_id = ?", date, userID).Error; err != nil {
 			return err
 		}
-		if err := database.DB.Delete(&models.PulseModule{}, "date = ?", date).Error; err != nil {
+		if err := database.DB.Delete(&models.PulseModule{}, "date = ? AND user_id = ?", date, userID).Error; err != nil {
 			return err
 		}
 	} else {
-		ok, err := h.hasCurrentPulseShape(date)
+		ok, err := h.hasCurrentPulseShape(date, userID)
 		if err != nil {
 			return err
 		}
 		if ok {
 			return nil
 		}
-		if err := database.DB.Delete(&models.PulseItem{}, "date = ?", date).Error; err != nil {
+		if err := database.DB.Delete(&models.PulseItem{}, "date = ? AND user_id = ?", date, userID).Error; err != nil {
 			return err
 		}
-		if err := database.DB.Delete(&models.PulseModule{}, "date = ?", date).Error; err != nil {
+		if err := database.DB.Delete(&models.PulseModule{}, "date = ? AND user_id = ?", date, userID).Error; err != nil {
 			return err
 		}
 	}
 
-	topics, err := h.loadTopics()
+	topics, err := h.loadTopics(userID)
 	if err != nil {
 		return err
 	}
-	memorySignals, err := h.loadMemorySignals()
+	memorySignals, err := h.loadMemorySignals(userID)
 	if err != nil {
 		return err
 	}
 
 	searchEvidence, searchErrors := h.collectPulseSearchEvidence(date, topics, memorySignals)
-	modules, items, err := h.generatePulse(date, topics, memorySignals, searchEvidence, searchErrors)
+	modules, items, err := h.generatePulse(date, userID, topics, memorySignals, searchEvidence, searchErrors)
 	if err != nil {
 		slog.Warn("Pulse agent generation failed; using signal fallback", "date", date, "error", err)
 		if hasSearchResults(searchEvidence) {
@@ -442,6 +478,7 @@ func (h *PulseHandler) ensureDailyPulse(date string, force bool) error {
 			modules, items = buildFallbackPulse(date, topics, memorySignals, searchErrors)
 		}
 	}
+	scopePulseModels(userID, modules, items)
 	if len(modules) == 0 && len(items) == 0 {
 		return nil
 	}
@@ -461,16 +498,17 @@ func (h *PulseHandler) ensureDailyPulse(date string, force bool) error {
 	})
 }
 
-func (h *PulseHandler) hasCurrentPulseShape(date string) (bool, error) {
+func (h *PulseHandler) hasCurrentPulseShape(date string, userID string) (bool, error) {
+	userID = normalizedUserID(userID)
 	var items []models.PulseItem
-	if err := database.DB.Where("date = ?", date).Find(&items).Error; err != nil {
+	if err := database.DB.Where("date = ? AND user_id = ?", date, userID).Find(&items).Error; err != nil {
 		return false, err
 	}
 	if len(items) == 0 {
 		return false, nil
 	}
 	var modules []models.PulseModule
-	if err := database.DB.Where("date = ?", date).Find(&modules).Error; err != nil {
+	if err := database.DB.Where("date = ? AND user_id = ?", date, userID).Find(&modules).Error; err != nil {
 		return false, err
 	}
 
@@ -489,15 +527,15 @@ func (h *PulseHandler) hasCurrentPulseShape(date string) (bool, error) {
 		moduleKeys[pulseSourceInterestHot], nil
 }
 
-func (h *PulseHandler) loadTopics() ([]models.PulseTopic, error) {
+func (h *PulseHandler) loadTopics(userID string) ([]models.PulseTopic, error) {
 	var topics []models.PulseTopic
-	err := database.DB.Order("enabled desc, created_at asc").Find(&topics).Error
+	err := database.DB.Where("user_id = ?", normalizedUserID(userID)).Order("enabled desc, created_at asc").Find(&topics).Error
 	return topics, err
 }
 
-func (h *PulseHandler) loadMemorySignals() ([]memoryPulseSignal, error) {
+func (h *PulseHandler) loadMemorySignals(userID string) ([]memoryPulseSignal, error) {
 	var messages []models.Message
-	if err := database.DB.Order(messageReverseChronologicalOrder).Limit(60).Find(&messages).Error; err != nil {
+	if err := database.DB.Where("user_id = ?", normalizedUserID(userID)).Order(messageReverseChronologicalOrder).Limit(60).Find(&messages).Error; err != nil {
 		return nil, err
 	}
 	return inferMemorySignals(messages), nil
@@ -674,13 +712,15 @@ func cleanPulseSearchTerms(values []string) []string {
 	return terms
 }
 
-func (h *PulseHandler) generatePulse(date string, topics []models.PulseTopic, signals []memoryPulseSignal, searchEvidence []pulseSearchEvidence, searchErrors []string) ([]models.PulseModule, []models.PulseItem, error) {
+func (h *PulseHandler) generatePulse(date string, userID string, topics []models.PulseTopic, signals []memoryPulseSignal, searchEvidence []pulseSearchEvidence, searchErrors []string) ([]models.PulseModule, []models.PulseItem, error) {
 	if h.agent == nil {
 		return nil, nil, fmt.Errorf("agent client is not configured")
 	}
+	userID = normalizedUserID(userID)
 
 	input := map[string]interface{}{
 		"date":            date,
+		"user_id":         userID,
 		"topics":          topicResponses(topics),
 		"memory_signals":  signals,
 		"interest_terms":  collectInterestTerms(topics, signals),
@@ -695,7 +735,7 @@ func (h *PulseHandler) generatePulse(date string, topics []models.PulseTopic, si
 	}
 	inputJSON, _ := json.MarshalIndent(input, "", "  ")
 
-	rawResponse, err := h.requestPulseGeneration(date, string(inputJSON))
+	rawResponse, err := h.requestPulseGeneration(date, userID, string(inputJSON))
 	if err != nil {
 		return nil, nil, err
 	}
@@ -703,17 +743,17 @@ func (h *PulseHandler) generatePulse(date string, topics []models.PulseTopic, si
 	var payload generatedPulsePayload
 	if err := decodePulseGeneration(rawResponse, &payload); err != nil {
 		firstErr := err
-		repairedResponse, repairErr := h.repairPulseGeneration(date, string(inputJSON), rawResponse, err)
+		repairedResponse, repairErr := h.repairPulseGeneration(date, userID, string(inputJSON), rawResponse, err)
 		if repairErr != nil {
 			slog.Warn("Pulse full JSON repair failed; trying per-module generation", "date", date, "error", repairErr)
-			modulePayload, moduleErr := h.generatePulseModulesIndividually(date, string(inputJSON))
+			modulePayload, moduleErr := h.generatePulseModulesIndividually(date, userID, string(inputJSON))
 			if moduleErr != nil {
 				return nil, nil, fmt.Errorf("%w; repair_failed=%v; per_module_failed=%v; response_preview=%q", firstErr, repairErr, moduleErr, compactSnippet(rawResponse, 320))
 			}
 			payload = modulePayload
 		} else if err := decodePulseGeneration(repairedResponse, &payload); err != nil {
 			slog.Warn("Pulse repaired JSON still invalid; trying per-module generation", "date", date, "error", err)
-			modulePayload, moduleErr := h.generatePulseModulesIndividually(date, string(inputJSON))
+			modulePayload, moduleErr := h.generatePulseModulesIndividually(date, userID, string(inputJSON))
 			if moduleErr != nil {
 				return nil, nil, fmt.Errorf("%w; original_error=%v; per_module_failed=%v; repaired_preview=%q", err, firstErr, moduleErr, compactSnippet(repairedResponse, 320))
 			}
@@ -723,7 +763,7 @@ func (h *PulseHandler) generatePulse(date string, topics []models.PulseTopic, si
 	requireSearchSources := hasSearchResults(searchEvidence)
 	if err := validateGeneratedPulsePayload(payload, requireSearchSources); err != nil {
 		slog.Warn("Pulse full payload failed validation; trying per-module generation", "date", date, "error", err)
-		modulePayload, moduleErr := h.generatePulseModulesIndividually(date, string(inputJSON))
+		modulePayload, moduleErr := h.generatePulseModulesIndividually(date, userID, string(inputJSON))
 		if moduleErr != nil {
 			return nil, nil, fmt.Errorf("%w; per_module_failed=%v; response_preview=%q", err, moduleErr, compactSnippet(rawResponse, 320))
 		}
@@ -740,10 +780,11 @@ func (h *PulseHandler) generatePulse(date string, topics []models.PulseTopic, si
 	return modules, items, nil
 }
 
-func (h *PulseHandler) requestPulseGeneration(date string, inputJSON string) (string, error) {
+func (h *PulseHandler) requestPulseGeneration(date string, userID string, inputJSON string) (string, error) {
 	memoryEnabled := false
 	resp, err := h.agent.Chat(bridge.ChatRequest{
-		ConversationID: fmt.Sprintf("pulse-%s", date),
+		ConversationID: fmt.Sprintf("pulse-%s-%s", normalizedUserID(userID), date),
+		UserID:         normalizedUserID(userID),
 		Message:        pulseGenerationPrompt(),
 		Stream:         false,
 		AgentID:        "super_chat",
@@ -765,10 +806,10 @@ func (h *PulseHandler) requestPulseGeneration(date string, inputJSON string) (st
 	return resp.Response, nil
 }
 
-func (h *PulseHandler) generatePulseModulesIndividually(date string, inputJSON string) (generatedPulsePayload, error) {
+func (h *PulseHandler) generatePulseModulesIndividually(date string, userID string, inputJSON string) (generatedPulsePayload, error) {
 	payload := generatedPulsePayload{Modules: make([]generatedPulseModule, 0, len(pulseModuleOrder))}
 	for _, key := range pulseModuleOrder {
-		rawResponse, err := h.requestPulseModuleGeneration(date, key, inputJSON)
+		rawResponse, err := h.requestPulseModuleGeneration(date, userID, key, inputJSON)
 		if err != nil {
 			return payload, err
 		}
@@ -776,7 +817,7 @@ func (h *PulseHandler) generatePulseModulesIndividually(date string, inputJSON s
 		var module generatedPulseModule
 		if err := decodePulseModuleGeneration(rawResponse, &module); err != nil {
 			firstErr := err
-			repairedResponse, repairErr := h.repairPulseModuleGeneration(date, key, inputJSON, rawResponse, err)
+			repairedResponse, repairErr := h.repairPulseModuleGeneration(date, userID, key, inputJSON, rawResponse, err)
 			if repairErr != nil {
 				return payload, fmt.Errorf("module %s: %w; repair_failed=%v; response_preview=%q", key, firstErr, repairErr, compactSnippet(rawResponse, 220))
 			}
@@ -797,10 +838,11 @@ func (h *PulseHandler) generatePulseModulesIndividually(date string, inputJSON s
 	return payload, nil
 }
 
-func (h *PulseHandler) requestPulseModuleGeneration(date string, key string, inputJSON string) (string, error) {
+func (h *PulseHandler) requestPulseModuleGeneration(date string, userID string, key string, inputJSON string) (string, error) {
 	memoryEnabled := false
 	resp, err := h.agent.Chat(bridge.ChatRequest{
-		ConversationID: fmt.Sprintf("pulse-%s-%s", date, key),
+		ConversationID: fmt.Sprintf("pulse-%s-%s-%s", normalizedUserID(userID), date, key),
+		UserID:         normalizedUserID(userID),
 		Message:        pulseModuleGenerationPrompt(key),
 		Stream:         false,
 		AgentID:        "super_chat",
@@ -821,10 +863,11 @@ func (h *PulseHandler) requestPulseModuleGeneration(date string, key string, inp
 	return resp.Response, nil
 }
 
-func (h *PulseHandler) repairPulseModuleGeneration(date string, key string, inputJSON string, brokenJSON string, parseErr error) (string, error) {
+func (h *PulseHandler) repairPulseModuleGeneration(date string, userID string, key string, inputJSON string, brokenJSON string, parseErr error) (string, error) {
 	memoryEnabled := false
 	resp, err := h.agent.Chat(bridge.ChatRequest{
-		ConversationID: fmt.Sprintf("pulse-%s-%s-json-repair", date, key),
+		ConversationID: fmt.Sprintf("pulse-%s-%s-%s-json-repair", normalizedUserID(userID), date, key),
+		UserID:         normalizedUserID(userID),
 		Message:        pulseModuleJSONRepairPrompt(key, parseErr),
 		Stream:         false,
 		AgentID:        "super_chat",
@@ -844,10 +887,11 @@ func (h *PulseHandler) repairPulseModuleGeneration(date string, key string, inpu
 	return resp.Response, nil
 }
 
-func (h *PulseHandler) repairPulseGeneration(date string, inputJSON string, brokenJSON string, parseErr error) (string, error) {
+func (h *PulseHandler) repairPulseGeneration(date string, userID string, inputJSON string, brokenJSON string, parseErr error) (string, error) {
 	memoryEnabled := false
 	resp, err := h.agent.Chat(bridge.ChatRequest{
-		ConversationID: fmt.Sprintf("pulse-%s-json-repair", date),
+		ConversationID: fmt.Sprintf("pulse-%s-%s-json-repair", normalizedUserID(userID), date),
+		UserID:         normalizedUserID(userID),
 		Message:        pulseJSONRepairPrompt(parseErr),
 		Stream:         false,
 		AgentID:        "super_chat",
@@ -1841,6 +1885,22 @@ func moduleCategory(key string) string {
 		return "可能兴趣"
 	default:
 		return "Pulse"
+	}
+}
+
+func scopePulseModels(userID string, modules []models.PulseModule, items []models.PulseItem) {
+	userID = normalizedUserID(userID)
+	for index := range modules {
+		modules[index].UserID = userID
+		if userID != "0" {
+			modules[index].ID = pulseItemID(modules[index].Date, "module:"+userID, modules[index].Key)
+		}
+	}
+	for index := range items {
+		items[index].UserID = userID
+		if userID != "0" {
+			items[index].ID = pulseItemID(items[index].Date, items[index].Source+":"+userID, items[index].ID)
+		}
 	}
 }
 

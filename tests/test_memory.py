@@ -132,6 +132,30 @@ class TestRoleMemoryStore:
         assert memories[0].confidence == 1.0
         assert memories[0].tags == ["first", "second"]
 
+    def test_role_memories_are_scoped_by_user_id(self):
+        store = RoleMemoryStore()
+        store.add_memory(
+            role_id="default",
+            user_id="a",
+            kind="long_term",
+            content="User A likes terse answers.",
+        )
+        store.add_memory(
+            role_id="default",
+            user_id="b",
+            kind="long_term",
+            content="User B likes detailed answers.",
+        )
+
+        context_a = store.get_context(role_id="default", user_id="a")
+        context_b = store.get_context(role_id="default", user_id="b")
+
+        assert context_a is not None
+        assert context_b is not None
+        assert "User A likes terse answers" in context_a.rendered
+        assert "User B likes detailed answers" not in context_a.rendered
+        assert "User B likes detailed answers" in context_b.rendered
+
     def test_persists_memory_records_to_json(self, tmp_path):
         storage_path = tmp_path / "agent_memory.json"
         store = RoleMemoryStore(storage_path=storage_path)

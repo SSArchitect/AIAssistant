@@ -133,6 +133,7 @@ func TestChatSendsPersistedConversationContextToAgent(t *testing.T) {
 	}
 	conv := models.Conversation{
 		ID:        "conv-context-chat",
+		UserID:    "42",
 		Title:     "MiniMax progress",
 		CreatedAt: time.Now().Add(-10 * time.Minute),
 		UpdatedAt: time.Now().Add(-5 * time.Minute),
@@ -143,12 +144,14 @@ func TestChatSendsPersistedConversationContextToAgent(t *testing.T) {
 	messages := []models.Message{
 		{
 			ConversationID: conv.ID,
+			UserID:         "42",
 			Role:           "user",
 			Content:        "帮我看看minimax有什么进展",
 			CreatedAt:      time.Now().Add(-4 * time.Minute),
 		},
 		{
 			ConversationID: conv.ID,
+			UserID:         "42",
 			Role:           "assistant",
 			Content:        "MiniMax 最近发布了图像和语音相关能力。",
 			CreatedAt:      time.Now().Add(-3 * time.Minute),
@@ -287,7 +290,7 @@ func TestPersistedConversationContextOrdersMixedTimestampFormats(t *testing.T) {
 	}
 
 	handler := NewChatHandler(bridge.NewAgentClient("http://agent.invalid", time.Second))
-	blocks := handler.persistedConversationContext(conv.ID)
+	blocks := handler.persistedConversationContext(conv.ID, "0")
 	if len(blocks) != 1 {
 		t.Fatalf("expected one context block, got %#v", blocks)
 	}

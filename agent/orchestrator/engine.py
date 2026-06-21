@@ -100,6 +100,13 @@ class AgentEngine:
             self._providers[key] = create_provider(name)
         return self._providers[key]
 
+    def _user_id(self, request: ChatRequest) -> str:
+        value = str(getattr(request, "user_id", None) or "0").strip()
+        return value or "0"
+
+    def _conversation_memory_id(self, request: ChatRequest) -> str:
+        return f"user:{self._user_id(request)}:conversation:{request.conversation_id}"
+
     def _resolve_role_id(self, request: ChatRequest, agent_metadata: dict) -> str:
         if request.role_id:
             return request.role_id
@@ -365,6 +372,7 @@ class AgentEngine:
                 updates.append(
                     self.role_memory.add_memory(
                         role_id=role_context.role.id,
+                        user_id=self._user_id(request),
                         kind=candidate.kind,
                         content=candidate.content,
                         source="hook",
@@ -801,6 +809,7 @@ class AgentEngine:
         target_role_id = self._resolve_role_id(request, target_agent.metadata)
         target_role_context = self.role_memory.get_context(
             role_id=target_role_id,
+            user_id=self._user_id(request),
             agent_id=target_agent.id,
         )
         if target_role_context is None or not target_role_context.role.enabled:
@@ -3519,7 +3528,7 @@ class AgentEngine:
             LLMMessage(role="user", content=request.message),
             LLMMessage(role="assistant", content=assistant_message),
         ]
-        self.memory.add_many(request.conversation_id, new_messages)
+        self.memory.add_many(self._conversation_memory_id(request), new_messages)
         memory_updates = await self._review_and_store_memories(
             request=request,
             agent_id=agent_id,
@@ -3809,7 +3818,7 @@ class AgentEngine:
 
         period_days = self._weight_loss_period_days(request)
         user_id = self._weight_loss_user_id(request)
-        history = self.memory.get(request.conversation_id)
+        history = self.memory.get(self._conversation_memory_id(request))
         starting_summary = self.weight_loss_store.summary(request.conversation_id, days=period_days, user_id=user_id)
         messages = self._build_weight_loss_messages(
             request=request,
@@ -4042,7 +4051,7 @@ class AgentEngine:
             LLMMessage(role="user", content=request.message),
             LLMMessage(role="assistant", content=assistant_message),
         ]
-        self.memory.add_many(request.conversation_id, new_messages)
+        self.memory.add_many(self._conversation_memory_id(request), new_messages)
         memory_updates = await self._review_and_store_memories(
             request=request,
             agent_id=agent_id,
@@ -4141,7 +4150,7 @@ class AgentEngine:
                     LLMMessage(role="user", content=request.message),
                     LLMMessage(role="assistant", content=assistant_message),
                 ]
-                self.memory.add_many(request.conversation_id, new_messages)
+                self.memory.add_many(self._conversation_memory_id(request), new_messages)
                 self.trace_store.complete_run(
                     run_id,
                     output=assistant_message,
@@ -4166,7 +4175,7 @@ class AgentEngine:
                 )
             request = self._apply_aigc_command_to_request(request, command)
 
-        history = self.memory.get(request.conversation_id)
+        history = self.memory.get(self._conversation_memory_id(request))
         professional = self._aigc_professional_mode_enabled(request)
         context_brief = self._aigc_existing_context_brief(request=request, history=history)
         source_agent_id = (
@@ -4559,7 +4568,7 @@ class AgentEngine:
                 LLMMessage(role="user", content=request.message),
                 LLMMessage(role="assistant", content=assistant_message),
             ]
-            self.memory.add_many(request.conversation_id, new_messages)
+            self.memory.add_many(self._conversation_memory_id(request), new_messages)
             memory_updates = await self._review_and_store_memories(
                 request=request,
                 agent_id=agent_id,
@@ -4789,7 +4798,7 @@ class AgentEngine:
                     LLMMessage(role="user", content=request.message),
                     LLMMessage(role="assistant", content=error_msg),
                 ]
-                self.memory.add_many(request.conversation_id, new_messages)
+                self.memory.add_many(self._conversation_memory_id(request), new_messages)
                 error_tokens_used = dict(research_usage)
                 for key, value in review_usage.items():
                     error_tokens_used[key] = error_tokens_used.get(key, 0) + value
@@ -4889,7 +4898,7 @@ class AgentEngine:
             LLMMessage(role="user", content=request.message),
             LLMMessage(role="assistant", content=assistant_message),
         ]
-        self.memory.add_many(request.conversation_id, new_messages)
+        self.memory.add_many(self._conversation_memory_id(request), new_messages)
         memory_updates = await self._review_and_store_memories(
             request=request,
             agent_id=agent_id,
@@ -4959,6 +4968,7 @@ class AgentEngine:
         runtime = agent_info.runtime if agent_info else "unknown"
         run = self.trace_store.start_run(
             conversation_id=request.conversation_id,
+            user_id=self._user_id(request),
             input_text=request.message,
             agent_id=agent_id,
             runtime=runtime,
@@ -5044,7 +5054,11 @@ class AgentEngine:
             )
 
         role_id = self._resolve_role_id(request, agent_info.metadata)
-        role_context = self.role_memory.get_context(role_id=role_id, agent_id=agent_id)
+        role_context = self.role_memory.get_context(
+            role_id=role_id,
+            user_id=self._user_id(request),
+            agent_id=agent_id,
+        )
         if role_context is None or not role_context.role.enabled:
             error_msg = f"Unknown or disabled role: {role_id}"
             self.trace_store.fail_run(
@@ -5069,7 +5083,7 @@ class AgentEngine:
                 events=latest_run.events,
             )
 
-        entry_history = self.memory.get(request.conversation_id)
+        entry_history = self.memory.get(self._conversation_memory_id(request))
         self._append_agent_input_received_trace(
             run_id=run.run_id,
             request=request,
@@ -5166,6 +5180,7 @@ class AgentEngine:
             target_role_id = self._resolve_role_id(request, target_agent.metadata)
             target_role_context = self.role_memory.get_context(
                 role_id=target_role_id,
+                user_id=self._user_id(request),
                 agent_id=AIGC_AGENT_ID,
             )
             if target_role_context is None or not target_role_context.role.enabled:
@@ -5243,6 +5258,7 @@ class AgentEngine:
             target_role_id = self._resolve_role_id(request, target_agent.metadata)
             target_role_context = self.role_memory.get_context(
                 role_id=target_role_id,
+                user_id=self._user_id(request),
                 agent_id=WEIGHT_LOSS_AGENT_ID,
             )
             if target_role_context is None or not target_role_context.role.enabled:
@@ -5329,7 +5345,7 @@ class AgentEngine:
         tools = self.skill_registry.get_tool_definitions()
 
         # Build messages
-        history = self.memory.get(request.conversation_id)
+        history = self.memory.get(self._conversation_memory_id(request))
         messages = [
             LLMMessage(
                 role="system",
@@ -5431,7 +5447,7 @@ class AgentEngine:
                 all_new_messages.append(
                     LLMMessage(role="assistant", content=error_msg)
                 )
-                self.memory.add_many(request.conversation_id, all_new_messages)
+                self.memory.add_many(self._conversation_memory_id(request), all_new_messages)
                 self.trace_store.fail_run(
                     run.run_id,
                     error_message=error_msg,
@@ -5606,7 +5622,7 @@ class AgentEngine:
             )
 
         # Save to memory
-        self.memory.add_many(request.conversation_id, all_new_messages)
+        self.memory.add_many(self._conversation_memory_id(request), all_new_messages)
 
         final_content = all_new_messages[-1].content
         if not isinstance(final_content, str):

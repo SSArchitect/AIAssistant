@@ -4,6 +4,7 @@ import "time"
 
 type Conversation struct {
 	ID        string    `json:"id" gorm:"primaryKey"`
+	UserID    string    `json:"user_id" gorm:"index;not null;default:0"`
 	Title     string    `json:"title"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
@@ -12,6 +13,7 @@ type Conversation struct {
 type Message struct {
 	ID             uint      `json:"id" gorm:"primaryKey;autoIncrement"`
 	ConversationID string    `json:"conversation_id" gorm:"index"`
+	UserID         string    `json:"user_id" gorm:"index;not null;default:0"`
 	Role           string    `json:"role"` // "user", "assistant"
 	Content        string    `json:"content"`
 	SkillsUsed     string    `json:"skills_used,omitempty"` // JSON array

@@ -68,6 +68,7 @@ func main() {
 	// Init handlers
 	chatHandler := handlers.NewChatHandler(agentClient, configSyncer)
 	convHandler := handlers.NewConversationHandler()
+	accountHandler := handlers.NewAccountHandler()
 	healthHandler := handlers.NewHealthHandler(agentClient)
 	adminHandler := handlers.NewAdminHandler(agentClient, configSyncer)
 	mediaHandler := handlers.NewMediaHandler()
@@ -81,6 +82,9 @@ func main() {
 	api := r.Group("/api")
 	{
 		api.GET("/health", healthHandler.Health)
+		api.GET("/accounts", accountHandler.List)
+		api.POST("/accounts", accountHandler.Create)
+		api.POST("/accounts/login", accountHandler.Login)
 		api.POST("/chat", chatHandler.Chat)
 		api.GET("/agents", chatHandler.ListAgents)
 		api.GET("/roles", chatHandler.ListRoles)

@@ -438,6 +438,9 @@ func TestAgentClientListRunsUsesFiltersAndDecodesEvents(t *testing.T) {
 		if got := r.URL.Query().Get("conversation_id"); got != "conv-1" {
 			t.Fatalf("unexpected conversation_id query: %s", got)
 		}
+		if got := r.URL.Query().Get("user_id"); got != "0" {
+			t.Fatalf("unexpected user_id query: %s", got)
+		}
 		if got := r.URL.Query().Get("limit"); got != "10" {
 			t.Fatalf("unexpected limit query: %s", got)
 		}
@@ -478,7 +481,7 @@ func TestAgentClientListRunsUsesFiltersAndDecodesEvents(t *testing.T) {
 	defer server.Close()
 
 	client := NewAgentClient(server.URL, time.Second)
-	resp, err := client.ListRuns("conv-1", 10)
+	resp, err := client.ListRuns("conv-1", "0", 10)
 	if err != nil {
 		t.Fatalf("ListRuns returned error: %v", err)
 	}

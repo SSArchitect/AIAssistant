@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>阿安的工作台</title>
-    <link rel="stylesheet" href="/static/css/style.css?v=30">
+    <link rel="stylesheet" href="/static/css/style.css?v=33">
 </head>
 <body>
     <div class="app">
@@ -17,6 +17,15 @@
                         <path d="m3 11 9 5 9-5"/>
                     </svg>
                     <span data-i18n="app.name">阿安的工作台</span>
+                </div>
+                <div class="account-picker">
+                    <label class="visually-hidden" for="account-select" data-i18n="account.label">帐号</label>
+                    <select id="account-select" class="account-select" aria-label="帐号" data-i18n-aria-label="account.label"></select>
+                    <button class="icon-button account-add-button" id="btn-add-account" type="button" title="新帐号" data-i18n-title="account.add">
+                        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.4">
+                            <path d="M12 5v14M5 12h14"/>
+                        </svg>
+                    </button>
                 </div>
             </div>
 
@@ -126,6 +135,7 @@
                 </a>
             </div>
         </aside>
+        <button class="sidebar-backdrop" id="sidebar-backdrop" type="button" aria-label="关闭侧边栏" hidden></button>
 
         <main class="workspace">
             <header class="topbar">
@@ -310,6 +320,33 @@
         </div>
     </div>
 
-    <script src="/static/js/app.js?v=40"></script>
+    <div class="account-login hidden" id="account-login" role="dialog" aria-modal="true" aria-labelledby="account-login-title">
+        <div class="account-login-panel">
+            <h2 id="account-login-title" data-i18n="account.loginTitle">选择帐号</h2>
+            <label class="account-login-field">
+                <span data-i18n="account.existing">已有帐号</span>
+                <select id="login-account-select"></select>
+            </label>
+            <label class="account-login-field">
+                <span data-i18n="account.password">密码</span>
+                <input id="login-password-input" type="password" autocomplete="current-password" data-i18n-placeholder="account.passwordPlaceholder" placeholder="输入密码">
+            </label>
+            <button class="btn-primary" id="btn-account-login" type="button" data-i18n="account.enter">进入</button>
+            <form class="account-create-form" id="account-create-form">
+                <label class="account-login-field">
+                    <span data-i18n="account.newName">新帐号</span>
+                    <input id="account-name-input" type="text" maxlength="40" autocomplete="off" data-i18n-placeholder="account.namePlaceholder" placeholder="输入帐号名">
+                </label>
+                <label class="account-login-field">
+                    <span data-i18n="account.password">密码</span>
+                    <input id="account-password-input" type="password" autocomplete="new-password" data-i18n-placeholder="account.passwordPlaceholder" placeholder="输入密码">
+                </label>
+                <button class="btn-secondary" type="submit" data-i18n="account.create">创建并进入</button>
+            </form>
+            <div class="account-login-error" id="account-login-error" role="status"></div>
+        </div>
+    </div>
+
+    <script src="/static/js/app.js?v=43"></script>
 </body>
 </html>

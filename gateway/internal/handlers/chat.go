@@ -61,34 +61,32 @@ const (
 	conversationContextMaxBlockBytes   = 24000
 )
 
-func normalizedUserID(userID string) string {
-	userID = strings.TrimSpace(userID)
-	if userID == "" {
-		return "0"
-	}
-	return userID
-}
-
 func (h *ChatHandler) Chat(c *gin.Context) {
 	var req ChatRequestBody
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request: " + err.Error()})
 		return
 	}
+	if req.UserID == "" {
+		req.UserID = requestUserID(c)
+	} else {
+		req.UserID = normalizedUserID(req.UserID)
+	}
 
 	// Ensure conversation exists
 	var conv models.Conversation
-	if err := database.DB.First(&conv, "id = ?", req.ConversationID).Error; err != nil {
+	if err := database.DB.First(&conv, "id = ? AND user_id = ?", req.ConversationID, req.UserID).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "conversation not found"})
 		return
 	}
 
-	contextBlocks := h.persistedConversationContext(req.ConversationID)
+	contextBlocks := h.persistedConversationContext(req.ConversationID, req.UserID)
 	contextBlocks = append(contextBlocks, req.ContextBlocks...)
 
 	// Save user message
 	userMsg := models.Message{
 		ConversationID: req.ConversationID,
+		UserID:         req.UserID,
 		Role:           "user",
 		Content:        req.Query,
 		CreatedAt:      time.Now(),
@@ -99,7 +97,7 @@ func (h *ChatHandler) Chat(c *gin.Context) {
 
 	agentReq := bridge.ChatRequest{
 		ConversationID:  req.ConversationID,
-		UserID:          normalizedUserID(req.UserID),
+		UserID:          req.UserID,
 		Message:         req.Query,
 		Stream:          req.Stream,
 		ModelPreference: req.ModelPreference,
@@ -129,7 +127,7 @@ func (h *ChatHandler) Chat(c *gin.Context) {
 		return
 	}
 
-	h.saveAssistantMessage(req.ConversationID, agentResp)
+	h.saveAssistantMessage(req.ConversationID, req.UserID, agentResp)
 	h.updateConversationTitle(conv, req.Query)
 
 	c.JSON(http.StatusOK, agentResp)
@@ -143,7 +141,7 @@ func (h *ChatHandler) streamChat(
 ) {
 	resp, err := h.agent.ChatStream(agentReq)
 	if err != nil {
-		h.saveAssistantMessage(req.ConversationID, &bridge.ChatResponse{
+		h.saveAssistantMessage(req.ConversationID, req.UserID, &bridge.ChatResponse{
 			ConversationID: req.ConversationID,
 			Response:       err.Error(),
 			ErrorType:      "stream_error",
@@ -255,7 +253,7 @@ func (h *ChatHandler) streamChat(
 		if len(finalResp.Events) == 0 && len(streamEvents) > 0 {
 			finalResp.Events = streamEvents
 		}
-		h.saveAssistantMessage(req.ConversationID, &finalResp)
+		h.saveAssistantMessage(req.ConversationID, req.UserID, &finalResp)
 		h.updateConversationTitle(conv, req.Query)
 	} else if streamErr.Error != "" || traceErrorMessage != "" {
 		errorMessage := streamErr.Error
@@ -269,7 +267,7 @@ func (h *ChatHandler) streamChat(
 		if errorType == "" {
 			errorType = "stream_error"
 		}
-		h.saveAssistantMessage(req.ConversationID, &bridge.ChatResponse{
+		h.saveAssistantMessage(req.ConversationID, req.UserID, &bridge.ChatResponse{
 			ConversationID: req.ConversationID,
 			Response:       errorMessage,
 			ErrorType:      errorType,
@@ -314,10 +312,10 @@ func (h *ChatHandler) recoverCompletedRunResponse(runID string, req ChatRequestB
 	}
 }
 
-func (h *ChatHandler) persistedConversationContext(conversationID string) []string {
+func (h *ChatHandler) persistedConversationContext(conversationID string, userID string) []string {
 	var messages []models.Message
 	err := database.DB.
-		Where("conversation_id = ?", conversationID).
+		Where("conversation_id = ? AND user_id = ?", conversationID, normalizedUserID(userID)).
 		Order(messageReverseChronologicalOrder).
 		Limit(conversationContextMessageLimit).
 		Find(&messages).Error
@@ -379,12 +377,13 @@ func (h *ChatHandler) syncConfigToAgent(c *gin.Context) bool {
 	return true
 }
 
-func (h *ChatHandler) saveAssistantMessage(conversationID string, agentResp *bridge.ChatResponse) {
+func (h *ChatHandler) saveAssistantMessage(conversationID string, userID string, agentResp *bridge.ChatResponse) {
 	skillsJSON, _ := json.Marshal(agentResp.SkillsUsed)
 	citationsJSON, _ := json.Marshal(agentResp.Citations)
 	traceEventsJSON, _ := json.Marshal(agentResp.Events)
 	assistantMsg := models.Message{
 		ConversationID: conversationID,
+		UserID:         normalizedUserID(userID),
 		Role:           "assistant",
 		Content:        agentResp.Response,
 		SkillsUsed:     string(skillsJSON),
@@ -497,7 +496,8 @@ func (h *ChatHandler) ListRuns(c *gin.Context) {
 		limit = parsed
 	}
 
-	runs, err := h.agent.ListRuns(c.Query("conversation_id"), limit)
+	userID := requestUserID(c)
+	runs, err := h.agent.ListRuns(c.Query("conversation_id"), userID, limit)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "agent error: " + err.Error()})
 		return
@@ -506,9 +506,14 @@ func (h *ChatHandler) ListRuns(c *gin.Context) {
 }
 
 func (h *ChatHandler) GetRun(c *gin.Context) {
+	userID := requestUserID(c)
 	run, err := h.agent.GetRun(c.Param("id"))
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "agent error: " + err.Error()})
+		return
+	}
+	if normalizedUserID(run.UserID) != userID {
+		c.JSON(http.StatusNotFound, gin.H{"error": "run not found"})
 		return
 	}
 	c.JSON(http.StatusOK, run)
