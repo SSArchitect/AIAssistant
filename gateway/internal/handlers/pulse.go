@@ -24,8 +24,10 @@ import (
 )
 
 type PulseHandler struct {
-	agent *bridge.AgentClient
-	mu    sync.Mutex
+	agent  *bridge.AgentClient
+	mu     sync.Mutex
+	jobsMu sync.Mutex
+	jobs   map[string]struct{}
 }
 
 type pulseTopicRequest struct {
@@ -38,6 +40,7 @@ type pulseTopicRequest struct {
 type pulseRefreshRequest struct {
 	Date   string `json:"date"`
 	UserID string `json:"user_id,omitempty"`
+	Wait   bool   `json:"wait,omitempty"`
 }
 
 type pulseNewsSource struct {
@@ -199,7 +202,7 @@ func NewPulseHandler(agents ...*bridge.AgentClient) *PulseHandler {
 	if len(agents) > 0 {
 		agent = agents[0]
 	}
-	return &PulseHandler{agent: agent}
+	return &PulseHandler{agent: agent, jobs: map[string]struct{}{}}
 }
 
 func (h *PulseHandler) StartScheduler() {
@@ -224,11 +227,10 @@ func (h *PulseHandler) runScheduledPulse(reason string) {
 		if !needsRefresh {
 			continue
 		}
-		if err := h.ensureDailyPulse(date, userID, true); err != nil {
-			slog.Warn("Pulse scheduled generation failed", "reason", reason, "date", date, "user_id", userID, "error", err)
+		if ok := h.startPulseGeneration(date, userID, true, "scheduled:"+reason); !ok {
+			slog.Info("Pulse scheduled generation already running", "reason", reason, "date", date, "user_id", userID)
 			continue
 		}
-		slog.Info("Pulse scheduled generation completed", "reason", reason, "date", date, "user_id", userID)
 	}
 }
 
@@ -268,11 +270,15 @@ func (h *PulseHandler) Get(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid date, expected YYYY-MM-DD"})
 		return
 	}
-	if err := h.ensureDailyPulse(date, userID, false); err != nil {
+	hasContent, err := h.hasPulseContent(date, userID)
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to prepare pulse: " + err.Error()})
 		return
 	}
-	h.writePulse(c, date, userID)
+	if !hasContent {
+		h.startPulseGeneration(date, userID, false, "get")
+	}
+	h.writePulseWithStatus(c, date, userID, h.pulseGenerationActive(date, userID))
 }
 
 func (h *PulseHandler) Refresh(c *gin.Context) {
@@ -292,11 +298,16 @@ func (h *PulseHandler) Refresh(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid date, expected YYYY-MM-DD"})
 		return
 	}
-	if err := h.ensureDailyPulse(date, userID, true); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to refresh pulse: " + err.Error()})
+	if req.Wait || c.Query("wait") == "true" {
+		if err := h.ensureDailyPulse(date, userID, true); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to refresh pulse: " + err.Error()})
+			return
+		}
+		h.writePulse(c, date, userID)
 		return
 	}
-	h.writePulse(c, date, userID)
+	h.startPulseGeneration(date, userID, true, "manual_refresh")
+	h.writePulseWithStatus(c, date, userID, h.pulseGenerationActive(date, userID))
 }
 
 func (h *PulseHandler) ListTopics(c *gin.Context) {
@@ -406,6 +417,10 @@ func (h *PulseHandler) DeleteTopic(c *gin.Context) {
 }
 
 func (h *PulseHandler) writePulse(c *gin.Context, date string, userID string) {
+	h.writePulseWithStatus(c, date, userID, false)
+}
+
+func (h *PulseHandler) writePulseWithStatus(c *gin.Context, date string, userID string, refreshing bool) {
 	userID = normalizedUserID(userID)
 	topics, err := h.loadTopics(userID)
 	if err != nil {
@@ -438,7 +453,67 @@ func (h *PulseHandler) writePulse(c *gin.Context, date string, userID string) {
 		"topics":       topicResponses(topics),
 		"items":        itemResponses(items),
 		"modules":      moduleResponses(modules, items),
+		"refreshing":   refreshing,
 	})
+}
+
+func (h *PulseHandler) hasPulseContent(date string, userID string) (bool, error) {
+	userID = normalizedUserID(userID)
+	var count int64
+	if err := database.DB.Model(&models.PulseItem{}).Where("date = ? AND user_id = ?", date, userID).Count(&count).Error; err != nil {
+		return false, err
+	}
+	if count > 0 {
+		return true, nil
+	}
+	if err := database.DB.Model(&models.PulseModule{}).Where("date = ? AND user_id = ?", date, userID).Count(&count).Error; err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
+func (h *PulseHandler) startPulseGeneration(date string, userID string, force bool, reason string) bool {
+	userID = normalizedUserID(userID)
+	key := pulseGenerationJobKey(date, userID)
+
+	h.jobsMu.Lock()
+	if h.jobs == nil {
+		h.jobs = map[string]struct{}{}
+	}
+	if _, exists := h.jobs[key]; exists {
+		h.jobsMu.Unlock()
+		return false
+	}
+	h.jobs[key] = struct{}{}
+	h.jobsMu.Unlock()
+
+	go func() {
+		defer h.finishPulseGeneration(key)
+		if err := h.ensureDailyPulse(date, userID, force); err != nil {
+			slog.Warn("Pulse background generation failed", "reason", reason, "date", date, "user_id", userID, "error", err)
+			return
+		}
+		slog.Info("Pulse background generation completed", "reason", reason, "date", date, "user_id", userID)
+	}()
+	return true
+}
+
+func (h *PulseHandler) pulseGenerationActive(date string, userID string) bool {
+	key := pulseGenerationJobKey(date, normalizedUserID(userID))
+	h.jobsMu.Lock()
+	defer h.jobsMu.Unlock()
+	_, exists := h.jobs[key]
+	return exists
+}
+
+func (h *PulseHandler) finishPulseGeneration(key string) {
+	h.jobsMu.Lock()
+	defer h.jobsMu.Unlock()
+	delete(h.jobs, key)
+}
+
+func pulseGenerationJobKey(date string, userID string) string {
+	return normalizedUserID(userID) + ":" + date
 }
 
 func (h *PulseHandler) ensureDailyPulse(date string, userID string, force bool) error {

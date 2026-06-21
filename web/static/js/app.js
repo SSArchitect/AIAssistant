@@ -134,6 +134,7 @@ const I18N = {
             todayTitle: '今日 Pulse',
             generatedAt: '已预计算：{time}',
             neverGenerated: '等待生成',
+            refreshing: '正在生成新的 Pulse...',
             loading: '正在加载 Pulse...',
             emptyTitle: '还没有推荐',
             emptyDetail: '添加一个 Topic 或刷新今日推荐。',
@@ -432,6 +433,7 @@ const I18N = {
             todayTitle: "Today's Pulse",
             generatedAt: 'Precomputed: {time}',
             neverGenerated: 'Waiting to generate',
+            refreshing: 'Generating a fresh Pulse...',
             loading: 'Loading Pulse...',
             emptyTitle: 'No recommendations yet',
             emptyDetail: 'Add a topic or refresh today.',
@@ -714,6 +716,8 @@ let runsError = '';
 let pulseError = '';
 let pulseErrorType = 'load';
 let pulseTopicSubmitting = false;
+let pulseRefreshPollTimer = null;
+let pulseRefreshPollAttempts = 0;
 let pinnedAgentIds = loadPinnedAgents();
 let collapsedSidebarSections = loadCollapsedSidebarSections();
 let selectedModeIds = loadSelectedModes();
@@ -1819,6 +1823,7 @@ async function loadPulse() {
         pulseErrorType = 'load';
     }
     renderPulse();
+    syncPulseRefreshPolling(false);
 }
 
 async function refreshPulse() {
@@ -1831,6 +1836,29 @@ async function refreshPulse() {
         pulseErrorType = 'load';
     }
     renderPulse();
+    syncPulseRefreshPolling(true);
+}
+
+function syncPulseRefreshPolling(resetAttempts = false) {
+    if (resetAttempts) {
+        pulseRefreshPollAttempts = 0;
+    }
+    if (!pulse?.refreshing) {
+        if (pulseRefreshPollTimer) {
+            clearTimeout(pulseRefreshPollTimer);
+            pulseRefreshPollTimer = null;
+        }
+        pulseRefreshPollAttempts = 0;
+        return;
+    }
+    if (pulseRefreshPollTimer || pulseRefreshPollAttempts >= 24) {
+        return;
+    }
+    pulseRefreshPollTimer = setTimeout(async () => {
+        pulseRefreshPollTimer = null;
+        pulseRefreshPollAttempts += 1;
+        await loadPulse();
+    }, 5000);
 }
 
 async function createPulseTopic() {
@@ -2295,9 +2323,11 @@ function renderPulse() {
         pulseDateTitle.textContent = pulse.date ? `${t('pulse.todayTitle')} · ${pulse.date}` : t('pulse.todayTitle');
     }
     if (pulseGeneratedAt) {
-        pulseGeneratedAt.textContent = pulse.generated_at
-            ? t('pulse.generatedAt', { time: formatFullTime(pulse.generated_at) })
-            : t('pulse.neverGenerated');
+        pulseGeneratedAt.textContent = pulse.refreshing
+            ? t('pulse.refreshing')
+            : pulse.generated_at
+                ? t('pulse.generatedAt', { time: formatFullTime(pulse.generated_at) })
+                : t('pulse.neverGenerated');
     }
 
     renderPulseTopics();

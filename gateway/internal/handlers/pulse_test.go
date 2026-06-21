@@ -38,7 +38,7 @@ func TestPulseCreatesTopicAndPrecomputesDailyItems(t *testing.T) {
 	}
 
 	refreshBody := bytes.NewBufferString(`{"date":"2026-06-20"}`)
-	refreshReq := httptest.NewRequest(http.MethodPost, "/api/pulse/refresh", refreshBody)
+	refreshReq := httptest.NewRequest(http.MethodPost, "/api/pulse/refresh?wait=true", refreshBody)
 	refreshReq.Header.Set("Content-Type", "application/json")
 	refreshRecorder := httptest.NewRecorder()
 	router.ServeHTTP(refreshRecorder, refreshReq)
@@ -145,7 +145,7 @@ func TestPulseUsesAgentGeneratedModules(t *testing.T) {
 	}
 
 	refreshBody := bytes.NewBufferString(`{"date":"2026-06-20"}`)
-	refreshReq := httptest.NewRequest(http.MethodPost, "/api/pulse/refresh", refreshBody)
+	refreshReq := httptest.NewRequest(http.MethodPost, "/api/pulse/refresh?wait=true", refreshBody)
 	refreshReq.Header.Set("Content-Type", "application/json")
 	refreshRecorder := httptest.NewRecorder()
 	router.ServeHTTP(refreshRecorder, refreshReq)
@@ -231,7 +231,7 @@ func TestPulseRepairsMalformedAgentJSON(t *testing.T) {
 	}
 
 	refreshBody := bytes.NewBufferString(`{"date":"2026-06-20"}`)
-	refreshReq := httptest.NewRequest(http.MethodPost, "/api/pulse/refresh", refreshBody)
+	refreshReq := httptest.NewRequest(http.MethodPost, "/api/pulse/refresh?wait=true", refreshBody)
 	refreshReq.Header.Set("Content-Type", "application/json")
 	refreshRecorder := httptest.NewRecorder()
 	router.ServeHTTP(refreshRecorder, refreshReq)
@@ -323,7 +323,7 @@ func TestPulseFallsBackToPerModuleGeneration(t *testing.T) {
 	}
 
 	refreshBody := bytes.NewBufferString(`{"date":"2026-06-20"}`)
-	refreshReq := httptest.NewRequest(http.MethodPost, "/api/pulse/refresh", refreshBody)
+	refreshReq := httptest.NewRequest(http.MethodPost, "/api/pulse/refresh?wait=true", refreshBody)
 	refreshReq.Header.Set("Content-Type", "application/json")
 	refreshRecorder := httptest.NewRecorder()
 	router.ServeHTTP(refreshRecorder, refreshReq)
@@ -384,7 +384,7 @@ func TestPulseUsesSearchFallbackWhenGenerationFails(t *testing.T) {
 	}
 
 	refreshBody := bytes.NewBufferString(`{"date":"2026-06-20"}`)
-	refreshReq := httptest.NewRequest(http.MethodPost, "/api/pulse/refresh", refreshBody)
+	refreshReq := httptest.NewRequest(http.MethodPost, "/api/pulse/refresh?wait=true", refreshBody)
 	refreshReq.Header.Set("Content-Type", "application/json")
 	refreshRecorder := httptest.NewRecorder()
 	router.ServeHTTP(refreshRecorder, refreshReq)
@@ -470,7 +470,7 @@ func TestPulseRefreshKeepsExistingItemsWhenReplacementFails(t *testing.T) {
 	router.POST("/api/pulse/refresh", handler.Refresh)
 
 	refreshBody := bytes.NewBufferString(`{"date":"2026-06-20"}`)
-	refreshReq := httptest.NewRequest(http.MethodPost, "/api/pulse/refresh", refreshBody)
+	refreshReq := httptest.NewRequest(http.MethodPost, "/api/pulse/refresh?wait=true", refreshBody)
 	refreshReq.Header.Set("Content-Type", "application/json")
 	refreshRecorder := httptest.NewRecorder()
 	router.ServeHTTP(refreshRecorder, refreshReq)
