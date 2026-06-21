@@ -67,6 +67,8 @@ const I18N = {
             copyAnswer: '复制回答',
             copied: '已复制',
             copyFailed: '复制失败',
+            confirmDeleteConversation: '确定删除这个会话及其全部消息吗？',
+            confirmDeleteTopic: '确定删除 Topic「{name}」吗？',
         },
         media: {
             preview: '图片预览',
@@ -363,6 +365,8 @@ const I18N = {
             copyAnswer: 'Copy Answer',
             copied: 'Copied',
             copyFailed: 'Copy Failed',
+            confirmDeleteConversation: 'Delete this conversation and all of its messages?',
+            confirmDeleteTopic: 'Delete topic "{name}"?',
         },
         media: {
             preview: 'Image Preview',
@@ -703,6 +707,8 @@ let collapsedTraceNodeIds = new Set();
 let expandedTraceNodeIds = new Set();
 let defaultModelText = '';
 const activeConversationRequests = new Set();
+const pendingConversationDeletes = new Set();
+const pendingPulseTopicDeletes = new Set();
 let toolsError = '';
 let runsError = '';
 let pulseError = '';
@@ -1738,16 +1744,25 @@ async function loadConversation(id) {
 }
 
 async function deleteConversation(id) {
-    await apiCall('DELETE', `/api/conversations/${encodeURIComponent(id)}`);
-    conversations = conversations.filter((c) => c.id !== id);
-    if (currentConversationId === id) {
-        currentConversationId = null;
-        saveCurrentConversationId(null);
-        clearQuestionHistory();
-        showWelcome();
-    }
+    if (!id || pendingConversationDeletes.has(id)) return;
+    if (!window.confirm(t('actions.confirmDeleteConversation'))) return;
+
+    pendingConversationDeletes.add(id);
     renderConversationList();
-    updateTopbar();
+    try {
+        await apiCall('DELETE', `/api/conversations/${encodeURIComponent(id)}`);
+        conversations = conversations.filter((c) => c.id !== id);
+        if (currentConversationId === id) {
+            currentConversationId = null;
+            saveCurrentConversationId(null);
+            clearQuestionHistory();
+            showWelcome();
+        }
+        updateTopbar();
+    } finally {
+        pendingConversationDeletes.delete(id);
+        renderConversationList();
+    }
 }
 
 async function loadAgents() {
@@ -1852,13 +1867,21 @@ async function createPulseTopic() {
 }
 
 async function deletePulseTopic(id) {
-    if (!id) return;
+    if (!id || pendingPulseTopicDeletes.has(id)) return;
+    const topic = (Array.isArray(pulse.topics) ? pulse.topics : []).find((item) => item.id === id);
+    if (!window.confirm(t('actions.confirmDeleteTopic', { name: topic?.name || '' }))) return;
+
+    pendingPulseTopicDeletes.add(id);
+    renderPulse();
     try {
         await apiCall('DELETE', `/api/pulse/topics/${encodeURIComponent(id)}`);
         await refreshPulse();
     } catch (err) {
         pulseError = err.message;
         pulseErrorType = 'delete';
+        renderPulse();
+    } finally {
+        pendingPulseTopicDeletes.delete(id);
         renderPulse();
     }
 }
@@ -2063,10 +2086,11 @@ function renderConversationList() {
 
     conversationList.innerHTML = conversations.map((conv) => {
         const isActive = conv.id === currentConversationId;
+        const deleting = pendingConversationDeletes.has(conv.id);
         return `
             <div class="conversation-item ${isActive ? 'active' : ''}" data-conversation-id="${escapeAttr(conv.id)}">
                 <span class="title">${escapeHtml(displayConversationTitle(conv))}</span>
-                <button class="delete-btn" type="button" data-delete-conversation="${escapeAttr(conv.id)}" title="${escapeAttr(t('actions.delete') || 'Delete')}">&times;</button>
+                <button class="delete-btn" type="button" data-delete-conversation="${escapeAttr(conv.id)}" title="${escapeAttr(t('actions.delete') || 'Delete')}" ${deleting ? 'disabled aria-busy="true"' : ''}>&times;</button>
             </div>
         `;
     }).join('');
@@ -2357,6 +2381,7 @@ function renderPulseTopics() {
 
     pulseTopicList.innerHTML = topics.map((topic) => {
         const keywords = Array.isArray(topic.keywords) ? topic.keywords : [];
+        const deleting = pendingPulseTopicDeletes.has(topic.id);
         return `
             <div class="pulse-topic-item ${topic.enabled ? '' : 'muted'}">
                 <div class="pulse-topic-copy">
@@ -2365,7 +2390,8 @@ function renderPulseTopics() {
                 </div>
                 <button class="icon-button pulse-topic-delete" type="button"
                         data-pulse-delete-topic="${escapeAttr(topic.id)}"
-                        title="${escapeAttr(t('actions.delete'))}">
+                        title="${escapeAttr(t('actions.delete'))}"
+                        ${deleting ? 'disabled aria-busy="true"' : ''}>
                     <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.4">
                         <path d="M3 6h18"/>
                         <path d="M8 6V4h8v2"/>
@@ -4447,7 +4473,9 @@ async function handleSend(queryOverride = '') {
     try {
         const resp = await sendMessageStream(conversationId, query, streamView, attachmentContext, attachmentPayload);
         streamView.finalize(resp);
-        await Promise.allSettled([loadConversations(), loadRuns()]);
+        void Promise.allSettled([loadConversations(), loadRuns()]).then(() => {
+            if (currentConversationId === conversationId) updateTopbar();
+        });
     } catch (err) {
         streamView.showError(`Error: ${err.message}`);
     } finally {
@@ -5750,6 +5778,15 @@ function localizedMetaText(value, fallback = '') {
     return fallback;
 }
 
+function actionAutoSend(action = {}) {
+    const explicit = action.auto_send ?? action.autoSend;
+    if (explicit === true || explicit === 'true') return true;
+    if (explicit === false || explicit === 'false') return false;
+
+    const query = String(action.query || '');
+    return Boolean(query.trim()) && query === query.trim();
+}
+
 function currentAgentQuickActions(agent = getCurrentAgent()) {
     const rawActions = agent?.metadata?.quick_actions;
     if (!Array.isArray(rawActions)) return [];
@@ -5761,7 +5798,7 @@ function currentAgentQuickActions(agent = getCurrentAgent()) {
             description: localizedMetaText(action.description, ''),
             query: String(action.query || ''),
             modeId: String(action.mode_id || action.modeId || ''),
-            autoSend: Boolean(action.auto_send || action.autoSend),
+            autoSend: actionAutoSend(action),
         }));
 }
 
@@ -6009,16 +6046,20 @@ document.addEventListener('click', async (event) => {
         if (quickAction.dataset.quickMode) {
             setModeSelected(quickAction.dataset.quickMode, true);
         }
+        const query = quickAction.dataset.query || '';
+        const shouldQuickSend = quickAction.dataset.quickSend === 'true';
         resetQuestionHistoryBrowse();
-        messageInput.value = quickAction.dataset.query;
+        messageInput.value = query;
         autoResizeInput();
         updateSendState();
+        if (shouldQuickSend) {
+            await handleSend(query);
+            return;
+        }
+
         focusMessageInput();
         if (messageInput.setSelectionRange) {
             messageInput.setSelectionRange(messageInput.value.length, messageInput.value.length);
-        }
-        if (quickAction.dataset.quickSend === 'true') {
-            await handleSend(quickAction.dataset.query || '');
         }
         return;
     }

@@ -311,7 +311,54 @@ curl -sS 'http://49.235.143.82/api/runs/<run_id>?user_id=<user_id>'
 sudo journalctl -u agent-assistant-agent.service -n 200 --no-pager
 ```
 
-### 7.3 Nginx 返回默认页或旧服务
+### 7.3 Pulse 刷新后为空，或会话内容看起来消失
+
+先确认不是服务卡死：
+
+```bash
+ssh ubuntu@49.235.143.82 '
+curl -fsS http://127.0.0.1:8080/api/health
+systemctl is-active agent-assistant-agent.service agent-assistant-gateway.service nginx
+'
+```
+
+然后看最近日志里是否有危险操作或长请求断开：
+
+```bash
+ssh ubuntu@49.235.143.82 '
+journalctl -u agent-assistant-agent.service -u agent-assistant-gateway.service --since "2 hours ago" --no-pager |
+  grep -E "DELETE +\"/api/(pulse/topics|conversations)|POST +\"/api/pulse/refresh|broken pipe|connection reset"
+'
+```
+
+判断要点：
+
+- `POST "/api/pulse/refresh"` 跑几分钟后出现 `broken pipe`，通常是浏览器刷新/超时断开，不等于服务挂了。
+- `DELETE "/api/pulse/topics/<id>"` 表示订阅主题被删除；刷新接口本身不应该删除 topic。
+- `DELETE "/api/conversations/<id>"` 会硬删除会话及消息，所以 assistant 内容会一起消失。
+- 会话和 Pulse 都按 `user_id` 隔离；切换帐号后旧数据可能还在默认帐号 `0` 下，只是当前帐号看不到。
+
+只查数量和归属，不要打印 settings/API key：
+
+```bash
+ssh ubuntu@49.235.143.82 'cd /home/ubuntu/agent_assistant && . .venv/bin/activate && python - <<'"'"'PY'"'"'
+import sqlite3
+conn=sqlite3.connect("data/assistant.db")
+conn.row_factory=sqlite3.Row
+for title, query in [
+    ("accounts", "select id,name,updated_at from accounts order by updated_at desc"),
+    ("conversations_by_user", "select user_id,count(*) as count,max(updated_at) as latest from conversations group by user_id order by latest desc"),
+    ("messages_by_user_role", "select user_id,role,count(*) as count,max(created_at) as latest from messages group by user_id,role order by latest desc"),
+    ("pulse_topics_by_user", "select user_id,count(*) as count,group_concat(name, ' | ') as topics from pulse_topics group by user_id"),
+    ("pulse_items_by_user", "select user_id,date,source,count(*) as count,max(updated_at) as latest from pulse_items group by user_id,date,source order by latest desc"),
+]:
+    print("\\n" + title)
+    for row in conn.execute(query):
+        print(dict(row))
+PY'
+```
+
+### 7.4 Nginx 返回默认页或旧服务
 
 确认实际加载配置：
 
@@ -321,7 +368,7 @@ ssh ubuntu@49.235.143.82 'sudo nginx -T 2>/dev/null | grep -n -A25 -B4 "agent_as
 
 当前应由 `/etc/nginx/conf.d/agent_assistant.conf` 代理到 `127.0.0.1:8080`。历史上服务器有 `quant-internet` 站点代理到 `127.0.0.1:9930`，不要误判为新 Gateway。
 
-### 7.4 Go toolchain 下载慢或超时
+### 7.5 Go toolchain 下载慢或超时
 
 服务器会用 Go 1.24.x toolchain。首次构建可能慢。设置国内代理：
 
@@ -332,7 +379,7 @@ go mod download
 go build -o gateway ./cmd/server/
 ```
 
-### 7.5 不要覆盖运行期数据
+### 7.6 不要覆盖运行期数据
 
 不要对服务器目录做这种操作：
 

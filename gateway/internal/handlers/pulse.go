@@ -446,14 +446,8 @@ func (h *PulseHandler) ensureDailyPulse(date string, userID string, force bool) 
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	if force {
-		if err := database.DB.Delete(&models.PulseItem{}, "date = ? AND user_id = ?", date, userID).Error; err != nil {
-			return err
-		}
-		if err := database.DB.Delete(&models.PulseModule{}, "date = ? AND user_id = ?", date, userID).Error; err != nil {
-			return err
-		}
-	} else {
+	replaceExisting := force
+	if !force {
 		ok, err := h.hasCurrentPulseShape(date, userID)
 		if err != nil {
 			return err
@@ -461,12 +455,7 @@ func (h *PulseHandler) ensureDailyPulse(date string, userID string, force bool) 
 		if ok {
 			return nil
 		}
-		if err := database.DB.Delete(&models.PulseItem{}, "date = ? AND user_id = ?", date, userID).Error; err != nil {
-			return err
-		}
-		if err := database.DB.Delete(&models.PulseModule{}, "date = ? AND user_id = ?", date, userID).Error; err != nil {
-			return err
-		}
+		replaceExisting = true
 	}
 
 	topics, err := h.loadTopics(userID)
@@ -490,10 +479,19 @@ func (h *PulseHandler) ensureDailyPulse(date string, userID string, force bool) 
 	}
 	scopePulseModels(userID, modules, items)
 	if len(modules) == 0 && len(items) == 0 {
+		slog.Warn("Pulse generation returned no content; keeping existing pulse", "date", date, "user_id", userID)
 		return nil
 	}
 
 	return database.DB.Transaction(func(tx *gorm.DB) error {
+		if replaceExisting {
+			if err := tx.Delete(&models.PulseItem{}, "date = ? AND user_id = ?", date, userID).Error; err != nil {
+				return err
+			}
+			if err := tx.Delete(&models.PulseModule{}, "date = ? AND user_id = ?", date, userID).Error; err != nil {
+				return err
+			}
+		}
 		if len(modules) > 0 {
 			if err := tx.Create(&modules).Error; err != nil {
 				return err

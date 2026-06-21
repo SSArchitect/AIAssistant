@@ -12,6 +12,7 @@ import (
 
 	"github.com/aan/agent-assistant-gateway/internal/bridge"
 	"github.com/aan/agent-assistant-gateway/internal/database"
+	"github.com/aan/agent-assistant-gateway/internal/models"
 	"github.com/gin-gonic/gin"
 )
 
@@ -414,6 +415,80 @@ func TestPulseUsesSearchFallbackWhenGenerationFails(t *testing.T) {
 	joinedQuestions := strings.Join(questions, "\n")
 	if len(questions) < 3 || strings.Contains(joinedQuestions, "这些来源共同说明了什么趋势") || !strings.Contains(joinedQuestions, "机器人") {
 		t.Fatalf("expected personalized search fallback questions, got %#v", questions)
+	}
+}
+
+func TestPulseRefreshKeepsExistingItemsWhenReplacementFails(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	if err := database.Init(filepath.Join(t.TempDir(), "assistant.db")); err != nil {
+		t.Fatalf("init database: %v", err)
+	}
+
+	date := "2026-06-20"
+	now := time.Now()
+	oldItem := models.PulseItem{
+		ID:        "existing-pulse-item",
+		UserID:    "0",
+		Date:      date,
+		Source:    pulseSourceMemory,
+		Category:  "近日 Memory",
+		Title:     "旧的 Pulse 内容",
+		Summary:   "刷新失败时应该保留。",
+		HeatScore: 70,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	oldModule := models.PulseModule{
+		ID:        "existing-pulse-module",
+		UserID:    "0",
+		Date:      date,
+		Key:       pulseSourceMemory,
+		Title:     "旧模块",
+		Summary:   "刷新失败时应该保留。",
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	conflictingModule := models.PulseModule{
+		ID:        pulseItemID(date, "module", pulseSourceTopicHot),
+		UserID:    "other-user",
+		Date:      date,
+		Key:       pulseSourceTopicHot,
+		Title:     "占用即将写入的 ID",
+		Summary:   "触发事务写入失败。",
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if err := database.DB.Create(&[]models.PulseModule{oldModule, conflictingModule}).Error; err != nil {
+		t.Fatalf("seed modules: %v", err)
+	}
+	if err := database.DB.Create(&oldItem).Error; err != nil {
+		t.Fatalf("seed item: %v", err)
+	}
+
+	handler := NewPulseHandler()
+	router := gin.New()
+	router.POST("/api/pulse/refresh", handler.Refresh)
+
+	refreshBody := bytes.NewBufferString(`{"date":"2026-06-20"}`)
+	refreshReq := httptest.NewRequest(http.MethodPost, "/api/pulse/refresh", refreshBody)
+	refreshReq.Header.Set("Content-Type", "application/json")
+	refreshRecorder := httptest.NewRecorder()
+	router.ServeHTTP(refreshRecorder, refreshReq)
+	if refreshRecorder.Code != http.StatusInternalServerError {
+		t.Fatalf("expected refresh failure, got status %d: %s", refreshRecorder.Code, refreshRecorder.Body.String())
+	}
+
+	var keptItem models.PulseItem
+	if err := database.DB.First(&keptItem, "id = ?", oldItem.ID).Error; err != nil {
+		t.Fatalf("expected old item to remain after failed replacement: %v", err)
+	}
+	if keptItem.Title != oldItem.Title {
+		t.Fatalf("unexpected kept item title: %q", keptItem.Title)
+	}
+
+	var keptModule models.PulseModule
+	if err := database.DB.First(&keptModule, "id = ?", oldModule.ID).Error; err != nil {
+		t.Fatalf("expected old module to remain after failed replacement: %v", err)
 	}
 }
 
