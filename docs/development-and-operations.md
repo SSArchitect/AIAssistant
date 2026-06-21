@@ -4,6 +4,8 @@
 
 这份文档记录当前代码落地后的服务启动方式、开发流程、测试要求和已知限制。架构方向见 [agent-workbench-architecture.md](./agent-workbench-architecture.md)。
 
+生产服务器部署、Git bundle 兜底、systemd/Nginx 检查和线上配置同步流程见 [server-deployment-runbook.md](./server-deployment-runbook.md)。
+
 ## 1. 当前服务边界
 
 项目保持 Go Gateway + Python Agent Service 分离：
