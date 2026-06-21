@@ -22,7 +22,10 @@ class SearchSkill(Skill):
                 SkillParameter(
                     name="sources",
                     type="string",
-                    description="可选的来源名称，用英文逗号分隔，例如 local、http、minimax-mcp 或 web。",
+                    description=(
+                        "可选的来源名称，用英文逗号分隔。留空使用默认搜索；web 表示通用网络搜索。"
+                        "也可以指定 local、http、bing-rss 或 minimax-mcp。"
+                    ),
                     required=False,
                 ),
                 SkillParameter(
@@ -48,7 +51,11 @@ class SearchSkill(Skill):
             limit = 5
         limit = max(1, min(limit, 20))
 
-        raw_sources = str(kwargs.get("sources") or "").strip()
+        raw_source_value = kwargs.get("sources")
+        if isinstance(raw_source_value, list):
+            raw_sources = ",".join(str(item) for item in raw_source_value)
+        else:
+            raw_sources = str(raw_source_value or "").strip()
         sources = [
             item.strip()
             for item in raw_sources.split(",")
@@ -71,7 +78,11 @@ class SearchSkill(Skill):
             return SkillResult(
                 success=False,
                 error=f"Search failed: {e}",
-                data={"query": query, "sources": service.provider_names},
+                data={
+                    "query": query,
+                    "sources": service.provider_names,
+                    "provider_errors": service.last_provider_errors,
+                },
             )
 
         data = [result.model_dump(mode="json") for result in results]

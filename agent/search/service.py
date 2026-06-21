@@ -538,6 +538,15 @@ class BingRSSSearchProvider:
 
 
 class SearchService:
+    WEB_SOURCE_ALIASES = {"web", "internet", "online"}
+    WEB_PROVIDER_PRIORITY = {
+        "local": 0,
+        "http": 1,
+        "bing-rss": 2,
+        "web": 3,
+        "minimax-mcp": 4,
+    }
+
     def __init__(
         self,
         providers: list[SearchProvider] | None = None,
@@ -649,12 +658,13 @@ class SearchService:
         sources: list[str] | None = None,
         limit: int = 5,
     ) -> list[SearchResult]:
-        selected = set(sources or [])
+        selected = self._normalize_sources(sources)
         providers = [
             provider
             for provider in self._providers
             if not selected or provider.name in selected
         ]
+        providers.sort(key=self._provider_sort_key)
         results: list[SearchResult] = []
         seen: set[str] = set()
         provider_errors: list[str] = []
@@ -691,6 +701,29 @@ class SearchService:
         if not results and provider_errors and len(provider_errors) == len(providers):
             raise RuntimeError("; ".join(provider_errors))
         return results[:limit]
+
+    def _normalize_sources(self, sources: list[str] | None) -> set[str]:
+        selected: set[str] = set()
+        available = set(self.provider_names)
+        for source in sources or []:
+            value = str(source or "").strip().lower()
+            if not value:
+                continue
+            if value in self.WEB_SOURCE_ALIASES:
+                selected.update(
+                    name
+                    for name in self.WEB_PROVIDER_PRIORITY
+                    if name in available and name not in {"local", "http"}
+                )
+            else:
+                selected.add(value)
+        return selected
+
+    def _provider_sort_key(self, provider: SearchProvider) -> tuple[int, str]:
+        return (
+            self.WEB_PROVIDER_PRIORITY.get(provider.name, 100),
+            provider.name,
+        )
 
     async def _search_provider_with_retries(
         self,

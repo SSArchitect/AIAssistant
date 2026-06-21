@@ -303,6 +303,45 @@ class TestSearchSkill:
         assert "minimax-mcp: mcp returned invalid json" in service.last_provider_errors
 
     @pytest.mark.asyncio
+    async def test_search_service_treats_web_source_as_generic_web_alias(self):
+        class SlowMCPProvider:
+            name = "minimax-mcp"
+
+            def __init__(self):
+                self.calls = 0
+
+            async def search(self, query, *, limit=5):
+                self.calls += 1
+                raise RuntimeError("should not be needed when bing has enough results")
+
+        class BingProvider:
+            name = "bing-rss"
+
+            async def search(self, query, *, limit=5):
+                return [
+                    SearchResult(
+                        title=f"Bing Result {index}",
+                        snippet=query,
+                        url=f"https://example.com/{index}",
+                        source=self.name,
+                    )
+                    for index in range(limit)
+                ]
+
+        mcp = SlowMCPProvider()
+        service = SearchService(
+            providers=[mcp, BingProvider()],
+            retry_attempts=1,
+            retry_delay=0,
+        )
+
+        results = await service.search("炝锅面教程", sources=["web"], limit=3)
+
+        assert len(results) == 3
+        assert {result.source for result in results} == {"bing-rss"}
+        assert mcp.calls == 0
+
+    @pytest.mark.asyncio
     async def test_search_skill_uses_service(self, monkeypatch):
         seen = {}
 
