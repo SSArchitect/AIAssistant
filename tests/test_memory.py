@@ -1,11 +1,13 @@
 """Unit tests for conversation memory."""
+import json
+
 import pytest
 
 from agent.memory.conversation import ConversationMemory
 from agent.memory.hooks import HeuristicMemoryHook
 from agent.memory.role_store import RoleMemoryStore
 from agent.llm.base import LLMMessage
-from agent.schemas.memory import RoleProfile
+from agent.schemas.memory import RoleCreateRequest, RoleProfile, RoleUpdateRequest
 
 
 class TestConversationMemory:
@@ -50,6 +52,17 @@ class TestConversationMemory:
         mem.add("conv1", LLMMessage(role="user", content="hello"))
         mem.clear("conv1")
         assert mem.get("conv1") == []
+
+    def test_summary_context(self):
+        mem = ConversationMemory()
+        mem.add("conv1", LLMMessage(role="user", content="hello"))
+        mem.set_summary("conv1", "User is designing memory.")
+
+        context = mem.get_context("conv1")
+
+        assert context.summary == "User is designing memory."
+        assert context.total_messages == 1
+        assert context.messages[0].content == "hello"
 
     def test_truncation(self):
         mem = ConversationMemory(max_messages=5)
@@ -106,8 +119,26 @@ class TestRoleMemoryStore:
         assert context is not None
         assert context.persona_memories[0].content == "Use Socratic questions"
         assert context.long_term_memories[0].content == "User is preparing interviews"
-        assert "人设记忆：" in context.rendered
+        assert "角色记忆：" in context.rendered
+        assert "用户更新的角色记忆：" in context.rendered
         assert "长期记忆：" in context.rendered
+
+    def test_role_preferences_render_in_context(self):
+        store = RoleMemoryStore(
+            roles=[
+                RoleProfile(
+                    id="operator",
+                    name="Operator",
+                    metadata={"preferences": ["Answer with the conclusion first"]},
+                )
+            ]
+        )
+
+        context = store.get_context(role_id="operator", agent_id="general_assistant")
+
+        assert context is not None
+        assert "习惯/偏好：" in context.rendered
+        assert "Answer with the conclusion first" in context.rendered
 
     def test_duplicate_memory_updates_existing_record(self):
         store = RoleMemoryStore()
@@ -156,6 +187,42 @@ class TestRoleMemoryStore:
         assert "User B likes detailed answers" not in context_a.rendered
         assert "User B likes detailed answers" in context_b.rendered
 
+    def test_custom_roles_are_visible_only_to_owner(self):
+        store = RoleMemoryStore()
+
+        role_a = store.create_role(
+            RoleCreateRequest(
+                user_id="account-a",
+                id="private_helper",
+                name="Account A Helper",
+            )
+        )
+        role_b = store.create_role(
+            RoleCreateRequest(
+                user_id="account-b",
+                id="private_helper",
+                name="Account B Helper",
+            )
+        )
+
+        assert role_a.metadata["owner_user_id"] == "account-a"
+        assert role_b.metadata["owner_user_id"] == "account-b"
+        roles_a = {role.id: role for role in store.list_roles(user_id="account-a")}
+        roles_b = {role.id: role for role in store.list_roles(user_id="account-b")}
+        assert roles_a["private_helper"].name == "Account A Helper"
+        assert roles_b["private_helper"].name == "Account B Helper"
+
+        store.update_role(
+            "private_helper",
+            RoleUpdateRequest(user_id="account-a", name="Account A Updated"),
+        )
+        assert store.get_role("private_helper", user_id="account-a").name == "Account A Updated"
+        assert store.get_role("private_helper", user_id="account-b").name == "Account B Helper"
+
+        store.delete_role("private_helper", user_id="account-a")
+        assert store.get_role("private_helper", user_id="account-a") is None
+        assert store.get_role("private_helper", user_id="account-b") is not None
+
     def test_persists_memory_records_to_json(self, tmp_path):
         storage_path = tmp_path / "agent_memory.json"
         store = RoleMemoryStore(storage_path=storage_path)
@@ -172,6 +239,54 @@ class TestRoleMemoryStore:
         assert len(memories) == 1
         assert memories[0].id == written.id
         assert memories[0].content == "User prefers durable memory"
+
+    def test_default_role_sync_prunes_retired_builtins_and_promotes_chuyi(self, tmp_path):
+        storage_path = tmp_path / "agent_memory.json"
+        retired_builtin = RoleProfile(
+            id="research_analyst",
+            name="Research Analyst",
+            metadata={"built_in": True},
+        )
+        old_chuyi = RoleProfile(
+            id="初一",
+            name="初一",
+            description="一个赛博小书生",
+            base_persona="一个赛博小书生，上通天文，下懂地理，技巧可爱",
+            metadata={"built_in": False},
+        )
+        custom = RoleProfile(
+            id="custom_writer",
+            name="Custom Writer",
+            metadata={"built_in": False},
+        )
+        storage_path.write_text(
+            json.dumps(
+                {
+                    "roles": [
+                        retired_builtin.model_dump(mode="json"),
+                        old_chuyi.model_dump(mode="json"),
+                        custom.model_dump(mode="json"),
+                    ],
+                    "records": [],
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+
+        store = RoleMemoryStore(storage_path=storage_path)
+
+        roles = {role.id: role for role in store.list_roles()}
+        assert set(roles) == {
+            "default",
+            "work_partner",
+            "learning_coach",
+            "初一",
+            "custom_writer",
+        }
+        assert roles["初一"].metadata["built_in"] is True
+        assert roles["初一"].metadata["localized"]["en"]["name"] == "Chuyi"
+        assert roles["custom_writer"].metadata["built_in"] is False
 
 
 class TestHeuristicMemoryHook:
@@ -207,7 +322,7 @@ class TestHeuristicMemoryHook:
         )
 
         assert len(candidates) == 1
-        assert candidates[0].kind == "persona"
+        assert candidates[0].kind == "role"
 
     @pytest.mark.asyncio
     async def test_ignores_low_signal_followup(self):

@@ -1,5 +1,7 @@
 const API_BASE = '';
 const LANGUAGE_KEY = 'agent_assistant_language';
+const CURRENT_USER_ID_STORAGE_KEY = 'agent_assistant_current_user_id';
+const ACCOUNT_SESSION_STORAGE_KEY = 'agent_assistant_account_session';
 
 const PROVIDER_CONFIG = [
     {
@@ -153,16 +155,20 @@ const I18N = {
         },
         roles: {
             title: '角色人设',
-            desc: '配置角色提示词和长期记忆范围。',
+            desc: '配置角色名、工作方式、习惯偏好和长期记忆范围。',
             new: '新建角色',
             id: '角色 ID',
-            name: '名称',
+            name: '角色名',
             namePlaceholder: '角色名称',
             description: '描述',
             descPlaceholder: '一句话描述',
             basePersona: '基础 Persona',
             instructions: '指令',
             instructionsPlaceholder: '每行一条指令',
+            preferences: '习惯 / 偏好',
+            preferencesPlaceholder: '每行一条，例如：回答先给结论；默认用中文；复杂任务先列计划',
+            examplesTitle: '常用模板',
+            applyExample: '套用',
             enabled: '启用',
             memory: '记忆',
             save: '保存角色',
@@ -174,6 +180,9 @@ const I18N = {
             nameRequired: '名称不能为空',
             saved: '角色已保存',
             deleted: '角色已删除',
+            builtInHint: '内置角色不可编辑或删除，可以新建自定义角色。',
+            customHint: '自定义角色可保存，也可以在左侧或下方删除。',
+            deleteConfirm: '确定删除角色「{name}」吗？',
             loadFailed: '加载角色失败：{message}',
             saveFailed: '保存失败：{message}',
             deleteFailed: '删除失败：{message}',
@@ -258,16 +267,20 @@ const I18N = {
         },
         roles: {
             title: 'Personas',
-            desc: 'Configure role prompts and long-term memory scope.',
+            desc: 'Configure persona names, working style, habits, preferences, and memory scope.',
             new: 'New Persona',
             id: 'Role ID',
-            name: 'Name',
+            name: 'Persona Name',
             namePlaceholder: 'Persona name',
             description: 'Description',
             descPlaceholder: 'Short description',
             basePersona: 'Base Persona',
             instructions: 'Instructions',
             instructionsPlaceholder: 'One instruction per line',
+            preferences: 'Habits / Preferences',
+            preferencesPlaceholder: 'One per line, e.g. answer with conclusion first; use English by default; plan before complex tasks',
+            examplesTitle: 'Templates',
+            applyExample: 'Use',
             enabled: 'Enabled',
             memory: 'Memory',
             save: 'Save Persona',
@@ -279,6 +292,9 @@ const I18N = {
             nameRequired: 'Name is required',
             saved: 'Persona saved',
             deleted: 'Persona deleted',
+            builtInHint: 'Built-in personas cannot be edited or deleted. Create a custom persona instead.',
+            customHint: 'Custom personas can be saved here and deleted from the left list or the button below.',
+            deleteConfirm: 'Delete persona "{name}"?',
             loadFailed: 'Failed to load personas: {message}',
             saveFailed: 'Failed to save: {message}',
             deleteFailed: 'Failed to delete: {message}',
@@ -301,6 +317,69 @@ const I18N = {
     },
 };
 
+const ROLE_EXAMPLES = [
+    {
+        id: 'personal_operator',
+        name: { zh: '私人执行助理', en: 'Personal Operator' },
+        description: {
+            zh: '帮我拆任务、跟进事项、整理日程和推动个人项目。',
+            en: 'Helps break down tasks, track follow-ups, organize schedules, and move personal projects forward.',
+        },
+        basePersona: {
+            zh: '你是一位靠谱、细致、有推进感的私人执行助理。你会把模糊想法整理成清晰行动，并帮用户减少拖延和遗漏。',
+            en: 'You are a reliable, detail-oriented personal operator. You turn fuzzy ideas into clear actions and help the user avoid procrastination and missed details.',
+        },
+        instructions: {
+            zh: ['先确认目标和截止时间。', '复杂事项拆成今天、这周、之后三层。', '输出尽量能直接变成待办或日程。'],
+            en: ['Clarify the goal and deadline first.', 'Split complex work into today, this week, and later.', 'Make outputs easy to turn into tasks or calendar items.'],
+        },
+        preferences: {
+            zh: ['默认用中文。', '回答先给结论，再给行动清单。', '提醒我哪些事需要主动推进。'],
+            en: ['Use English by default.', 'Answer with the conclusion first, then action items.', 'Call out items that need proactive follow-up.'],
+        },
+    },
+    {
+        id: 'engineering_partner',
+        name: { zh: '工程搭档', en: 'Engineering Partner' },
+        description: {
+            zh: '一起设计、实现、排查和复盘代码项目。',
+            en: 'Collaborates on design, implementation, debugging, and review for engineering projects.',
+        },
+        basePersona: {
+            zh: '你是一位资深工程搭档。你会先读懂现有系统，再提出保守、清晰、可验证的实现方案。',
+            en: 'You are a senior engineering partner. You understand the existing system first, then suggest conservative, clear, verifiable implementation paths.',
+        },
+        instructions: {
+            zh: ['先确认代码边界和现有约定。', '优先给可测试、可回滚的小步改动。', '发现风险时直接指出具体文件或行为。'],
+            en: ['Confirm code boundaries and existing conventions first.', 'Prefer small changes that can be tested and rolled back.', 'Point to concrete files or behavior when identifying risks.'],
+        },
+        preferences: {
+            zh: ['不要空泛重构。', '解释时带上验证方式。', '遇到不确定先查代码。'],
+            en: ['Avoid vague refactors.', 'Include verification steps when explaining.', 'Inspect the code before assuming.'],
+        },
+    },
+    {
+        id: 'writing_editor_custom',
+        name: { zh: '写作编辑', en: 'Writing Editor' },
+        description: {
+            zh: '帮我写作、润色、改标题、调整语气和结构。',
+            en: 'Helps draft, polish, title, tune tone, and structure writing.',
+        },
+        basePersona: {
+            zh: '你是一位克制但有审美的写作编辑。你会保留用户原意，让表达更准确、有节奏、有辨识度。',
+            en: 'You are a restrained editor with taste. You preserve the user intent while making the writing clearer, sharper, and more distinctive.',
+        },
+        instructions: {
+            zh: ['先判断文本目标和读者。', '给少量高质量版本，不堆砌选项。', '修改时说明关键取舍。'],
+            en: ['Identify the goal and audience first.', 'Offer a few high-quality versions instead of many options.', 'Explain the key editorial tradeoffs.'],
+        },
+        preferences: {
+            zh: ['偏好自然、克制、不过度营销。', '标题要短、有力、具体。', '保留我原来的语气底色。'],
+            en: ['Prefer natural, restrained language over hype.', 'Titles should be short, strong, and specific.', 'Preserve my underlying voice.'],
+        },
+    },
+];
+
 let currentLanguage = localStorage.getItem(LANGUAGE_KEY) || 'zh';
 let roles = [];
 let selectedRoleId = 'default';
@@ -309,10 +388,14 @@ let settingsCache = {};
 const providerModels = {};
 
 async function apiCall(method, path, body = null) {
+    const currentUserId = loadCurrentUserId();
+    const accountToken = loadAccountSessionToken(currentUserId);
     const opts = {
         method,
         headers: { 'Content-Type': 'application/json' },
     };
+    if (accountToken) opts.headers['X-Account-Session'] = accountToken;
+    if (currentUserId) opts.headers['X-User-ID'] = currentUserId;
     if (body) opts.body = JSON.stringify(body);
 
     const resp = await fetch(API_BASE + path, opts);
@@ -321,6 +404,18 @@ async function apiCall(method, path, body = null) {
         throw new Error(err.error || err.detail || 'Request failed');
     }
     return resp.json();
+}
+
+function loadCurrentUserId() {
+    const value = localStorage.getItem(CURRENT_USER_ID_STORAGE_KEY);
+    if (value && String(value).trim()) return String(value).trim();
+    return '';
+}
+
+function loadAccountSessionToken(userId = loadCurrentUserId()) {
+    const id = String(userId || '').trim();
+    if (!id) return '';
+    return localStorage.getItem(`${ACCOUNT_SESSION_STORAGE_KEY}:${id}`) || '';
 }
 
 function t(key, vars = {}) {
@@ -354,6 +449,7 @@ function setLanguage(language) {
     renderProviderConfigurator();
     applySettingsToForm(settingsCache);
     updateProviderStatuses(settingsCache);
+    renderRoleExamples();
     renderRoles();
     renderRoleEditor();
 }
@@ -366,6 +462,32 @@ function escapeHtml(text) {
 
 function escapeAttr(text) {
     return escapeHtml(text).replace(/"/g, '&quot;');
+}
+
+function localizedRoleText(role, field) {
+    const localized = role?.metadata?.localized || {};
+    const candidates = [
+        localized[currentLanguage]?.[field],
+        localized.zh?.[field],
+        localized.en?.[field],
+        role?.[field],
+    ];
+    const match = candidates.find((item) => typeof item === 'string' && item.trim());
+    return match || '';
+}
+
+function localizedExampleText(example, field) {
+    const value = example?.[field];
+    if (typeof value === 'string') return value;
+    return value?.[currentLanguage] || value?.zh || value?.en || '';
+}
+
+function localizedExampleList(example, field) {
+    const value = example?.[field];
+    const list = Array.isArray(value?.[currentLanguage])
+        ? value[currentLanguage]
+        : (Array.isArray(value?.zh) ? value.zh : value?.en);
+    return Array.isArray(list) ? list : [];
 }
 
 function toggleVisibility(inputId) {
@@ -539,6 +661,17 @@ async function loadRoles() {
     }
 }
 
+function renderRoleExamples() {
+    const list = document.getElementById('role-example-list');
+    if (!list) return;
+    list.innerHTML = ROLE_EXAMPLES.map((example, index) => `
+        <button class="role-example-button" type="button" data-role-example="${index}">
+            <span>${escapeHtml(localizedExampleText(example, 'name'))}</span>
+            <small>${escapeHtml(localizedExampleText(example, 'description'))}</small>
+        </button>
+    `).join('');
+}
+
 function renderRoles() {
     const list = document.getElementById('role-list');
     const badge = document.getElementById('role-count-badge');
@@ -553,12 +686,22 @@ function renderRoles() {
     list.innerHTML = roles.map((role) => {
         const builtIn = role.metadata && role.metadata.built_in;
         return `
-            <button class="role-list-item ${role.id === selectedRoleId ? 'active' : ''}"
-                    type="button"
-                    data-role-id="${escapeAttr(role.id)}">
-                <span>${escapeHtml(role.name || role.id)}</span>
-                <small>${builtIn ? t('roles.builtIn') : t('roles.custom')}</small>
-            </button>
+            <div class="role-list-item ${role.id === selectedRoleId ? 'active' : ''}">
+                <button class="role-list-select" type="button" data-role-id="${escapeAttr(role.id)}">
+                    <span>${escapeHtml(localizedRoleText(role, 'name') || role.id)}</span>
+                    <small>${escapeHtml(localizedRoleText(role, 'description') || (builtIn ? t('roles.builtIn') : t('roles.custom')))}</small>
+                </button>
+                ${builtIn ? '<span class="role-list-lock"></span>' : `
+                    <button class="role-list-delete" type="button"
+                            data-delete-role-id="${escapeAttr(role.id)}"
+                            title="${escapeAttr(t('roles.delete'))}"
+                            aria-label="${escapeAttr(t('roles.delete'))}">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                            <path d="M3 6h18M8 6V4h8v2M10 11v6M14 11v6M6 6l1 15h10l1-15"/>
+                        </svg>
+                    </button>
+                `}
+            </div>
         `;
     }).join('');
 }
@@ -566,44 +709,110 @@ function renderRoles() {
 function renderRoleEditor() {
     const role = roles.find((item) => item.id === selectedRoleId);
     const isNew = !role;
+    const builtIn = role?.metadata && role.metadata.built_in;
     setValue('role-id', role?.id || '');
-    setValue('role-name', role?.name || '');
-    setValue('role-description', role?.description || '');
+    setValue('role-name', builtIn ? localizedRoleText(role, 'name') : (role?.name || ''));
+    setValue('role-description', builtIn ? localizedRoleText(role, 'description') : (role?.description || ''));
     setValue('role-base-persona', role?.base_persona || '');
     setValue('role-instructions', (role?.instructions || []).join('\n'));
+    setValue('role-preferences', rolePreferences(role).join('\n'));
     setChecked('role-enabled', role ? !!role.enabled : true);
     setChecked('role-memory-enabled', role ? !!role.memory_enabled : true);
 
     const idInput = document.getElementById('role-id');
     if (idInput) idInput.disabled = !isNew;
+    setRoleEditorDisabled(Boolean(builtIn));
     const deleteButton = document.getElementById('btn-delete-role');
     if (deleteButton) {
-        const builtIn = role?.metadata && role.metadata.built_in;
         deleteButton.disabled = isNew || builtIn;
     }
+    setRoleHint(isNew ? '' : (builtIn ? t('roles.builtInHint') : t('roles.customHint')));
+}
+
+function rolePreferences(role) {
+    const value = role?.metadata?.preferences;
+    if (Array.isArray(value)) {
+        return value.map((item) => String(item || '').trim()).filter(Boolean);
+    }
+    if (typeof value === 'string') {
+        return value.split('\n').map((line) => line.trim()).filter(Boolean);
+    }
+    return [];
+}
+
+function setRoleEditorDisabled(disabled) {
+    [
+        'role-name',
+        'role-description',
+        'role-base-persona',
+        'role-instructions',
+        'role-preferences',
+        'role-enabled',
+        'role-memory-enabled',
+    ].forEach((id) => {
+        const el = document.getElementById(id);
+        if (el) el.disabled = disabled;
+    });
+    const saveButton = document.querySelector('.role-actions .btn-test');
+    if (saveButton) saveButton.disabled = disabled;
+}
+
+function setRoleHint(message) {
+    const hint = document.getElementById('role-editor-hint');
+    if (!hint) return;
+    hint.textContent = message || '';
+    hint.hidden = !message;
 }
 
 function newRoleDraft() {
     selectedRoleId = '';
     renderRoles();
     renderRoleEditor();
+    renderRoleExamples();
+    showRoleResult('', true, false);
     const nameInput = document.getElementById('role-name');
     if (nameInput) nameInput.focus();
 }
 
+function parseRoleLines(value) {
+    return String(value || '')
+        .split('\n')
+        .map((line) => line.trim())
+        .filter(Boolean);
+}
+
 function collectRolePayload() {
+    const existing = roles.find((item) => item.id === selectedRoleId);
+    const metadata = { ...(existing?.metadata || {}) };
+    if (!metadata.built_in) metadata.built_in = false;
+    metadata.preferences = parseRoleLines(readValue('role-preferences'));
     return {
         id: readValue('role-id'),
         name: readValue('role-name'),
         description: readValue('role-description'),
         base_persona: readValue('role-base-persona'),
-        instructions: readValue('role-instructions')
-            .split('\n')
-            .map((line) => line.trim())
-            .filter(Boolean),
+        instructions: parseRoleLines(readValue('role-instructions')),
         enabled: readChecked('role-enabled'),
         memory_enabled: readChecked('role-memory-enabled'),
+        metadata,
     };
+}
+
+function applyRoleExample(index) {
+    const example = ROLE_EXAMPLES[index];
+    if (!example) return;
+    selectedRoleId = '';
+    renderRoles();
+    renderRoleEditor();
+    showRoleResult('', true, false);
+    setValue('role-id', example.id);
+    setValue('role-name', localizedExampleText(example, 'name'));
+    setValue('role-description', localizedExampleText(example, 'description'));
+    setValue('role-base-persona', localizedExampleText(example, 'basePersona'));
+    setValue('role-instructions', localizedExampleList(example, 'instructions').join('\n'));
+    setValue('role-preferences', localizedExampleList(example, 'preferences').join('\n'));
+    setChecked('role-enabled', true);
+    setChecked('role-memory-enabled', true);
 }
 
 async function saveRole() {
@@ -629,9 +838,20 @@ async function saveRole() {
 }
 
 async function deleteSelectedRole() {
-    if (!selectedRoleId) return;
+    await deleteRoleById(selectedRoleId);
+}
+
+async function deleteRoleById(roleId) {
+    if (!roleId) return;
+    const role = roles.find((item) => item.id === roleId);
+    if (role?.metadata?.built_in) {
+        showRoleResult(t('roles.builtInHint'), false);
+        return;
+    }
+    const name = localizedRoleText(role, 'name') || role?.name || roleId;
+    if (!window.confirm(t('roles.deleteConfirm', { name }))) return;
     try {
-        await apiCall('DELETE', `/api/roles/${encodeURIComponent(selectedRoleId)}`);
+        await apiCall('DELETE', `/api/roles/${encodeURIComponent(roleId)}`);
         selectedRoleId = 'default';
         showRoleResult(t('roles.deleted'), true);
         await loadRoles();
@@ -640,12 +860,12 @@ async function deleteSelectedRole() {
     }
 }
 
-function showRoleResult(message, ok) {
+function showRoleResult(message, ok, visible = true) {
     const el = document.getElementById('role-save-result');
     if (!el) return;
     el.textContent = message;
     el.className = ok ? 'test-result success' : 'test-result error';
-    el.style.display = 'block';
+    el.style.display = visible && message ? 'block' : 'none';
 }
 
 function setValue(id, value) {
@@ -910,6 +1130,19 @@ document.addEventListener('click', async (event) => {
         return;
     }
 
+    const roleExampleButton = event.target.closest('[data-role-example]');
+    if (roleExampleButton) {
+        applyRoleExample(Number(roleExampleButton.dataset.roleExample));
+        return;
+    }
+
+    const roleDeleteButton = event.target.closest('[data-delete-role-id]');
+    if (roleDeleteButton) {
+        event.stopPropagation();
+        await deleteRoleById(roleDeleteButton.dataset.deleteRoleId);
+        return;
+    }
+
     const roleButton = event.target.closest('[data-role-id]');
     if (roleButton) {
         selectedRoleId = roleButton.dataset.roleId;
@@ -967,5 +1200,6 @@ document.addEventListener('keydown', (event) => {
 
 applyI18n();
 renderProviderConfigurator();
+renderRoleExamples();
 loadSettings();
 loadRoles();

@@ -83,6 +83,7 @@ async def lifespan(app: FastAPI):
         skill_registry,
         trace_store=trace_store,
         role_memory=RoleMemoryStore(storage_path=_memory_storage_path()),
+        ai_memory_review_enabled=True,
     )
     logger.info(
         f"Agent engine started with {len(skill_registry.list_skills())} skills"
@@ -118,10 +119,10 @@ async def agents():
 
 
 @app.get("/agent/roles", response_model=RoleListResponse)
-async def roles():
+async def roles(user_id: Optional[str] = None):
     if engine is None:
         raise HTTPException(status_code=503, detail="Agent engine not ready")
-    return RoleListResponse(roles=engine.role_memory.list_roles())
+    return RoleListResponse(roles=engine.role_memory.list_roles(user_id=user_id))
 
 
 @app.post("/agent/roles", response_model=RoleProfile)
@@ -145,11 +146,11 @@ async def update_role(role_id: str, request: RoleUpdateRequest):
 
 
 @app.delete("/agent/roles/{role_id}")
-async def delete_role(role_id: str):
+async def delete_role(role_id: str, user_id: Optional[str] = None):
     if engine is None:
         raise HTTPException(status_code=503, detail="Agent engine not ready")
     try:
-        engine.role_memory.delete_role(role_id)
+        engine.role_memory.delete_role(role_id, user_id=user_id)
     except ValueError as e:
         message = str(e)
         status = 400 if "cannot delete" in message else 404
@@ -166,7 +167,7 @@ async def list_role_memories(
 ):
     if engine is None:
         raise HTTPException(status_code=503, detail="Agent engine not ready")
-    if engine.role_memory.get_role(role_id) is None:
+    if engine.role_memory.get_role(role_id, user_id=user_id) is None:
         raise HTTPException(status_code=404, detail="role not found")
     return MemoryListResponse(
         memories=engine.role_memory.list_memories(
@@ -182,7 +183,7 @@ async def list_role_memories(
 async def create_role_memory(role_id: str, request: MemoryCreateRequest):
     if engine is None:
         raise HTTPException(status_code=503, detail="Agent engine not ready")
-    if engine.role_memory.get_role(role_id) is None:
+    if engine.role_memory.get_role(role_id, user_id=request.user_id) is None:
         raise HTTPException(status_code=404, detail="role not found")
     memory = engine.role_memory.add_memory(
         role_id=role_id,

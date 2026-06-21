@@ -335,6 +335,9 @@ func TestAgentClientRolesCRUD(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/agent/roles":
+			if got := r.URL.Query().Get("user_id"); got != "user-1" {
+				t.Fatalf("unexpected list roles user_id: %s", got)
+			}
 			_, _ = w.Write([]byte(`{
 				"roles": [
 					{
@@ -355,7 +358,7 @@ func TestAgentClientRolesCRUD(t *testing.T) {
 			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 				t.Fatalf("decode create role: %v", err)
 			}
-			if req.ID != "custom_role" || req.Name != "Custom Role" {
+			if req.UserID != "user-1" || req.ID != "custom_role" || req.Name != "Custom Role" {
 				t.Fatalf("unexpected create role request: %#v", req)
 			}
 			_, _ = w.Write([]byte(`{
@@ -370,6 +373,13 @@ func TestAgentClientRolesCRUD(t *testing.T) {
 			}`))
 		case r.Method == http.MethodPut && r.URL.Path == "/agent/roles/custom_role":
 			updated = true
+			var req RoleWriteRequest
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				t.Fatalf("decode update role: %v", err)
+			}
+			if req.UserID != "user-1" {
+				t.Fatalf("unexpected update role user_id: %#v", req)
+			}
 			_, _ = w.Write([]byte(`{
 				"id": "custom_role",
 				"name": "Updated Role",
@@ -381,6 +391,9 @@ func TestAgentClientRolesCRUD(t *testing.T) {
 				"metadata": {"built_in": false}
 			}`))
 		case r.Method == http.MethodDelete && r.URL.Path == "/agent/roles/custom_role":
+			if got := r.URL.Query().Get("user_id"); got != "user-1" {
+				t.Fatalf("unexpected delete role user_id: %s", got)
+			}
 			deleted = true
 			_, _ = w.Write([]byte(`{"status":"ok"}`))
 		default:
@@ -390,7 +403,7 @@ func TestAgentClientRolesCRUD(t *testing.T) {
 	defer server.Close()
 
 	client := NewAgentClient(server.URL, time.Second)
-	roles, err := client.ListRoles()
+	roles, err := client.ListRoles("user-1")
 	if err != nil {
 		t.Fatalf("ListRoles returned error: %v", err)
 	}
@@ -399,6 +412,7 @@ func TestAgentClientRolesCRUD(t *testing.T) {
 	}
 
 	role, err := client.CreateRole(RoleWriteRequest{
+		UserID:      "user-1",
 		ID:          "custom_role",
 		Name:        "Custom Role",
 		BasePersona: "Persona",
@@ -412,6 +426,7 @@ func TestAgentClientRolesCRUD(t *testing.T) {
 
 	enabled := true
 	role, err = client.UpdateRole("custom_role", RoleWriteRequest{
+		UserID:  "user-1",
 		Name:    "Updated Role",
 		Enabled: &enabled,
 	})
@@ -422,8 +437,103 @@ func TestAgentClientRolesCRUD(t *testing.T) {
 		t.Fatalf("unexpected updated role: %#v", role)
 	}
 
-	if err := client.DeleteRole("custom_role"); err != nil {
+	if err := client.DeleteRole("custom_role", "user-1"); err != nil {
 		t.Fatalf("DeleteRole returned error: %v", err)
+	}
+	if !deleted {
+		t.Fatal("expected delete request")
+	}
+}
+
+func TestAgentClientRoleMemoriesCRUD(t *testing.T) {
+	var created bool
+	var deleted bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/agent/roles/default/memories":
+			if got := r.URL.Query().Get("user_id"); got != "user-1" {
+				t.Fatalf("unexpected user_id query: %s", got)
+			}
+			if got := r.URL.Query().Get("kind"); got != "role" {
+				t.Fatalf("unexpected kind query: %s", got)
+			}
+			_, _ = w.Write([]byte(`{
+				"memories": [
+					{
+						"id": "mem_1",
+						"role_id": "default",
+						"user_id": "user-1",
+						"kind": "role",
+						"content": "Keep answers concise",
+						"source": "manual",
+						"confidence": 1,
+						"tags": ["role_config"],
+						"created_at": "2026-06-21T00:00:00Z",
+						"updated_at": "2026-06-21T00:00:00Z",
+						"metadata": {}
+					}
+				]
+			}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/agent/roles/default/memories":
+			created = true
+			var req MemoryWriteRequest
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				t.Fatalf("decode create memory: %v", err)
+			}
+			if req.UserID != "user-1" || req.Kind != "role" || req.Content != "Keep answers concise" {
+				t.Fatalf("unexpected create memory request: %#v", req)
+			}
+			_, _ = w.Write([]byte(`{
+				"id": "mem_1",
+				"role_id": "default",
+				"user_id": "user-1",
+				"kind": "role",
+				"content": "Keep answers concise",
+				"source": "manual",
+				"confidence": 1,
+				"tags": ["role_config"],
+				"created_at": "2026-06-21T00:00:00Z",
+				"updated_at": "2026-06-21T00:00:00Z",
+				"metadata": {}
+			}`))
+		case r.Method == http.MethodDelete && r.URL.Path == "/agent/roles/default/memories/mem_1":
+			deleted = true
+			if got := r.URL.Query().Get("user_id"); got != "user-1" {
+				t.Fatalf("unexpected delete user_id query: %s", got)
+			}
+			_, _ = w.Write([]byte(`{"status":"ok"}`))
+		default:
+			t.Fatalf("unexpected %s %s", r.Method, r.URL.String())
+		}
+	}))
+	defer server.Close()
+
+	client := NewAgentClient(server.URL, time.Second)
+	memories, err := client.ListRoleMemories("default", "user-1", "role", "")
+	if err != nil {
+		t.Fatalf("ListRoleMemories returned error: %v", err)
+	}
+	if len(memories.Memories) != 1 || memories.Memories[0].ID != "mem_1" {
+		t.Fatalf("unexpected memories: %#v", memories)
+	}
+
+	memory, err := client.CreateRoleMemory("default", MemoryWriteRequest{
+		UserID:  "user-1",
+		Kind:    "role",
+		Content: "Keep answers concise",
+		Source:  "manual",
+		Tags:    []string{"role_config"},
+	})
+	if err != nil {
+		t.Fatalf("CreateRoleMemory returned error: %v", err)
+	}
+	if memory.ID != "mem_1" || !created {
+		t.Fatalf("unexpected created memory: %#v", memory)
+	}
+
+	if err := client.DeleteRoleMemory("default", "mem_1", "user-1"); err != nil {
+		t.Fatalf("DeleteRoleMemory returned error: %v", err)
 	}
 	if !deleted {
 		t.Fatal("expected delete request")

@@ -97,6 +97,7 @@ type RunEvent struct {
 type MemoryRecord struct {
 	ID         string                 `json:"id"`
 	RoleID     string                 `json:"role_id"`
+	UserID     string                 `json:"user_id,omitempty"`
 	Kind       string                 `json:"kind"`
 	Content    string                 `json:"content"`
 	Source     string                 `json:"source"`
@@ -206,6 +207,7 @@ type RoleListResponse struct {
 }
 
 type RoleWriteRequest struct {
+	UserID        string                 `json:"user_id,omitempty"`
 	ID            string                 `json:"id,omitempty"`
 	Name          string                 `json:"name,omitempty"`
 	Description   string                 `json:"description,omitempty"`
@@ -214,6 +216,21 @@ type RoleWriteRequest struct {
 	Enabled       *bool                  `json:"enabled,omitempty"`
 	MemoryEnabled *bool                  `json:"memory_enabled,omitempty"`
 	Metadata      map[string]interface{} `json:"metadata,omitempty"`
+}
+
+type MemoryListResponse struct {
+	Memories []MemoryRecord `json:"memories"`
+}
+
+type MemoryWriteRequest struct {
+	UserID     string                 `json:"user_id,omitempty"`
+	Kind       string                 `json:"kind,omitempty"`
+	Content    string                 `json:"content,omitempty"`
+	Source     string                 `json:"source,omitempty"`
+	AgentID    string                 `json:"agent_id,omitempty"`
+	Confidence float64                `json:"confidence,omitempty"`
+	Tags       []string               `json:"tags,omitempty"`
+	Metadata   map[string]interface{} `json:"metadata,omitempty"`
 }
 
 type RunRecord struct {
@@ -401,8 +418,12 @@ func (c *AgentClient) ListAgents() (*AgentListResponse, error) {
 	return &agents, nil
 }
 
-func (c *AgentClient) ListRoles() (*RoleListResponse, error) {
-	resp, err := c.httpClient.Get(c.baseURL + "/agent/roles")
+func (c *AgentClient) ListRoles(userID string) (*RoleListResponse, error) {
+	endpoint := c.baseURL + "/agent/roles"
+	if userID != "" {
+		endpoint += "?user_id=" + url.QueryEscape(userID)
+	}
+	resp, err := c.httpClient.Get(endpoint)
 	if err != nil {
 		return nil, fmt.Errorf("roles request failed: %w", err)
 	}
@@ -428,8 +449,12 @@ func (c *AgentClient) UpdateRole(roleID string, req RoleWriteRequest) (*RoleProf
 	return c.writeRole(http.MethodPut, "/agent/roles/"+url.PathEscape(roleID), req)
 }
 
-func (c *AgentClient) DeleteRole(roleID string) error {
-	httpReq, err := http.NewRequest(http.MethodDelete, c.baseURL+"/agent/roles/"+url.PathEscape(roleID), nil)
+func (c *AgentClient) DeleteRole(roleID string, userID string) error {
+	endpoint := c.baseURL + "/agent/roles/" + url.PathEscape(roleID)
+	if userID != "" {
+		endpoint += "?user_id=" + url.QueryEscape(userID)
+	}
+	httpReq, err := http.NewRequest(http.MethodDelete, endpoint, nil)
 	if err != nil {
 		return fmt.Errorf("build delete role request: %w", err)
 	}
@@ -441,6 +466,91 @@ func (c *AgentClient) DeleteRole(roleID string) error {
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("delete role returned status %d: %s", resp.StatusCode, string(respBody))
+	}
+	return nil
+}
+
+func (c *AgentClient) ListRoleMemories(roleID string, userID string, kind string, agentID string) (*MemoryListResponse, error) {
+	params := url.Values{}
+	if userID != "" {
+		params.Set("user_id", userID)
+	}
+	if kind != "" {
+		params.Set("kind", kind)
+	}
+	if agentID != "" {
+		params.Set("agent_id", agentID)
+	}
+
+	endpoint := c.baseURL + "/agent/roles/" + url.PathEscape(roleID) + "/memories"
+	if encoded := params.Encode(); encoded != "" {
+		endpoint += "?" + encoded
+	}
+
+	resp, err := c.httpClient.Get(endpoint)
+	if err != nil {
+		return nil, fmt.Errorf("role memories request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("role memories returned status %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	var memories MemoryListResponse
+	if err := json.NewDecoder(resp.Body).Decode(&memories); err != nil {
+		return nil, fmt.Errorf("decode role memories: %w", err)
+	}
+	return &memories, nil
+}
+
+func (c *AgentClient) CreateRoleMemory(roleID string, req MemoryWriteRequest) (*MemoryRecord, error) {
+	body, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("marshal role memory request: %w", err)
+	}
+	resp, err := c.httpClient.Post(
+		c.baseURL+"/agent/roles/"+url.PathEscape(roleID)+"/memories",
+		"application/json",
+		bytes.NewReader(body),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("create role memory request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("create role memory returned status %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	var memory MemoryRecord
+	if err := json.NewDecoder(resp.Body).Decode(&memory); err != nil {
+		return nil, fmt.Errorf("decode role memory: %w", err)
+	}
+	return &memory, nil
+}
+
+func (c *AgentClient) DeleteRoleMemory(roleID string, memoryID string, userID string) error {
+	endpoint := c.baseURL + "/agent/roles/" + url.PathEscape(roleID) + "/memories/" + url.PathEscape(memoryID)
+	if userID != "" {
+		endpoint += "?user_id=" + url.QueryEscape(userID)
+	}
+
+	httpReq, err := http.NewRequest(http.MethodDelete, endpoint, nil)
+	if err != nil {
+		return fmt.Errorf("build delete role memory request: %w", err)
+	}
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		return fmt.Errorf("delete role memory request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("delete role memory returned status %d: %s", resp.StatusCode, string(respBody))
 	}
 	return nil
 }

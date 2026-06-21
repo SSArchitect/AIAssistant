@@ -6,7 +6,7 @@ from typing import Any, Literal, Optional
 from pydantic import BaseModel, Field
 
 
-MemoryKind = Literal["persona", "long_term"]
+MemoryKind = Literal["role", "persona", "long_term"]
 
 
 def utc_now() -> datetime:
@@ -25,6 +25,7 @@ class RoleProfile(BaseModel):
 
 
 class RoleCreateRequest(BaseModel):
+    user_id: Optional[str] = None
     id: Optional[str] = None
     name: str
     description: str = ""
@@ -36,6 +37,7 @@ class RoleCreateRequest(BaseModel):
 
 
 class RoleUpdateRequest(BaseModel):
+    user_id: Optional[str] = None
     name: Optional[str] = None
     description: Optional[str] = None
     base_persona: Optional[str] = None

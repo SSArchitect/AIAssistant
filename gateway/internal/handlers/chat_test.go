@@ -125,6 +125,116 @@ func TestChatSyncsSettingsBeforeAgentRequest(t *testing.T) {
 	}
 }
 
+func TestChatRegenerateSkipsPersistingDuplicateUserMessage(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	if err := database.Init(filepath.Join(t.TempDir(), "assistant.db")); err != nil {
+		t.Fatalf("init database: %v", err)
+	}
+	conv := models.Conversation{
+		ID:        "conv-regenerate-chat",
+		Title:     "Existing Conversation",
+		CreatedAt: time.Now().Add(-10 * time.Minute),
+		UpdatedAt: time.Now().Add(-5 * time.Minute),
+	}
+	if err := database.DB.Create(&conv).Error; err != nil {
+		t.Fatalf("create conversation: %v", err)
+	}
+	existingMessages := []models.Message{
+		{
+			ConversationID: conv.ID,
+			Role:           "user",
+			Content:        "explain this again",
+			CreatedAt:      time.Now().Add(-2 * time.Minute),
+		},
+		{
+			ConversationID: conv.ID,
+			Role:           "assistant",
+			Content:        "old answer",
+			CreatedAt:      time.Now().Add(-1 * time.Minute),
+		},
+	}
+	if err := database.DB.Create(&existingMessages).Error; err != nil {
+		t.Fatalf("create messages: %v", err)
+	}
+
+	sawRegenerateContext := false
+	agentServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/agent/chat" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		var payload bridge.ChatRequest
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode chat payload: %v", err)
+		}
+		if payload.Message != "explain this again" {
+			t.Fatalf("unexpected message: %q", payload.Message)
+		}
+		for _, block := range payload.ContextBlocks {
+			if strings.Contains(block, "Regeneration request") {
+				sawRegenerateContext = true
+			}
+		}
+		_, _ = w.Write([]byte(`{
+			"conversation_id": "conv-regenerate-chat",
+			"response": "fresh answer",
+			"skills_used": [],
+			"citations": [],
+			"model_used": "test-model",
+			"tokens_used": {},
+			"agent_id": "super_chat",
+			"runtime": "self",
+			"run_id": "run_regenerate",
+			"events": []
+		}`))
+	}))
+	defer agentServer.Close()
+
+	router := gin.New()
+	handler := NewChatHandler(bridge.NewAgentClient(agentServer.URL, time.Second))
+	router.POST("/api/chat", handler.Chat)
+
+	body := bytes.NewBufferString(`{
+		"conversation_id": "conv-regenerate-chat",
+		"query": "explain this again",
+		"stream": false,
+		"agent_id": "super_chat",
+		"regenerate": true
+	}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", body)
+	req.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	router.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("unexpected status %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if !sawRegenerateContext {
+		t.Fatal("expected regenerate context block to reach agent")
+	}
+
+	var messages []models.Message
+	if err := database.DB.Where("conversation_id = ?", conv.ID).Order("created_at asc").Find(&messages).Error; err != nil {
+		t.Fatalf("load messages: %v", err)
+	}
+	if len(messages) != 3 {
+		t.Fatalf("expected original user plus two assistant messages, got %#v", messages)
+	}
+	userCount := 0
+	for _, message := range messages {
+		if message.Role == "user" {
+			userCount += 1
+		}
+	}
+	if userCount != 1 {
+		t.Fatalf("expected regenerate to avoid duplicate user messages, got %d", userCount)
+	}
+	if messages[2].Role != "assistant" || messages[2].Content != "fresh answer" {
+		t.Fatalf("unexpected regenerated assistant message: %#v", messages[2])
+	}
+}
+
 func TestChatSendsPersistedConversationContextToAgent(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -239,6 +349,143 @@ func TestChatSendsPersistedConversationContextToAgent(t *testing.T) {
 	}
 	if captured.AgentInput["target_agent_id"] != "super_chat" {
 		t.Fatalf("unexpected agent input target: %#v", captured.AgentInput)
+	}
+}
+
+func TestChatSessionUserOverridesBodyUserID(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	if err := database.Init(filepath.Join(t.TempDir(), "assistant.db")); err != nil {
+		t.Fatalf("init database: %v", err)
+	}
+	token := "session-token-chat"
+	if err := database.DB.Create(&models.AccountSession{
+		TokenHash:  accountSessionTokenHash(token),
+		UserID:     "session-user",
+		CreatedAt:  time.Now(),
+		LastUsedAt: time.Now(),
+	}).Error; err != nil {
+		t.Fatalf("create account session: %v", err)
+	}
+	if err := database.DB.Create(&models.Conversation{
+		ID:        "conv-session-chat",
+		UserID:    "session-user",
+		Title:     "Session scoped",
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}).Error; err != nil {
+		t.Fatalf("create conversation: %v", err)
+	}
+
+	var captured bridge.ChatRequest
+	agentServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+			t.Fatalf("decode agent request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"conversation_id": "conv-session-chat",
+			"response": "ok",
+			"skills_used": [],
+			"model_used": "test-model",
+			"tokens_used": {},
+			"agent_id": "super_chat",
+			"runtime": "self"
+		}`))
+	}))
+	defer agentServer.Close()
+
+	router := gin.New()
+	handler := NewChatHandler(bridge.NewAgentClient(agentServer.URL, time.Second))
+	router.POST("/api/chat", handler.Chat)
+
+	body := bytes.NewBufferString(`{
+		"conversation_id": "conv-session-chat",
+		"user_id": "attacker-user",
+		"query": "hello",
+		"agent_id": "super_chat"
+	}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", body)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Account-Session", token)
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("unexpected status %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if captured.UserID != "session-user" {
+		t.Fatalf("expected session user to be forwarded, got %q", captured.UserID)
+	}
+}
+
+func TestRoleMemoryCreateSessionUserOverridesBodyUserID(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	if err := database.Init(filepath.Join(t.TempDir(), "assistant.db")); err != nil {
+		t.Fatalf("init database: %v", err)
+	}
+	token := "session-token-role-memory"
+	if err := database.DB.Create(&models.AccountSession{
+		TokenHash:  accountSessionTokenHash(token),
+		UserID:     "session-user",
+		CreatedAt:  time.Now(),
+		LastUsedAt: time.Now(),
+	}).Error; err != nil {
+		t.Fatalf("create account session: %v", err)
+	}
+
+	var captured bridge.MemoryWriteRequest
+	agentServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/agent/roles/default/memories" {
+			t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+			t.Fatalf("decode memory request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id": "mem_session",
+			"role_id": "default",
+			"user_id": "session-user",
+			"kind": "role",
+			"content": "Use a concise tone",
+			"source": "manual",
+			"confidence": 1,
+			"tags": ["role_config"],
+			"created_at": "2026-06-21T00:00:00Z",
+			"updated_at": "2026-06-21T00:00:00Z",
+			"metadata": {}
+		}`))
+	}))
+	defer agentServer.Close()
+
+	router := gin.New()
+	handler := NewChatHandler(bridge.NewAgentClient(agentServer.URL, time.Second))
+	router.POST("/api/roles/:id/memories", handler.CreateRoleMemory)
+
+	body := bytes.NewBufferString(`{
+		"user_id": "attacker-user",
+		"kind": "role",
+		"content": "Use a concise tone"
+	}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/roles/default/memories", body)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Account-Session", token)
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("unexpected status %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if captured.UserID != "session-user" {
+		t.Fatalf("expected session user to be forwarded, got %q", captured.UserID)
+	}
+	if captured.Kind != "role" || captured.Source != "manual" {
+		t.Fatalf("expected default role/manual memory, got %#v", captured)
+	}
+	if captured.Metadata["entrypoint"] != "super_chat_role_memory" {
+		t.Fatalf("expected role memory entrypoint metadata, got %#v", captured.Metadata)
 	}
 }
 

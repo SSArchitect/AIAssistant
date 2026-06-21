@@ -39,3 +39,17 @@ type PulseModule struct {
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
+
+type PulseEvent struct {
+	ID           string    `json:"id" gorm:"primaryKey"`
+	UserID       string    `json:"user_id" gorm:"index;not null;default:0"`
+	Date         string    `json:"date" gorm:"index"`
+	ItemID       string    `json:"item_id" gorm:"index;not null"`
+	TopicID      string    `json:"topic_id,omitempty" gorm:"index"`
+	TopicName    string    `json:"topic_name,omitempty"`
+	Source       string    `json:"source,omitempty" gorm:"index"`
+	EventType    string    `json:"event_type" gorm:"index;not null"`
+	Value        int       `json:"value"`
+	MetadataJSON string    `json:"metadata_json,omitempty" gorm:"type:text"`
+	CreatedAt    time.Time `json:"created_at"`
+}

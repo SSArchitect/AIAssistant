@@ -43,6 +43,7 @@ type ChatRequestBody struct {
 	Attachments     []bridge.ChatAttachment `json:"attachments,omitempty"`
 	AgentInput      map[string]interface{}  `json:"agent_input,omitempty"`
 	Handoff         map[string]interface{}  `json:"handoff,omitempty"`
+	Regenerate      bool                    `json:"regenerate,omitempty"`
 }
 
 type streamErrorPayload struct {
@@ -67,11 +68,7 @@ func (h *ChatHandler) Chat(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request: " + err.Error()})
 		return
 	}
-	if req.UserID == "" {
-		req.UserID = requestUserID(c)
-	} else {
-		req.UserID = normalizedUserID(req.UserID)
-	}
+	req.UserID = requestUserIDWithBody(c, req.UserID)
 
 	// Ensure conversation exists
 	var conv models.Conversation
@@ -81,18 +78,23 @@ func (h *ChatHandler) Chat(c *gin.Context) {
 	}
 
 	contextBlocks := h.persistedConversationContext(req.ConversationID, req.UserID)
+	if req.Regenerate {
+		contextBlocks = append(contextBlocks, "Regeneration request: the user clicked the refresh button for the previous assistant answer. Answer the current query again from scratch and provide a fresh response.")
+	}
 	contextBlocks = append(contextBlocks, req.ContextBlocks...)
 
-	// Save user message
-	userMsg := models.Message{
-		ConversationID: req.ConversationID,
-		UserID:         req.UserID,
-		Role:           "user",
-		Content:        req.Query,
-		CreatedAt:      time.Now(),
-	}
-	if err := database.DB.Create(&userMsg).Error; err != nil {
-		slog.Error("Failed to save user message", "error", err)
+	if !req.Regenerate {
+		// Save user message
+		userMsg := models.Message{
+			ConversationID: req.ConversationID,
+			UserID:         req.UserID,
+			Role:           "user",
+			Content:        req.Query,
+			CreatedAt:      time.Now(),
+		}
+		if err := database.DB.Create(&userMsg).Error; err != nil {
+			slog.Error("Failed to save user message", "error", err)
+		}
 	}
 
 	agentReq := bridge.ChatRequest{
@@ -432,7 +434,7 @@ func (h *ChatHandler) ListAgents(c *gin.Context) {
 }
 
 func (h *ChatHandler) ListRoles(c *gin.Context) {
-	roles, err := h.agent.ListRoles()
+	roles, err := h.agent.ListRoles(requestUserID(c))
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "agent error: " + err.Error()})
 		return
@@ -446,6 +448,7 @@ func (h *ChatHandler) CreateRole(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request: " + err.Error()})
 		return
 	}
+	req.UserID = requestUserIDWithBody(c, req.UserID)
 	role, err := h.agent.CreateRole(req)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "agent error: " + err.Error()})
@@ -460,6 +463,7 @@ func (h *ChatHandler) UpdateRole(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request: " + err.Error()})
 		return
 	}
+	req.UserID = requestUserIDWithBody(c, req.UserID)
 	role, err := h.agent.UpdateRole(c.Param("id"), req)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "agent error: " + err.Error()})
@@ -469,7 +473,57 @@ func (h *ChatHandler) UpdateRole(c *gin.Context) {
 }
 
 func (h *ChatHandler) DeleteRole(c *gin.Context) {
-	if err := h.agent.DeleteRole(c.Param("id")); err != nil {
+	if err := h.agent.DeleteRole(c.Param("id"), requestUserID(c)); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "agent error: " + err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"status": "ok"})
+}
+
+func (h *ChatHandler) ListRoleMemories(c *gin.Context) {
+	memories, err := h.agent.ListRoleMemories(c.Param("id"), requestUserID(c), c.Query("kind"), c.Query("agent_id"))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "agent error: " + err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, memories)
+}
+
+func (h *ChatHandler) CreateRoleMemory(c *gin.Context) {
+	var req bridge.MemoryWriteRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request: " + err.Error()})
+		return
+	}
+	req.Content = strings.TrimSpace(req.Content)
+	if req.Content == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "memory content is required"})
+		return
+	}
+	req.UserID = requestUserIDWithBody(c, req.UserID)
+	req.Kind = strings.TrimSpace(req.Kind)
+	if req.Kind == "" {
+		req.Kind = "role"
+	}
+	req.Source = strings.TrimSpace(req.Source)
+	if req.Source == "" {
+		req.Source = "manual"
+	}
+	if req.Metadata == nil {
+		req.Metadata = map[string]interface{}{}
+	}
+	req.Metadata["entrypoint"] = "super_chat_role_memory"
+
+	memory, err := h.agent.CreateRoleMemory(c.Param("id"), req)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "agent error: " + err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, memory)
+}
+
+func (h *ChatHandler) DeleteRoleMemory(c *gin.Context) {
+	if err := h.agent.DeleteRoleMemory(c.Param("id"), c.Param("memory_id"), requestUserID(c)); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "agent error: " + err.Error()})
 		return
 	}

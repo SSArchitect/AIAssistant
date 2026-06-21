@@ -89,7 +89,7 @@ class HeuristicMemoryHook:
 
         direct = self._extract_direct_memory(text)
         if direct:
-            kind = "persona" if self._looks_like_persona_memory(direct) else "long_term"
+            kind = "role" if self._looks_like_persona_memory(direct) else "long_term"
             return [
                 MemoryCandidate(
                     kind=kind,
@@ -103,7 +103,7 @@ class HeuristicMemoryHook:
         if self._looks_like_persona_memory(text):
             return [
                 MemoryCandidate(
-                    kind="persona",
+                    kind="role",
                     content=self._trim(text),
                     confidence=0.72,
                     reason="persona_instruction",

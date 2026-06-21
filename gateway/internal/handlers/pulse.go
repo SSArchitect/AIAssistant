@@ -43,6 +43,15 @@ type pulseRefreshRequest struct {
 	Wait   bool   `json:"wait,omitempty"`
 }
 
+type pulseEventRequest struct {
+	Date      string                 `json:"date,omitempty"`
+	ItemID    string                 `json:"item_id"`
+	EventType string                 `json:"event_type"`
+	Value     *int                   `json:"value,omitempty"`
+	Metadata  map[string]interface{} `json:"metadata,omitempty"`
+	UserID    string                 `json:"user_id,omitempty"`
+}
+
 type pulseNewsSource struct {
 	Title       string `json:"title"`
 	URL         string `json:"url"`
@@ -60,6 +69,34 @@ type pulseTopicResponse struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
+type pulseSuggestedTopicResponse struct {
+	Name      string   `json:"name"`
+	Keywords  []string `json:"keywords"`
+	Reason    string   `json:"reason"`
+	Source    string   `json:"source"`
+	HeatScore int      `json:"heat_score"`
+}
+
+type pulseRelatedClusterResponse struct {
+	ID        string `json:"id"`
+	Source    string `json:"source"`
+	TopicName string `json:"topic_name,omitempty"`
+	Title     string `json:"title"`
+	Summary   string `json:"summary"`
+	Reason    string `json:"reason"`
+	HeatScore int    `json:"heat_score"`
+}
+
+type pulseItemFeedbackResponse struct {
+	Liked         bool   `json:"liked"`
+	Vote          string `json:"vote,omitempty"`
+	LikeCount     int    `json:"like_count"`
+	UpvoteCount   int    `json:"upvote_count"`
+	DownvoteCount int    `json:"downvote_count"`
+	OpenCount     int    `json:"open_count"`
+	ExposureCount int    `json:"exposure_count"`
+}
+
 type pulseItemDetail struct {
 	RecommendationReason string            `json:"recommendation_reason"`
 	Signals              []string          `json:"signals"`
@@ -71,19 +108,23 @@ type pulseItemDetail struct {
 }
 
 type pulseItemResponse struct {
-	ID            string          `json:"id"`
-	Date          string          `json:"date"`
-	TopicID       string          `json:"topic_id,omitempty"`
-	TopicName     string          `json:"topic_name,omitempty"`
-	Source        string          `json:"source"`
-	Category      string          `json:"category,omitempty"`
-	Title         string          `json:"title"`
-	Summary       string          `json:"summary"`
-	HeatScore     int             `json:"heat_score"`
-	Detail        pulseItemDetail `json:"detail"`
-	ExplorePrompt string          `json:"explore_prompt,omitempty"`
-	CreatedAt     time.Time       `json:"created_at"`
-	UpdatedAt     time.Time       `json:"updated_at"`
+	ID                 string                        `json:"id"`
+	Date               string                        `json:"date"`
+	TopicID            string                        `json:"topic_id,omitempty"`
+	TopicName          string                        `json:"topic_name,omitempty"`
+	Source             string                        `json:"source"`
+	Category           string                        `json:"category,omitempty"`
+	Title              string                        `json:"title"`
+	Summary            string                        `json:"summary"`
+	HeatScore          int                           `json:"heat_score"`
+	Detail             pulseItemDetail               `json:"detail"`
+	ExplorePrompt      string                        `json:"explore_prompt,omitempty"`
+	RelatedClusters    []pulseRelatedClusterResponse `json:"related_clusters,omitempty"`
+	Feedback           pulseItemFeedbackResponse     `json:"feedback"`
+	FeatureScore       int                           `json:"feature_score"`
+	RecommendationNote string                        `json:"recommendation_note,omitempty"`
+	CreatedAt          time.Time                     `json:"created_at"`
+	UpdatedAt          time.Time                     `json:"updated_at"`
 }
 
 type pulseModuleResponse struct {
@@ -176,10 +217,17 @@ const (
 	pulseSourceMemory      = "memory"
 	pulseSourceInterestHot = "interest_hot"
 
+	pulseEventExposure = "exposure"
+	pulseEventOpen     = "open"
+	pulseEventLike     = "like"
+	pulseEventUpvote   = "upvote"
+	pulseEventDownvote = "downvote"
+
 	pulseSchedulerTickInterval    = 30 * time.Minute
 	pulseScheduledRefreshInterval = 6 * time.Hour
 	pulseSearchQueryLimit         = 5
 	pulseSearchResultLimit        = 5
+	pulseFeatureEventLimit        = 1000
 )
 
 var pulseModuleOrder = []string{
@@ -284,10 +332,7 @@ func (h *PulseHandler) Get(c *gin.Context) {
 func (h *PulseHandler) Refresh(c *gin.Context) {
 	var req pulseRefreshRequest
 	_ = c.ShouldBindJSON(&req)
-	userID := requestUserID(c)
-	if req.UserID != "" {
-		userID = normalizedUserID(req.UserID)
-	}
+	userID := requestUserIDWithBody(c, req.UserID)
 
 	dateText := req.Date
 	if dateText == "" {
@@ -326,10 +371,7 @@ func (h *PulseHandler) CreateTopic(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request: " + err.Error()})
 		return
 	}
-	userID := requestUserID(c)
-	if req.UserID != "" {
-		userID = normalizedUserID(req.UserID)
-	}
+	userID := requestUserIDWithBody(c, req.UserID)
 
 	name := normalizeTopicName(req.Name)
 	if name == "" {
@@ -342,7 +384,7 @@ func (h *PulseHandler) CreateTopic(c *gin.Context) {
 		enabled = *req.Enabled
 	}
 
-	keywordsJSON := encodeKeywords(req.Keywords)
+	keywordsJSON := encodeKeywords(expandPulseTopicKeywords(name, req.Keywords))
 	var existing models.PulseTopic
 	err := database.DB.Where("user_id = ? AND lower(name) = lower(?)", userID, name).First(&existing).Error
 	if err == nil {
@@ -416,6 +458,67 @@ func (h *PulseHandler) DeleteTopic(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "deleted"})
 }
 
+func (h *PulseHandler) RecordEvent(c *gin.Context) {
+	var req pulseEventRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request: " + err.Error()})
+		return
+	}
+	userID := requestUserIDWithBody(c, req.UserID)
+	eventType := normalizePulseEventType(req.EventType)
+	if eventType == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "unsupported pulse event type"})
+		return
+	}
+	itemID := strings.TrimSpace(req.ItemID)
+	if itemID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "item_id is required"})
+		return
+	}
+
+	var item models.PulseItem
+	if err := database.DB.First(&item, "id = ? AND user_id = ?", itemID, userID).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "pulse item not found"})
+		return
+	}
+
+	value := defaultPulseEventValue(eventType)
+	if req.Value != nil {
+		value = normalizePulseEventValue(eventType, *req.Value)
+	}
+	metadataJSON := ""
+	if len(req.Metadata) > 0 {
+		metadataJSON = limitText(mustJSON(req.Metadata), 2000)
+	}
+	event := models.PulseEvent{
+		ID:           uuid.NewString(),
+		UserID:       userID,
+		Date:         firstNonEmptyPulse(req.Date, item.Date),
+		ItemID:       item.ID,
+		TopicID:      item.TopicID,
+		TopicName:    item.TopicName,
+		Source:       item.Source,
+		EventType:    eventType,
+		Value:        value,
+		MetadataJSON: metadataJSON,
+		CreatedAt:    time.Now(),
+	}
+	if err := database.DB.Create(&event).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to record pulse event"})
+		return
+	}
+
+	featureState, err := loadPulseFeatureState(userID, item.Date, []models.PulseItem{item})
+	if err != nil {
+		slog.Warn("Pulse event recorded but feature state load failed", "item_id", item.ID, "error", err)
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"status":   "recorded",
+		"event_id": event.ID,
+		"feedback": featureState.feedbackFor(item.ID),
+	})
+}
+
 func (h *PulseHandler) writePulse(c *gin.Context, date string, userID string) {
 	h.writePulseWithStatus(c, date, userID, false)
 }
@@ -438,6 +541,16 @@ func (h *PulseHandler) writePulseWithStatus(c *gin.Context, date string, userID 
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load pulse modules"})
 		return
 	}
+	featureState, err := loadPulseFeatureState(userID, date, items)
+	if err != nil {
+		slog.Warn("Pulse feature state load failed", "user_id", userID, "date", date, "error", err)
+	}
+	items = rankPulseItems(items, featureState)
+
+	memorySignals, err := h.loadMemorySignals(userID)
+	if err != nil {
+		slog.Warn("Pulse memory signal load failed for suggested topics", "user_id", userID, "error", err)
+	}
 
 	generatedAt := ""
 	if len(modules) > 0 {
@@ -447,13 +560,14 @@ func (h *PulseHandler) writePulseWithStatus(c *gin.Context, date string, userID 
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"date":         date,
-		"user_id":      userID,
-		"generated_at": generatedAt,
-		"topics":       topicResponses(topics),
-		"items":        itemResponses(items),
-		"modules":      moduleResponses(modules, items),
-		"refreshing":   refreshing,
+		"date":             date,
+		"user_id":          userID,
+		"generated_at":     generatedAt,
+		"topics":           topicResponses(topics),
+		"suggested_topics": buildPulseSuggestedTopics(topics, memorySignals),
+		"items":            itemResponsesWithFeatures(items, items, featureState),
+		"modules":          moduleResponsesWithFeatures(modules, items, featureState),
+		"refreshing":       refreshing,
 	})
 }
 
@@ -744,8 +858,7 @@ func buildPulseSearchQueries(date string, topics []models.PulseTopic, signals []
 		if !topic.Enabled {
 			continue
 		}
-		terms := []string{topic.Name}
-		terms = append(terms, decodeKeywords(topic.Keywords)...)
+		terms := append([]string{topic.Name}, expandPulseTopicKeywords(topic.Name, decodeKeywords(topic.Keywords))...)
 		add(pulseSourceTopicHot, "查找订阅 topic 的近期外网热门进展", topic.ID, topic.Name, terms)
 	}
 
@@ -2211,13 +2324,178 @@ func collectInterestTerms(topics []models.PulseTopic, signals []memoryPulseSigna
 			continue
 		}
 		terms = appendUniqueStrings(terms, topic.Name)
-		terms = appendUniqueStrings(terms, decodeKeywords(topic.Keywords)...)
+		terms = appendUniqueStrings(terms, expandPulseTopicKeywords(topic.Name, decodeKeywords(topic.Keywords))...)
 	}
 	for _, signal := range signals {
 		terms = appendUniqueStrings(terms, signal.Theme, signal.Focus)
 		terms = appendUniqueStrings(terms, signal.Keywords...)
 	}
 	return terms
+}
+
+func buildPulseSuggestedTopics(topics []models.PulseTopic, signals []memoryPulseSignal) []pulseSuggestedTopicResponse {
+	existing := map[string]bool{}
+	for _, topic := range topics {
+		existing[normalizedPulseTopicKey(topic.Name)] = true
+	}
+
+	suggestions := []pulseSuggestedTopicResponse{}
+	add := func(name string, keywords []string, reason string, source string, heat int) {
+		name = normalizeTopicName(name)
+		if name == "" {
+			return
+		}
+		key := normalizedPulseTopicKey(name)
+		if key == "" || existing[key] {
+			return
+		}
+		for _, item := range suggestions {
+			if normalizedPulseTopicKey(item.Name) == key {
+				return
+			}
+		}
+		suggestions = append(suggestions, pulseSuggestedTopicResponse{
+			Name:      name,
+			Keywords:  limitStringSlice(expandPulseTopicKeywords(name, keywords), 5, 28),
+			Reason:    limitText(reason, 120),
+			Source:    source,
+			HeatScore: normalizeHeatScore(heat, pulseSourceInterestHot, len(suggestions)),
+		})
+	}
+
+	for index, signal := range signals[:minInt(len(signals), 4)] {
+		name := pulseTopicNameFromSignal(signal)
+		keywords := append([]string{}, signal.Keywords...)
+		keywords = appendUniqueStrings(keywords, pulseKeywordsFromText(signal.Focus)...)
+		reason := fmt.Sprintf("来自最近对话里的「%s」信号，适合先订阅成一个可持续追踪的 topic。", signal.Theme)
+		add(name, keywords, reason, "memory", 94-index*4)
+	}
+
+	for _, topic := range topics {
+		if !topic.Enabled {
+			continue
+		}
+		for _, seed := range adjacentPulseTopicSeeds(topic) {
+			add(seed.Name, seed.Keywords, seed.Reason, "topic_expansion", seed.HeatScore)
+		}
+	}
+
+	for _, seed := range defaultPulseTopicSeeds() {
+		add(seed.Name, seed.Keywords, seed.Reason, seed.Source, seed.HeatScore)
+	}
+
+	limit := 6
+	if len(topics) > 0 {
+		limit = 5
+	}
+	if len(suggestions) > limit {
+		suggestions = suggestions[:limit]
+	}
+	return suggestions
+}
+
+func pulseTopicNameFromSignal(signal memoryPulseSignal) string {
+	switch signal.Theme {
+	case "最近对话延展":
+		return "最近问题延伸"
+	case "工作台探索":
+		return "个人工作台与效率系统"
+	default:
+		return signal.Theme
+	}
+}
+
+func adjacentPulseTopicSeeds(topic models.PulseTopic) []pulseSuggestedTopicResponse {
+	text := strings.ToLower(strings.Join(append([]string{topic.Name}, decodeKeywords(topic.Keywords)...), " "))
+	seeds := []pulseSuggestedTopicResponse{}
+	add := func(name string, keywords []string, reason string, heat int) {
+		seeds = append(seeds, pulseSuggestedTopicResponse{
+			Name:      name,
+			Keywords:  keywords,
+			Reason:    reason,
+			Source:    "topic_expansion",
+			HeatScore: heat,
+		})
+	}
+	switch {
+	case pulseTextHasAny(text, "agent", "rag", "ai", "openai", "模型", "智能体", "大模型"):
+		add("Agent 工程实践", []string{"工具调用", "RAG", "工作流", "评测"}, "由 AI/Agent 相关订阅外扩，适合追踪工程落地和产品架构。", 88)
+		add("大模型产品动态", []string{"OpenAI", "Claude", "Gemini", "模型能力"}, "和当前 AI 订阅相邻，适合集中跟进模型与产品发布。", 84)
+	case pulseTextHasAny(text, "机器人", "具身", "embodied", "人形"):
+		add("具身智能产业链", []string{"人形机器人", "传感器", "执行器", "量产"}, "由机器人订阅外扩，适合跟进产业化、供应链和商业化信号。", 88)
+		add("机器人模型与数据", []string{"VLA", "world model", "仿真数据", "机器人学习"}, "和机器人 topic 相邻，适合深入模型、数据和训练范式。", 84)
+	case pulseTextHasAny(text, "投资", "估值", "公司", "商业模式"):
+		add("公司基本面跟踪", []string{"收入", "毛利", "竞争格局", "风险"}, "由投资研究订阅外扩，适合持续沉淀可核验的信息簇。", 86)
+	case pulseTextHasAny(text, "健康", "减脂", "训练", "饮食"):
+		add("训练与恢复", []string{"力量训练", "睡眠", "蛋白质", "恢复"}, "由健康管理订阅外扩，适合把信息流变成可执行的长期跟踪。", 84)
+	}
+	return seeds
+}
+
+func defaultPulseTopicSeeds() []pulseSuggestedTopicResponse {
+	return []pulseSuggestedTopicResponse{
+		{Name: "AI 应用开发", Keywords: []string{"Agent", "RAG", "多模态", "工作流"}, Reason: "适合作为信息流冷启动 topic，覆盖产品、工程和模型能力。", Source: "starter", HeatScore: 82},
+		{Name: "大模型产品动态", Keywords: []string{"OpenAI", "Claude", "Gemini", "模型发布"}, Reason: "更新频率高，容易形成可持续阅读的信息簇。", Source: "starter", HeatScore: 80},
+		{Name: "工程效率与工具链", Keywords: []string{"代码助手", "DevOps", "测试", "自动化"}, Reason: "和日常研发工作相关，适合积累可复用方法。", Source: "starter", HeatScore: 76},
+		{Name: "产品增长与用户研究", Keywords: []string{"增长实验", "留存", "推荐系统", "用户洞察"}, Reason: "适合从案例、数据和方法论里继续延展学习。", Source: "starter", HeatScore: 72},
+		{Name: "投资研究", Keywords: []string{"公司基本面", "估值", "商业模式", "风险"}, Reason: "适合把外部资讯整理成可核验的研究线索。", Source: "starter", HeatScore: 68},
+		{Name: "健康管理", Keywords: []string{"减脂", "训练", "饮食", "睡眠"}, Reason: "适合长期跟踪可执行建议和个人目标。", Source: "starter", HeatScore: 64},
+	}
+}
+
+func expandPulseTopicKeywords(name string, keywords []string) []string {
+	expanded := normalizeKeywords(keywords)
+	text := strings.ToLower(strings.Join(append([]string{name}, expanded...), " "))
+	add := func(values ...string) {
+		expanded = appendUniqueStrings(expanded, values...)
+	}
+
+	switch {
+	case pulseTextHasAny(text, "agent", "智能体"):
+		add("工具调用", "RAG", "工作流", "评测", "多智能体")
+	case pulseTextHasAny(text, "rag", "知识库"):
+		add("向量检索", "重排", "知识库", "引用来源", "评测")
+	case pulseTextHasAny(text, "ai", "openai", "claude", "gemini", "模型", "大模型"):
+		add("模型能力", "产品发布", "多模态", "推理", "开源模型")
+	case pulseTextHasAny(text, "机器人", "具身", "embodied", "人形"):
+		add("具身智能", "人形机器人", "VLA", "量产", "供应链")
+	case pulseTextHasAny(text, "投资", "估值", "公司", "商业模式"):
+		add("公司基本面", "收入", "竞争格局", "风险", "估值")
+	case pulseTextHasAny(text, "产品", "增长", "用户"):
+		add("用户研究", "留存", "转化", "推荐系统", "增长实验")
+	case pulseTextHasAny(text, "健康", "减脂", "训练", "饮食"):
+		add("热量缺口", "力量训练", "蛋白质", "睡眠", "恢复")
+	case pulseTextHasAny(text, "旅行", "旅游", "自驾"):
+		add("路线", "住宿", "交通", "预算", "避坑")
+	}
+
+	if len(expanded) == 0 {
+		expanded = appendUniqueStrings(expanded, pulseKeywordsFromText(name)...)
+	}
+	return limitStringSlice(expanded, 8, 28)
+}
+
+func pulseKeywordsFromText(value string) []string {
+	parts := strings.FieldsFunc(value, func(r rune) bool {
+		return unicode.IsSpace(r) || strings.ContainsRune(",，;；/、|｜:：()（）[]【】", r)
+	})
+	keywords := []string{}
+	for _, part := range parts {
+		cleaned := strings.TrimSpace(part)
+		if cleaned == "" {
+			continue
+		}
+		runeCount := len([]rune(cleaned))
+		if runeCount < 2 || runeCount > 18 {
+			continue
+		}
+		keywords = appendUniqueStrings(keywords, cleaned)
+	}
+	return keywords
+}
+
+func normalizedPulseTopicKey(value string) string {
+	return strings.ToLower(strings.ReplaceAll(normalizeTopicName(value), " ", ""))
 }
 
 func normalizePulseModuleKey(key string) string {
@@ -2642,7 +2920,393 @@ func topicResponse(topic models.PulseTopic) pulseTopicResponse {
 	}
 }
 
+type pulseFeatureState struct {
+	feedbackByItem map[string]pulseItemFeedbackResponse
+	directScores   map[string]int
+	topicScores    map[string]int
+	sourceScores   map[string]int
+}
+
+func loadPulseFeatureState(userID string, date string, items []models.PulseItem) (pulseFeatureState, error) {
+	state := pulseFeatureState{
+		feedbackByItem: map[string]pulseItemFeedbackResponse{},
+		directScores:   map[string]int{},
+		topicScores:    map[string]int{},
+		sourceScores:   map[string]int{},
+	}
+	if len(items) == 0 {
+		return state, nil
+	}
+
+	itemIDs := make([]string, 0, len(items))
+	itemByID := map[string]models.PulseItem{}
+	for _, item := range items {
+		if item.ID == "" {
+			continue
+		}
+		itemIDs = append(itemIDs, item.ID)
+		itemByID[item.ID] = item
+	}
+	if len(itemIDs) == 0 {
+		return state, nil
+	}
+
+	var events []models.PulseEvent
+	err := database.DB.Where("user_id = ?", normalizedUserID(userID)).
+		Order("created_at desc").
+		Limit(pulseFeatureEventLimit).
+		Find(&events).Error
+	if err != nil {
+		return state, err
+	}
+	sort.SliceStable(events, func(i, j int) bool {
+		return events[i].CreatedAt.Before(events[j].CreatedAt)
+	})
+
+	for _, event := range events {
+		item, ok := itemByID[event.ItemID]
+		if ok {
+			feedback := state.feedbackByItem[event.ItemID]
+			switch normalizePulseEventType(event.EventType) {
+			case pulseEventExposure:
+				if event.Value != 0 {
+					feedback.ExposureCount++
+				}
+			case pulseEventOpen:
+				if event.Value != 0 {
+					feedback.OpenCount++
+				}
+			case pulseEventLike:
+				feedback.Liked = event.Value > 0
+				if event.Value > 0 {
+					feedback.LikeCount++
+				}
+			case pulseEventUpvote:
+				if event.Value > 0 {
+					feedback.Vote = "up"
+					feedback.UpvoteCount++
+				} else if feedback.Vote == "up" {
+					feedback.Vote = ""
+				}
+			case pulseEventDownvote:
+				if event.Value > 0 {
+					feedback.Vote = "down"
+					feedback.DownvoteCount++
+				} else if feedback.Vote == "down" {
+					feedback.Vote = ""
+				}
+			}
+			state.feedbackByItem[event.ItemID] = feedback
+		}
+
+		weight := pulseEventFeatureWeight(event)
+		if ok {
+			state.directScores[event.ItemID] += weight
+		}
+		topicID := firstNonEmptyPulse(event.TopicID, item.TopicID)
+		if topicID != "" {
+			state.topicScores["id:"+topicID] += weight / 2
+		}
+		topicName := firstNonEmptyPulse(event.TopicName, item.TopicName)
+		if topicName != "" {
+			state.topicScores["name:"+strings.ToLower(topicName)] += weight / 2
+		}
+		if source := normalizePulseModuleKey(firstNonEmptyPulse(event.Source, item.Source)); source != "" {
+			state.sourceScores[source] += weight / 3
+		}
+	}
+	return state, nil
+}
+
+func (state pulseFeatureState) feedbackFor(itemID string) pulseItemFeedbackResponse {
+	if state.feedbackByItem == nil {
+		return pulseItemFeedbackResponse{}
+	}
+	return state.feedbackByItem[itemID]
+}
+
+func (state pulseFeatureState) scoreFor(item models.PulseItem) int {
+	score := item.HeatScore
+	if state.directScores != nil {
+		score += state.directScores[item.ID]
+	}
+	if state.topicScores != nil {
+		if item.TopicID != "" {
+			score += state.topicScores["id:"+item.TopicID]
+		}
+		if item.TopicName != "" {
+			score += state.topicScores["name:"+strings.ToLower(item.TopicName)]
+		}
+	}
+	if state.sourceScores != nil {
+		score += state.sourceScores[normalizePulseModuleKey(item.Source)]
+	}
+	if score < 1 {
+		return 1
+	}
+	if score > 140 {
+		return 140
+	}
+	return score
+}
+
+func rankPulseItems(items []models.PulseItem, featureState pulseFeatureState) []models.PulseItem {
+	ranked := append([]models.PulseItem(nil), items...)
+	sort.SliceStable(ranked, func(i, j int) bool {
+		leftScore := featureState.scoreFor(ranked[i])
+		rightScore := featureState.scoreFor(ranked[j])
+		if leftScore == rightScore {
+			if ranked[i].HeatScore == ranked[j].HeatScore {
+				return ranked[i].CreatedAt.Before(ranked[j].CreatedAt)
+			}
+			return ranked[i].HeatScore > ranked[j].HeatScore
+		}
+		return leftScore > rightScore
+	})
+	return ranked
+}
+
+func pulseEventFeatureWeight(event models.PulseEvent) int {
+	if event.Value == 0 {
+		switch normalizePulseEventType(event.EventType) {
+		case pulseEventLike:
+			return -16
+		case pulseEventUpvote:
+			return -22
+		case pulseEventDownvote:
+			return 28
+		default:
+			return 0
+		}
+	}
+	if event.Value < 0 {
+		switch normalizePulseEventType(event.EventType) {
+		case pulseEventLike:
+			return -16
+		case pulseEventUpvote:
+			return -22
+		case pulseEventDownvote:
+			return -28
+		default:
+			return 0
+		}
+	}
+	switch normalizePulseEventType(event.EventType) {
+	case pulseEventExposure:
+		return -1
+	case pulseEventOpen:
+		return 8
+	case pulseEventLike:
+		return 16
+	case pulseEventUpvote:
+		return 22
+	case pulseEventDownvote:
+		return -28
+	default:
+		return 0
+	}
+}
+
+func normalizePulseEventType(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case pulseEventExposure, "impression", "view":
+		return pulseEventExposure
+	case pulseEventOpen, "click":
+		return pulseEventOpen
+	case pulseEventLike, "favorite", "fav":
+		return pulseEventLike
+	case pulseEventUpvote, "up", "thumb_up", "thumbs_up":
+		return pulseEventUpvote
+	case pulseEventDownvote, "down", "dislike", "thumb_down", "thumbs_down":
+		return pulseEventDownvote
+	default:
+		return ""
+	}
+}
+
+func defaultPulseEventValue(eventType string) int {
+	return 1
+}
+
+func normalizePulseEventValue(eventType string, value int) int {
+	if value == 0 {
+		return 0
+	}
+	switch normalizePulseEventType(eventType) {
+	case pulseEventDownvote:
+		if value < 0 {
+			return 1
+		}
+		return 1
+	default:
+		if value < 0 {
+			return -1
+		}
+		return 1
+	}
+}
+
+func pulseRecommendationNote(item models.PulseItem) string {
+	focus := firstNonEmptyPulse(item.TopicName, item.Category, moduleCategory(item.Source))
+	switch normalizePulseModuleKey(item.Source) {
+	case pulseSourceTopicHot:
+		if focus != "" {
+			return fmt.Sprintf("可能对「%s」推荐", focus)
+		}
+		return "可能对已订阅 Topic 推荐"
+	case pulseSourceMemory:
+		return "可能对近期 Memory 推荐"
+	case pulseSourceInterestHot:
+		if focus != "" && focus != moduleCategory(item.Source) {
+			return fmt.Sprintf("可能对「%s」延伸推荐", focus)
+		}
+		return "可能对兴趣外扩推荐"
+	default:
+		if focus != "" {
+			return fmt.Sprintf("可能对「%s」推荐", focus)
+		}
+		return "可能对你推荐"
+	}
+}
+
+type pulseRelatedCandidate struct {
+	item   models.PulseItem
+	score  int
+	reason string
+}
+
+func buildPulseRelatedClusters(item models.PulseItem, allItems []models.PulseItem) []pulseRelatedClusterResponse {
+	if len(allItems) <= 1 {
+		return nil
+	}
+
+	baseTerms := pulseClusterTerms(item)
+	candidates := []pulseRelatedCandidate{}
+	for _, candidate := range allItems {
+		if candidate.ID == "" || candidate.ID == item.ID {
+			continue
+		}
+		score, reason := pulseClusterRelationScore(item, candidate, baseTerms, pulseClusterTerms(candidate))
+		if score < 18 {
+			continue
+		}
+		candidates = append(candidates, pulseRelatedCandidate{item: candidate, score: score, reason: reason})
+	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		if candidates[i].score == candidates[j].score {
+			if candidates[i].item.HeatScore == candidates[j].item.HeatScore {
+				return candidates[i].item.CreatedAt.Before(candidates[j].item.CreatedAt)
+			}
+			return candidates[i].item.HeatScore > candidates[j].item.HeatScore
+		}
+		return candidates[i].score > candidates[j].score
+	})
+
+	related := make([]pulseRelatedClusterResponse, 0, minInt(len(candidates), 3))
+	for _, candidate := range candidates[:minInt(len(candidates), 3)] {
+		related = append(related, pulseRelatedClusterResponse{
+			ID:        candidate.item.ID,
+			Source:    candidate.item.Source,
+			TopicName: candidate.item.TopicName,
+			Title:     candidate.item.Title,
+			Summary:   limitText(candidate.item.Summary, 180),
+			Reason:    candidate.reason,
+			HeatScore: candidate.item.HeatScore,
+		})
+	}
+	return related
+}
+
+func pulseClusterRelationScore(item models.PulseItem, candidate models.PulseItem, baseTerms []string, candidateTerms []string) (int, string) {
+	score := candidate.HeatScore / 12
+	reasons := []string{}
+
+	if item.TopicID != "" && item.TopicID == candidate.TopicID {
+		score += 46
+		reasons = append(reasons, fmt.Sprintf("同属「%s」topic", firstNonEmptyPulse(item.TopicName, candidate.TopicName)))
+	} else if item.TopicName != "" && strings.EqualFold(item.TopicName, candidate.TopicName) {
+		score += 38
+		reasons = append(reasons, fmt.Sprintf("同属「%s」topic", item.TopicName))
+	}
+	if normalizePulseModuleKey(item.Source) != "" && normalizePulseModuleKey(item.Source) == normalizePulseModuleKey(candidate.Source) {
+		score += 12
+		reasons = append(reasons, "同一推荐模块")
+	}
+	if item.Category != "" && strings.EqualFold(item.Category, candidate.Category) {
+		score += 8
+	}
+
+	overlap := intersectPulseTerms(baseTerms, candidateTerms)
+	if len(overlap) > 0 {
+		score += minInt(len(overlap), 4) * 14
+		reasons = append(reasons, fmt.Sprintf("共享「%s」线索", strings.Join(overlap[:minInt(len(overlap), 3)], " / ")))
+	}
+	if len(reasons) == 0 && score >= 18 {
+		reasons = append(reasons, "同一批信息流里的高热相邻簇")
+	}
+	return score, strings.Join(limitStringSlice(reasons, 2, 80), "；")
+}
+
+func pulseClusterTerms(item models.PulseItem) []string {
+	var detail pulseItemDetail
+	_ = json.Unmarshal([]byte(item.DetailJSON), &detail)
+	values := []string{item.TopicName, item.Category, item.Title, item.Summary, detail.QuickContext}
+	values = append(values, detail.KeyPoints...)
+
+	terms := []string{}
+	for _, value := range values {
+		terms = appendUniqueStrings(terms, pulseKeywordsFromText(value)...)
+		terms = appendUniqueStrings(terms, pulseClusterHintTerms(value)...)
+	}
+	return limitStringSlice(terms, 14, 32)
+}
+
+func pulseClusterHintTerms(value string) []string {
+	text := strings.ToLower(value)
+	hints := []string{
+		"AI", "Agent", "RAG", "AIGC", "LLM", "OpenAI", "Claude", "Gemini", "GPT", "DeepSeek", "Qwen", "Kimi",
+		"多模态", "推理", "模型能力", "工具调用", "工作流", "知识库", "向量检索", "推荐系统",
+		"机器人", "具身智能", "人形机器人", "供应链", "量产", "VLA",
+		"投资", "估值", "商业模式", "增长", "留存", "健康", "减脂", "训练",
+	}
+	terms := []string{}
+	for _, hint := range hints {
+		if strings.Contains(text, strings.ToLower(hint)) {
+			terms = appendUniqueStrings(terms, hint)
+		}
+	}
+	for _, entity := range pulseKnownEntities {
+		if strings.Contains(text, strings.ToLower(entity)) {
+			terms = appendUniqueStrings(terms, entity)
+		}
+	}
+	return terms
+}
+
+func intersectPulseTerms(left []string, right []string) []string {
+	rightSet := map[string]bool{}
+	for _, value := range right {
+		key := strings.ToLower(value)
+		if key != "" {
+			rightSet[key] = true
+		}
+	}
+	overlap := []string{}
+	for _, value := range left {
+		key := strings.ToLower(value)
+		if key == "" || !rightSet[key] {
+			continue
+		}
+		overlap = appendUniqueStrings(overlap, value)
+	}
+	return limitStringSlice(overlap, 6, 32)
+}
+
 func moduleResponses(modules []models.PulseModule, items []models.PulseItem) []pulseModuleResponse {
+	return moduleResponsesWithFeatures(modules, items, pulseFeatureState{})
+}
+
+func moduleResponsesWithFeatures(modules []models.PulseModule, items []models.PulseItem, featureState pulseFeatureState) []pulseModuleResponse {
 	if len(modules) == 0 {
 		for _, key := range pulseModuleOrder {
 			title, summary := defaultPulseModuleCopy(key)
@@ -2679,37 +3343,45 @@ func moduleResponses(modules []models.PulseModule, items []models.PulseItem) []p
 			Key:     key,
 			Title:   module.Title,
 			Summary: module.Summary,
-			Items:   itemResponses(moduleItems),
+			Items:   itemResponsesWithFeatures(moduleItems, items, featureState),
 		})
 	}
 	return responses
 }
 
 func itemResponses(items []models.PulseItem) []pulseItemResponse {
+	return itemResponsesWithFeatures(items, items, pulseFeatureState{})
+}
+
+func itemResponsesWithFeatures(items []models.PulseItem, allItems []models.PulseItem, featureState pulseFeatureState) []pulseItemResponse {
 	responses := make([]pulseItemResponse, 0, len(items))
 	for _, item := range items {
-		responses = append(responses, itemResponse(item))
+		responses = append(responses, itemResponse(item, allItems, featureState))
 	}
 	return responses
 }
 
-func itemResponse(item models.PulseItem) pulseItemResponse {
+func itemResponse(item models.PulseItem, allItems []models.PulseItem, featureState pulseFeatureState) pulseItemResponse {
 	var detail pulseItemDetail
 	_ = json.Unmarshal([]byte(item.DetailJSON), &detail)
 	return pulseItemResponse{
-		ID:            item.ID,
-		Date:          item.Date,
-		TopicID:       item.TopicID,
-		TopicName:     item.TopicName,
-		Source:        item.Source,
-		Category:      item.Category,
-		Title:         item.Title,
-		Summary:       item.Summary,
-		HeatScore:     item.HeatScore,
-		Detail:        detail,
-		ExplorePrompt: item.ExplorePrompt,
-		CreatedAt:     item.CreatedAt,
-		UpdatedAt:     item.UpdatedAt,
+		ID:                 item.ID,
+		Date:               item.Date,
+		TopicID:            item.TopicID,
+		TopicName:          item.TopicName,
+		Source:             item.Source,
+		Category:           item.Category,
+		Title:              item.Title,
+		Summary:            item.Summary,
+		HeatScore:          item.HeatScore,
+		Detail:             detail,
+		ExplorePrompt:      item.ExplorePrompt,
+		RelatedClusters:    buildPulseRelatedClusters(item, allItems),
+		Feedback:           featureState.feedbackFor(item.ID),
+		FeatureScore:       featureState.scoreFor(item),
+		RecommendationNote: pulseRecommendationNote(item),
+		CreatedAt:          item.CreatedAt,
+		UpdatedAt:          item.UpdatedAt,
 	}
 }
 

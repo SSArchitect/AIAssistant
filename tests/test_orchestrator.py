@@ -315,6 +315,55 @@ async def test_separate_conversations(engine):
 
 
 @pytest.mark.asyncio
+async def test_memory_is_scoped_by_user_id(engine):
+    engine.role_memory.add_memory(
+        role_id="default",
+        user_id="alice",
+        kind="long_term",
+        content="Alice likes terse memory answers",
+    )
+    engine.role_memory.add_memory(
+        role_id="default",
+        user_id="bob",
+        kind="long_term",
+        content="Bob likes detailed memory answers",
+    )
+    engine.memory.add_many(
+        "user:alice:conversation:shared-conv",
+        [
+            LLMMessage(role="user", content="alice short-term memory"),
+            LLMMessage(role="assistant", content="alice short-term answer"),
+        ],
+    )
+
+    response = LLMResponse(
+        content="ok",
+        tool_calls=[],
+        model="test-model",
+        usage={},
+    )
+    with patch.object(engine, "_get_provider") as mock_provider:
+        provider = AsyncMock()
+        provider.chat = AsyncMock(return_value=response)
+        mock_provider.return_value = provider
+
+        result = await engine.process(
+            ChatRequest(
+                conversation_id="shared-conv",
+                user_id="bob",
+                message="hello",
+            )
+        )
+
+    first_call_messages = provider.chat.call_args_list[0][0][0]
+    system_prompt = first_call_messages[0].content
+    assert "Bob likes detailed memory answers" in system_prompt
+    assert "Alice likes terse memory answers" not in system_prompt
+    assert all("alice short-term" not in str(message.content) for message in first_call_messages)
+    assert [record.user_id for record in result.memory_context] == ["bob"]
+
+
+@pytest.mark.asyncio
 async def test_role_memory_is_injected_into_system_prompt(engine):
     """Role memory should be included in the model context."""
     engine.role_memory.register_role(
@@ -1493,6 +1542,132 @@ async def test_memory_hook_writes_after_turn(engine):
     assert result.memory_updates[0].content == "我的名字是安安"
     assert memories[0].content == "我的名字是安安"
     assert "memory.extracted" in [event.type for event in result.events]
+
+
+@pytest.mark.asyncio
+async def test_ai_memory_review_writes_long_term_memory(registry):
+    engine = AgentEngine(registry, ai_memory_review_enabled=True)
+    assistant_response = LLMResponse(
+        content="我会记住。",
+        tool_calls=[],
+        model="chat-model",
+        usage={},
+    )
+    review_response = LLMResponse(
+        content=json.dumps(
+            {
+                "memories": [
+                    {
+                        "kind": "long_term",
+                        "content": "用户正在重构 agent memory 系统",
+                        "confidence": 0.86,
+                        "reason": "持续项目状态",
+                        "tags": ["project"],
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        tool_calls=[],
+        model="review-model",
+        usage={},
+    )
+
+    with patch.object(engine, "_get_provider") as mock_provider:
+        provider = AsyncMock()
+        provider.chat = AsyncMock(side_effect=[assistant_response, review_response])
+        mock_provider.return_value = provider
+
+        result = await engine.process(
+            ChatRequest(
+                conversation_id="conv-ai-memory",
+                message="我们现在在重构 agent memory 系统",
+            )
+        )
+
+    assert len(result.memory_updates) == 1
+    assert result.memory_updates[0].content == "用户正在重构 agent memory 系统"
+    assert result.memory_updates[0].metadata["reviewer"] == "ai"
+    event_types = [event.type for event in result.events]
+    assert "memory.review.completed" in event_types
+
+
+@pytest.mark.asyncio
+async def test_conversation_memory_compacts_with_summary(registry):
+    engine = AgentEngine(
+        registry,
+        conversation_compaction_threshold=2,
+        conversation_compaction_keep_messages=2,
+    )
+    first_response = LLMResponse(content="第一轮", model="chat-model", usage={})
+    second_response = LLMResponse(content="第二轮", model="chat-model", usage={})
+    compact_response = LLMResponse(
+        content=json.dumps(
+            {
+                "should_compact": True,
+                "summary": "用户正在分层设计 memory 系统。",
+                "keep_message_indices": [2, 3],
+            },
+            ensure_ascii=False,
+        ),
+        model="compact-model",
+        usage={},
+    )
+
+    with patch.object(engine, "_get_provider") as mock_provider:
+        provider = AsyncMock()
+        provider.chat = AsyncMock(
+            side_effect=[first_response, second_response, compact_response]
+        )
+        mock_provider.return_value = provider
+
+        await engine.process(ChatRequest(conversation_id="conv-compact", message="第一轮"))
+        result = await engine.process(ChatRequest(conversation_id="conv-compact", message="第二轮"))
+
+    memory_id = "user:0:conversation:conv-compact"
+    assert engine.memory.get_summary(memory_id) == "用户正在分层设计 memory 系统。"
+    assert [message.content for message in engine.memory.get(memory_id)] == ["第二轮", "第二轮"]
+    assert "memory.compaction.completed" in [event.type for event in result.events]
+
+
+@pytest.mark.asyncio
+async def test_memory_disabled_hides_stored_memory(engine):
+    engine.role_memory.add_memory(
+        role_id="default",
+        kind="long_term",
+        content="User likes hidden durable memory",
+    )
+    engine.memory.add_many(
+        "user:0:conversation:conv-memory-disabled",
+        [
+            LLMMessage(role="user", content="hidden short-term message"),
+            LLMMessage(role="assistant", content="hidden short-term answer"),
+        ],
+    )
+    response = LLMResponse(
+        content="ok",
+        tool_calls=[],
+        model="test-model",
+        usage={},
+    )
+
+    with patch.object(engine, "_get_provider") as mock_provider:
+        provider = AsyncMock()
+        provider.chat = AsyncMock(return_value=response)
+        mock_provider.return_value = provider
+
+        result = await engine.process(
+            ChatRequest(
+                conversation_id="conv-memory-disabled",
+                message="hello",
+                memory_enabled=False,
+            )
+        )
+
+    first_call_messages = provider.chat.call_args_list[0][0][0]
+    assert "User likes hidden durable memory" not in first_call_messages[0].content
+    assert all("hidden short-term" not in message.content for message in first_call_messages)
+    assert result.memory_context == []
 
 
 @pytest.mark.asyncio

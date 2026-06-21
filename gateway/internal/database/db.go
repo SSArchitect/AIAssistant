@@ -36,6 +36,7 @@ func Init(dbPath string) error {
 		&models.PulseTopic{},
 		&models.PulseItem{},
 		&models.PulseModule{},
+		&models.PulseEvent{},
 	); err != nil {
 		return err
 	}

@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -47,5 +48,42 @@ func TestConversationListIsScopedByUserID(t *testing.T) {
 	}
 	if len(payload.Conversations) != 1 || payload.Conversations[0].ID != "conv-user-a" {
 		t.Fatalf("expected only user a conversation, got %#v", payload.Conversations)
+	}
+}
+
+func TestConversationCreateSessionUserOverridesBodyUserID(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	if err := database.Init(filepath.Join(t.TempDir(), "assistant.db")); err != nil {
+		t.Fatalf("init database: %v", err)
+	}
+	token := "session-token-conversation"
+	if err := database.DB.Create(&models.AccountSession{
+		TokenHash:  accountSessionTokenHash(token),
+		UserID:     "session-user",
+		CreatedAt:  time.Now(),
+		LastUsedAt: time.Now(),
+	}).Error; err != nil {
+		t.Fatalf("create account session: %v", err)
+	}
+
+	router := gin.New()
+	handler := NewConversationHandler()
+	router.POST("/api/conversations", handler.Create)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/conversations", strings.NewReader(`{"user_id":"attacker-user"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Account-Session", token)
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("unexpected status %d: %s", recorder.Code, recorder.Body.String())
+	}
+	var conv models.Conversation
+	if err := json.Unmarshal(recorder.Body.Bytes(), &conv); err != nil {
+		t.Fatalf("decode conversation: %v", err)
+	}
+	if conv.UserID != "session-user" {
+		t.Fatalf("expected session user, got %q", conv.UserID)
 	}
 }

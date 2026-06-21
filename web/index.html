@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>阿安的工作台</title>
-    <link rel="stylesheet" href="/static/css/style.css?v=33">
+    <link rel="stylesheet" href="/static/css/style.css?v=34">
 </head>
 <body>
     <div class="app">
@@ -53,7 +53,7 @@
                         <path d="M20 20v-5h-5"/>
                         <path d="M5 19A9 9 0 0 0 19 5"/>
                     </svg>
-                    <span data-i18n="nav.pulse">Pulse</span>
+                    <span data-i18n="nav.pulse">信息流</span>
                 </button>
                 <button class="nav-item" type="button" data-view="agents">
                     <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2">
@@ -156,6 +156,31 @@
                         </svg>
                         <span data-i18n="actions.newChat">新话题</span>
                     </button>
+                    <div class="role-picker" id="role-picker">
+                        <select id="role-select" class="role-select" aria-label="角色" data-i18n-aria-label="topbar.role"></select>
+                        <button class="icon-button role-memory-button" id="btn-role-memory" type="button" title="角色记忆" data-i18n-title="roleMemory.title">
+                            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M12 3a4 4 0 0 1 4 4v1h1a4 4 0 0 1 0 8h-1v1a4 4 0 0 1-8 0v-1H7a4 4 0 0 1 0-8h1V7a4 4 0 0 1 4-4Z"/>
+                                <path d="M9 8h6M9 12h6M10 16h4"/>
+                            </svg>
+                        </button>
+                        <div class="role-memory-popover hidden" id="role-memory-popover" role="dialog" aria-labelledby="role-memory-title">
+                            <div class="role-memory-head">
+                                <strong id="role-memory-title" data-i18n="roleMemory.title">角色记忆</strong>
+                                <button class="role-memory-close" type="button" data-role-memory-close aria-label="关闭" data-i18n-aria-label="media.close">
+                                    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.4">
+                                        <path d="M6 6l12 12M18 6 6 18"/>
+                                    </svg>
+                                </button>
+                            </div>
+                            <div class="role-memory-list" id="role-memory-list"></div>
+                            <form class="role-memory-form" id="role-memory-form">
+                                <textarea id="role-memory-input" rows="3" placeholder="写下角色需要长期遵守的语气或工作方式" data-i18n-placeholder="roleMemory.placeholder"></textarea>
+                                <div class="role-memory-status" id="role-memory-status" role="status"></div>
+                                <button class="btn-primary" type="submit" data-role-memory-save data-i18n="roleMemory.save">保存</button>
+                            </form>
+                        </div>
+                    </div>
                     <select id="agent-select" hidden aria-hidden="true" tabindex="-1"></select>
                     <span class="model-pill" id="current-model"></span>
                     <button class="icon-button" id="btn-refresh" type="button" title="刷新数据" data-i18n-title="actions.refresh">
@@ -211,7 +236,7 @@
                     <div class="pulse-feed">
                         <div class="pulse-feed-toolbar">
                             <div>
-                                <h2 id="pulse-date-title">Pulse</h2>
+                                <h2 id="pulse-date-title">信息流</h2>
                                 <p id="pulse-generated-at"></p>
                             </div>
                             <button class="btn-secondary" type="button" data-pulse-refresh>
@@ -223,6 +248,7 @@
                                 <span data-i18n="pulse.refresh">刷新今日推荐</span>
                             </button>
                         </div>
+                        <div class="pulse-topic-filter" id="pulse-topic-filter"></div>
                         <div class="pulse-items" id="pulse-items"></div>
                     </div>
 
@@ -249,6 +275,10 @@
                                 <span data-i18n="pulse.subscribe">订阅</span>
                             </button>
                         </form>
+                        <section class="pulse-suggested-topic-section">
+                            <h3 data-i18n="pulse.suggestedTopics">推荐 Topic</h3>
+                            <div class="pulse-suggested-topic-list" id="pulse-suggested-topics"></div>
+                        </section>
                         <div class="pulse-topic-list" id="pulse-topic-list"></div>
                     </aside>
                 </div>
@@ -273,6 +303,25 @@
                 <div class="content-grid" id="settings-grid"></div>
             </section>
         </main>
+    </div>
+
+    <div class="pulse-post-window hidden" id="pulse-post-window" role="dialog" aria-modal="true" aria-labelledby="pulse-post-title">
+        <button class="pulse-post-backdrop" type="button" data-pulse-close-post aria-label="关闭帖子"></button>
+        <article class="pulse-post-panel">
+            <header class="pulse-post-head">
+                <div>
+                    <span class="pulse-post-note" id="pulse-post-note"></span>
+                    <h2 id="pulse-post-title"></h2>
+                </div>
+                <button class="icon-button pulse-post-close" type="button" data-pulse-close-post title="关闭" aria-label="关闭">
+                    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.4">
+                        <path d="M18 6 6 18M6 6l12 12"/>
+                    </svg>
+                </button>
+            </header>
+            <div class="pulse-post-body" id="pulse-post-body"></div>
+            <footer class="pulse-post-footer" id="pulse-post-footer"></footer>
+        </article>
     </div>
 
     <div class="media-lightbox hidden" id="media-lightbox" role="dialog" aria-modal="true" aria-labelledby="media-lightbox-title">
@@ -347,6 +396,6 @@
         </div>
     </div>
 
-    <script src="/static/js/app.js?v=45"></script>
+    <script src="/static/js/app.js?v=47"></script>
 </body>
 </html>

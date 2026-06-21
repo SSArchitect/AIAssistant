@@ -173,6 +173,284 @@ func TestPulseUsesAgentGeneratedModules(t *testing.T) {
 	}
 }
 
+func TestPulseExpandsSingleTopicKeywordsAndSuggestsTopics(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	if err := database.Init(filepath.Join(t.TempDir(), "assistant.db")); err != nil {
+		t.Fatalf("init database: %v", err)
+	}
+
+	handler := NewPulseHandler()
+	router := gin.New()
+	router.POST("/api/pulse/topics", handler.CreateTopic)
+	router.GET("/api/pulse", handler.Get)
+
+	createReq := httptest.NewRequest(http.MethodPost, "/api/pulse/topics", bytes.NewBufferString(`{"name":"AI 应用开发"}`))
+	createReq.Header.Set("Content-Type", "application/json")
+	createRecorder := httptest.NewRecorder()
+	router.ServeHTTP(createRecorder, createReq)
+	if createRecorder.Code != http.StatusCreated {
+		t.Fatalf("unexpected create status %d: %s", createRecorder.Code, createRecorder.Body.String())
+	}
+
+	var created struct {
+		Topic pulseTopicResponse `json:"topic"`
+	}
+	if err := json.Unmarshal(createRecorder.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode created topic: %v", err)
+	}
+	joinedKeywords := strings.Join(created.Topic.Keywords, "\n")
+	if !strings.Contains(joinedKeywords, "多模态") || !strings.Contains(joinedKeywords, "模型能力") {
+		t.Fatalf("expected expanded AI keywords, got %#v", created.Topic.Keywords)
+	}
+
+	getReq := httptest.NewRequest(http.MethodGet, "/api/pulse?date=2026-06-20", nil)
+	getRecorder := httptest.NewRecorder()
+	router.ServeHTTP(getRecorder, getReq)
+	if getRecorder.Code != http.StatusOK {
+		t.Fatalf("unexpected get status %d: %s", getRecorder.Code, getRecorder.Body.String())
+	}
+
+	var payload struct {
+		SuggestedTopics []pulseSuggestedTopicResponse `json:"suggested_topics"`
+	}
+	if err := json.Unmarshal(getRecorder.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode pulse response: %v", err)
+	}
+	if len(payload.SuggestedTopics) == 0 {
+		t.Fatalf("expected suggested topics")
+	}
+	for _, suggestion := range payload.SuggestedTopics {
+		if suggestion.Name == created.Topic.Name {
+			t.Fatalf("suggested topics should exclude subscribed topic, got %#v", payload.SuggestedTopics)
+		}
+	}
+}
+
+func TestPulseResponseIncludesRelatedClusters(t *testing.T) {
+	now := time.Now()
+	items := []models.PulseItem{
+		{
+			ID:        "cluster-a",
+			Date:      "2026-06-20",
+			TopicID:   "topic-robotics",
+			TopicName: "机器人",
+			Source:    pulseSourceTopicHot,
+			Category:  "关注 Topic",
+			Title:     "具身智能供应链出现新线索",
+			Summary:   "机器人量产和供应链值得跟踪。",
+			HeatScore: 90,
+			DetailJSON: mustJSON(pulseItemDetail{
+				KeyPoints: []string{"具身智能", "供应链", "量产"},
+			}),
+			CreatedAt: now,
+			UpdatedAt: now,
+		},
+		{
+			ID:        "cluster-b",
+			Date:      "2026-06-20",
+			TopicID:   "topic-robotics",
+			TopicName: "机器人",
+			Source:    pulseSourceInterestHot,
+			Category:  "可能兴趣",
+			Title:     "人形机器人量产节奏需要核验",
+			Summary:   "具身智能和供应链消息需要对照来源。",
+			HeatScore: 84,
+			DetailJSON: mustJSON(pulseItemDetail{
+				KeyPoints: []string{"人形机器人", "具身智能", "供应链"},
+			}),
+			CreatedAt: now.Add(time.Second),
+			UpdatedAt: now.Add(time.Second),
+		},
+	}
+
+	responses := itemResponses(items)
+	if len(responses) != 2 {
+		t.Fatalf("expected two responses, got %#v", responses)
+	}
+	if len(responses[0].RelatedClusters) == 0 || responses[0].RelatedClusters[0].ID != "cluster-b" {
+		t.Fatalf("expected related cluster-b, got %#v", responses[0].RelatedClusters)
+	}
+	if !strings.Contains(responses[0].RelatedClusters[0].Reason, "topic") {
+		t.Fatalf("expected explainable related reason, got %#v", responses[0].RelatedClusters[0])
+	}
+}
+
+func TestPulseEventsUpdateFeedbackAndRanking(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	if err := database.Init(filepath.Join(t.TempDir(), "assistant.db")); err != nil {
+		t.Fatalf("init database: %v", err)
+	}
+
+	date := "2026-06-20"
+	now := time.Now()
+	items := []models.PulseItem{
+		{
+			ID:         "pulse-high",
+			UserID:     "0",
+			Date:       date,
+			Source:     pulseSourceTopicHot,
+			Category:   "关注 Topic",
+			Title:      "高热但未反馈的信息簇",
+			Summary:    "基础热度更高。",
+			HeatScore:  90,
+			DetailJSON: mustJSON(pulseItemDetail{KeyPoints: []string{"高热"}}),
+			CreatedAt:  now,
+			UpdatedAt:  now,
+		},
+		{
+			ID:         "pulse-liked",
+			UserID:     "0",
+			Date:       date,
+			Source:     pulseSourceTopicHot,
+			Category:   "关注 Topic",
+			Title:      "用户点赞的信息簇",
+			Summary:    "基础热度略低，但用户反馈更强。",
+			HeatScore:  70,
+			DetailJSON: mustJSON(pulseItemDetail{KeyPoints: []string{"点赞"}}),
+			CreatedAt:  now.Add(time.Second),
+			UpdatedAt:  now.Add(time.Second),
+		},
+	}
+	if err := database.DB.Create(&items).Error; err != nil {
+		t.Fatalf("seed pulse items: %v", err)
+	}
+
+	handler := NewPulseHandler()
+	router := gin.New()
+	router.POST("/api/pulse/events", handler.RecordEvent)
+	router.GET("/api/pulse", handler.Get)
+
+	eventReq := httptest.NewRequest(http.MethodPost, "/api/pulse/events", bytes.NewBufferString(`{"item_id":"pulse-liked","event_type":"upvote","value":1}`))
+	eventReq.Header.Set("Content-Type", "application/json")
+	eventRecorder := httptest.NewRecorder()
+	router.ServeHTTP(eventRecorder, eventReq)
+	if eventRecorder.Code != http.StatusOK {
+		t.Fatalf("unexpected event status %d: %s", eventRecorder.Code, eventRecorder.Body.String())
+	}
+	var eventPayload struct {
+		Feedback pulseItemFeedbackResponse `json:"feedback"`
+	}
+	if err := json.Unmarshal(eventRecorder.Body.Bytes(), &eventPayload); err != nil {
+		t.Fatalf("decode event response: %v", err)
+	}
+	if eventPayload.Feedback.Vote != "up" || eventPayload.Feedback.UpvoteCount == 0 {
+		t.Fatalf("expected upvote feedback, got %#v", eventPayload.Feedback)
+	}
+
+	getReq := httptest.NewRequest(http.MethodGet, "/api/pulse?date=2026-06-20", nil)
+	getRecorder := httptest.NewRecorder()
+	router.ServeHTTP(getRecorder, getReq)
+	if getRecorder.Code != http.StatusOK {
+		t.Fatalf("unexpected get status %d: %s", getRecorder.Code, getRecorder.Body.String())
+	}
+	var payload struct {
+		Items []pulseItemResponse `json:"items"`
+	}
+	if err := json.Unmarshal(getRecorder.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode pulse response: %v", err)
+	}
+	if len(payload.Items) != 2 {
+		t.Fatalf("expected two items, got %#v", payload.Items)
+	}
+	if payload.Items[0].ID != "pulse-liked" {
+		t.Fatalf("expected feedback-ranked item first, got %#v", payload.Items)
+	}
+	if payload.Items[0].Feedback.Vote != "up" || payload.Items[0].FeatureScore <= payload.Items[1].FeatureScore {
+		t.Fatalf("expected ranked feedback in response, got %#v", payload.Items)
+	}
+}
+
+func TestPulseEventsBoostFutureItemsByTopic(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	if err := database.Init(filepath.Join(t.TempDir(), "assistant.db")); err != nil {
+		t.Fatalf("init database: %v", err)
+	}
+
+	now := time.Now()
+	items := []models.PulseItem{
+		{
+			ID:         "pulse-old-liked",
+			UserID:     "0",
+			Date:       "2026-06-19",
+			TopicID:    "topic-ai",
+			TopicName:  "AI 应用开发",
+			Source:     pulseSourceTopicHot,
+			Category:   "关注 Topic",
+			Title:      "旧的信息簇",
+			Summary:    "用户之前赞过的方向。",
+			HeatScore:  70,
+			DetailJSON: mustJSON(pulseItemDetail{KeyPoints: []string{"旧反馈"}}),
+			CreatedAt:  now.Add(-24 * time.Hour),
+			UpdatedAt:  now.Add(-24 * time.Hour),
+		},
+		{
+			ID:         "pulse-future-topic",
+			UserID:     "0",
+			Date:       "2026-06-20",
+			TopicID:    "topic-ai",
+			TopicName:  "AI 应用开发",
+			Source:     pulseSourceTopicHot,
+			Category:   "关注 Topic",
+			Title:      "新的同 Topic 信息簇",
+			Summary:    "基础热度略低，但应继承 topic 偏好。",
+			HeatScore:  70,
+			DetailJSON: mustJSON(pulseItemDetail{KeyPoints: []string{"同 topic"}}),
+			CreatedAt:  now,
+			UpdatedAt:  now,
+		},
+		{
+			ID:         "pulse-future-other",
+			UserID:     "0",
+			Date:       "2026-06-20",
+			TopicID:    "topic-other",
+			TopicName:  "其他方向",
+			Source:     pulseSourceTopicHot,
+			Category:   "关注 Topic",
+			Title:      "新的其他信息簇",
+			Summary:    "基础热度更高。",
+			HeatScore:  78,
+			DetailJSON: mustJSON(pulseItemDetail{KeyPoints: []string{"其他 topic"}}),
+			CreatedAt:  now.Add(time.Second),
+			UpdatedAt:  now.Add(time.Second),
+		},
+	}
+	if err := database.DB.Create(&items).Error; err != nil {
+		t.Fatalf("seed pulse items: %v", err)
+	}
+
+	handler := NewPulseHandler()
+	router := gin.New()
+	router.POST("/api/pulse/events", handler.RecordEvent)
+	router.GET("/api/pulse", handler.Get)
+
+	eventReq := httptest.NewRequest(http.MethodPost, "/api/pulse/events", bytes.NewBufferString(`{"item_id":"pulse-old-liked","event_type":"upvote","value":1}`))
+	eventReq.Header.Set("Content-Type", "application/json")
+	eventRecorder := httptest.NewRecorder()
+	router.ServeHTTP(eventRecorder, eventReq)
+	if eventRecorder.Code != http.StatusOK {
+		t.Fatalf("unexpected event status %d: %s", eventRecorder.Code, eventRecorder.Body.String())
+	}
+
+	getReq := httptest.NewRequest(http.MethodGet, "/api/pulse?date=2026-06-20", nil)
+	getRecorder := httptest.NewRecorder()
+	router.ServeHTTP(getRecorder, getReq)
+	if getRecorder.Code != http.StatusOK {
+		t.Fatalf("unexpected get status %d: %s", getRecorder.Code, getRecorder.Body.String())
+	}
+	var payload struct {
+		Items []pulseItemResponse `json:"items"`
+	}
+	if err := json.Unmarshal(getRecorder.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode pulse response: %v", err)
+	}
+	if len(payload.Items) != 2 {
+		t.Fatalf("expected current-day items, got %#v", payload.Items)
+	}
+	if payload.Items[0].ID != "pulse-future-topic" {
+		t.Fatalf("expected historical topic feedback to boost future topic item, got %#v", payload.Items)
+	}
+}
+
 func TestPulseRepairsMalformedAgentJSON(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	if err := database.Init(filepath.Join(t.TempDir(), "assistant.db")); err != nil {

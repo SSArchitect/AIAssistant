@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Settings - Agent Assistant</title>
-    <link rel="stylesheet" href="/static/css/admin.css?v=6">
+    <link rel="stylesheet" href="/static/css/admin.css?v=7">
 </head>
 <body>
     <div class="admin-app">
@@ -63,7 +63,7 @@
                             <h2 data-i18n="roles.title">角色 Personas</h2>
                             <span class="provider-badge configured" id="role-count-badge">0</span>
                         </div>
-                        <p class="card-desc" data-i18n="roles.desc">配置角色提示词和长期记忆范围。</p>
+                        <p class="card-desc" data-i18n="roles.desc">配置角色名、工作方式、习惯偏好和长期记忆范围。</p>
                     </div>
                     <div class="card-body">
                         <div class="role-config-layout">
@@ -72,12 +72,18 @@
                                 <button class="btn-test btn-small" type="button" onclick="newRoleDraft()" data-i18n="roles.new">新建角色</button>
                             </div>
                             <div class="role-editor">
+                                <div class="role-example-panel">
+                                    <div class="role-example-head">
+                                        <strong data-i18n="roles.examplesTitle">常用模板</strong>
+                                    </div>
+                                    <div class="role-example-list" id="role-example-list"></div>
+                                </div>
                                 <div class="form-group">
                                     <label for="role-id" data-i18n="roles.id">角色 ID</label>
                                     <input type="text" id="role-id" class="form-input" placeholder="custom_role">
                                 </div>
                                 <div class="form-group">
-                                    <label for="role-name" data-i18n="roles.name">名称</label>
+                                    <label for="role-name" data-i18n="roles.name">角色名</label>
                                     <input type="text" id="role-name" class="form-input" data-i18n-placeholder="roles.namePlaceholder" placeholder="角色名称">
                                 </div>
                                 <div class="form-group">
@@ -92,6 +98,11 @@
                                     <label for="role-instructions" data-i18n="roles.instructions">指令</label>
                                     <textarea id="role-instructions" class="form-input form-textarea" rows="4" data-i18n-placeholder="roles.instructionsPlaceholder" placeholder="每行一条指令"></textarea>
                                 </div>
+                                <div class="form-group">
+                                    <label for="role-preferences" data-i18n="roles.preferences">习惯 / 偏好</label>
+                                    <textarea id="role-preferences" class="form-input form-textarea" rows="4" data-i18n-placeholder="roles.preferencesPlaceholder" placeholder="每行一条，例如：回答先给结论；默认用中文；复杂任务先列计划"></textarea>
+                                </div>
+                                <div class="role-editor-hint" id="role-editor-hint"></div>
                                 <div class="toggle-row">
                                     <label><input type="checkbox" id="role-enabled" checked> <span data-i18n="roles.enabled">启用</span></label>
                                     <label><input type="checkbox" id="role-memory-enabled" checked> <span data-i18n="roles.memory">记忆</span></label>
@@ -168,6 +179,6 @@
         </main>
     </div>
 
-    <script src="/static/js/admin.js?v=6"></script>
+    <script src="/static/js/admin.js?v=8"></script>
 </body>
 </html>

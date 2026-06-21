@@ -30,10 +30,7 @@ func (h *ConversationHandler) List(c *gin.Context) {
 func (h *ConversationHandler) Create(c *gin.Context) {
 	var req conversationCreateRequest
 	_ = c.ShouldBindJSON(&req)
-	userID := requestUserID(c)
-	if req.UserID != "" {
-		userID = normalizedUserID(req.UserID)
-	}
+	userID := requestUserIDWithBody(c, req.UserID)
 
 	conv := models.Conversation{
 		ID:        uuid.New().String(),

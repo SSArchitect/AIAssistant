@@ -98,13 +98,13 @@ async def test_list_roles(client):
     assert resp.status_code == 200
     data = resp.json()
     roles = {role["id"]: role for role in data["roles"]}
-    assert "default" in roles
-    assert "interview_coach" in roles
-    assert "product_architect" in roles
-    assert "research_analyst" in roles
-    assert "creative_partner" in roles
-    assert "code_reviewer" in roles
+    assert set(roles) == {"default", "work_partner", "learning_coach", "初一"}
     assert roles["default"]["memory_enabled"] is True
+    assert roles["default"]["metadata"]["localized"]["en"]["name"] == "Everyday Assistant"
+    assert roles["work_partner"]["metadata"]["localized"]["zh"]["name"] == "工作搭档"
+    assert roles["work_partner"]["metadata"]["preferences"]
+    assert roles["初一"]["metadata"]["built_in"] is True
+    assert roles["初一"]["metadata"]["localized"]["en"]["name"] == "Chuyi"
 
 
 @pytest.mark.asyncio
@@ -144,6 +144,70 @@ async def test_create_update_delete_role(client):
 
 
 @pytest.mark.asyncio
+async def test_custom_roles_are_scoped_by_user_id(client):
+    create_a = await client.post(
+        "/agent/roles",
+        json={
+            "user_id": "account-a",
+            "id": "private_helper",
+            "name": "Account A Helper",
+        },
+    )
+    create_b = await client.post(
+        "/agent/roles",
+        json={
+            "user_id": "account-b",
+            "id": "private_helper",
+            "name": "Account B Helper",
+        },
+    )
+    assert create_a.status_code == 200
+    assert create_b.status_code == 200
+    assert create_a.json()["metadata"]["owner_user_id"] == "account-a"
+    assert create_b.json()["metadata"]["owner_user_id"] == "account-b"
+
+    list_a = await client.get("/agent/roles", params={"user_id": "account-a"})
+    list_b = await client.get("/agent/roles", params={"user_id": "account-b"})
+    roles_a = {role["id"]: role for role in list_a.json()["roles"]}
+    roles_b = {role["id"]: role for role in list_b.json()["roles"]}
+
+    assert set(roles_a) == {"default", "work_partner", "learning_coach", "初一", "private_helper"}
+    assert set(roles_b) == {"default", "work_partner", "learning_coach", "初一", "private_helper"}
+    assert roles_a["private_helper"]["name"] == "Account A Helper"
+    assert roles_b["private_helper"]["name"] == "Account B Helper"
+
+    update_a = await client.put(
+        "/agent/roles/private_helper",
+        json={
+            "user_id": "account-a",
+            "name": "Account A Updated",
+        },
+    )
+    assert update_a.status_code == 200
+
+    list_b_after_update = await client.get("/agent/roles", params={"user_id": "account-b"})
+    roles_b_after_update = {role["id"]: role for role in list_b_after_update.json()["roles"]}
+    assert roles_b_after_update["private_helper"]["name"] == "Account B Helper"
+
+    delete_a = await client.delete(
+        "/agent/roles/private_helper",
+        params={"user_id": "account-a"},
+    )
+    assert delete_a.status_code == 200
+
+    roles_a_after_delete = {
+        role["id"]
+        for role in (await client.get("/agent/roles", params={"user_id": "account-a"})).json()["roles"]
+    }
+    roles_b_after_delete = {
+        role["id"]
+        for role in (await client.get("/agent/roles", params={"user_id": "account-b"})).json()["roles"]
+    }
+    assert "private_helper" not in roles_a_after_delete
+    assert "private_helper" in roles_b_after_delete
+
+
+@pytest.mark.asyncio
 async def test_cannot_delete_builtin_role(client):
     resp = await client.delete("/agent/roles/default")
     assert resp.status_code == 400
@@ -170,6 +234,37 @@ async def test_create_and_list_role_memory(client):
     assert list_resp.status_code == 200
     memories = list_resp.json()["memories"]
     assert any(memory["id"] == created["id"] for memory in memories)
+
+
+@pytest.mark.asyncio
+async def test_role_memory_api_is_scoped_by_user_id(client):
+    create_a = await client.post(
+        "/agent/roles/default/memories",
+        json={
+            "user_id": "account-a",
+            "kind": "long_term",
+            "content": "Account A private memory",
+        },
+    )
+    create_b = await client.post(
+        "/agent/roles/default/memories",
+        json={
+            "user_id": "account-b",
+            "kind": "long_term",
+            "content": "Account B private memory",
+        },
+    )
+    assert create_a.status_code == 200
+    assert create_b.status_code == 200
+
+    list_a = await client.get(
+        "/agent/roles/default/memories",
+        params={"user_id": "account-a", "kind": "long_term"},
+    )
+    assert list_a.status_code == 200
+    contents = [memory["content"] for memory in list_a.json()["memories"]]
+    assert "Account A private memory" in contents
+    assert "Account B private memory" not in contents
 
 
 @pytest.mark.asyncio

@@ -34,7 +34,7 @@ from agent.schemas.handoff import (
     AgentHandoffPacket,
     AgentStageContext,
 )
-from agent.schemas.memory import MemoryContext, MemoryRecord
+from agent.schemas.memory import MemoryCandidate, MemoryContext, MemoryRecord
 from agent.skills.registry import SkillRegistry
 from agent.trace import TraceStore
 from agent.weight_loss import WeightLossStore
@@ -48,6 +48,9 @@ SYSTEM_PROMPT = """你是一个可靠、友好的个人助手，可以使用已�
 默认使用中文回答，除非用户明确要求英文或其他语言。回答要简洁、清楚、有帮助。使用工具后，简要说明你做了什么，并清晰呈现结果。"""
 
 MAX_TOOL_ROUNDS = 12
+CONVERSATION_COMPACTION_THRESHOLD = 40
+CONVERSATION_COMPACTION_KEEP_MESSAGES = 12
+CONVERSATION_COMPACTION_MAX_MESSAGES = 80
 SUPER_CHAT_AGENT_ID = "super_chat"
 AIGC_AGENT_ID = "image_generation_v1"
 WEIGHT_LOSS_AGENT_ID = "weight_loss_v1"
@@ -79,12 +82,18 @@ class AgentEngine:
         trace_store: TraceStore | None = None,
         role_memory: RoleMemoryStore | None = None,
         memory_hook: MemoryHook | None = None,
+        ai_memory_review_enabled: bool = False,
+        conversation_compaction_threshold: int = CONVERSATION_COMPACTION_THRESHOLD,
+        conversation_compaction_keep_messages: int = CONVERSATION_COMPACTION_KEEP_MESSAGES,
         weight_loss_store: WeightLossStore | None = None,
     ):
         self.skill_registry = skill_registry
-        self.memory = ConversationMemory()
+        self.memory = ConversationMemory(max_messages=CONVERSATION_COMPACTION_MAX_MESSAGES)
         self.role_memory = role_memory or RoleMemoryStore()
         self.memory_hook = memory_hook or HeuristicMemoryHook()
+        self.ai_memory_review_enabled = ai_memory_review_enabled
+        self.conversation_compaction_threshold = conversation_compaction_threshold
+        self.conversation_compaction_keep_messages = conversation_compaction_keep_messages
         self.trace_store = trace_store or TraceStore()
         self.weight_loss_store = weight_loss_store or WeightLossStore()
         self._providers: dict[str, LLMProvider] = {}
@@ -107,11 +116,35 @@ class AgentEngine:
     def _conversation_memory_id(self, request: ChatRequest) -> str:
         return f"user:{self._user_id(request)}:conversation:{request.conversation_id}"
 
+    def _add_conversation_memory(
+        self,
+        request: ChatRequest,
+        messages: list[LLMMessage],
+    ) -> None:
+        if not request.memory_enabled or not messages:
+            return
+        self.memory.add_many(self._conversation_memory_id(request), messages)
+
     def _resolve_role_id(self, request: ChatRequest, agent_metadata: dict) -> str:
         if request.role_id:
             return request.role_id
         default_role_id = agent_metadata.get("default_role_id") or "default"
         return str(default_role_id)
+
+    def _apply_memory_read_policy(
+        self,
+        request: ChatRequest,
+        role_context: MemoryContext,
+    ) -> MemoryContext:
+        if request.memory_enabled and role_context.role.memory_enabled:
+            return role_context
+        visible = MemoryContext(
+            role=role_context.role,
+            persona_memories=[],
+            long_term_memories=[],
+        )
+        visible.rendered = self.role_memory.render_context(visible)
+        return visible
 
     def _normalize_mode_prompts(self, prompts: list[str] | None) -> list[str]:
         normalized: list[str] = []
@@ -151,14 +184,51 @@ class AgentEngine:
             "`/减肥 /history 7d`、`/weight_loss/history 7d`、`/生图 /generate 复古台灯海报`。"
         )
 
+    def _render_memory_system(
+        self,
+        role_context: MemoryContext,
+        *,
+        short_term_summary: str = "",
+    ) -> str:
+        short_term_summary = " ".join(str(short_term_summary or "").split()).strip()
+        short_term_lines = [
+            "短期记忆：",
+            (
+                f"- 会话摘要：{short_term_summary}"
+                if short_term_summary
+                else "- 暂无压缩摘要；最近原始消息会作为后续对话消息提供。"
+            ),
+        ]
+        return "\n".join(
+            [
+                "记忆系统：",
+                role_context.rendered.strip(),
+                "",
+                "\n".join(short_term_lines),
+            ]
+        )
+
     def _build_system_prompt(
         self,
         role_context: MemoryContext,
         mode_prompts: list[str] | None = None,
         context_blocks: list[str] | None = None,
         agent_id: str = "general_assistant",
+        tool_names: list[str] | None = None,
+        short_term_summary: str = "",
     ) -> str:
         current_time = datetime.now(ZoneInfo("Asia/Shanghai"))
+        normalized_tool_names = [name for name in (tool_names or []) if name]
+        system_config = (
+            "系统级配置：\n"
+            f"- 当前 Agent：{agent_id}。\n"
+            "- 工具调用：可用工具 schema 已通过 tool/function calling 通道提供；"
+            + (
+                "当前工具包括：" + "、".join(normalized_tool_names[:20]) + "。"
+                if normalized_tool_names
+                else "当前没有可用工具。"
+            )
+        )
         temporal_context = (
             "时间上下文：\n"
             f"- 当前日期/时间：{current_time.strftime('%Y-%m-%d %H:%M:%S')} "
@@ -187,9 +257,14 @@ class AgentEngine:
         return (
             SYSTEM_PROMPT
             + "\n\n"
+            + system_config
+            + "\n\n"
             + temporal_context
             + "\n\n"
-            + role_context.rendered
+            + self._render_memory_system(
+                role_context,
+                short_term_summary=short_term_summary,
+            )
             + self._agent_system_context(agent_id)
             + mode_context
             + turn_context
@@ -230,6 +305,7 @@ class AgentEngine:
         mode_ids: list[str] | None = None,
         mode_prompts: list[str] | None = None,
         context_blocks: list[str] | None = None,
+        short_term_summary: str = "",
     ) -> None:
         normalized_context_blocks = self._normalize_context_blocks(context_blocks)
         self.trace_store.append_event(
@@ -249,6 +325,7 @@ class AgentEngine:
                 "context_block_chars": sum(len(block) for block in normalized_context_blocks),
                 "system_prompt": messages[0].content if messages else "",
                 "role_context": role_context.rendered,
+                "short_term_summary": short_term_summary,
                 "memory_records": [
                     {
                         "id": record.id,
@@ -263,6 +340,396 @@ class AgentEngine:
                 "messages": [self._trace_message(message) for message in messages],
             },
         )
+
+    def _memory_message_payload(self, message: LLMMessage, index: int) -> dict[str, Any]:
+        content = message.content
+        if isinstance(content, list):
+            text_parts: list[str] = []
+            for item in content:
+                if not isinstance(item, dict):
+                    continue
+                if item.get("type") == "text":
+                    text_parts.append(str(item.get("text") or ""))
+                elif item.get("type") == "image_url":
+                    text_parts.append("[image attachment]")
+                else:
+                    text_parts.append(f"[{item.get('type') or 'attachment'}]")
+            content_text = "\n".join(part for part in text_parts if part).strip()
+        else:
+            content_text = str(content or "").strip()
+        return {
+            "index": index,
+            "role": message.role,
+            "content": content_text[:1800],
+            "has_tool_calls": bool(message.tool_calls),
+            "tool_call_id": message.tool_call_id,
+        }
+
+    def _memory_review_messages(
+        self,
+        *,
+        role_context: MemoryContext,
+        agent_id: str,
+        request: ChatRequest,
+        assistant_message: str,
+        new_messages: list[LLMMessage],
+    ) -> list[LLMMessage]:
+        existing_records = [
+            {
+                "id": record.id,
+                "kind": "role" if record.kind == "persona" else record.kind,
+                "content": record.content,
+                "confidence": record.confidence,
+                "tags": record.tags,
+            }
+            for record in role_context.records
+        ]
+        turn_messages = [
+            self._memory_message_payload(message, index)
+            for index, message in enumerate(new_messages)
+        ]
+        system = (
+            "你是长期记忆更新器。你的任务是在一轮对话结束后，判断是否有信息值得跨会话保存。"
+            "只返回 JSON 对象，不要 Markdown。\n\n"
+            "只保存这些类型：\n"
+            "- long_term：稳定的用户事实、偏好、长期项目、持续目标、明确要求记住的信息。\n"
+            "- role：用户要求改变助手角色、人设、语气、工作方式或长期交互规则。\n\n"
+            "不要保存普通问题、一次性任务、临时上下文、模型回答中的猜测、搜索结果摘要、"
+            "敏感信息或隐私信息，除非用户明确要求记住。若当前消息与已有记忆重复，不要返回。"
+            "如果没有值得保存的内容，返回空数组。"
+        )
+        user = json.dumps(
+            {
+                "output_schema": {
+                    "memories": [
+                        {
+                            "kind": "long_term|role",
+                            "content": "简短、可直接放入 prompt 的记忆",
+                            "confidence": 0.0,
+                            "reason": "为什么值得保存",
+                            "tags": ["可选标签"],
+                        }
+                    ]
+                },
+                "role": role_context.role.model_dump(mode="json"),
+                "agent_id": agent_id,
+                "conversation_id": request.conversation_id,
+                "user_message": request.message,
+                "assistant_message": assistant_message[:2000],
+                "existing_memories": existing_records,
+                "turn_messages": turn_messages,
+            },
+            ensure_ascii=False,
+        )
+        return [
+            LLMMessage(role="system", content=system),
+            LLMMessage(role="user", content=user),
+        ]
+
+    def _coerce_memory_candidates(
+        self,
+        raw: dict[str, Any] | None,
+    ) -> list[MemoryCandidate]:
+        if not isinstance(raw, dict):
+            return []
+        items = raw.get("memories")
+        if not isinstance(items, list):
+            items = raw.get("candidates")
+        if not isinstance(items, list):
+            return []
+
+        candidates: list[MemoryCandidate] = []
+        for item in items[:8]:
+            if not isinstance(item, dict):
+                continue
+            kind = str(item.get("kind") or "long_term").strip()
+            if kind == "persona":
+                kind = "role"
+            if kind not in {"role", "long_term"}:
+                continue
+            content = " ".join(str(item.get("content") or "").split()).strip()
+            if len(content) < 4:
+                continue
+            try:
+                confidence = float(item.get("confidence", 0.7))
+            except (TypeError, ValueError):
+                confidence = 0.7
+            if confidence < 0.55:
+                continue
+            tags = item.get("tags") if isinstance(item.get("tags"), list) else []
+            reason = str(item.get("reason") or "ai_memory_review").strip()
+            candidates.append(
+                MemoryCandidate(
+                    kind=kind,  # type: ignore[arg-type]
+                    content=content[:240],
+                    confidence=max(0.0, min(confidence, 1.0)),
+                    reason=reason[:160] or "ai_memory_review",
+                    tags=[
+                        str(tag).strip()[:32]
+                        for tag in tags
+                        if str(tag).strip()
+                    ][:6],
+                    metadata={"reviewer": "ai"},
+                )
+            )
+        return candidates
+
+    async def _review_turn_with_ai(
+        self,
+        *,
+        request: ChatRequest,
+        agent_id: str,
+        role_context: MemoryContext,
+        assistant_message: str,
+        new_messages: list[LLMMessage],
+        run_id: str,
+    ) -> list[MemoryCandidate]:
+        provider = self._get_provider(request.model_preference)
+        messages = self._memory_review_messages(
+            role_context=role_context,
+            agent_id=agent_id,
+            request=request,
+            assistant_message=assistant_message,
+            new_messages=new_messages,
+        )
+        started = perf_counter()
+        self.trace_store.append_event(
+            run_id,
+            type="memory.review.started",
+            status="running",
+            title="AI memory review started",
+            payload={
+                "role_id": role_context.role.id,
+                "agent_id": agent_id,
+                "message_count": len(new_messages),
+            },
+        )
+        response = await provider.chat(messages, tools=None, temperature=0.1)
+        raw = self._extract_json_object(response.content)
+        candidates = self._coerce_memory_candidates(raw)
+        self.trace_store.append_event(
+            run_id,
+            type="memory.review.completed",
+            status="completed",
+            title="AI memory review completed",
+            payload={
+                "role_id": role_context.role.id,
+                "candidate_count": len(candidates),
+                "model": response.model,
+                "usage": response.usage,
+            },
+            duration_ms=int((perf_counter() - started) * 1000),
+        )
+        return candidates
+
+    def _conversation_compaction_messages(
+        self,
+        *,
+        conversation_id: str,
+        existing_summary: str,
+        history: list[LLMMessage],
+        keep_messages: int,
+    ) -> list[LLMMessage]:
+        payload = {
+            "conversation_id": conversation_id,
+            "existing_summary": existing_summary,
+            "messages": [
+                self._memory_message_payload(message, index)
+                for index, message in enumerate(history)
+            ],
+            "max_keep_message_indices": keep_messages,
+            "output_schema": {
+                "should_compact": True,
+                "summary": "压缩后的短期会话记忆摘要",
+                "keep_message_indices": [0],
+            },
+        }
+        system = (
+            "你是会话记忆压缩器。请判断当前会话历史是否需要压缩，并把仍然有用的信息写成短期摘要。"
+            "只返回 JSON 对象，不要 Markdown。\n\n"
+            "摘要要保留：用户目标、进行中的任务、关键约束、未解决问题、用户明确偏好、最近重要结论。"
+            "删除：寒暄、重复内容、工具原始输出、已经过期的一次性细节。"
+            "keep_message_indices 只保留需要作为原文继续带入的最近消息，优先保留最新用户请求和助手结论；"
+            "不要保留 tool 消息。"
+        )
+        return [
+            LLMMessage(role="system", content=system),
+            LLMMessage(role="user", content=json.dumps(payload, ensure_ascii=False)),
+        ]
+
+    def _fallback_conversation_summary(
+        self,
+        *,
+        existing_summary: str,
+        history: list[LLMMessage],
+    ) -> str:
+        parts: list[str] = []
+        if existing_summary:
+            parts.append(existing_summary)
+        for message in history[-12:]:
+            if message.role not in {"user", "assistant"}:
+                continue
+            payload = self._memory_message_payload(message, 0)
+            content = str(payload.get("content") or "").strip()
+            if not content:
+                continue
+            parts.append(f"{message.role}: {content[:260]}")
+        return "\n".join(parts)[-3000:].strip()
+
+    def _select_compaction_keep_messages(
+        self,
+        *,
+        raw: dict[str, Any] | None,
+        history: list[LLMMessage],
+        keep_messages: int,
+    ) -> list[LLMMessage]:
+        selected: list[LLMMessage] = []
+        raw_indices = raw.get("keep_message_indices") if isinstance(raw, dict) else None
+        if isinstance(raw_indices, list):
+            seen: set[int] = set()
+            for value in raw_indices:
+                try:
+                    index = int(value)
+                except (TypeError, ValueError):
+                    continue
+                if index in seen or index < 0 or index >= len(history):
+                    continue
+                seen.add(index)
+                message = history[index]
+                if message.role not in {"user", "assistant"} or message.tool_calls:
+                    continue
+                selected.append(message)
+                if len(selected) >= keep_messages:
+                    break
+
+        if selected:
+            return selected
+
+        recent = [
+            message
+            for message in history
+            if message.role in {"user", "assistant"} and not message.tool_calls
+        ]
+        return recent[-keep_messages:]
+
+    async def _maybe_compact_conversation_memory(
+        self,
+        *,
+        request: ChatRequest,
+        run_id: str,
+    ) -> None:
+        if not request.memory_enabled:
+            return
+        conversation_memory_id = self._conversation_memory_id(request)
+        threshold = max(1, self.conversation_compaction_threshold)
+        if not self.memory.needs_compaction(conversation_memory_id, threshold=threshold):
+            return
+
+        history = self.memory.get(conversation_memory_id)
+        existing_summary = self.memory.get_summary(conversation_memory_id)
+        keep_messages = max(2, self.conversation_compaction_keep_messages)
+        started = perf_counter()
+        self.trace_store.append_event(
+            run_id,
+            type="memory.compaction.started",
+            status="running",
+            title="Conversation memory compaction started",
+            payload={
+                "conversation_id": request.conversation_id,
+                "message_count": len(history),
+                "existing_summary_chars": len(existing_summary),
+            },
+        )
+        try:
+            provider = self._get_provider(request.model_preference)
+            response = await provider.chat(
+                self._conversation_compaction_messages(
+                    conversation_id=request.conversation_id,
+                    existing_summary=existing_summary,
+                    history=history,
+                    keep_messages=keep_messages,
+                ),
+                tools=None,
+                temperature=0.1,
+            )
+            raw = self._extract_json_object(response.content)
+            should_compact = True
+            if isinstance(raw, dict) and isinstance(raw.get("should_compact"), bool):
+                should_compact = bool(raw["should_compact"])
+            if not should_compact:
+                self.trace_store.append_event(
+                    run_id,
+                    type="memory.compaction.skipped",
+                    status="completed",
+                    title="Conversation memory compaction skipped",
+                    payload={"reason": "ai_decision", "model": response.model},
+                    duration_ms=int((perf_counter() - started) * 1000),
+                )
+                return
+            summary = (
+                str(raw.get("summary") or "").strip()
+                if isinstance(raw, dict)
+                else ""
+            )
+            if not summary:
+                summary = self._fallback_conversation_summary(
+                    existing_summary=existing_summary,
+                    history=history,
+                )
+            kept = self._select_compaction_keep_messages(
+                raw=raw,
+                history=history,
+                keep_messages=keep_messages,
+            )
+            self.memory.compact(
+                conversation_memory_id,
+                summary=summary[:3000],
+                keep_messages=kept,
+            )
+            self.trace_store.append_event(
+                run_id,
+                type="memory.compaction.completed",
+                status="completed",
+                title="Conversation memory compacted",
+                payload={
+                    "conversation_id": request.conversation_id,
+                    "before_count": len(history),
+                    "after_count": len(kept),
+                    "summary_chars": len(summary[:3000]),
+                    "model": response.model,
+                    "usage": response.usage,
+                },
+                duration_ms=int((perf_counter() - started) * 1000),
+            )
+        except Exception as e:
+            logger.exception("Conversation memory compaction failed")
+            summary = self._fallback_conversation_summary(
+                existing_summary=existing_summary,
+                history=history,
+            )
+            kept = self._select_compaction_keep_messages(
+                raw=None,
+                history=history,
+                keep_messages=keep_messages,
+            )
+            self.memory.compact(
+                conversation_memory_id,
+                summary=summary[:3000],
+                keep_messages=kept,
+            )
+            self.trace_store.append_event(
+                run_id,
+                type="memory.compaction.failed",
+                status="error",
+                title="Conversation memory compaction failed; fallback used",
+                payload={
+                    "error_message": str(e),
+                    "conversation_id": request.conversation_id,
+                    "before_count": len(history),
+                    "after_count": len(kept),
+                },
+                duration_ms=int((perf_counter() - started) * 1000),
+            )
 
     def _collect_search_citations(
         self,
@@ -347,24 +814,55 @@ class AgentEngine:
             return []
 
         try:
-            candidates = await self.memory_hook.review_turn(
-                role=role_context.role,
-                agent_id=agent_id,
-                conversation_id=request.conversation_id,
-                user_message=request.message,
-                assistant_message=assistant_message,
-                new_messages=new_messages,
-            )
+            if self.ai_memory_review_enabled:
+                candidates = await self._review_turn_with_ai(
+                    request=request,
+                    agent_id=agent_id,
+                    role_context=role_context,
+                    assistant_message=assistant_message,
+                    new_messages=new_messages,
+                    run_id=run_id,
+                )
+            else:
+                candidates = await self.memory_hook.review_turn(
+                    role=role_context.role,
+                    agent_id=agent_id,
+                    conversation_id=request.conversation_id,
+                    user_message=request.message,
+                    assistant_message=assistant_message,
+                    new_messages=new_messages,
+                )
         except Exception as e:
-            logger.exception("Memory hook failed")
+            logger.exception("AI memory review failed; falling back to heuristic hook")
             self.trace_store.append_event(
                 run_id,
-                type="memory.failed",
+                type="memory.review.failed",
                 status="error",
-                title="Memory hook failed",
+                title="AI memory review failed; heuristic fallback used",
                 payload={"error_message": str(e), "role_id": role_context.role.id},
             )
-            return []
+            try:
+                candidates = await self.memory_hook.review_turn(
+                    role=role_context.role,
+                    agent_id=agent_id,
+                    conversation_id=request.conversation_id,
+                    user_message=request.message,
+                    assistant_message=assistant_message,
+                    new_messages=new_messages,
+                )
+            except Exception as hook_error:
+                logger.exception("Memory hook failed")
+                self.trace_store.append_event(
+                    run_id,
+                    type="memory.failed",
+                    status="error",
+                    title="Memory hook failed",
+                    payload={
+                        "error_message": str(hook_error),
+                        "role_id": role_context.role.id,
+                    },
+                )
+                return []
 
         updates: list[MemoryRecord] = []
         for candidate in candidates:
@@ -836,6 +1334,7 @@ class AgentEngine:
                 events=latest_run.events if latest_run else [],
                 memory_context=source_role_context.records,
             )
+        target_role_context = self._apply_memory_read_policy(request, target_role_context)
 
         if target_agent.id == AIGC_AGENT_ID:
             return await self._process_image_generation(
@@ -1310,6 +1809,7 @@ class AgentEngine:
         history: list[LLMMessage],
         context_brief: str,
         handoff_packet: AgentHandoffPacket | None = None,
+        short_term_summary: str = "",
     ) -> list[LLMMessage]:
         context_blocks = self._normalize_context_blocks(request.context_blocks)
         context_text = "\n\n---\n\n".join(context_blocks) or "没有额外上下文块。"
@@ -1349,6 +1849,7 @@ class AgentEngine:
             f"模式指令：\n{mode_text}\n\n"
             f"结构化 Agent 输入包：\n{handoff_text}\n\n"
             f"角色上下文：\n{role_context.rendered[:2000]}\n\n"
+            f"短期记忆摘要：\n{short_term_summary or '暂无压缩摘要。'}\n\n"
             f"近期内存会话：\n{history_text}\n\n"
             f"当前用户请求：\n{user_text}\n\n"
             f"候选可复用上下文简报：\n{context_brief or '没有检测到可复用上下文简报。'}\n\n"
@@ -1490,6 +1991,7 @@ class AgentEngine:
         context_brief: str,
         run_id: str,
         handoff_packet: AgentHandoffPacket | None = None,
+        short_term_summary: str = "",
     ) -> dict[str, Any]:
         fallback = self._default_aigc_planning_decision(request, context_brief)
         should_plan = self._aigc_retrieval_required(request) or bool(context_brief.strip())
@@ -1502,6 +2004,7 @@ class AgentEngine:
             history=history,
             context_brief=context_brief,
             handoff_packet=handoff_packet,
+            short_term_summary=short_term_summary,
         )
         planning_started = perf_counter()
         self.trace_store.append_event(
@@ -1654,6 +2157,7 @@ class AgentEngine:
         role_context: MemoryContext,
         history: list[LLMMessage],
         handoff_packet: AgentHandoffPacket | None = None,
+        short_term_summary: str = "",
     ) -> list[LLMMessage]:
         context_blocks = self._normalize_context_blocks(request.context_blocks)
         context_text = "\n\n---\n\n".join(context_blocks) or "没有额外上下文块。"
@@ -1685,6 +2189,7 @@ class AgentEngine:
             f"模式指令：\n{mode_text}\n\n"
             f"结构化 Agent 输入包：\n{handoff_text}\n\n"
             f"角色上下文：\n{role_context.rendered[:4000]}\n\n"
+            f"短期记忆摘要：\n{short_term_summary or '暂无压缩摘要。'}\n\n"
             f"近期会话：\n{history_text}\n\n"
             f"当前用户请求：\n{user_text}\n\n"
             f"上传附件：\n{attachment_text}\n\n"
@@ -1703,6 +2208,7 @@ class AgentEngine:
         history: list[LLMMessage],
         run_id: str,
         handoff_packet: AgentHandoffPacket | None = None,
+        short_term_summary: str = "",
     ) -> dict[str, Any]:
         tools = self.skill_registry.get_tool_definitions()
         messages = self._build_aigc_research_messages(
@@ -1710,6 +2216,7 @@ class AgentEngine:
             role_context=role_context,
             history=history,
             handoff_packet=handoff_packet,
+            short_term_summary=short_term_summary,
         )
         citations: list[Citation] = []
         citation_urls: set[str] = set()
@@ -2164,6 +2671,7 @@ class AgentEngine:
         research_brief: str = "",
         text_heavy_visual: bool | None = None,
         handoff_packet: AgentHandoffPacket | None = None,
+        short_term_summary: str = "",
     ) -> list[LLMMessage]:
         mode_name = "专业提示词修饰" if professional else "轻量提示词审查"
         has_research_brief = bool(research_brief.strip())
@@ -2240,6 +2748,7 @@ class AgentEngine:
                 f"模式：{mode_name}\n\n"
                 f"结构化 Agent 输入包：\n{handoff_text}\n\n"
                 f"角色上下文：\n{role_context.rendered[:2500]}\n\n"
+                f"短期记忆摘要：\n{short_term_summary or '暂无压缩摘要。'}\n\n"
                 f"近期会话：\n{history_text}\n\n"
                 f"当前用户请求：\n{user_text}\n\n"
                 f"生图简报：\n{research_text}\n\n"
@@ -2700,6 +3209,7 @@ class AgentEngine:
         role_context: MemoryContext,
         summary: dict[str, Any],
         history: list[LLMMessage],
+        short_term_summary: str = "",
     ) -> list[LLMMessage]:
         current_time = datetime.now(ZoneInfo("Asia/Shanghai"))
         system = (
@@ -2753,6 +3263,7 @@ class AgentEngine:
         text = (
             f"当前时间：{current_time.strftime('%Y-%m-%d %H:%M:%S')} Asia/Shanghai\n\n"
             f"角色上下文：\n{role_context.rendered[:1600]}\n\n"
+            f"短期记忆摘要：\n{short_term_summary or '暂无压缩摘要。'}\n\n"
             f"近期对话：\n{self._format_weight_loss_history(history)}\n\n"
             f"数据库摘要：\n{self._render_weight_loss_summary_context(summary)}\n\n"
             f"用户本轮请求：\n{request.message or '用户没有输入文字。'}\n\n"
@@ -3528,13 +4039,17 @@ class AgentEngine:
             LLMMessage(role="user", content=request.message),
             LLMMessage(role="assistant", content=assistant_message),
         ]
-        self.memory.add_many(self._conversation_memory_id(request), new_messages)
+        self._add_conversation_memory(request, new_messages)
         memory_updates = await self._review_and_store_memories(
             request=request,
             agent_id=agent_id,
             role_context=role_context,
             assistant_message=assistant_message,
             new_messages=new_messages,
+            run_id=run_id,
+        )
+        await self._maybe_compact_conversation_memory(
+            request=request,
             run_id=run_id,
         )
         unique_skills = list(dict.fromkeys(skills_used))
@@ -3818,13 +4333,16 @@ class AgentEngine:
 
         period_days = self._weight_loss_period_days(request)
         user_id = self._weight_loss_user_id(request)
-        history = self.memory.get(self._conversation_memory_id(request))
+        conversation_context = self.memory.get_context(self._conversation_memory_id(request))
+        history = conversation_context.messages if request.memory_enabled else []
+        short_term_summary = conversation_context.summary if request.memory_enabled else ""
         starting_summary = self.weight_loss_store.summary(request.conversation_id, days=period_days, user_id=user_id)
         messages = self._build_weight_loss_messages(
             request=request,
             role_context=role_context,
             summary=starting_summary,
             history=history,
+            short_term_summary=short_term_summary,
         )
         self._append_context_trace(
             run_id=run_id,
@@ -3836,6 +4354,7 @@ class AgentEngine:
             mode_ids=request.mode_ids,
             mode_prompts=request.mode_prompts,
             context_blocks=request.context_blocks,
+            short_term_summary=short_term_summary,
         )
         self.trace_store.append_event(
             run_id,
@@ -4051,13 +4570,17 @@ class AgentEngine:
             LLMMessage(role="user", content=request.message),
             LLMMessage(role="assistant", content=assistant_message),
         ]
-        self.memory.add_many(self._conversation_memory_id(request), new_messages)
+        self._add_conversation_memory(request, new_messages)
         memory_updates = await self._review_and_store_memories(
             request=request,
             agent_id=agent_id,
             role_context=role_context,
             assistant_message=assistant_message,
             new_messages=new_messages,
+            run_id=run_id,
+        )
+        await self._maybe_compact_conversation_memory(
+            request=request,
             run_id=run_id,
         )
         skills_used = ["food_calorie_estimation"] if logged_meal else []
@@ -4150,7 +4673,7 @@ class AgentEngine:
                     LLMMessage(role="user", content=request.message),
                     LLMMessage(role="assistant", content=assistant_message),
                 ]
-                self.memory.add_many(self._conversation_memory_id(request), new_messages)
+                self._add_conversation_memory(request, new_messages)
                 self.trace_store.complete_run(
                     run_id,
                     output=assistant_message,
@@ -4175,7 +4698,9 @@ class AgentEngine:
                 )
             request = self._apply_aigc_command_to_request(request, command)
 
-        history = self.memory.get(self._conversation_memory_id(request))
+        conversation_context = self.memory.get_context(self._conversation_memory_id(request))
+        history = conversation_context.messages if request.memory_enabled else []
+        short_term_summary = conversation_context.summary if request.memory_enabled else ""
         professional = self._aigc_professional_mode_enabled(request)
         context_brief = self._aigc_existing_context_brief(request=request, history=history)
         source_agent_id = (
@@ -4234,6 +4759,7 @@ class AgentEngine:
             context_brief=context_brief,
             run_id=run_id,
             handoff_packet=handoff_packet,
+            short_term_summary=short_term_summary,
         )
         planning_stage = AgentStageContext(
             stage_id="target_agent.execution_planning",
@@ -4322,6 +4848,7 @@ class AgentEngine:
             title="Role memory loaded",
             payload={
                 "role_id": role_id,
+                "user_id": self._user_id(request),
                 "persona_count": len(role_context.persona_memories),
                 "long_term_count": len(role_context.long_term_memories),
                 "context_record_ids": [record.id for record in role_context.records],
@@ -4393,6 +4920,7 @@ class AgentEngine:
                     history=history,
                     run_id=run_id,
                     handoff_packet=handoff_packet,
+                    short_term_summary=short_term_summary,
                 )
                 self.trace_store.append_event(
                     run_id,
@@ -4480,6 +5008,7 @@ class AgentEngine:
             research_brief=research_brief,
             text_heavy_visual=text_heavy_visual,
             handoff_packet=handoff_packet,
+            short_term_summary=short_term_summary,
         )
         self._append_context_trace(
             run_id=run_id,
@@ -4491,6 +5020,7 @@ class AgentEngine:
             mode_ids=request.mode_ids,
             mode_prompts=request.mode_prompts,
             context_blocks=review_context_blocks,
+            short_term_summary=short_term_summary,
         )
 
         fallback_review = self._fallback_aigc_review(request)
@@ -4568,13 +5098,17 @@ class AgentEngine:
                 LLMMessage(role="user", content=request.message),
                 LLMMessage(role="assistant", content=assistant_message),
             ]
-            self.memory.add_many(self._conversation_memory_id(request), new_messages)
+            self._add_conversation_memory(request, new_messages)
             memory_updates = await self._review_and_store_memories(
                 request=request,
                 agent_id=agent_id,
                 role_context=role_context,
                 assistant_message=assistant_message,
                 new_messages=new_messages,
+                run_id=run_id,
+            )
+            await self._maybe_compact_conversation_memory(
+                request=request,
                 run_id=run_id,
             )
             skills_used = list(dict.fromkeys(research_skills + ["prompt_refine"]))
@@ -4798,7 +5332,7 @@ class AgentEngine:
                     LLMMessage(role="user", content=request.message),
                     LLMMessage(role="assistant", content=error_msg),
                 ]
-                self.memory.add_many(self._conversation_memory_id(request), new_messages)
+                self._add_conversation_memory(request, new_messages)
                 error_tokens_used = dict(research_usage)
                 for key, value in review_usage.items():
                     error_tokens_used[key] = error_tokens_used.get(key, 0) + value
@@ -4898,13 +5432,17 @@ class AgentEngine:
             LLMMessage(role="user", content=request.message),
             LLMMessage(role="assistant", content=assistant_message),
         ]
-        self.memory.add_many(self._conversation_memory_id(request), new_messages)
+        self._add_conversation_memory(request, new_messages)
         memory_updates = await self._review_and_store_memories(
             request=request,
             agent_id=agent_id,
             role_context=role_context,
             assistant_message=assistant_message,
             new_messages=new_messages,
+            run_id=run_id,
+        )
+        await self._maybe_compact_conversation_memory(
+            request=request,
             run_id=run_id,
         )
 
@@ -5082,6 +5620,7 @@ class AgentEngine:
                 run_id=run.run_id,
                 events=latest_run.events,
             )
+        role_context = self._apply_memory_read_policy(request, role_context)
 
         entry_history = self.memory.get(self._conversation_memory_id(request))
         self._append_agent_input_received_trace(
@@ -5207,6 +5746,7 @@ class AgentEngine:
                     events=latest_run.events,
                     memory_context=role_context.records,
                 )
+            target_role_context = self._apply_memory_read_policy(request, target_role_context)
 
             return await self._process_image_generation(
                 request=request,
@@ -5285,6 +5825,7 @@ class AgentEngine:
                     events=latest_run.events,
                     memory_context=role_context.records,
                 )
+            target_role_context = self._apply_memory_read_policy(request, target_role_context)
 
             return await self._process_weight_loss(
                 request=request,
@@ -5345,7 +5886,10 @@ class AgentEngine:
         tools = self.skill_registry.get_tool_definitions()
 
         # Build messages
-        history = self.memory.get(self._conversation_memory_id(request))
+        conversation_context = self.memory.get_context(self._conversation_memory_id(request))
+        history = conversation_context.messages if request.memory_enabled else []
+        short_term_summary = conversation_context.summary if request.memory_enabled else ""
+        tool_names = [tool.name for tool in tools]
         messages = [
             LLMMessage(
                 role="system",
@@ -5354,6 +5898,8 @@ class AgentEngine:
                     request.mode_prompts,
                     request.context_blocks,
                     agent_id=agent_id,
+                    tool_names=tool_names,
+                    short_term_summary=short_term_summary,
                 ),
             )
         ]
@@ -5366,6 +5912,7 @@ class AgentEngine:
             title="Role memory loaded",
             payload={
                 "role_id": role_id,
+                "user_id": self._user_id(request),
                 "persona_count": len(role_context.persona_memories),
                 "long_term_count": len(role_context.long_term_memories),
                 "context_record_ids": [record.id for record in role_context.records],
@@ -5377,10 +5924,11 @@ class AgentEngine:
             role_context=role_context,
             messages=messages,
             tools_count=len(tools),
-            tool_names=[tool.name for tool in tools],
+            tool_names=tool_names,
             mode_ids=request.mode_ids,
             mode_prompts=request.mode_prompts,
             context_blocks=request.context_blocks,
+            short_term_summary=short_term_summary,
         )
 
         # Track skill usage
@@ -5447,7 +5995,7 @@ class AgentEngine:
                 all_new_messages.append(
                     LLMMessage(role="assistant", content=error_msg)
                 )
-                self.memory.add_many(self._conversation_memory_id(request), all_new_messages)
+                self._add_conversation_memory(request, all_new_messages)
                 self.trace_store.fail_run(
                     run.run_id,
                     error_message=error_msg,
@@ -5622,7 +6170,7 @@ class AgentEngine:
             )
 
         # Save to memory
-        self.memory.add_many(self._conversation_memory_id(request), all_new_messages)
+        self._add_conversation_memory(request, all_new_messages)
 
         final_content = all_new_messages[-1].content
         if not isinstance(final_content, str):
@@ -5634,6 +6182,10 @@ class AgentEngine:
             role_context=role_context,
             assistant_message=final_content,
             new_messages=all_new_messages,
+            run_id=run.run_id,
+        )
+        await self._maybe_compact_conversation_memory(
+            request=request,
             run_id=run.run_id,
         )
 

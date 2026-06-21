@@ -20,99 +20,121 @@ from agent.schemas.memory import (
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_USER_ID = "0"
+ROLE_OWNER_METADATA_KEY = "owner_user_id"
+
+
+def _role_metadata(
+    *,
+    category: str,
+    zh_name: str,
+    zh_description: str,
+    en_name: str,
+    en_description: str,
+    preferences: list[str] | None = None,
+) -> dict:
+    return {
+        "built_in": True,
+        "category": category,
+        "localized": {
+            "zh": {"name": zh_name, "description": zh_description},
+            "en": {"name": en_name, "description": en_description},
+        },
+        "preferences": preferences or [],
+    }
+
 
 DEFAULT_ROLE = RoleProfile(
     id="default",
     name="默认助手",
-    description="普通个人助手对话的共享角色。",
+    description="日常聊天、问答、整理和轻量任务的默认角色。",
     base_persona=(
-        "你是一位简洁、有帮助的个人助手。你会在不同会话中保持必要连续性，"
-        "但不会过度暴露内部记忆。"
+        "你是一位温和、清晰、有行动感的个人助手。你会先理解用户真正想完成的事，"
+        "再用简洁的结构给出回答、建议或下一步。"
     ),
     instructions=[
         "把角色记忆作为私有上下文，用于提升相关性和连续性。",
         "除非用户询问，不要逐条复述记忆记录。",
         "如果记忆和当前用户消息冲突，优先相信当前消息。",
+        "默认跟随用户当前使用的语言回答。",
     ],
-    metadata={"built_in": True},
+    metadata=_role_metadata(
+        category="daily",
+        zh_name="默认助手",
+        zh_description="日常聊天、问答、整理和轻量任务的默认角色。",
+        en_name="Everyday Assistant",
+        en_description="A balanced default persona for chat, Q&A, notes, and lightweight tasks.",
+        preferences=["回答先给结论，再补必要背景。", "不确定时明确说明边界。"],
+    ),
 )
 
 DEFAULT_ROLES = [
     DEFAULT_ROLE,
     RoleProfile(
-        id="interview_coach",
-        name="Interview Coach",
-        description="面试陪练角色，适合 AI 应用开发、系统设计和项目复盘。",
+        id="work_partner",
+        name="工作搭档",
+        description="适合拆任务、写计划、整理会议和推进日常工作。",
         base_persona=(
-            "你是一位严格但支持感很强的面试教练。你会先判断候选人的目标岗位和当前水平，"
-            "再用追问、结构化反馈和示范答案帮助用户提升表达质量。"
+            "你是一位可靠的工作搭档。你擅长把杂乱信息整理成目标、行动项、优先级和"
+            "可追踪的下一步。"
         ),
         instructions=[
-            "优先用中文回答，必要时给出英文面试表达版本。",
-            "先指出答案的结构问题，再给出更强版本。",
-            "对用户的经历保持真实约束，不编造项目细节。",
+            "先识别目标、截止时间、相关人和阻塞点。",
+            "输出要便于直接复制到待办、周报或会议纪要。",
+            "在信息不足时给出最小可行动版本，并标出需要补充的内容。",
         ],
-        metadata={"built_in": True, "category": "career"},
+        metadata=_role_metadata(
+            category="work",
+            zh_name="工作搭档",
+            zh_description="适合拆任务、写计划、整理会议和推进日常工作。",
+            en_name="Work Partner",
+            en_description="For planning tasks, meeting notes, prioritization, and daily execution.",
+            preferences=["偏好行动清单和明确负责人。", "复杂事项先拆阶段。"],
+        ),
     ),
     RoleProfile(
-        id="product_architect",
-        name="Product Architect",
-        description="产品和技术方案共创角色，适合从想法推进到架构和 MVP。",
+        id="learning_coach",
+        name="学习教练",
+        description="适合学习计划、概念讲解、复习路径和刻意练习。",
         base_persona=(
-            "你是一位兼具产品判断和工程落地能力的架构伙伴。你会把模糊需求拆成用户、"
-            "场景、边界、数据流和渐进式实施计划。"
+            "你是一位耐心但不纵容模糊的学习教练。你会先判断用户当前水平，再用小步解释、"
+            "例题、反问和复盘帮助用户真正掌握。"
         ),
         instructions=[
-            "默认先澄清目标用户、核心工作流和约束。",
-            "优先提出可落地的最小闭环，而不是过度抽象的平台化设计。",
-            "方案要包含产品体验、后端边界和后续演进点。",
+            "先判断用户已经知道什么，再决定讲解深度。",
+            "复杂概念用例子和对比解释。",
+            "每次给一个可练习的小任务，避免一次塞太多内容。",
         ],
-        metadata={"built_in": True, "category": "product"},
+        metadata=_role_metadata(
+            category="learning",
+            zh_name="学习教练",
+            zh_description="适合学习计划、概念讲解、复习路径和刻意练习。",
+            en_name="Learning Coach",
+            en_description="For learning plans, explanations, review paths, and deliberate practice.",
+            preferences=["一步一步讲清楚。", "用小测和复盘确认掌握。"],
+        ),
     ),
     RoleProfile(
-        id="research_analyst",
-        name="Research Analyst",
-        description="研究分析角色，适合资料检索、归纳对比和报告结构化。",
+        id="初一",
+        name="初一",
+        description="一个赛博小书生，适合陪聊、解释知识、整理灵感和轻快共创。",
         base_persona=(
-            "你是一位谨慎的研究分析师。你会区分事实、推断和建议，尽量给出来源、时间范围"
-            "和不确定性。"
+            "你是一个赛博小书生，上通天文，下懂地理，技巧可爱。你会用轻快、有书卷气"
+            "但不过度表演的方式陪用户聊天、解释问题、整理想法。"
         ),
         instructions=[
-            "遇到可能变化的信息时要提醒需要检索或验证。",
-            "输出优先使用结论、证据、风险、下一步的结构。",
-            "不要把检索不到的信息包装成确定事实。",
+            "默认跟随用户当前使用的语言回答。",
+            "解释复杂问题时先用通俗说法，再补关键细节。",
+            "可以保持一点灵动可爱的表达，但不要影响准确性和效率。",
         ],
-        metadata={"built_in": True, "category": "research"},
-    ),
-    RoleProfile(
-        id="creative_partner",
-        name="Creative Partner",
-        description="创意伙伴角色，适合写作、命名、叙事和表达风格探索。",
-        base_persona=(
-            "你是一位有审美判断的创意伙伴。你会提出多个方向，解释风格差异，并帮助用户"
-            "找到更准确、更有生命力的表达。"
+        metadata=_role_metadata(
+            category="companion",
+            zh_name="初一",
+            zh_description="一个赛博小书生，适合陪聊、解释知识、整理灵感和轻快共创。",
+            en_name="Chuyi",
+            en_description="A cyber young scholar for conversation, explanations, idea sorting, and playful collaboration.",
+            preferences=["语气轻巧可爱，但不牺牲准确性。", "先讲通俗版本，再补关键细节。"],
         ),
-        instructions=[
-            "先给少量高质量方向，再迭代细化。",
-            "保留用户原始意图，不把内容改成空泛模板。",
-            "需要时给出不同语气版本，如克制、锐利、温柔、专业。",
-        ],
-        metadata={"built_in": True, "category": "creative"},
-    ),
-    RoleProfile(
-        id="code_reviewer",
-        name="Code Reviewer",
-        description="代码审查角色，适合发现 bug、回归风险和测试缺口。",
-        base_persona=(
-            "你是一位严谨的代码审查者。你优先寻找真实风险、行为回归和缺失测试，"
-            "并用具体文件和行号定位问题。"
-        ),
-        instructions=[
-            "发现问题时按严重程度排序。",
-            "没有问题时明确说明，并列出剩余风险或测试缺口。",
-            "不要把风格偏好包装成 bug。",
-        ],
-        metadata={"built_in": True, "category": "engineering"},
     ),
 ]
 
@@ -133,7 +155,7 @@ class RoleMemoryStore:
         max_context_records: int = 12,
     ):
         self._roles: dict[str, RoleProfile] = {
-            role.id: role for role in DEFAULT_ROLES
+            self._role_storage_key(role): role for role in DEFAULT_ROLES
         }
         self._records: dict[str, list[MemoryRecord]] = defaultdict(list)
         self._storage_path = Path(storage_path) if storage_path else None
@@ -141,12 +163,19 @@ class RoleMemoryStore:
         self._max_context_records = max_context_records
         self._lock = RLock()
         self._load()
+        self._sync_default_roles()
         for role in roles or []:
             self.register_role(role)
 
-    def register_role(self, role: RoleProfile) -> RoleProfile:
+    def register_role(
+        self,
+        role: RoleProfile,
+        *,
+        user_id: str | None = None,
+    ) -> RoleProfile:
+        role = self._role_with_owner(role, user_id=user_id)
         with self._lock:
-            self._roles[role.id] = role
+            self._roles[self._role_storage_key(role)] = role
             self._persist_locked()
         return role
 
@@ -154,10 +183,14 @@ class RoleMemoryStore:
         role_id = self._clean_role_id(request.id or request.name)
         if not role_id:
             raise ValueError("role id cannot be empty")
+        owner_user_id = self._normalize_user_id(request.user_id)
 
         with self._lock:
-            if role_id in self._roles:
-                raise ValueError(f"role already exists: {role_id}")
+            if role_id in self._default_role_ids():
+                raise ValueError(f"role id is reserved by built-in role: {role_id}")
+            role_key = self._role_storage_key_for(role_id, owner_user_id)
+            if role_key in self._roles:
+                raise ValueError(f"role already exists for user {owner_user_id}: {role_id}")
             role = RoleProfile(
                 id=role_id,
                 name=request.name.strip(),
@@ -166,19 +199,28 @@ class RoleMemoryStore:
                 instructions=[item.strip() for item in request.instructions if item.strip()],
                 enabled=request.enabled,
                 memory_enabled=request.memory_enabled,
-                metadata={**request.metadata, "built_in": False},
+                metadata={
+                    **request.metadata,
+                    "built_in": False,
+                    ROLE_OWNER_METADATA_KEY: owner_user_id,
+                },
             )
-            self._roles[role.id] = role
+            self._roles[role_key] = role
             self._persist_locked()
             return role
 
     def update_role(self, role_id: str, request: RoleUpdateRequest) -> RoleProfile:
+        owner_user_id = self._normalize_user_id(request.user_id)
         with self._lock:
-            role = self._roles.get(role_id)
+            role_key = self._role_storage_key_for(role_id, owner_user_id)
+            role = self._roles.get(role_key)
             if role is None:
                 raise ValueError(f"unknown role: {role_id}")
+            if role.metadata.get("built_in"):
+                raise ValueError(f"cannot update built-in role: {role_id}")
 
             updates = request.model_dump(exclude_unset=True)
+            updates.pop("user_id", None)
             metadata = updates.pop("metadata", None)
             if "name" in updates and updates["name"] is not None:
                 updates["name"] = updates["name"].strip()
@@ -196,31 +238,56 @@ class RoleMemoryStore:
                 updates["metadata"] = {
                     **role.metadata,
                     **metadata,
-                    "built_in": bool(role.metadata.get("built_in")),
+                    "built_in": False,
+                    ROLE_OWNER_METADATA_KEY: owner_user_id,
                 }
 
             updated = role.model_copy(update=updates)
-            self._roles[role_id] = updated
+            self._roles[role_key] = updated
             self._persist_locked()
             return updated
 
-    def delete_role(self, role_id: str) -> None:
+    def delete_role(self, role_id: str, *, user_id: str | None = None) -> None:
+        owner_user_id = self._normalize_user_id(user_id)
         with self._lock:
-            role = self._roles.get(role_id)
+            role_key = self._role_storage_key_for(role_id, owner_user_id)
+            role = self._roles.get(role_key)
             if role is None:
                 raise ValueError(f"unknown role: {role_id}")
             if role.metadata.get("built_in"):
                 raise ValueError(f"cannot delete built-in role: {role_id}")
-            self._roles.pop(role_id, None)
-            self._records.pop(role_id, None)
+            self._roles.pop(role_key, None)
+            self._records[role_id] = [
+                record
+                for record in self._records.get(role_id, [])
+                if record.user_id != owner_user_id
+            ]
+            if not self._records[role_id]:
+                self._records.pop(role_id, None)
             self._persist_locked()
 
-    def list_roles(self) -> list[RoleProfile]:
+    def list_roles(self, *, user_id: str | None = None) -> list[RoleProfile]:
+        owner_user_id = self._normalize_user_id(user_id)
         with self._lock:
-            return list(self._roles.values())
+            built_ins = [
+                self._roles[role.id]
+                for role in DEFAULT_ROLES
+                if role.id in self._roles
+            ]
+            custom = [
+                role
+                for role in self._roles.values()
+                if not role.metadata.get("built_in")
+                and self._role_owner_user_id(role) == owner_user_id
+            ]
+            return [*built_ins, *custom]
 
-    def get_role(self, role_id: str) -> RoleProfile | None:
+    def get_role(self, role_id: str, *, user_id: str | None = None) -> RoleProfile | None:
+        owner_user_id = self._normalize_user_id(user_id)
         with self._lock:
+            custom = self._roles.get(self._role_storage_key_for(role_id, owner_user_id))
+            if custom is not None:
+                return custom
             return self._roles.get(role_id)
 
     def add_memory(
@@ -242,7 +309,7 @@ class RoleMemoryStore:
             raise ValueError("memory content cannot be empty")
 
         with self._lock:
-            if role_id not in self._roles:
+            if self.get_role(role_id, user_id=normalized_user_id) is None:
                 raise ValueError(f"unknown role: {role_id}")
 
             duplicate = self._find_duplicate(
@@ -276,7 +343,7 @@ class RoleMemoryStore:
                 metadata=metadata or {},
             )
             self._records[role_id].append(record)
-            self._truncate(role_id)
+            self._truncate(role_id, user_id=normalized_user_id)
             self._persist_locked()
             return record
 
@@ -318,7 +385,7 @@ class RoleMemoryStore:
     ) -> None:
         normalized_user_id = self._normalize_user_id(user_id)
         with self._lock:
-            if role_id not in self._roles:
+            if self.get_role(role_id, user_id=normalized_user_id) is None:
                 raise ValueError(f"unknown role: {role_id}")
 
             records = self._records.get(role_id, [])
@@ -340,9 +407,16 @@ class RoleMemoryStore:
         user_id: str | None = None,
         agent_id: str | None = None,
     ) -> MemoryContext | None:
-        role = self.get_role(role_id)
+        role = self.get_role(role_id, user_id=user_id)
         if role is None:
             return None
+        role_memories = self.list_memories(
+            role_id=role_id,
+            user_id=user_id,
+            kind="role",
+            agent_id=agent_id,
+            limit=self._max_context_records,
+        )
         persona_memories = self.list_memories(
             role_id=role_id,
             user_id=user_id,
@@ -359,7 +433,7 @@ class RoleMemoryStore:
         )
         context = MemoryContext(
             role=role,
-            persona_memories=persona_memories,
+            persona_memories=[*role_memories, *persona_memories],
             long_term_memories=long_term_memories,
         )
         context.rendered = self.render_context(context)
@@ -367,27 +441,27 @@ class RoleMemoryStore:
 
     def render_context(self, context: MemoryContext) -> str:
         role = context.role
-        lines = [
-            "当前角色上下文：",
-            f"- 角色 ID：{role.id}",
-            f"- 角色名称：{role.name}",
-        ]
+        lines = ["角色记忆：", f"- 角色 ID：{role.id}", f"- 角色名称：{role.name}"]
         if role.description:
             lines.append(f"- 角色描述：{role.description}")
         if role.base_persona:
-            lines.extend(["", "基础人设：", role.base_persona])
+            lines.append(f"- 基础人设：{role.base_persona}")
         if role.instructions:
-            lines.append("")
-            lines.append("角色指令：")
-            lines.extend(f"- {item}" for item in role.instructions)
+            lines.append("- 角色指令：")
+            lines.extend(f"  - {item}" for item in role.instructions)
+        preferences = self._metadata_list(role.metadata.get("preferences"))
+        if preferences:
+            lines.append("- 习惯/偏好：")
+            lines.extend(f"  - {item}" for item in preferences)
         if context.persona_memories:
-            lines.append("")
-            lines.append("人设记忆：")
-            lines.extend(f"- {record.content}" for record in context.persona_memories)
+            lines.append("- 用户更新的角色记忆：")
+            lines.extend(f"  - {record.content}" for record in context.persona_memories)
         if context.long_term_memories:
             lines.append("")
             lines.append("长期记忆：")
             lines.extend(f"- {record.content}" for record in context.long_term_memories)
+        else:
+            lines.extend(["", "长期记忆：", "- 暂无。"])
         return "\n".join(lines)
 
     def _find_duplicate(
@@ -411,12 +485,47 @@ class RoleMemoryStore:
                 return record
         return None
 
-    def _truncate(self, role_id: str) -> None:
+    def _truncate(self, role_id: str, *, user_id: str) -> None:
         records = self._records[role_id]
-        if len(records) <= self._max_records_per_role:
+        scoped_records = [record for record in records if record.user_id == user_id]
+        if len(scoped_records) <= self._max_records_per_role:
             return
-        records.sort(key=lambda record: record.updated_at, reverse=True)
-        self._records[role_id] = records[: self._max_records_per_role]
+        scoped_records.sort(key=lambda record: record.updated_at, reverse=True)
+        keep_ids = {record.id for record in scoped_records[: self._max_records_per_role]}
+        self._records[role_id] = [
+            record
+            for record in records
+            if record.user_id != user_id or record.id in keep_ids
+        ]
+
+    def _sync_default_roles(self) -> None:
+        changed = False
+        with self._lock:
+            default_role_ids = {role.id for role in DEFAULT_ROLES}
+            for role in DEFAULT_ROLES:
+                current = self._roles.get(role.id)
+                if current != role:
+                    changed = changed or current != role
+                    self._roles[role.id] = role
+            stale_role_keys = [
+                role_key
+                for role_key, role in self._roles.items()
+                if (
+                    role.metadata.get("built_in")
+                    and role.id not in default_role_ids
+                )
+                or (
+                    not role.metadata.get("built_in")
+                    and role.id in default_role_ids
+                )
+            ]
+            for role_key in stale_role_keys:
+                role = self._roles.pop(role_key, None)
+                if role is not None and role.metadata.get("built_in"):
+                    self._records.pop(role.id, None)
+                changed = True
+            if changed:
+                self._persist_locked()
 
     def _load(self) -> None:
         if self._storage_path is None or not self._storage_path.exists():
@@ -426,7 +535,8 @@ class RoleMemoryStore:
             payload = json.loads(self._storage_path.read_text(encoding="utf-8"))
             for role_data in payload.get("roles", []):
                 role = RoleProfile.model_validate(role_data)
-                self._roles[role.id] = role
+                role = self._role_with_owner(role)
+                self._roles[self._role_storage_key(role)] = role
 
             loaded_records: dict[str, list[MemoryRecord]] = defaultdict(list)
             for record_data in payload.get("records", []):
@@ -463,10 +573,61 @@ class RoleMemoryStore:
         )
         tmp_path.replace(self._storage_path)
 
+    def _role_with_owner(
+        self,
+        role: RoleProfile,
+        *,
+        user_id: str | None = None,
+    ) -> RoleProfile:
+        if role.metadata.get("built_in"):
+            metadata = {**role.metadata, "built_in": True}
+            metadata.pop(ROLE_OWNER_METADATA_KEY, None)
+            return role.model_copy(update={"metadata": metadata})
+
+        owner_user_id = self._normalize_user_id(
+            user_id
+            or role.metadata.get(ROLE_OWNER_METADATA_KEY)
+            or role.metadata.get("user_id")
+        )
+        return role.model_copy(
+            update={
+                "metadata": {
+                    **role.metadata,
+                    "built_in": False,
+                    ROLE_OWNER_METADATA_KEY: owner_user_id,
+                }
+            }
+        )
+
+    def _role_storage_key(self, role: RoleProfile) -> str:
+        if role.metadata.get("built_in"):
+            return role.id
+        return self._role_storage_key_for(role.id, self._role_owner_user_id(role))
+
+    def _role_storage_key_for(self, role_id: str, user_id: str | None) -> str:
+        if role_id in self._default_role_ids():
+            return role_id
+        return f"user:{self._normalize_user_id(user_id)}:role:{role_id}"
+
+    def _role_owner_user_id(self, role: RoleProfile) -> str:
+        return self._normalize_user_id(role.metadata.get(ROLE_OWNER_METADATA_KEY))
+
+    @staticmethod
+    def _default_role_ids() -> set[str]:
+        return {role.id for role in DEFAULT_ROLES}
+
     @staticmethod
     def _normalize_user_id(value: str | int | None) -> str:
         text = str(value if value not in (None, "") else "0").strip()
         return text or "0"
+
+    @staticmethod
+    def _metadata_list(value: object) -> list[str]:
+        if isinstance(value, str):
+            return [value.strip()] if value.strip() else []
+        if isinstance(value, list):
+            return [str(item).strip() for item in value if str(item).strip()]
+        return []
 
     @staticmethod
     def _clean_content(content: str) -> str:

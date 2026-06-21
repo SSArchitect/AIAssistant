@@ -2,6 +2,7 @@ const API_BASE = '';
 const LANGUAGE_KEY = 'agent_assistant_language';
 const MODE_STORAGE_KEY = 'super_chat_mode_ids';
 const CURRENT_CONVERSATION_STORAGE_KEY = 'agent_assistant_current_conversation_id';
+const CURRENT_ROLE_ID_STORAGE_KEY = 'agent_assistant_current_role_id';
 const SIDEBAR_COLLAPSE_STORAGE_KEY = 'agent_assistant_sidebar_collapsed_sections';
 const CURRENT_USER_ID_STORAGE_KEY = 'agent_assistant_current_user_id';
 const ACCOUNT_SESSION_STORAGE_KEY = 'agent_assistant_account_session';
@@ -19,7 +20,7 @@ const VIEW_COPY = {
 const I18N = {
     zh: {
         app: { name: '阿安的工作台' },
-        nav: { chat: 'Super Chat', pulse: 'Pulse', agents: 'Agents', tools: 'Tools', trace: 'Trace', runs: 'Runs', settings: 'Settings' },
+        nav: { chat: 'Super Chat', pulse: '信息流', agents: 'Agents', tools: 'Tools', trace: 'Trace', runs: 'Runs', settings: 'Settings' },
         sidebar: {
             navigation: '导航',
             pinned: '固定 Agent',
@@ -30,7 +31,7 @@ const I18N = {
             emptyConversations: '暂无会话',
             emptyPinned: '在 Agents 中固定常用功能',
         },
-        topbar: { agent: 'Agent' },
+        topbar: { agent: 'Agent', role: '角色' },
         account: {
             label: '帐号',
             add: '新帐号',
@@ -64,6 +65,7 @@ const I18N = {
             openConfig: '打开完整配置',
             generate: '生成图片',
             generating: '生成中...',
+            regenerateAnswer: '重新回答',
             copyAnswer: '复制回答',
             copied: '已复制',
             copyFailed: '复制失败',
@@ -83,7 +85,7 @@ const I18N = {
         },
         views: {
             chat: { title: 'Super Chat', subtitle: '意图识别、Agent 调用与汇总回答入口' },
-            pulse: { title: 'Pulse', subtitle: '每日推荐、Topic 订阅与预计算知识入口' },
+            pulse: { title: '信息流', subtitle: 'Topic 推荐、信息簇阅读与下一跳学习入口' },
             agents: { title: 'Agents', subtitle: 'Agent 功能入口、实现版本和能力状态' },
             tools: { title: 'Tools', subtitle: '内置工具、参数和调用状态' },
             runs: { title: 'Runs', subtitle: '执行轨迹、事件和调试信息' },
@@ -121,37 +123,64 @@ const I18N = {
             resumePending: 'AI 仍在生成，完成后会自动恢复到当前会话',
             citations: '引用来源',
         },
+        roleMemory: {
+            title: '角色记忆',
+            defaultRole: '默认助手',
+            empty: '暂无角色记忆',
+            placeholder: '写下这个角色需要长期遵守的语气、偏好或工作方式',
+            save: '保存',
+            saved: '已保存',
+            loadFailed: '加载角色记忆失败：{message}',
+            saveFailed: '保存失败：{message}',
+            deleteFailed: '删除失败：{message}',
+            manual: '手动',
+            ai: '对话',
+        },
         pulse: {
             topicsTitle: 'Topic 订阅',
-            topicsSubtitle: '每天为订阅主题预生成学习入口',
+            topicsSubtitle: '选择一个方向，生成可持续阅读的信息簇',
             topicName: 'Topic',
             topicPlaceholder: '例如：AI 应用开发',
             keywords: '关键词',
             keywordsPlaceholder: 'Agent, RAG, 多模态',
             subscribe: '订阅',
             subscribing: '订阅中...',
-            refresh: '刷新今日推荐',
-            todayTitle: '今日 Pulse',
+            refresh: '刷新信息流',
+            todayTitle: '今日信息流',
             generatedAt: '已预计算：{time}',
             neverGenerated: '等待生成',
-            refreshing: '正在生成新的 Pulse...',
-            loading: '正在加载 Pulse...',
-            emptyTitle: '还没有推荐',
-            emptyDetail: '添加一个 Topic 或刷新今日推荐。',
+            refreshing: '正在生成新的信息流...',
+            loading: '正在加载信息流...',
+            emptyTitle: '还没有信息簇',
+            emptyDetail: '添加一个 Topic 或刷新信息流。',
             emptyTopics: '还没有订阅 Topic',
             emptyModule: '这个模块暂时没有推荐',
+            emptyFiltered: '这个 Topic 暂时没有信息簇',
+            emptySuggestedTopics: '暂无可推荐 Topic',
             subscribed: '订阅',
+            suggestedTopics: '推荐 Topic',
+            topicFilterAll: '全部信息簇',
+            addSuggestedTopic: '订阅',
             hot: '热度',
             heat: '热度 {score}',
+            featureScore: '排序 {score}',
             expand: '展开',
             collapse: '收起',
             ask: '继续聊',
+            openPost: '打开帖子',
+            closePost: '关闭帖子',
+            like: 'Like',
+            liked: 'Liked',
+            upvote: '赞',
+            downvote: '踩',
             reason: '推荐理由',
             signals: '依据线索',
             quickContext: '背景',
             keyPoints: '关键点',
             newsSources: '新闻来源',
             suggestedQuestions: '可以追问',
+            relatedClusters: '相关信息簇',
+            openCluster: '打开',
             sourceTopic: '关注 Topic',
             sourceMemory: '近日 Memory',
             sourceHot: '可能兴趣',
@@ -187,7 +216,6 @@ const I18N = {
             imageTitle: 'AI 生图功能',
             active: '已启用：{names}',
             items: {
-                knowledge_qa: ['智能问答', '必须输出结论 / 依据 / 不确定性'],
                 research: ['研究', '拆解问题、对比来源、标明证据'],
                 plan: ['计划模式', '必须输出计划、风险和下一步'],
                 image_generation: ['AI 生图', '强制交给 AI 生图 Agent 执行'],
@@ -318,7 +346,7 @@ const I18N = {
     },
     en: {
         app: { name: '阿安的工作台' },
-        nav: { chat: 'Super Chat', pulse: 'Pulse', agents: 'Agents', tools: 'Tools', trace: 'Trace', runs: 'Runs', settings: 'Settings' },
+        nav: { chat: 'Super Chat', pulse: 'Info Flow', agents: 'Agents', tools: 'Tools', trace: 'Trace', runs: 'Runs', settings: 'Settings' },
         sidebar: {
             navigation: 'Navigation',
             pinned: 'Pinned Agents',
@@ -329,7 +357,7 @@ const I18N = {
             emptyConversations: 'No conversations',
             emptyPinned: 'Pin frequent agents from Agents',
         },
-        topbar: { agent: 'Agent' },
+        topbar: { agent: 'Agent', role: 'Role' },
         account: {
             label: 'Account',
             add: 'New account',
@@ -363,6 +391,7 @@ const I18N = {
             openConfig: 'Open Full Settings',
             generate: 'Generate Image',
             generating: 'Generating...',
+            regenerateAnswer: 'Regenerate Answer',
             copyAnswer: 'Copy Answer',
             copied: 'Copied',
             copyFailed: 'Copy Failed',
@@ -382,7 +411,7 @@ const I18N = {
         },
         views: {
             chat: { title: 'Super Chat', subtitle: 'Intent routing, agent calls, and final answers' },
-            pulse: { title: 'Pulse', subtitle: 'Daily recommendations, topic subscriptions, and precomputed knowledge cards' },
+            pulse: { title: 'Info Flow', subtitle: 'Topic seeds, information clusters, and next-step reading' },
             agents: { title: 'Agents', subtitle: 'Agent entry points, runtimes, and capability status' },
             tools: { title: 'Tools', subtitle: 'Built-in tools, parameters, and execution status' },
             runs: { title: 'Runs', subtitle: 'Execution traces, events, and debugging details' },
@@ -420,37 +449,64 @@ const I18N = {
             resumePending: 'AI is still generating. The answer will reappear here when it finishes.',
             citations: 'Sources',
         },
+        roleMemory: {
+            title: 'Role Memory',
+            defaultRole: 'Default Assistant',
+            empty: 'No role memories yet',
+            placeholder: 'Write the tone, preference, or working style this role should keep',
+            save: 'Save',
+            saved: 'Saved',
+            loadFailed: 'Failed to load role memory: {message}',
+            saveFailed: 'Failed to save: {message}',
+            deleteFailed: 'Failed to delete: {message}',
+            manual: 'Manual',
+            ai: 'Chat',
+        },
         pulse: {
             topicsTitle: 'Topic Subscriptions',
-            topicsSubtitle: 'Precomputed daily learning entries for topics you follow',
+            topicsSubtitle: 'Pick a direction and generate ongoing information clusters',
             topicName: 'Topic',
             topicPlaceholder: 'Example: AI app development',
             keywords: 'Keywords',
             keywordsPlaceholder: 'Agents, RAG, multimodal',
             subscribe: 'Subscribe',
             subscribing: 'Subscribing...',
-            refresh: 'Refresh Today',
-            todayTitle: "Today's Pulse",
+            refresh: 'Refresh Flow',
+            todayTitle: "Today's Info Flow",
             generatedAt: 'Precomputed: {time}',
             neverGenerated: 'Waiting to generate',
-            refreshing: 'Generating a fresh Pulse...',
-            loading: 'Loading Pulse...',
-            emptyTitle: 'No recommendations yet',
-            emptyDetail: 'Add a topic or refresh today.',
+            refreshing: 'Generating a fresh info flow...',
+            loading: 'Loading info flow...',
+            emptyTitle: 'No clusters yet',
+            emptyDetail: 'Add a topic or refresh the flow.',
             emptyTopics: 'No topic subscriptions yet',
             emptyModule: 'No recommendations in this module yet',
+            emptyFiltered: 'No clusters for this topic yet',
+            emptySuggestedTopics: 'No suggested topics',
             subscribed: 'Topic',
+            suggestedTopics: 'Suggested Topics',
+            topicFilterAll: 'All clusters',
+            addSuggestedTopic: 'Subscribe',
             hot: 'Hot',
             heat: 'Heat {score}',
+            featureScore: 'Rank {score}',
             expand: 'Expand',
             collapse: 'Collapse',
             ask: 'Ask',
+            openPost: 'Open post',
+            closePost: 'Close post',
+            like: 'Like',
+            liked: 'Liked',
+            upvote: 'Up',
+            downvote: 'Down',
             reason: 'Why this',
             signals: 'Signals',
             quickContext: 'Context',
             keyPoints: 'Key Points',
             newsSources: 'News Sources',
             suggestedQuestions: 'Suggested Questions',
+            relatedClusters: 'Related Clusters',
+            openCluster: 'Open',
             sourceTopic: 'Followed Topic',
             sourceMemory: 'Recent Memory',
             sourceHot: 'Likely Interest',
@@ -486,7 +542,6 @@ const I18N = {
             imageTitle: 'AI Image Modes',
             active: 'Enabled: {names}',
             items: {
-                knowledge_qa: ['Knowledge Q&A', 'Must show answer, evidence, uncertainty'],
                 research: ['Research', 'Break down, compare sources, cite evidence'],
                 plan: ['Plan Mode', 'Must show plan, risks, next action'],
                 image_generation: ['AI Image', 'Force this turn through the AI image agent'],
@@ -629,13 +684,6 @@ const PROVIDERS = [
 
 const SUPER_CHAT_MODES = [
     {
-        id: 'knowledge_qa',
-        prompts: {
-            zh: '【智能问答】本轮必须用清晰可见的问答结构输出：先给“结论”，再给“依据”，最后给“需要确认/不确定性”。如果问题不需要检索，直接基于当前上下文回答；如果需要事实、最新信息或外部资料，优先使用可用搜索工具或说明无法验证。不要只说自己处于智能问答模式。',
-            en: '[Knowledge Q&A] For this turn, the visible answer must include: "Answer", "Evidence", and "Uncertainty / Needs confirmation". If retrieval is unnecessary, answer from the current context; if factual, current, or external information is needed, use available search tools or state what cannot be verified. Do not merely announce the mode.',
-        },
-    },
-    {
         id: 'research',
         prompts: {
             zh: '【研究】本轮必须先拆解研究问题，再收集/对比可靠信息。遇到时效性、事实性或外部资料问题时优先搜索，尽量使用多组不同查询并把 search limit 提高到 12-20；至少比较多个来源，保留可引用 URL、关键数字、日期和不确定性。输出时包含“问题拆解”“关键发现”“证据强度/来源”“下一步验证”。如果不能检索，明确标注依据限制。',
@@ -696,12 +744,19 @@ let tools = [];
 let runs = [];
 let settings = {};
 let health = null;
-let pulse = { date: '', generated_at: '', topics: [], items: [] };
+let pulse = { date: '', generated_at: '', topics: [], suggested_topics: [], items: [] };
 let currentLanguage = localStorage.getItem(LANGUAGE_KEY) || 'zh';
 let currentUserId = loadCurrentUserId();
 let currentAccountToken = '';
 let accounts = [];
 let currentAgentId = 'super_chat';
+let roles = [];
+let currentRoleId = loadCurrentRoleId();
+let roleMemories = [];
+let roleMemoryError = '';
+let roleMemoryStatusText = '';
+let roleMemorySaving = false;
+let roleMemoryDeletingIds = new Set();
 let selectedRunId = '';
 let selectedTraceNodeId = '';
 let selectedTraceRunId = '';
@@ -728,6 +783,11 @@ let mediaPreviewScale = 1;
 let mediaPreviewRotation = 0;
 let mediaPreviewReturnFocus = null;
 let expandedPulseItemIds = new Set();
+let selectedPulseTopicId = '';
+let selectedPulsePostId = '';
+let pulsePostReturnFocus = null;
+let pulseExposureObserver = null;
+let exposedPulseItemKeys = new Set();
 let userQuestionHistory = [];
 let questionHistoryIndex = -1;
 let questionHistoryDraft = '';
@@ -755,6 +815,14 @@ const btnRefresh = document.getElementById('btn-refresh');
 const modelSelect = document.getElementById('model-select');
 const currentModelEl = document.getElementById('current-model');
 const agentSelect = document.getElementById('agent-select');
+const rolePicker = document.getElementById('role-picker');
+const roleSelect = document.getElementById('role-select');
+const btnRoleMemory = document.getElementById('btn-role-memory');
+const roleMemoryPopover = document.getElementById('role-memory-popover');
+const roleMemoryList = document.getElementById('role-memory-list');
+const roleMemoryForm = document.getElementById('role-memory-form');
+const roleMemoryInput = document.getElementById('role-memory-input');
+const roleMemoryStatus = document.getElementById('role-memory-status');
 const viewTitle = document.getElementById('view-title');
 const viewSubtitle = document.getElementById('view-subtitle');
 const systemStatus = document.getElementById('system-status');
@@ -774,9 +842,16 @@ const pulseTopicForm = document.getElementById('pulse-topic-form');
 const pulseTopicInput = document.getElementById('pulse-topic-input');
 const pulseKeywordsInput = document.getElementById('pulse-keywords-input');
 const pulseTopicList = document.getElementById('pulse-topic-list');
+const pulseSuggestedTopics = document.getElementById('pulse-suggested-topics');
+const pulseTopicFilter = document.getElementById('pulse-topic-filter');
 const pulseItems = document.getElementById('pulse-items');
 const pulseDateTitle = document.getElementById('pulse-date-title');
 const pulseGeneratedAt = document.getElementById('pulse-generated-at');
+const pulsePostWindow = document.getElementById('pulse-post-window');
+const pulsePostTitle = document.getElementById('pulse-post-title');
+const pulsePostNote = document.getElementById('pulse-post-note');
+const pulsePostBody = document.getElementById('pulse-post-body');
+const pulsePostFooter = document.getElementById('pulse-post-footer');
 const languageToggle = document.getElementById('language-toggle');
 const agentCommandBar = document.getElementById('agent-command-bar');
 const modeMenu = document.getElementById('mode-menu');
@@ -891,6 +966,8 @@ function setLanguage(language) {
     renderSettings();
     renderPulse();
     renderAccountControls();
+    renderRoleSelect();
+    renderRoleMemoryList();
     renderModelSelect();
     updateTopbar();
     refreshWelcomeIfEmpty();
@@ -1027,6 +1104,16 @@ function accountStorageKey(key) {
     return `${key}:${currentUserId || 'anonymous'}`;
 }
 
+function loadCurrentRoleId() {
+    if (!currentUserId) return 'default';
+    return localStorage.getItem(accountStorageKey(CURRENT_ROLE_ID_STORAGE_KEY)) || 'default';
+}
+
+function saveCurrentRoleId() {
+    if (!currentUserId) return;
+    localStorage.setItem(accountStorageKey(CURRENT_ROLE_ID_STORAGE_KEY), currentRoleId || 'default');
+}
+
 async function loadAccounts() {
     const data = await publicApiCall('GET', '/api/accounts');
     accounts = Array.isArray(data.accounts) ? data.accounts : [];
@@ -1122,9 +1209,14 @@ async function switchAccount(userId, options = {}) {
     if (options.token) saveAccountSessionToken(nextUserId, options.token);
     saveCurrentUserId(currentUserId);
     currentConversationId = loadCurrentConversationId();
+    currentRoleId = loadCurrentRoleId();
+    roleMemories = [];
+    roleMemoryError = '';
+    roleMemoryStatusText = '';
+    roleMemoryDeletingIds = new Set();
     conversations = [];
     runs = [];
-    pulse = { date: '', generated_at: '', topics: [], items: [] };
+    pulse = { date: '', generated_at: '', topics: [], suggested_topics: [], items: [] };
     runsError = '';
     pulseError = '';
     pulseErrorType = 'load';
@@ -1133,12 +1225,17 @@ async function switchAccount(userId, options = {}) {
     selectedTraceNodeId = '';
     selectedTraceRunId = '';
     expandedPulseItemIds = new Set();
+    selectedPulseTopicId = '';
+    selectedPulsePostId = '';
+    exposedPulseItemKeys = new Set();
     clearQuestionHistory();
     clearAttachments();
     messageInput.value = '';
     autoResizeInput();
     updateSendState();
     renderAccountControls();
+    renderRoleSelect();
+    renderRoleMemoryList();
     renderConversationList();
     renderPulse();
     renderRuns();
@@ -1334,6 +1431,23 @@ function updateSendState() {
     if (btnAttach) {
         btnAttach.classList.toggle('active', attachedContexts.length > 0);
     }
+    updateRegenerateButtonsState();
+}
+
+function updateRegenerateButtonsState() {
+    const loading = isCurrentConversationLoading();
+    messagesContainer.querySelectorAll('[data-regenerate-answer]').forEach((button) => {
+        const message = button.closest('.message.assistant');
+        const enabled = !loading
+            && Boolean(message?.dataset.regenerateQuery)
+            && !message?.classList.contains('streaming');
+        button.disabled = !enabled;
+        if (enabled) {
+            button.removeAttribute('aria-disabled');
+        } else {
+            button.setAttribute('aria-disabled', 'true');
+        }
+    });
 }
 
 function resetQuestionHistoryBrowse() {
@@ -1785,6 +1899,208 @@ async function loadAgents() {
     updateCounts();
 }
 
+async function loadRoles() {
+    roleMemoryError = '';
+    try {
+        const data = await apiCall('GET', '/api/roles');
+        roles = Array.isArray(data.roles) ? data.roles : [];
+        const selectable = selectableRoles();
+        if (!selectable.some((role) => role.id === currentRoleId)) {
+            currentRoleId = selectable[0]?.id || 'default';
+            saveCurrentRoleId();
+        }
+        renderRoleSelect();
+        await loadRoleMemories();
+    } catch (err) {
+        roles = [];
+        roleMemories = [];
+        roleMemoryError = t('roleMemory.loadFailed', { message: err.message });
+        renderRoleSelect();
+        renderRoleMemoryList();
+    }
+}
+
+function selectableRoles() {
+    return roles.filter((role) => role && role.id && role.enabled !== false);
+}
+
+function localizedRoleText(role, field) {
+    const localized = role?.metadata?.localized || {};
+    const candidates = [
+        localized[currentLanguage]?.[field],
+        localized.zh?.[field],
+        localized.en?.[field],
+        role?.[field],
+    ];
+    const match = candidates.find((item) => typeof item === 'string' && item.trim());
+    return match || '';
+}
+
+function roleDisplayName(role) {
+    return localizedRoleText(role, 'name') || role?.id || t('roleMemory.defaultRole');
+}
+
+function renderRoleSelect() {
+    if (!roleSelect) return;
+    const selectable = selectableRoles();
+    const displayRoles = selectable.length
+        ? selectable
+        : [{ id: currentRoleId || 'default', name: t('roleMemory.defaultRole'), enabled: true }];
+    roleSelect.innerHTML = displayRoles.map((role) => (
+        `<option value="${escapeAttr(role.id)}">${escapeHtml(roleDisplayName(role))}</option>`
+    )).join('');
+    roleSelect.value = displayRoles.some((role) => role.id === currentRoleId)
+        ? currentRoleId
+        : displayRoles[0]?.id || 'default';
+    roleSelect.disabled = displayRoles.length === 0;
+}
+
+function setCurrentRole(roleId, { refreshMemory = true } = {}) {
+    const selectable = selectableRoles();
+    const nextRoleId = roleId || selectable[0]?.id || 'default';
+    currentRoleId = selectable.some((role) => role.id === nextRoleId)
+        ? nextRoleId
+        : selectable[0]?.id || 'default';
+    saveCurrentRoleId();
+    renderRoleSelect();
+    roleMemoryStatusText = '';
+    if (refreshMemory) {
+        void loadRoleMemories();
+    }
+}
+
+async function loadRoleMemories() {
+    if (!currentUserId || !currentRoleId) {
+        roleMemories = [];
+        renderRoleMemoryList();
+        return;
+    }
+    roleMemoryError = '';
+    try {
+        const data = await apiCall('GET', `/api/roles/${encodeURIComponent(currentRoleId)}/memories?kind=role`);
+        roleMemories = Array.isArray(data.memories) ? data.memories : [];
+    } catch (err) {
+        roleMemories = [];
+        roleMemoryError = t('roleMemory.loadFailed', { message: err.message });
+    }
+    renderRoleMemoryList();
+}
+
+function renderRoleMemoryList() {
+    if (btnRoleMemory) {
+        btnRoleMemory.classList.toggle('active', roleMemories.length > 0);
+    }
+    if (roleMemoryStatus) {
+        roleMemoryStatus.textContent = roleMemoryError || roleMemoryStatusText || '';
+        roleMemoryStatus.classList.toggle('error', Boolean(roleMemoryError));
+    }
+    updateRoleMemoryFormState();
+    if (!roleMemoryList) return;
+
+    if (roleMemoryError) {
+        roleMemoryList.innerHTML = `<div class="role-memory-empty">${escapeHtml(roleMemoryError)}</div>`;
+        return;
+    }
+    if (!roleMemories.length) {
+        roleMemoryList.innerHTML = `<div class="role-memory-empty">${escapeHtml(t('roleMemory.empty'))}</div>`;
+        return;
+    }
+
+    roleMemoryList.innerHTML = roleMemories.map((memory) => {
+        const deleting = roleMemoryDeletingIds.has(memory.id);
+        const source = memory.source === 'manual' ? t('roleMemory.manual') : t('roleMemory.ai');
+        const timeText = formatTime(memory.updated_at || memory.created_at || '');
+        const meta = [source, timeText].filter(Boolean).join(' · ');
+        return `
+            <div class="role-memory-item">
+                <div class="role-memory-copy">
+                    <p>${escapeHtml(memory.content || '')}</p>
+                    <small>${escapeHtml(meta)}</small>
+                </div>
+                <button class="role-memory-delete" type="button"
+                        data-delete-role-memory="${escapeAttr(memory.id)}"
+                        title="${escapeAttr(t('actions.delete'))}"
+                        aria-label="${escapeAttr(t('actions.delete'))}"
+                        ${deleting ? 'disabled aria-busy="true"' : ''}>
+                    <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2">
+                        <path d="M3 6h18M8 6V4h8v2M10 11v6M14 11v6M6 6l1 15h10l1-15"/>
+                    </svg>
+                </button>
+            </div>
+        `;
+    }).join('');
+}
+
+function updateRoleMemoryFormState() {
+    const button = roleMemoryForm?.querySelector('[data-role-memory-save]');
+    if (button) button.disabled = roleMemorySaving || !currentRoleId || !currentUserId;
+}
+
+function toggleRoleMemoryPopover() {
+    if (!roleMemoryPopover) return;
+    const willOpen = roleMemoryPopover.classList.contains('hidden');
+    roleMemoryPopover.classList.toggle('hidden', !willOpen);
+    if (willOpen) {
+        roleMemoryStatusText = '';
+        void loadRoleMemories();
+        requestAnimationFrame(() => roleMemoryInput?.focus({ preventScroll: true }));
+    }
+}
+
+function closeRoleMemoryPopover() {
+    if (roleMemoryPopover) roleMemoryPopover.classList.add('hidden');
+}
+
+async function saveRoleMemory() {
+    if (!currentRoleId || !roleMemoryInput || roleMemorySaving) return;
+    const content = roleMemoryInput.value.trim();
+    if (!content) {
+        roleMemoryInput.focus();
+        return;
+    }
+
+    roleMemorySaving = true;
+    roleMemoryError = '';
+    roleMemoryStatusText = '';
+    updateRoleMemoryFormState();
+    try {
+        await apiCall('POST', `/api/roles/${encodeURIComponent(currentRoleId)}/memories`, {
+            user_id: currentUserId,
+            kind: 'role',
+            content,
+            source: 'manual',
+            confidence: 1,
+            tags: ['role_config'],
+        });
+        roleMemoryInput.value = '';
+        roleMemoryStatusText = t('roleMemory.saved');
+        await loadRoleMemories();
+    } catch (err) {
+        roleMemoryError = t('roleMemory.saveFailed', { message: err.message });
+        renderRoleMemoryList();
+    } finally {
+        roleMemorySaving = false;
+        updateRoleMemoryFormState();
+    }
+}
+
+async function deleteRoleMemory(memoryId) {
+    if (!currentRoleId || !memoryId || roleMemoryDeletingIds.has(memoryId)) return;
+    roleMemoryDeletingIds.add(memoryId);
+    renderRoleMemoryList();
+    try {
+        await apiCall('DELETE', `/api/roles/${encodeURIComponent(currentRoleId)}/memories/${encodeURIComponent(memoryId)}`);
+        roleMemoryStatusText = '';
+        await loadRoleMemories();
+    } catch (err) {
+        roleMemoryError = t('roleMemory.deleteFailed', { message: err.message });
+        renderRoleMemoryList();
+    } finally {
+        roleMemoryDeletingIds.delete(memoryId);
+        renderRoleMemoryList();
+    }
+}
+
 async function loadTools() {
     toolsError = '';
     try {
@@ -1861,27 +2177,33 @@ function syncPulseRefreshPolling(resetAttempts = false) {
     }, 5000);
 }
 
-async function createPulseTopic() {
+async function createPulseTopic(seed = null) {
     if (!pulseTopicInput || pulseTopicSubmitting) return;
-    const name = pulseTopicInput.value.trim();
+    const seeded = seed && typeof seed === 'object';
+    const name = seeded ? String(seed.name || '').trim() : pulseTopicInput.value.trim();
     if (!name) {
         pulseError = t('pulse.topicRequired');
         pulseErrorType = 'create';
         renderPulse();
-        pulseTopicInput.focus();
+        if (!seeded) pulseTopicInput.focus();
         return;
     }
 
-    const keywords = parsePulseKeywords(pulseKeywordsInput?.value || '');
+    const keywords = seeded
+        ? normalizePulseKeywordList(seed.keywords || [])
+        : parsePulseKeywords(pulseKeywordsInput?.value || '');
     pulseTopicSubmitting = true;
     updatePulseTopicSubmitState();
     try {
         const data = await apiCall('POST', '/api/pulse/topics', { name, keywords });
         upsertPulseTopic(data.topic);
+        if (data.topic?.id) selectedPulseTopicId = data.topic.id;
         pulseError = '';
         pulseErrorType = 'load';
-        pulseTopicInput.value = '';
-        if (pulseKeywordsInput) pulseKeywordsInput.value = '';
+        if (!seeded) {
+            pulseTopicInput.value = '';
+            if (pulseKeywordsInput) pulseKeywordsInput.value = '';
+        }
         renderPulse();
         refreshPulse();
     } catch (err) {
@@ -1903,6 +2225,7 @@ async function deletePulseTopic(id) {
     renderPulse();
     try {
         await apiCall('DELETE', `/api/pulse/topics/${encodeURIComponent(id)}`);
+        if (selectedPulseTopicId === id) selectedPulseTopicId = '';
         await refreshPulse();
     } catch (err) {
         pulseError = err.message;
@@ -1934,10 +2257,22 @@ function updatePulseTopicSubmitState() {
 }
 
 function parsePulseKeywords(value = '') {
-    return String(value)
+    return normalizePulseKeywordList(String(value)
         .split(/[,\n，;；]/)
-        .map((item) => item.trim())
-        .filter(Boolean);
+        .map((item) => item.trim()));
+}
+
+function normalizePulseKeywordList(values = []) {
+    const seen = new Set();
+    const keywords = [];
+    (Array.isArray(values) ? values : []).forEach((value) => {
+        const cleaned = String(value || '').trim();
+        const key = cleaned.toLowerCase();
+        if (!cleaned || seen.has(key)) return;
+        seen.add(key);
+        keywords.push(cleaned);
+    });
+    return keywords;
 }
 
 function mergeRuns(nextRuns = []) {
@@ -1998,6 +2333,7 @@ async function refreshAll() {
         loadHealth(),
         loadConversations(),
         loadAgents(),
+        loadRoles(),
         loadTools(),
         loadRuns(),
         loadSettings(),
@@ -2031,6 +2367,7 @@ async function bootApp() {
     currentUserId = selectedAccount.id;
     currentAccountToken = storedToken;
     currentConversationId = loadCurrentConversationId();
+    currentRoleId = loadCurrentRoleId();
     renderAccountControls();
     await refreshAll();
     await restoreInitialConversation();
@@ -2063,6 +2400,10 @@ function setView(view, options = {}) {
 
 function updateTopbar() {
     const copy = VIEW_COPY[activeView] || VIEW_COPY.chat;
+    if (rolePicker) {
+        rolePicker.hidden = activeView !== 'chat';
+        if (rolePicker.hidden) closeRoleMemoryPopover();
+    }
 
     if (activeView === 'chat') {
         viewTitle.textContent = getCurrentAgentName();
@@ -2331,6 +2672,7 @@ function renderPulse() {
     }
 
     renderPulseTopics();
+    renderPulseSuggestedTopics();
 
     if (pulseError) {
         pulseItems.innerHTML = emptyState(formatPulseError(), '');
@@ -2338,12 +2680,21 @@ function renderPulse() {
     }
 
     const items = Array.isArray(pulse.items) ? pulse.items : [];
+    renderPulseTopicFilter(items);
     if (!items.length) {
         pulseItems.innerHTML = emptyState(t('pulse.emptyTitle'), t('pulse.emptyDetail'));
         return;
     }
 
-    pulseItems.innerHTML = renderPulseModules(items, pulse.modules || []);
+    const filteredItems = filterPulseItemsByTopic(items);
+    if (!filteredItems.length) {
+        pulseItems.innerHTML = emptyState(t('pulse.emptyFiltered'), '');
+        return;
+    }
+
+    pulseItems.innerHTML = renderPulseFeed(filteredItems);
+    renderPulsePostWindow();
+    observePulseExposures();
 }
 
 function formatPulseError() {
@@ -2353,6 +2704,14 @@ function formatPulseError() {
             ? 'pulse.deleteFailed'
             : 'pulse.loadFailed';
     return t(key, { message: pulseError });
+}
+
+function renderPulseFeed(items = []) {
+    return `
+        <div class="pulse-post-grid">
+            ${items.map(renderPulseCard).join('')}
+        </div>
+    `;
 }
 
 function renderPulseModules(items = [], generatedModules = []) {
@@ -2368,9 +2727,7 @@ function renderPulseModules(items = [], generatedModules = []) {
         const [fallbackTitle, fallbackDetail] = pulseModuleCopy(module.key);
         const title = module.title || fallbackTitle;
         const detail = module.summary || fallbackDetail;
-        const moduleItems = Array.isArray(module.items)
-            ? module.items
-            : items.filter((item) => item.source === module.key);
+        const moduleItems = items.filter((item) => item.source === module.key);
         return `
             <section class="pulse-module pulse-module-${escapeAttr(pulseModuleClass(module.key))}">
                 <div class="pulse-module-head">
@@ -2412,12 +2769,13 @@ function renderPulseTopics() {
     pulseTopicList.innerHTML = topics.map((topic) => {
         const keywords = Array.isArray(topic.keywords) ? topic.keywords : [];
         const deleting = pendingPulseTopicDeletes.has(topic.id);
+        const selected = selectedPulseTopicId && topic.id === selectedPulseTopicId;
         return `
-            <div class="pulse-topic-item ${topic.enabled ? '' : 'muted'}">
-                <div class="pulse-topic-copy">
+            <div class="pulse-topic-item ${topic.enabled ? '' : 'muted'} ${selected ? 'selected' : ''}">
+                <button class="pulse-topic-select" type="button" data-pulse-select-topic="${escapeAttr(topic.id)}">
                     <strong>${escapeHtml(topic.name || '')}</strong>
                     <span>${keywords.map(escapeHtml).join(' / ') || escapeHtml(t('pulse.subscribed'))}</span>
-                </div>
+                </button>
                 <button class="icon-button pulse-topic-delete" type="button"
                         data-pulse-delete-topic="${escapeAttr(topic.id)}"
                         title="${escapeAttr(t('actions.delete'))}"
@@ -2434,38 +2792,159 @@ function renderPulseTopics() {
     }).join('');
 }
 
+function renderPulseSuggestedTopics() {
+    if (!pulseSuggestedTopics) return;
+    const suggestions = Array.isArray(pulse.suggested_topics) ? pulse.suggested_topics : [];
+    if (!suggestions.length) {
+        pulseSuggestedTopics.innerHTML = `<div class="empty-inline">${escapeHtml(t('pulse.emptySuggestedTopics'))}</div>`;
+        return;
+    }
+
+    pulseSuggestedTopics.innerHTML = suggestions.map((topic, index) => {
+        const keywords = normalizePulseKeywordList(topic.keywords || []);
+        return `
+            <button class="pulse-suggested-topic" type="button" data-pulse-suggest-topic="${index}">
+                <span class="pulse-suggested-topic-main">
+                    <strong>${escapeHtml(topic.name || '')}</strong>
+                    <small>${escapeHtml(topic.reason || keywords.join(' / '))}</small>
+                </span>
+                <span class="pulse-suggested-topic-action">
+                    <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.4">
+                        <path d="M12 5v14M5 12h14"/>
+                    </svg>
+                    ${escapeHtml(t('pulse.addSuggestedTopic'))}
+                </span>
+            </button>
+        `;
+    }).join('');
+}
+
+function renderPulseTopicFilter(items = []) {
+    if (!pulseTopicFilter) return;
+    const topics = Array.isArray(pulse.topics) ? pulse.topics : [];
+    if (!topics.length) {
+        pulseTopicFilter.innerHTML = '';
+        selectedPulseTopicId = '';
+        return;
+    }
+    if (selectedPulseTopicId && !topics.some((topic) => topic.id === selectedPulseTopicId)) {
+        selectedPulseTopicId = '';
+    }
+
+    const allActive = !selectedPulseTopicId;
+    const countByTopic = new Map();
+    items.forEach((item) => {
+        if (item.topic_id) {
+            countByTopic.set(item.topic_id, (countByTopic.get(item.topic_id) || 0) + 1);
+            return;
+        }
+        const matched = topics.find((topic) => topic.name && topic.name === item.topic_name);
+        if (matched) countByTopic.set(matched.id, (countByTopic.get(matched.id) || 0) + 1);
+    });
+
+    const chips = [`
+        <button class="pulse-filter-chip ${allActive ? 'active' : ''}" type="button" data-pulse-filter-topic="">
+            ${escapeHtml(t('pulse.topicFilterAll'))}
+            <span>${items.length}</span>
+        </button>
+    `];
+    topics.forEach((topic) => {
+        const active = topic.id === selectedPulseTopicId;
+        chips.push(`
+            <button class="pulse-filter-chip ${active ? 'active' : ''}" type="button" data-pulse-filter-topic="${escapeAttr(topic.id)}">
+                ${escapeHtml(topic.name || '')}
+                <span>${countByTopic.get(topic.id) || 0}</span>
+            </button>
+        `);
+    });
+    pulseTopicFilter.innerHTML = chips.join('');
+}
+
+function filterPulseItemsByTopic(items = []) {
+    if (!selectedPulseTopicId) return items;
+    const topics = Array.isArray(pulse.topics) ? pulse.topics : [];
+    const selectedTopic = topics.find((topic) => topic.id === selectedPulseTopicId);
+    if (!selectedTopic) return items;
+    return items.filter((item) => item.topic_id === selectedTopic.id || (selectedTopic.name && item.topic_name === selectedTopic.name));
+}
+
 function renderPulseCard(item) {
-    const expanded = expandedPulseItemIds.has(item.id);
     const sourceLabel = pulseSourceLabel(item.source);
-    const detail = item.detail || {};
     const topicLabel = item.topic_name || item.category || sourceLabel;
-    const chatPrompt = buildPulseChatPrompt(item);
+    const feedback = item.feedback || {};
+    const liked = Boolean(feedback.liked);
+    const vote = feedback.vote || '';
+    const note = item.recommendation_note || pulseRecommendationNote(item);
+    const featureScore = item.feature_score || item.heat_score || 0;
     return `
-        <article class="pulse-card ${expanded ? 'expanded' : ''}">
-            <div class="pulse-card-topline">
-                <span class="status-chip ${pulseSourceTone(item.source)}">${escapeHtml(sourceLabel)}</span>
-                <span class="status-chip neutral">${escapeHtml(topicLabel)}</span>
-                <span class="pulse-heat">${escapeHtml(t('pulse.heat', { score: item.heat_score || 0 }))}</span>
+        <article class="pulse-card pulse-post-card" data-pulse-card-id="${escapeAttr(item.id)}">
+            <button class="pulse-card-open" type="button" data-pulse-open-post="${escapeAttr(item.id)}" aria-label="${escapeAttr(t('pulse.openPost'))}">
+                <div class="pulse-card-topline">
+                    <span class="status-chip ${pulseSourceTone(item.source)}">${escapeHtml(sourceLabel)}</span>
+                    <span class="status-chip neutral">${escapeHtml(topicLabel)}</span>
+                    <span class="pulse-heat">${escapeHtml(t('pulse.featureScore', { score: featureScore }))}</span>
+                </div>
+                <h3>${escapeHtml(item.title || '')}</h3>
+                <p>${escapeHtml(compactPulsePostSummary(item))}</p>
+            </button>
+            <div class="pulse-card-footer">
+                <span class="pulse-recommend-note">${escapeHtml(note)}</span>
+                <div class="pulse-feedback-actions">
+                    ${renderPulseFeedbackButton(item.id, pulseEventLike, liked ? 0 : 1, liked ? t('pulse.liked') : t('pulse.like'), liked, feedback.like_count)}
+                    ${renderPulseFeedbackButton(item.id, pulseEventUpvote, vote === 'up' ? 0 : 1, t('pulse.upvote'), vote === 'up', feedback.upvote_count)}
+                    ${renderPulseFeedbackButton(item.id, pulseEventDownvote, vote === 'down' ? 0 : 1, t('pulse.downvote'), vote === 'down', feedback.downvote_count)}
+                </div>
             </div>
-            <h3>${escapeHtml(item.title || '')}</h3>
-            <p>${escapeHtml(item.summary || '')}</p>
-            <div class="pulse-card-actions">
-                <button class="btn-secondary" type="button" data-pulse-toggle-item="${escapeAttr(item.id)}">
-                    <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.3">
-                        ${expanded ? '<path d="M5 12h14"/>' : '<path d="M12 5v14M5 12h14"/>'}
-                    </svg>
-                    <span>${escapeHtml(expanded ? t('pulse.collapse') : t('pulse.expand'))}</span>
-                </button>
-                <button class="btn-secondary" type="button" data-pulse-chat="${escapeAttr(chatPrompt)}">
-                    <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2">
-                        <path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4Z"/>
-                    </svg>
-                    <span>${escapeHtml(t('pulse.ask'))}</span>
-                </button>
-            </div>
-            ${expanded ? renderPulseDetail(item, detail) : ''}
         </article>
     `;
+}
+
+const pulseEventExposure = 'exposure';
+const pulseEventOpen = 'open';
+const pulseEventLike = 'like';
+const pulseEventUpvote = 'upvote';
+const pulseEventDownvote = 'downvote';
+
+function renderPulseFeedbackButton(itemId, eventType, value, label, active = false, count = 0) {
+    return `
+        <button class="pulse-feedback-button ${active ? 'active' : ''}" type="button"
+                data-pulse-feedback="${escapeAttr(itemId)}"
+                data-pulse-feedback-type="${escapeAttr(eventType)}"
+                data-pulse-feedback-value="${escapeAttr(value)}"
+                aria-pressed="${active ? 'true' : 'false'}"
+                title="${escapeAttr(label)}">
+            ${pulseFeedbackIcon(eventType)}
+            <span>${escapeHtml(label)}</span>
+            ${count ? `<small>${escapeHtml(formatPulseFeedbackCount(count))}</small>` : ''}
+        </button>
+    `;
+}
+
+function pulseFeedbackIcon(eventType) {
+    if (eventType === pulseEventLike) {
+        return '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.3"><path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.6l-1-1a5.5 5.5 0 0 0-7.8 7.8l1 1L12 21l7.8-7.6 1-1a5.5 5.5 0 0 0 0-7.8Z"/></svg>';
+    }
+    if (eventType === pulseEventDownvote) {
+        return '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.3"><path d="M12 5v14"/><path d="m19 12-7 7-7-7"/></svg>';
+    }
+    return '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.3"><path d="M12 19V5"/><path d="m5 12 7-7 7 7"/></svg>';
+}
+
+function formatPulseFeedbackCount(value = 0) {
+    const count = Number(value) || 0;
+    if (count >= 1000) return `${(count / 1000).toFixed(1)}k`;
+    return String(count);
+}
+
+function compactPulsePostSummary(item = {}) {
+    return truncateText(item.summary || item.detail?.quick_context || '', 180);
+}
+
+function pulseRecommendationNote(item = {}) {
+    if (item.recommendation_note) return item.recommendation_note;
+    if (item.source === 'topic_hot') return item.topic_name ? `可能对「${item.topic_name}」推荐` : '可能对订阅 Topic 推荐';
+    if (item.source === 'memory') return '可能对近期 Memory 推荐';
+    return item.topic_name ? `可能对「${item.topic_name}」延伸推荐` : '可能对兴趣外扩推荐';
 }
 
 function pulseSourceLabel(source) {
@@ -2485,6 +2964,7 @@ function renderPulseDetail(item = {}, detail = {}) {
     const questions = Array.isArray(detail.suggested_questions) ? detail.suggested_questions : [];
     const signals = Array.isArray(detail.signals) ? detail.signals : [];
     const newsSources = normalizePulseNewsSources(detail.news_sources, detail.sources, detail.related_news);
+    const relatedClusters = Array.isArray(item.related_clusters) ? item.related_clusters : [];
     return `
         <div class="pulse-detail">
             ${detail.recommendation_reason ? `
@@ -2533,8 +3013,186 @@ function renderPulseDetail(item = {}, detail = {}) {
                     </div>
                 </section>
             ` : ''}
+            ${relatedClusters.length ? `
+                <section>
+                    <h4>${escapeHtml(t('pulse.relatedClusters'))}</h4>
+                    ${renderPulseRelatedClusters(relatedClusters)}
+                </section>
+            ` : ''}
         </div>
     `;
+}
+
+function renderPulseRelatedClusters(clusters = []) {
+    return `
+        <div class="pulse-related-list">
+            ${clusters.map((cluster) => `
+                <button class="pulse-related-item" type="button" data-pulse-open-post="${escapeAttr(cluster.id)}">
+                    <span class="pulse-related-main">
+                        <strong>${escapeHtml(cluster.title || '')}</strong>
+                        <small>${escapeHtml(cluster.reason || cluster.summary || '')}</small>
+                    </span>
+                    <span class="pulse-related-action">${escapeHtml(t('pulse.openCluster'))}</span>
+                </button>
+            `).join('')}
+        </div>
+    `;
+}
+
+function openPulseCluster(itemId = '') {
+    openPulsePost(itemId);
+}
+
+function findPulseItem(itemId = '') {
+    const items = Array.isArray(pulse.items) ? pulse.items : [];
+    return items.find((item) => item.id === itemId) || null;
+}
+
+function openPulsePost(itemId = '', trigger = null) {
+    const item = findPulseItem(itemId);
+    if (!item) return;
+    selectedPulsePostId = itemId;
+    pulsePostReturnFocus = trigger || document.activeElement;
+    renderPulsePostWindow();
+    recordPulseEvent(itemId, pulseEventOpen, 1, { surface: 'post_window' });
+}
+
+function closePulsePost() {
+    selectedPulsePostId = '';
+    renderPulsePostWindow();
+    const returnFocus = pulsePostReturnFocus;
+    pulsePostReturnFocus = null;
+    if (returnFocus && document.contains(returnFocus)) {
+        returnFocus.focus({ preventScroll: true });
+    }
+}
+
+function pulsePostIsOpen() {
+    return Boolean(pulsePostWindow && !pulsePostWindow.classList.contains('hidden'));
+}
+
+function renderPulsePostWindow() {
+    if (!pulsePostWindow || !pulsePostTitle || !pulsePostBody || !pulsePostFooter) return;
+    const item = findPulseItem(selectedPulsePostId);
+    if (!item) {
+        pulsePostWindow.classList.add('hidden');
+        document.body.classList.remove('pulse-post-open');
+        return;
+    }
+
+    pulsePostWindow.classList.remove('hidden');
+    document.body.classList.add('pulse-post-open');
+    if (pulsePostNote) pulsePostNote.textContent = item.recommendation_note || pulseRecommendationNote(item);
+    pulsePostTitle.textContent = item.title || '';
+    pulsePostBody.innerHTML = renderPulsePostBody(item);
+    pulsePostFooter.innerHTML = renderPulsePostFooter(item);
+}
+
+function renderPulsePostBody(item = {}) {
+    const detail = item.detail || {};
+    const paragraphs = [];
+    paragraphs.push(item.summary || detail.quick_context || '');
+    if (detail.quick_context && detail.quick_context !== item.summary) {
+        paragraphs.push(detail.quick_context);
+    }
+    const keyPoints = Array.isArray(detail.key_points) ? detail.key_points : [];
+    if (keyPoints.length) {
+        paragraphs.push(keyPoints.slice(0, 4).join('\n'));
+    }
+    return paragraphs
+        .map((paragraph) => String(paragraph || '').trim())
+        .filter(Boolean)
+        .map((paragraph) => `<p>${escapeHtml(paragraph)}</p>`)
+        .join('') || `<p>${escapeHtml(item.summary || '')}</p>`;
+}
+
+function renderPulsePostFooter(item = {}) {
+    const feedback = item.feedback || {};
+    const vote = feedback.vote || '';
+    const liked = Boolean(feedback.liked);
+    const relatedClusters = Array.isArray(item.related_clusters) ? item.related_clusters : [];
+    const chatPrompt = buildPulseChatPrompt(item);
+    return `
+        <div class="pulse-post-feedback">
+            ${renderPulseFeedbackButton(item.id, pulseEventLike, liked ? 0 : 1, liked ? t('pulse.liked') : t('pulse.like'), liked, feedback.like_count)}
+            ${renderPulseFeedbackButton(item.id, pulseEventUpvote, vote === 'up' ? 0 : 1, t('pulse.upvote'), vote === 'up', feedback.upvote_count)}
+            ${renderPulseFeedbackButton(item.id, pulseEventDownvote, vote === 'down' ? 0 : 1, t('pulse.downvote'), vote === 'down', feedback.downvote_count)}
+            <button class="pulse-feedback-button pulse-ask-button" type="button" data-pulse-chat="${escapeAttr(chatPrompt)}">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2">
+                    <path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4Z"/>
+                </svg>
+                <span>${escapeHtml(t('pulse.ask'))}</span>
+            </button>
+        </div>
+        ${relatedClusters.length ? renderPulseRelatedClusters(relatedClusters) : ''}
+    `;
+}
+
+async function recordPulseEvent(itemId, eventType, value = 1, metadata = {}) {
+    if (!itemId || !eventType) return null;
+    try {
+        const data = await apiCall('POST', '/api/pulse/events', {
+            date: pulse.date || undefined,
+            item_id: itemId,
+            event_type: eventType,
+            value,
+            metadata,
+        });
+        if (data?.feedback) {
+            updatePulseItemFeedback(itemId, data.feedback);
+        }
+        return data;
+    } catch (err) {
+        console.warn('Pulse event failed', err);
+        return null;
+    }
+}
+
+function updatePulseItemFeedback(itemId, feedback) {
+    if (!itemId || !feedback) return;
+    const update = (item) => item?.id === itemId ? { ...item, feedback } : item;
+    pulse = {
+        ...pulse,
+        items: (Array.isArray(pulse.items) ? pulse.items : []).map(update),
+        modules: (Array.isArray(pulse.modules) ? pulse.modules : []).map((module) => ({
+            ...module,
+            items: Array.isArray(module.items) ? module.items.map(update) : module.items,
+        })),
+    };
+    renderPulse();
+}
+
+function observePulseExposures() {
+    if (!pulseItems) return;
+    if (pulseExposureObserver) {
+        pulseExposureObserver.disconnect();
+        pulseExposureObserver = null;
+    }
+    const cards = Array.from(pulseItems.querySelectorAll('[data-pulse-card-id]'));
+    if (!cards.length) return;
+
+    const markExposed = (itemId) => {
+        const key = `${pulse.date || ''}:${itemId}`;
+        if (!itemId || exposedPulseItemKeys.has(key)) return;
+        exposedPulseItemKeys.add(key);
+        recordPulseEvent(itemId, pulseEventExposure, 1, { surface: 'feed' });
+    };
+
+    if (!('IntersectionObserver' in window)) {
+        cards.forEach((card) => markExposed(card.getAttribute('data-pulse-card-id')));
+        return;
+    }
+
+    pulseExposureObserver = new IntersectionObserver((entries) => {
+        entries.forEach((entry) => {
+            if (!entry.isIntersecting || entry.intersectionRatio < 0.45) return;
+            const itemId = entry.target.getAttribute('data-pulse-card-id');
+            markExposed(itemId);
+            pulseExposureObserver?.unobserve(entry.target);
+        });
+    }, { threshold: [0.45, 0.75] });
+
+    cards.forEach((card) => pulseExposureObserver.observe(card));
 }
 
 function normalizePulseNewsSources(...groups) {
@@ -2603,6 +3261,7 @@ function buildPulseContextBlock(item = {}) {
     const detail = item.detail || {};
     const keyPoints = Array.isArray(detail.key_points) ? detail.key_points : [];
     const sources = normalizePulseNewsSources(detail.news_sources, detail.sources, detail.related_news);
+    const relatedClusters = Array.isArray(item.related_clusters) ? item.related_clusters : [];
     const lines = [
         '[Pulse 推荐]',
         `模块：${pulseSourceLabel(item.source)}`,
@@ -2626,6 +3285,13 @@ function buildPulseContextBlock(item = {}) {
             lines.push(`${index + 1}. ${source.title || hostFromUrl(source.url) || '来源'}${meta.length ? `（${Array.from(new Set(meta)).join(' / ')}）` : ''}`);
             lines.push(`   URL: ${source.url}`);
             if (source.snippet) lines.push(`   摘要: ${truncateText(source.snippet, 220)}`);
+        });
+    }
+
+    if (relatedClusters.length) {
+        lines.push('相关信息簇：');
+        relatedClusters.slice(0, 3).forEach((cluster, index) => {
+            lines.push(`${index + 1}. ${cluster.title || '未命名信息簇'}${cluster.reason ? `（${cluster.reason}）` : ''}`);
         });
     }
 
@@ -3248,8 +3914,15 @@ function traceEventDisplay(event = {}) {
     if (type === 'run.failed') return { label: traceCopy('Run 失败', 'Run failed'), detail: payload.error_message || payload.error_type || '' };
     if (type === 'agent.delegated') return { label: traceCopy('转交给专业 Agent', 'Delegated to specialist agent'), detail: payload.reason || payload.target_agent_id || '' };
     if (type === 'agent.command.routed') return { label: traceCopy('路由 Agent 命令', 'Routed agent command'), detail: `${payload.target_agent_id || ''} ${payload.command_text || ''}`.trim() };
-    if (type === 'memory.loaded') return { label: traceCopy('读取角色记忆', 'Loaded role memory'), detail: traceCopy(`长期 ${payload.long_term_count || 0} / 人设 ${payload.persona_count || 0}`, `Long-term ${payload.long_term_count || 0} / persona ${payload.persona_count || 0}`) };
+    if (type === 'memory.loaded') return { label: traceCopy('读取角色记忆', 'Loaded role memory'), detail: traceCopy(`长期 ${payload.long_term_count || 0} / 角色 ${payload.persona_count || 0}`, `Long-term ${payload.long_term_count || 0} / role ${payload.persona_count || 0}`) };
     if (type === 'context.built') return { label: traceCopy('构建 Prompt 上下文', 'Built prompt context'), detail: traceCopy(`${payload.message_count || 0} 条消息 / ${payload.tools_count || 0} 个工具`, `${payload.message_count || 0} messages / ${payload.tools_count || 0} tools`) };
+    if (type === 'memory.review.started') return { label: traceCopy('开始长期记忆检查', 'Started long-term memory review'), detail: payload.agent_id || '' };
+    if (type === 'memory.review.completed') return { label: traceCopy('长期记忆检查完成', 'Long-term memory review completed'), detail: traceCopy(`候选 ${payload.candidate_count || 0}`, `${payload.candidate_count || 0} candidates`) };
+    if (type === 'memory.review.failed') return { label: traceCopy('长期记忆检查降级', 'Long-term memory review fallback'), detail: payload.error_message || '' };
+    if (type === 'memory.compaction.started') return { label: traceCopy('开始压缩会话记忆', 'Started conversation compaction'), detail: traceCopy(`${payload.message_count || 0} 条消息`, `${payload.message_count || 0} messages`) };
+    if (type === 'memory.compaction.completed') return { label: traceCopy('会话记忆已压缩', 'Conversation memory compacted'), detail: traceCopy(`${payload.before_count || 0} -> ${payload.after_count || 0}`, `${payload.before_count || 0} -> ${payload.after_count || 0}`) };
+    if (type === 'memory.compaction.skipped') return { label: traceCopy('跳过会话压缩', 'Skipped conversation compaction'), detail: payload.reason || '' };
+    if (type === 'memory.compaction.failed') return { label: traceCopy('会话压缩降级', 'Conversation compaction fallback'), detail: payload.error_message || '' };
     if (type === 'memory.extracted') return { label: traceCopy('记忆检查完成', 'Memory review completed'), detail: traceCopy(`新增 ${payload.stored_count || 0}`, `${payload.stored_count || 0} stored`) };
     if (type === 'memory.failed') return { label: traceCopy('记忆处理失败', 'Memory failed'), detail: payload.error_message || '' };
 
@@ -4067,7 +4740,11 @@ async function renderConversationMessages(id, options = {}) {
         if (!messages.length) {
             showWelcome();
         } else {
+            let latestUserQuery = '';
             messages.forEach((msg, index) => {
+                if (msg.role === 'user') {
+                    latestUserQuery = String(msg.content || '').trim();
+                }
                 const matchedRun = runMatches.get(index);
                 const skillsUsed = parseSkills(msg.skills_used);
                 const citations = parseCitations(msg.citations);
@@ -4084,7 +4761,9 @@ async function renderConversationMessages(id, options = {}) {
                     savedTraceEvents.length ? savedTraceEvents : (traceRun?.events || []),
                     msg.run_id || traceRun?.run_id || '',
                     msg.runtime || traceRun?.runtime || '',
-                    citations
+                    citations,
+                    null,
+                    msg.role === 'assistant' ? latestUserQuery : ''
                 );
             });
             scrollToBottom();
@@ -4269,7 +4948,8 @@ async function watchActiveRunForConversation(id, messages = []) {
             return;
         }
 
-        const streamView = appendStreamingAssistantMessage();
+        const pendingQuery = [...messages].reverse().find((msg) => msg?.role === 'user')?.content || '';
+        const streamView = appendStreamingAssistantMessage(pendingQuery);
         streamView.setPending(t('chat.resumePending'));
         streamView.setTrace(run.events || [], {
             runId: run.run_id || '',
@@ -4349,7 +5029,7 @@ async function pollActiveRunWatcher() {
 }
 
 function appendRecoveredRunMessage(run) {
-    const streamView = appendStreamingAssistantMessage();
+    const streamView = appendStreamingAssistantMessage(run?.input || '');
     streamView.finalize(chatResponseFromRun(run));
 }
 
@@ -4496,12 +5176,48 @@ async function handleSend(queryOverride = '') {
         modes: modeMeta,
         attachments: attachmentSummary(attachmentsForTurn),
     });
-    const streamView = appendStreamingAssistantMessage();
+    const streamView = appendStreamingAssistantMessage(query);
     clearAttachments();
     scrollToBottom();
 
     try {
         const resp = await sendMessageStream(conversationId, query, streamView, attachmentContext, attachmentPayload);
+        streamView.finalize(resp);
+        void Promise.allSettled([loadConversations(), loadRuns()]).then(() => {
+            if (currentConversationId === conversationId) updateTopbar();
+        });
+    } catch (err) {
+        streamView.showError(`Error: ${err.message}`);
+    } finally {
+        activeConversationRequests.delete(conversationId);
+        updateSendState();
+        if (currentConversationId === conversationId) {
+            scrollToBottom();
+            focusMessageInput();
+        }
+    }
+}
+
+async function regenerateAssistantAnswer(button) {
+    if (!currentUserId) {
+        showAccountLogin();
+        return;
+    }
+
+    const conversationId = currentConversationId;
+    const message = button.closest('.message.assistant');
+    const query = String(message?.dataset.regenerateQuery || '').trim();
+    if (!conversationId || !query || activeConversationRequests.has(conversationId)) return;
+
+    stopActiveRunWatcher();
+    activeConversationRequests.add(conversationId);
+    updateSendState();
+
+    const streamView = appendStreamingAssistantMessage(query);
+    scrollToBottom();
+
+    try {
+        const resp = await sendMessageStream(conversationId, query, streamView, '', [], { regenerate: true });
         streamView.finalize(resp);
         void Promise.allSettled([loadConversations(), loadRuns()]).then(() => {
             if (currentConversationId === conversationId) updateTopbar();
@@ -4528,13 +5244,14 @@ async function sendMessage(conversationId, query, attachmentContext = '', attach
         stream: false,
         model_preference: model || undefined,
         agent_id: currentAgentId,
+        role_id: currentRoleId || undefined,
         context_blocks: attachmentContext ? [attachmentContext] : [],
         attachments,
         ...modePayload,
     });
 }
 
-async function sendMessageStream(conversationId, query, streamView, attachmentContext = '', attachments = []) {
+async function sendMessageStream(conversationId, query, streamView, attachmentContext = '', attachments = [], extraPayload = {}) {
     const model = modelSelect.value || undefined;
     const modePayload = selectedModePayload();
     const resp = await fetch(API_BASE + '/api/chat', {
@@ -4551,9 +5268,11 @@ async function sendMessageStream(conversationId, query, streamView, attachmentCo
             stream: true,
             model_preference: model || undefined,
             agent_id: currentAgentId,
+            role_id: currentRoleId || undefined,
             context_blocks: attachmentContext ? [attachmentContext] : [],
             attachments,
             ...modePayload,
+            ...extraPayload,
         }),
     });
 
@@ -4622,13 +5341,14 @@ async function sendMessageStream(conversationId, query, streamView, attachmentCo
     };
 }
 
-function appendStreamingAssistantMessage() {
+function appendStreamingAssistantMessage(regenerateQuery = '') {
     const welcome = messagesContainer.querySelector('.welcome-screen');
     if (welcome) welcome.remove();
 
     const div = document.createElement('div');
     div.className = 'message assistant streaming';
     div.dataset.copyText = '';
+    if (regenerateQuery) div.dataset.regenerateQuery = regenerateQuery;
     div.innerHTML = `
         <div class="avatar">AI</div>
         <div class="bubble">
@@ -4639,7 +5359,7 @@ function appendStreamingAssistantMessage() {
             <div class="streaming-citations"></div>
             <div class="streaming-skills"></div>
             <div class="streaming-trace"></div>
-            ${renderAssistantActions({ copyEnabled: false })}
+            ${renderAssistantActions({ copyEnabled: false, regenerateQuery, regenerateEnabled: false })}
         </div>
     `;
     messagesContainer.appendChild(div);
@@ -4690,6 +5410,8 @@ function appendStreamingAssistantMessage() {
                 runId: lastMeta.runId || '',
                 runtime: lastMeta.runtime || '',
                 modelUsed: lastMeta.modelUsed || '',
+                regenerateQuery,
+                regenerateEnabled: false,
             });
         },
         finalize(resp) {
@@ -4712,6 +5434,16 @@ function appendStreamingAssistantMessage() {
                 modelUsed: resp.model_used || lastMeta.modelUsed || '',
             });
             div.classList.remove('streaming');
+            updateAssistantActions(div, {
+                copyEnabled: Boolean(div.dataset.copyText),
+                traceEvents: lastEvents,
+                runId: lastMeta.runId || '',
+                runtime: lastMeta.runtime || '',
+                modelUsed: lastMeta.modelUsed || '',
+                regenerateQuery,
+                regenerateEnabled: Boolean(regenerateQuery),
+            });
+            updateRegenerateButtonsState();
         },
         showError(message, type = 'error') {
             statusEl.hidden = true;
@@ -4723,6 +5455,16 @@ function appendStreamingAssistantMessage() {
                 type === 'rate_limit' ? 'rate-limit' : 'generic-error'
             );
             div.classList.remove('streaming');
+            updateAssistantActions(div, {
+                copyEnabled: Boolean(message),
+                traceEvents: lastEvents,
+                runId: lastMeta.runId || '',
+                runtime: lastMeta.runtime || '',
+                modelUsed: lastMeta.modelUsed || '',
+                regenerateQuery,
+                regenerateEnabled: Boolean(regenerateQuery),
+            });
+            updateRegenerateButtonsState();
         },
     };
 }
@@ -4846,7 +5588,8 @@ function appendMessage(
     runId = '',
     runtime = '',
     citations = [],
-    inputMeta = null
+    inputMeta = null,
+    regenerateQuery = ''
 ) {
     const welcome = messagesContainer.querySelector('.welcome-screen');
     if (welcome) welcome.remove();
@@ -4854,6 +5597,7 @@ function appendMessage(
     const div = document.createElement('div');
     div.className = `message ${role}`;
     if (role === 'assistant') div.dataset.copyText = content || '';
+    if (role === 'assistant' && regenerateQuery) div.dataset.regenerateQuery = regenerateQuery;
     const avatar = role === 'user' ? 'You' : 'AI';
     const assistantActions = role === 'assistant'
         ? renderAssistantActions({
@@ -4862,6 +5606,8 @@ function appendMessage(
             runId,
             runtime,
             modelUsed,
+            regenerateQuery,
+            regenerateEnabled: Boolean(regenerateQuery),
         })
         : '';
     const displayError = errorType
@@ -4898,6 +5644,8 @@ function renderAssistantActions(options = {}) {
 function renderAssistantActionButtons(options = {}) {
     const {
         copyEnabled = true,
+        regenerateQuery = '',
+        regenerateEnabled = true,
         traceEvents = [],
         runId = '',
         runtime = '',
@@ -4907,6 +5655,7 @@ function renderAssistantActionButtons(options = {}) {
     const disabled = copyEnabled ? '' : 'disabled aria-disabled="true"';
     return `
         ${renderTraceActionButton(traceEvents, runId, runtime, modelUsed)}
+        ${renderRegenerateActionButton(regenerateQuery, regenerateEnabled)}
         <button class="assistant-action-button assistant-copy" type="button" data-copy-answer ${disabled}
                 title="${escapeAttr(label)}" aria-label="${escapeAttr(label)}">
             <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2">
@@ -4922,6 +5671,23 @@ function updateAssistantActions(messageEl, options = {}) {
     const actions = messageEl?.querySelector?.('.assistant-actions');
     if (!actions) return;
     actions.innerHTML = renderAssistantActionButtons(options);
+}
+
+function renderRegenerateActionButton(query = '', enabled = true) {
+    if (!query) return '';
+
+    const label = t('actions.regenerateAnswer');
+    const disabled = enabled ? '' : 'disabled aria-disabled="true"';
+    return `
+        <button class="assistant-action-button assistant-regenerate" type="button" data-regenerate-answer ${disabled}
+                title="${escapeAttr(label)}" aria-label="${escapeAttr(label)}">
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M21 12a9 9 0 1 1-2.64-6.36"/>
+                <path d="M21 3v6h-6"/>
+            </svg>
+            <span class="visually-hidden">${escapeHtml(label)}</span>
+        </button>
+    `;
 }
 
 function renderTraceActionButton(events = [], runId = '', runtime = '', modelUsed = '') {
@@ -5994,6 +6760,35 @@ document.addEventListener('click', async (event) => {
         return;
     }
 
+    const roleMemoryToggle = event.target.closest('#btn-role-memory');
+    if (roleMemoryToggle) {
+        event.stopPropagation();
+        closeModePopover();
+        toggleRoleMemoryPopover();
+        return;
+    }
+
+    const roleMemoryCloseButton = event.target.closest('[data-role-memory-close]');
+    if (roleMemoryCloseButton) {
+        event.preventDefault();
+        closeRoleMemoryPopover();
+        return;
+    }
+
+    const roleMemoryDeleteButton = event.target.closest('[data-delete-role-memory]');
+    if (roleMemoryDeleteButton && !roleMemoryDeleteButton.disabled) {
+        event.stopPropagation();
+        await deleteRoleMemory(roleMemoryDeleteButton.dataset.deleteRoleMemory);
+        return;
+    }
+
+    if (event.target.closest('#role-memory-popover') || event.target.closest('#role-picker')) {
+        closeModePopover();
+        return;
+    }
+
+    closeRoleMemoryPopover();
+
     const modeToggle = event.target.closest('#btn-mode-toggle');
     if (modeToggle) {
         event.stopPropagation();
@@ -6025,6 +6820,58 @@ document.addEventListener('click', async (event) => {
         return;
     }
 
+    const pulseClosePostButton = event.target.closest('[data-pulse-close-post]');
+    if (pulseClosePostButton) {
+        event.preventDefault();
+        closePulsePost();
+        return;
+    }
+
+    const pulseSuggestedTopicButton = event.target.closest('[data-pulse-suggest-topic]');
+    if (pulseSuggestedTopicButton) {
+        event.preventDefault();
+        const index = Number(pulseSuggestedTopicButton.dataset.pulseSuggestTopic);
+        const suggestions = Array.isArray(pulse.suggested_topics) ? pulse.suggested_topics : [];
+        if (Number.isInteger(index) && suggestions[index]) {
+            await createPulseTopic(suggestions[index]);
+        }
+        return;
+    }
+
+    const pulseFilterTopicButton = event.target.closest('[data-pulse-filter-topic]');
+    if (pulseFilterTopicButton) {
+        selectedPulseTopicId = pulseFilterTopicButton.dataset.pulseFilterTopic || '';
+        renderPulse();
+        return;
+    }
+
+    const pulseSelectTopicButton = event.target.closest('[data-pulse-select-topic]');
+    if (pulseSelectTopicButton) {
+        selectedPulseTopicId = pulseSelectTopicButton.dataset.pulseSelectTopic || '';
+        renderPulse();
+        return;
+    }
+
+    const pulseFeedbackButton = event.target.closest('[data-pulse-feedback]');
+    if (pulseFeedbackButton) {
+        event.preventDefault();
+        event.stopPropagation();
+        const itemId = pulseFeedbackButton.dataset.pulseFeedback || '';
+        const eventType = pulseFeedbackButton.dataset.pulseFeedbackType || '';
+        const value = Number(pulseFeedbackButton.dataset.pulseFeedbackValue || '1');
+        pulseFeedbackButton.disabled = true;
+        await recordPulseEvent(itemId, eventType, Number.isFinite(value) ? value : 1, { surface: selectedPulsePostId ? 'post_window' : 'feed' });
+        pulseFeedbackButton.disabled = false;
+        return;
+    }
+
+    const pulseOpenPostButton = event.target.closest('[data-pulse-open-post]');
+    if (pulseOpenPostButton) {
+        event.preventDefault();
+        openPulsePost(pulseOpenPostButton.dataset.pulseOpenPost || '', pulseOpenPostButton);
+        return;
+    }
+
     const pulseDeleteTopicButton = event.target.closest('[data-pulse-delete-topic]');
     if (pulseDeleteTopicButton) {
         event.stopPropagation();
@@ -6044,9 +6891,16 @@ document.addEventListener('click', async (event) => {
         return;
     }
 
+    const pulseOpenClusterButton = event.target.closest('[data-pulse-open-cluster]');
+    if (pulseOpenClusterButton) {
+        openPulseCluster(pulseOpenClusterButton.dataset.pulseOpenCluster);
+        return;
+    }
+
 	const pulseChatButton = event.target.closest('[data-pulse-chat]');
 	if (pulseChatButton) {
 		const query = pulseChatButton.dataset.pulseChat || '';
+		if (pulsePostIsOpen()) closePulsePost();
 		openPulseChat(query);
 		return;
 	}
@@ -6109,6 +6963,14 @@ document.addEventListener('click', async (event) => {
     const testProviderButton = event.target.closest('[data-test-provider]');
     if (testProviderButton && !testProviderButton.disabled) {
         await testProvider(testProviderButton.dataset.testProvider, testProviderButton);
+        return;
+    }
+
+    const regenerateAnswerButton = event.target.closest('[data-regenerate-answer]');
+    if (regenerateAnswerButton) {
+        event.stopPropagation();
+        if (regenerateAnswerButton.disabled) return;
+        await regenerateAssistantAnswer(regenerateAnswerButton);
         return;
     }
 
@@ -6184,6 +7046,18 @@ document.addEventListener('keydown', (event) => {
         return;
     }
 
+    if (event.key === 'Escape' && roleMemoryPopover && !roleMemoryPopover.classList.contains('hidden')) {
+        event.preventDefault();
+        closeRoleMemoryPopover();
+        return;
+    }
+
+    if (event.key === 'Escape' && pulsePostIsOpen()) {
+        event.preventDefault();
+        closePulsePost();
+        return;
+    }
+
     if (!mediaPreviewIsOpen()) return;
 
     if (event.key === 'Escape') {
@@ -6249,6 +7123,13 @@ if (pulseTopicForm) {
     pulseTopicForm.addEventListener('submit', async (event) => {
         event.preventDefault();
         await createPulseTopic();
+    });
+}
+
+if (roleMemoryForm) {
+    roleMemoryForm.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        await saveRoleMemory();
     });
 }
 
@@ -6380,12 +7261,20 @@ if (agentSelect) {
     });
 }
 
+if (roleSelect) {
+    roleSelect.addEventListener('change', () => {
+        setCurrentRole(roleSelect.value || 'default');
+    });
+}
+
 applyI18n();
 applySidebarCollapseState();
 renderAgentCommandBar();
 renderModes();
 renderPulse();
 renderAccountControls();
+renderRoleSelect();
+renderRoleMemoryList();
 updateCounts();
 renderHealth();
 updateSendState();
