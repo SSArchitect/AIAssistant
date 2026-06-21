@@ -127,6 +127,7 @@ const I18N = {
             keywords: '关键词',
             keywordsPlaceholder: 'Agent, RAG, 多模态',
             subscribe: '订阅',
+            subscribing: '订阅中...',
             refresh: '刷新今日推荐',
             todayTitle: '今日 Pulse',
             generatedAt: '已预计算：{time}',
@@ -159,6 +160,7 @@ const I18N = {
             loadFailed: '加载 Pulse 失败：{message}',
             createFailed: '订阅失败：{message}',
             deleteFailed: '删除失败：{message}',
+            topicRequired: '请先填写 Topic',
         },
         attachments: {
             reading: '解析中',
@@ -421,6 +423,7 @@ const I18N = {
             keywords: 'Keywords',
             keywordsPlaceholder: 'Agents, RAG, multimodal',
             subscribe: 'Subscribe',
+            subscribing: 'Subscribing...',
             refresh: 'Refresh Today',
             todayTitle: "Today's Pulse",
             generatedAt: 'Precomputed: {time}',
@@ -453,6 +456,7 @@ const I18N = {
             loadFailed: 'Failed to load Pulse: {message}',
             createFailed: 'Failed to subscribe: {message}',
             deleteFailed: 'Failed to delete: {message}',
+            topicRequired: 'Enter a topic first',
         },
         attachments: {
             reading: 'Parsing',
@@ -702,6 +706,8 @@ const activeConversationRequests = new Set();
 let toolsError = '';
 let runsError = '';
 let pulseError = '';
+let pulseErrorType = 'load';
+let pulseTopicSubmitting = false;
 let pinnedAgentIds = loadPinnedAgents();
 let collapsedSidebarSections = loadCollapsedSidebarSections();
 let selectedModeIds = loadSelectedModes();
@@ -1111,6 +1117,8 @@ async function switchAccount(userId, options = {}) {
     pulse = { date: '', generated_at: '', topics: [], items: [] };
     runsError = '';
     pulseError = '';
+    pulseErrorType = 'load';
+    pulseTopicSubmitting = false;
     selectedRunId = '';
     selectedTraceNodeId = '';
     selectedTraceRunId = '';
@@ -1788,38 +1796,58 @@ async function loadRuns() {
 
 async function loadPulse() {
     pulseError = '';
+    pulseErrorType = 'load';
     try {
         pulse = await apiCall('GET', '/api/pulse');
     } catch (err) {
         pulseError = err.message;
+        pulseErrorType = 'load';
     }
     renderPulse();
 }
 
 async function refreshPulse() {
     pulseError = '';
+    pulseErrorType = 'load';
     try {
         pulse = await apiCall('POST', '/api/pulse/refresh', { date: pulse.date || undefined });
     } catch (err) {
         pulseError = err.message;
+        pulseErrorType = 'load';
     }
     renderPulse();
 }
 
 async function createPulseTopic() {
-    if (!pulseTopicInput) return;
+    if (!pulseTopicInput || pulseTopicSubmitting) return;
     const name = pulseTopicInput.value.trim();
-    if (!name) return;
+    if (!name) {
+        pulseError = t('pulse.topicRequired');
+        pulseErrorType = 'create';
+        renderPulse();
+        pulseTopicInput.focus();
+        return;
+    }
 
     const keywords = parsePulseKeywords(pulseKeywordsInput?.value || '');
+    pulseTopicSubmitting = true;
+    updatePulseTopicSubmitState();
     try {
-        await apiCall('POST', '/api/pulse/topics', { name, keywords });
+        const data = await apiCall('POST', '/api/pulse/topics', { name, keywords });
+        upsertPulseTopic(data.topic);
+        pulseError = '';
+        pulseErrorType = 'load';
         pulseTopicInput.value = '';
         if (pulseKeywordsInput) pulseKeywordsInput.value = '';
-        await refreshPulse();
-    } catch (err) {
-        pulseError = t('pulse.createFailed', { message: err.message });
         renderPulse();
+        refreshPulse();
+    } catch (err) {
+        pulseError = err.message;
+        pulseErrorType = 'create';
+        renderPulse();
+    } finally {
+        pulseTopicSubmitting = false;
+        updatePulseTopicSubmitState();
     }
 }
 
@@ -1829,9 +1857,29 @@ async function deletePulseTopic(id) {
         await apiCall('DELETE', `/api/pulse/topics/${encodeURIComponent(id)}`);
         await refreshPulse();
     } catch (err) {
-        pulseError = t('pulse.deleteFailed', { message: err.message });
+        pulseError = err.message;
+        pulseErrorType = 'delete';
         renderPulse();
     }
+}
+
+function upsertPulseTopic(topic) {
+    if (!topic || !topic.id) return;
+    const topicName = String(topic.name || '').trim().toLowerCase();
+    const topics = Array.isArray(pulse.topics) ? pulse.topics : [];
+    const nextTopics = topics.filter((item) => {
+        const itemName = String(item.name || '').trim().toLowerCase();
+        return item.id !== topic.id && (!topicName || itemName !== topicName);
+    });
+    pulse = { ...pulse, topics: [...nextTopics, topic] };
+}
+
+function updatePulseTopicSubmitState() {
+    const submitButton = pulseTopicForm?.querySelector('.pulse-submit');
+    if (!submitButton) return;
+    submitButton.disabled = pulseTopicSubmitting;
+    const label = submitButton.querySelector('[data-i18n="pulse.subscribe"]');
+    if (label) label.textContent = t(pulseTopicSubmitting ? 'pulse.subscribing' : 'pulse.subscribe');
 }
 
 function parsePulseKeywords(value = '') {
@@ -2217,6 +2265,8 @@ function capabilityLabel(capability) {
 function renderPulse() {
     if (!pulseItems || !pulseTopicList) return;
 
+    updatePulseTopicSubmitState();
+
     if (pulseDateTitle) {
         pulseDateTitle.textContent = pulse.date ? `${t('pulse.todayTitle')} · ${pulse.date}` : t('pulse.todayTitle');
     }
@@ -2229,7 +2279,7 @@ function renderPulse() {
     renderPulseTopics();
 
     if (pulseError) {
-        pulseItems.innerHTML = emptyState(t('pulse.loadFailed', { message: pulseError }), '');
+        pulseItems.innerHTML = emptyState(formatPulseError(), '');
         return;
     }
 
@@ -2240,6 +2290,15 @@ function renderPulse() {
     }
 
     pulseItems.innerHTML = renderPulseModules(items, pulse.modules || []);
+}
+
+function formatPulseError() {
+    const key = pulseErrorType === 'create'
+        ? 'pulse.createFailed'
+        : pulseErrorType === 'delete'
+            ? 'pulse.deleteFailed'
+            : 'pulse.loadFailed';
+    return t(key, { message: pulseError });
 }
 
 function renderPulseModules(items = [], generatedModules = []) {

@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -182,6 +183,15 @@ var pulseModuleOrder = []string{
 	pulseSourceTopicHot,
 	pulseSourceMemory,
 	pulseSourceInterestHot,
+}
+
+var pulseModelEntityPattern = regexp.MustCompile(`(?i)\b(?:gpt|claude|gemini|llama|grok|fable|mythos|deepseek|qwen|kimi|mistral|sora|dall-e|o[0-9])(?:[-\s]?[a-z0-9.]+)?\b`)
+
+var pulseKnownEntities = []string{
+	"GPT-5.6", "GPT-5", "GPT-4.5", "GPT-4o", "ChatGPT", "OpenAI",
+	"Claude", "Anthropic", "Gemini", "DeepMind", "Google", "Llama",
+	"Meta", "Grok", "xAI", "DeepSeek", "Qwen", "Kimi", "Mistral",
+	"Sora", "Fable", "Mythos", "具身智能", "机器人",
 }
 
 func NewPulseHandler(agents ...*bridge.AgentClient) *PulseHandler {
@@ -792,6 +802,8 @@ func (h *PulseHandler) requestPulseGeneration(date string, userID string, inputJ
 			"你是 Pulse 推荐预计算器。必须只输出一个合法 JSON 对象，不要 Markdown，不要解释。",
 			"你必须基于 search_evidence 中的外网检索结果做新闻/资讯聚合总结，不能只改写 topic/keyword。",
 			"每个 item 是一个资讯簇，必须包含 news_sources 数组，并且 signals 至少包含一个真实来源，格式为：搜索来源：标题 - URL。",
+			"title 必须写成中文资讯标题，可以保留 GPT-5、Claude、OpenAI 等产品/公司名；禁止直接复制英文搜索标题或写成“近期资讯聚合：...”。",
+			"summary 必须整合新闻簇并解释发生了什么、为什么推荐、哪些点需要核验；禁止拼接来源标题/snippet，禁止写“聚合 N 条来源，关键线索是...”。",
 			"如果某模块没有搜索结果，items 可以为空，或明确说明搜索不足；禁止编造最新事实。",
 		},
 		ContextBlocks: []string{
@@ -850,6 +862,8 @@ func (h *PulseHandler) requestPulseModuleGeneration(date string, userID string, 
 			"你是 Pulse 单模块预计算器。只输出一个合法 JSON 对象，不要 Markdown，不要解释。",
 			"你必须基于 search_evidence 中对应模块的外网检索结果做新闻/资讯聚合总结，不能只改写 topic/keyword。",
 			"每个 item 是一个资讯簇，必须包含 news_sources 数组，并且 signals 至少包含一个真实来源，格式为：搜索来源：标题 - URL。",
+			"title 必须写成中文资讯标题，可以保留 GPT-5、Claude、OpenAI 等产品/公司名；禁止直接复制英文搜索标题或写成“近期资讯聚合：...”。",
+			"summary 必须整合新闻簇并解释发生了什么、为什么推荐、哪些点需要核验；禁止拼接来源标题/snippet，禁止写“聚合 N 条来源，关键线索是...”。",
 			"如果对应模块没有搜索结果，items 可以为空，或明确说明搜索不足；禁止编造最新事实。",
 		},
 		ContextBlocks: []string{
@@ -923,7 +937,8 @@ func pulseGenerationPrompt() string {
 - 必须先阅读 search_evidence；推荐内容必须来自搜索结果的 title/snippet/url，而不是改写 topic/keyword。
 - topic_hot 必须优先使用 module=topic_hot 的搜索结果；interest_hot 必须使用 module=interest_hot 的搜索结果；memory 可结合 memory_signals 和搜索结果。
 - 每个 item 是一个“资讯簇”：聚合 2-5 条相关搜索结果；不要把每条搜索结果拆成独立 item。
-- title 写成聚合话题标题；summary 用 1-2 句给关键/可能感兴趣的信息，而不是泛泛背景。
+- title 写成中文编辑标题，保留 GPT-5、Claude、OpenAI 等必要专名即可；禁止直接复制英文搜索标题，禁止写“近期资讯聚合：来源标题...”。
+- summary 用 1-2 句整合新闻簇：说明发生了什么、主体/版本/时间/动作是什么、为什么推荐给用户、哪些点仍需核验。禁止拼接来源标题/snippet，禁止写“聚合 N 条来源，关键线索是...”。
 - news_sources 必须包含 2-5 个来自 search_evidence.results 的来源对象，url 必须原样复制。
 - 每个 item 的 signals 必须至少包含一个真实来源，格式为“搜索来源：标题 - URL”。
 - quick_context 要综合多条来源，说明共同结论、差异和证据强弱；不要写空泛背景。
@@ -944,7 +959,9 @@ func pulseModuleGenerationPrompt(key string) string {
 要求：
 - title、summary 和 items 必须基于 search_evidence 中 module=%s 的外网检索结果生成。
 - 每个 item 是一个“资讯簇”：聚合 2-5 条相关搜索结果；不要把每条搜索结果拆成独立 item。
-- item.summary 用 1-2 句写关键/可能感兴趣的信息；quick_context 展开综合多条来源的背景、共同结论、差异和证据强弱。
+- item.title 写成中文编辑标题，保留 GPT-5、Claude、OpenAI 等必要专名即可；禁止直接复制英文搜索标题，禁止写“近期资讯聚合：来源标题...”。
+- item.summary 用 1-2 句整合新闻簇：说明发生了什么、主体/版本/时间/动作是什么、为什么推荐给用户、哪些点仍需核验。禁止拼接来源标题/snippet，禁止写“聚合 N 条来源，关键线索是...”。
+- quick_context 展开综合多条来源的背景、共同结论、差异和证据强弱。
 - news_sources 必须包含 2-5 个来自 search_evidence.results 的来源对象，url 必须原样复制。
 - 每个 item 的 signals 必须至少包含一个真实来源，格式为“搜索来源：标题 - URL”。
 - quick_context 要总结搜索结果里的新信息，并说明证据强弱。
@@ -1151,9 +1168,29 @@ func generatedPayloadToModels(date string, payload generatedPulsePayload, topics
 			if len(newsSources) == 0 {
 				newsSources = newsSourcesFromSignals(generatedItem.Signals, 5)
 			}
+			itemTitle := strings.TrimSpace(generatedItem.Title)
+			itemSummary := strings.TrimSpace(generatedItem.Summary)
+			if pulseItemCopyLooksLikeSearchDump(itemTitle, itemSummary) {
+				fallbackResults := pulseSearchResultsFromNewsSources(newsSources)
+				if len(fallbackResults) > 0 {
+					fallbackEvidence := pulseSearchEvidence{
+						Module:    key,
+						Query:     firstNonEmptyPulse(topicName, generatedItem.Category, generatedItem.Title),
+						TopicID:   topicID,
+						TopicName: topicName,
+						Intent:    generatedItem.Category,
+					}
+					if pulseTitleLooksLikeSearchDump(itemTitle) {
+						itemTitle = searchFallbackClusterTitle(key, fallbackEvidence, fallbackResults)
+					}
+					if pulseSummaryLooksLikeSearchDump(itemSummary) {
+						itemSummary = searchFallbackClusterSummary(fallbackEvidence, fallbackResults)
+					}
+				}
+			}
 			questionContext := pulseQuestionContext{
-				Title:     generatedItem.Title,
-				Summary:   generatedItem.Summary,
+				Title:     itemTitle,
+				Summary:   itemSummary,
 				Module:    key,
 				TopicName: topicName,
 				Category:  generatedItem.Category,
@@ -1174,17 +1211,17 @@ func generatedPayloadToModels(date string, payload generatedPulsePayload, topics
 				detail.Signals = []string{"由 Pulse 预计算 Agent 根据 topic 与 memory 信号生成。"}
 			}
 			items = append(items, models.PulseItem{
-				ID:            pulseItemID(date, key, fmt.Sprintf("%s:%d", generatedItem.Title, index)),
+				ID:            pulseItemID(date, key, fmt.Sprintf("%s:%d", itemTitle, index)),
 				Date:          date,
 				TopicID:       topicID,
 				TopicName:     topicName,
 				Source:        key,
 				Category:      limitText(firstNonEmptyPulse(generatedItem.Category, moduleCategory(key)), 80),
-				Title:         limitText(generatedItem.Title, 120),
-				Summary:       limitText(generatedItem.Summary, 420),
+				Title:         limitText(itemTitle, 120),
+				Summary:       limitText(itemSummary, 420),
 				HeatScore:     normalizeHeatScore(generatedItem.HeatScore, key, index),
 				DetailJSON:    mustJSON(detail),
-				ExplorePrompt: limitText(firstNonEmptyPulse(generatedItem.ExplorePrompt, fmt.Sprintf("请展开「%s」，并说明为什么推荐给我。", generatedItem.Title)), 600),
+				ExplorePrompt: limitText(firstNonEmptyPulse(generatedItem.ExplorePrompt, fmt.Sprintf("请展开「%s」，并说明为什么推荐给我。", itemTitle)), 600),
 				CreatedAt:     now,
 				UpdatedAt:     now,
 			})
@@ -1274,9 +1311,8 @@ func searchFallbackClusterItem(date string, queryEvidence pulseSearchEvidence, m
 	module := normalizePulseModuleKey(queryEvidence.Module)
 	results := queryEvidence.Results[:minInt(len(queryEvidence.Results), pulseSearchResultLimit)]
 	sources := newsSourcesFromSearchResults(results, 5)
-	primary := results[0]
-	title := searchFallbackClusterTitle(module, queryEvidence, primary)
-	summary := searchFallbackClusterSummary(results)
+	title := searchFallbackClusterTitle(module, queryEvidence, results)
+	summary := searchFallbackClusterSummary(queryEvidence, results)
 	sourceSignals := []string{
 		fmt.Sprintf("外网检索查询：%s", queryEvidence.Query),
 		fmt.Sprintf("聚合来源数量：%d", len(results)),
@@ -1293,8 +1329,8 @@ func searchFallbackClusterItem(date string, queryEvidence pulseSearchEvidence, m
 		Query:     queryEvidence.Query,
 		Intent:    queryEvidence.Intent,
 		Category:  moduleCategory(module),
-		KeyPoints: searchFallbackClusterKeyPoints(results),
-		Context:   searchFallbackClusterContext(results),
+		KeyPoints: searchFallbackClusterKeyPoints(queryEvidence, results),
+		Context:   searchFallbackClusterContext(queryEvidence, results),
 		Sources:   sources,
 	}
 	detail := pulseItemDetail{
@@ -1307,7 +1343,7 @@ func searchFallbackClusterItem(date string, queryEvidence pulseSearchEvidence, m
 		PrecomputedAt:        now.UTC().Format(time.RFC3339),
 	}
 	return models.PulseItem{
-		ID:            pulseItemID(date, module, fmt.Sprintf("%s:%s:%d", queryEvidence.Query, primary.URL, moduleIndex)),
+		ID:            pulseItemID(date, module, fmt.Sprintf("%s:%s:%d", queryEvidence.Query, results[0].URL, moduleIndex)),
 		Date:          date,
 		TopicID:       queryEvidence.TopicID,
 		TopicName:     queryEvidence.TopicName,
@@ -1323,39 +1359,41 @@ func searchFallbackClusterItem(date string, queryEvidence pulseSearchEvidence, m
 	}
 }
 
-func searchFallbackClusterTitle(module string, queryEvidence pulseSearchEvidence, primary pulseSearchResult) string {
-	headline := limitText(firstNonEmptyPulse(primary.Title, queryEvidence.Query), 72)
-	switch module {
-	case pulseSourceTopicHot:
-		if queryEvidence.TopicName != "" {
-			return fmt.Sprintf("「%s」近期资讯聚合：%s", queryEvidence.TopicName, headline)
-		}
-		return fmt.Sprintf("订阅 Topic 近期资讯聚合：%s", headline)
-	case pulseSourceMemory:
-		return fmt.Sprintf("近日关注延伸：%s", headline)
-	case pulseSourceInterestHot:
-		return fmt.Sprintf("可能值得关注：%s", headline)
-	default:
-		return headline
+func searchFallbackClusterTitle(module string, queryEvidence pulseSearchEvidence, results []pulseSearchResult) string {
+	focus := searchFallbackClusterFocus(module, queryEvidence, results)
+	entities := searchFallbackClusterEntities(queryEvidence, results)
+	change := searchFallbackClusterTitleChange(results)
+	if len(entities) > 0 {
+		return limitText(fmt.Sprintf("%s：%s %s", focus, strings.Join(entities[:minInt(len(entities), 3)], "、"), change), 120)
 	}
+	return limitText(fmt.Sprintf("%s：%s", focus, change), 120)
 }
 
-func searchFallbackClusterSummary(results []pulseSearchResult) string {
+func searchFallbackClusterSummary(queryEvidence pulseSearchEvidence, results []pulseSearchResult) string {
 	if len(results) == 0 {
 		return ""
 	}
-	pieces := []string{fmt.Sprintf("聚合 %d 条来源，关键线索是：%s", len(results), searchResultSnippet(results[0]))}
+	focus := searchFallbackClusterFocus(normalizePulseModuleKey(queryEvidence.Module), queryEvidence, results)
+	entities := searchFallbackClusterEntities(queryEvidence, results)
+	subject := focus
+	if len(entities) > 0 {
+		subject = fmt.Sprintf("%s（%s）", focus, strings.Join(entities[:minInt(len(entities), 3)], "、"))
+	}
+	change := searchFallbackClusterSummaryChange(results)
+	aspects := strings.Join(searchFallbackClusterAspects(results), "、")
+	sourcePhrase := "搜索结果"
 	if len(results) > 1 {
-		pieces = append(pieces, fmt.Sprintf("另一个来源关注「%s」。", limitText(results[1].Title, 72)))
+		sourcePhrase = fmt.Sprintf("%d 条来源", len(results))
 	}
-	return limitText(strings.Join(pieces, " "), 420)
+	return limitText(fmt.Sprintf("%s集中指向%s：%s。推荐重点看%s；%s", sourcePhrase, subject, change, aspects, searchFallbackClusterUncertainty(results)), 420)
 }
 
-func searchFallbackClusterContext(results []pulseSearchResult) string {
+func searchFallbackClusterContext(queryEvidence pulseSearchEvidence, results []pulseSearchResult) string {
 	if len(results) == 0 {
 		return ""
 	}
-	parts := []string{fmt.Sprintf("聚合摘要：这组资讯来自 %d 条外网搜索结果，下面按来源列出主要信息，便于继续核验。", len(results))}
+	parts := []string{"综合判断：" + searchFallbackClusterSummary(queryEvidence, results)}
+	parts = append(parts, "来源线索：")
 	for index, result := range results[:minInt(len(results), 4)] {
 		published := ""
 		if result.PublishedAt != "" {
@@ -1367,17 +1405,304 @@ func searchFallbackClusterContext(results []pulseSearchResult) string {
 	return limitText(strings.Join(parts, "\n"), 900)
 }
 
-func searchFallbackClusterKeyPoints(results []pulseSearchResult) []string {
-	points := []string{}
-	for _, result := range results[:minInt(len(results), 3)] {
-		points = append(points, fmt.Sprintf("%s：%s", firstNonEmptyPulse(result.Title, "未命名来源"), searchResultSnippet(result)))
+func searchFallbackClusterKeyPoints(queryEvidence pulseSearchEvidence, results []pulseSearchResult) []string {
+	focus := searchFallbackClusterFocus(normalizePulseModuleKey(queryEvidence.Module), queryEvidence, results)
+	entities := searchFallbackClusterEntities(queryEvidence, results)
+	entityText := firstNonEmptyPulse(strings.Join(entities[:minInt(len(entities), 3)], "、"), focus)
+	points := []string{
+		fmt.Sprintf("共同线索：%s正在出现新的资讯信号。", entityText),
+		fmt.Sprintf("重点看点：%s。", strings.Join(searchFallbackClusterAspects(results), "、")),
+		fmt.Sprintf("推荐理由：这组来源和「%s」相关，适合作为今日快速判断入口。", focus),
+		"核验动作：打开原文确认发布时间、版本号/主体名称和官方口径，避免被搜索摘要误导。",
 	}
-	points = append(points, "这组推荐由外网检索自动聚合，建议打开来源核验发布时间和原文上下文。")
 	return limitStringSlice(points, 5, 180)
+}
+
+func searchFallbackClusterFocus(module string, queryEvidence pulseSearchEvidence, results []pulseSearchResult) string {
+	topic := cleanSearchText(queryEvidence.TopicName)
+	clusterText := strings.ToLower(searchFallbackClusterText(queryEvidence, results))
+	if strings.EqualFold(topic, "ai") && pulseClusterMentionsModel(clusterText) {
+		return "AI 模型进展"
+	}
+	if topic != "" {
+		return topic
+	}
+	switch module {
+	case pulseSourceMemory:
+		return "近日关注延伸"
+	case pulseSourceInterestHot:
+		return "可能兴趣方向"
+	default:
+		return "订阅 Topic"
+	}
+}
+
+func searchFallbackClusterEntities(queryEvidence pulseSearchEvidence, results []pulseSearchResult) []string {
+	text := searchFallbackClusterText(queryEvidence, results)
+	entities := []string{}
+	for _, match := range pulseModelEntityPattern.FindAllString(text, -1) {
+		entities = appendPulseEntity(entities, normalizePulseEntity(match))
+	}
+	for _, entity := range pulseKnownEntities {
+		if pulseTextContainsFold(text, entity) {
+			entities = appendPulseEntity(entities, entity)
+		}
+	}
+	return limitStringSlice(entities, 5, 40)
+}
+
+func appendPulseEntity(entities []string, entity string) []string {
+	entity = normalizePulseEntity(entity)
+	if entity == "" || pulseEntityLooksGeneric(entity) {
+		return entities
+	}
+	normalized := strings.ToLower(strings.ReplaceAll(entity, " ", ""))
+	for _, existing := range entities {
+		existingKey := strings.ToLower(strings.ReplaceAll(existing, " ", ""))
+		if existingKey == normalized || strings.Contains(existingKey, normalized) || strings.Contains(normalized, existingKey) {
+			return entities
+		}
+	}
+	return append(entities, entity)
+}
+
+func normalizePulseEntity(entity string) string {
+	entity = strings.TrimSpace(strings.Join(strings.Fields(entity), " "))
+	entity = strings.Trim(entity, "：:，,。.;；、()（）[]【】\"'")
+	if entity == "" {
+		return ""
+	}
+	lower := strings.ToLower(entity)
+	switch lower {
+	case "gpt", "chatgpt":
+		return "GPT"
+	case "openai":
+		return "OpenAI"
+	case "claude":
+		return "Claude"
+	case "anthropic":
+		return "Anthropic"
+	case "gemini":
+		return "Gemini"
+	case "llama":
+		return "Llama"
+	case "grok":
+		return "Grok"
+	case "xai":
+		return "xAI"
+	case "deepseek":
+		return "DeepSeek"
+	case "qwen":
+		return "Qwen"
+	case "kimi":
+		return "Kimi"
+	case "mistral":
+		return "Mistral"
+	case "sora":
+		return "Sora"
+	case "fable":
+		return "Fable"
+	case "mythos":
+		return "Mythos"
+	}
+	if strings.HasPrefix(lower, "gpt") {
+		return strings.ToUpper(strings.ReplaceAll(entity, " ", "-"))
+	}
+	return entity
+}
+
+func pulseEntityLooksGeneric(entity string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(entity))
+	if normalized == "" {
+		return true
+	}
+	generic := []string{"latest", "news", "the", "model", "models", "available", "all", "new"}
+	for _, value := range generic {
+		if normalized == value {
+			return true
+		}
+	}
+	return false
+}
+
+func searchFallbackClusterTitleChange(results []pulseSearchResult) string {
+	text := strings.ToLower(searchFallbackResultsText(results))
+	switch {
+	case pulseTextHasAny(text, "expected", "reportedly", "rumor", "rumour", "预计", "传闻", "据称", "据报道"):
+		return "发布时间与版本细节待核验"
+	case pulseTextHasAny(text, "release", "released", "launch", "launched", "announce", "announces", "unveil", "unveils", "available", "发布", "推出", "宣布", "上线", "开放"):
+		return "发布与开放信号待核验"
+	case pulseTextHasAny(text, "benchmark", "performance", "state-of-the-art", "能力", "性能", "评测"):
+		return "能力表现和评测口径待核验"
+	default:
+		return "新线索值得跟踪"
+	}
+}
+
+func searchFallbackClusterSummaryChange(results []pulseSearchResult) string {
+	text := strings.ToLower(searchFallbackResultsText(results))
+	parts := []string{}
+	if pulseTextHasAny(text, "expected", "reportedly", "rumor", "rumour", "预计", "传闻", "据称", "据报道") {
+		parts = append(parts, "发布时间或版本号出现传闻/报道")
+	}
+	if pulseTextHasAny(text, "release", "released", "launch", "launched", "announce", "announces", "unveil", "unveils", "available", "发布", "推出", "宣布", "上线", "开放") {
+		parts = append(parts, "发布、开放范围或产品可用性有新信息")
+	}
+	if pulseTextHasAny(text, "safe", "safety", "guardrail", "restricted", "安全", "限制", "风控") {
+		parts = append(parts, "安全限制和访问门槛也是关键变量")
+	}
+	if pulseTextHasAny(text, "benchmark", "performance", "state-of-the-art", "capable", "能力", "性能", "评测") {
+		parts = append(parts, "能力表现和评测口径需要对照来源核验")
+	}
+	if len(parts) == 0 {
+		return "出现新的外部资讯信号，但具体事实仍需要打开来源核验"
+	}
+	return strings.Join(parts, "；")
+}
+
+func searchFallbackClusterAspects(results []pulseSearchResult) []string {
+	text := strings.ToLower(searchFallbackResultsText(results))
+	aspects := []string{}
+	if pulseTextHasAny(text, "expected", "date", "when", "预计", "时间", "日期", "发布") {
+		aspects = append(aspects, "时间线")
+	}
+	if pulseTextHasAny(text, "version", "gpt-", "fable", "mythos", "版本", "型号", "模型") {
+		aspects = append(aspects, "版本/模型名称")
+	}
+	if pulseTextHasAny(text, "available", "access", "restricted", "everyone", "开放", "可用", "访问", "限制") {
+		aspects = append(aspects, "开放范围")
+	}
+	if pulseTextHasAny(text, "performance", "benchmark", "capable", "state-of-the-art", "能力", "性能", "评测") {
+		aspects = append(aspects, "能力变化")
+	}
+	if pulseTextHasAny(text, "safe", "safety", "guardrail", "安全", "风控") {
+		aspects = append(aspects, "安全/风控约束")
+	}
+	if len(aspects) == 0 {
+		aspects = append(aspects, "事实更新", "来源可信度", "后续跟踪关键词")
+	}
+	return limitStringSlice(aspects, 4, 24)
+}
+
+func searchFallbackClusterUncertainty(results []pulseSearchResult) string {
+	text := strings.ToLower(searchFallbackResultsText(results))
+	if pulseTextHasAny(text, "expected", "reportedly", "rumor", "rumour", "预计", "传闻", "据称", "据报道") {
+		return "目前更像待核验信号，具体发布时间、版本号和官方表述要以原文/官方发布为准。"
+	}
+	return "这是搜索摘要聚合，具体事实、发布时间和上下文仍要打开原文核验。"
+}
+
+func pulseClusterMentionsModel(text string) bool {
+	return pulseTextHasAny(text, "gpt", "claude", "gemini", "llama", "model", "llm", "openai", "anthropic", "模型", "大模型")
+}
+
+func searchFallbackClusterText(queryEvidence pulseSearchEvidence, results []pulseSearchResult) string {
+	parts := []string{queryEvidence.TopicName, queryEvidence.Query, queryEvidence.Intent}
+	for _, result := range results {
+		parts = append(parts, result.Title, result.Snippet, result.Source)
+	}
+	return strings.Join(parts, " ")
+}
+
+func searchFallbackResultsText(results []pulseSearchResult) string {
+	parts := []string{}
+	for _, result := range results {
+		parts = append(parts, result.Title, result.Snippet)
+	}
+	return strings.Join(parts, " ")
+}
+
+func pulseTextContainsFold(text string, needle string) bool {
+	return strings.Contains(strings.ToLower(text), strings.ToLower(needle))
+}
+
+func pulseTextHasAny(text string, needles ...string) bool {
+	for _, needle := range needles {
+		if strings.Contains(text, strings.ToLower(needle)) {
+			return true
+		}
+	}
+	return false
 }
 
 func searchResultSnippet(result pulseSearchResult) string {
 	return firstNonEmptyPulse(cleanSearchText(result.Snippet), cleanSearchText(result.Title), "搜索结果没有提供摘要，需要点击来源或继续追问来核验细节。")
+}
+
+func pulseItemCopyLooksLikeSearchDump(title string, summary string) bool {
+	return pulseTitleLooksLikeSearchDump(title) || pulseSummaryLooksLikeSearchDump(summary)
+}
+
+func pulseTitleLooksLikeSearchDump(value string) bool {
+	cleaned := cleanSearchText(value)
+	normalized := strings.ToLower(cleaned)
+	if cleaned == "" {
+		return false
+	}
+	badFragments := []string{
+		"近期资讯聚合",
+		"recent news",
+		"latest news",
+		"the latest news",
+		"latest information",
+	}
+	for _, fragment := range badFragments {
+		if strings.Contains(normalized, strings.ToLower(fragment)) {
+			return true
+		}
+	}
+	return pulseMostlyEnglish(cleaned) && len([]rune(cleaned)) > 32
+}
+
+func pulseSummaryLooksLikeSearchDump(value string) bool {
+	cleaned := cleanSearchText(value)
+	normalized := strings.ToLower(cleaned)
+	if cleaned == "" {
+		return false
+	}
+	badFragments := []string{
+		"关键线索是",
+		"另一个来源关注",
+		"latest information",
+		"the latest information",
+	}
+	for _, fragment := range badFragments {
+		if strings.Contains(normalized, strings.ToLower(fragment)) {
+			return true
+		}
+	}
+	return strings.HasPrefix(cleaned, "聚合 ") || (pulseMostlyEnglish(cleaned) && len([]rune(cleaned)) > 80)
+}
+
+func pulseMostlyEnglish(value string) bool {
+	letterCount := 0
+	hanCount := 0
+	for _, r := range value {
+		switch {
+		case unicode.Is(unicode.Han, r):
+			hanCount++
+		case (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z'):
+			letterCount++
+		}
+	}
+	return hanCount == 0 && letterCount >= 18
+}
+
+func pulseSearchResultsFromNewsSources(sources []pulseNewsSource) []pulseSearchResult {
+	results := make([]pulseSearchResult, 0, len(sources))
+	for _, source := range sources {
+		if strings.TrimSpace(source.URL) == "" {
+			continue
+		}
+		results = append(results, pulseSearchResult{
+			Title:       cleanSearchText(source.Title),
+			Snippet:     cleanSearchText(source.Snippet),
+			URL:         strings.TrimSpace(source.URL),
+			Source:      cleanSearchText(source.Source),
+			PublishedAt: cleanSearchText(source.PublishedAt),
+		})
+	}
+	return results
 }
 
 func newsSourcesFromSearchResults(results []pulseSearchResult, maxItems int) []pulseNewsSource {

@@ -417,6 +417,107 @@ func TestPulseUsesSearchFallbackWhenGenerationFails(t *testing.T) {
 	}
 }
 
+func TestSearchFallbackClusterSummarizesNewsCluster(t *testing.T) {
+	item := searchFallbackClusterItem("2026-06-20", pulseSearchEvidence{
+		Module:    pulseSourceTopicHot,
+		Query:     "AI GPT-5 latest news 2026",
+		TopicName: "AI",
+		Results: []pulseSearchResult{
+			{
+				Title:   "GPT-5.6 reportedly supports longer context and new tool use",
+				Snippet: "Several reports say OpenAI is expected to release GPT-5.6 later this year, but official timing is not confirmed.",
+				URL:     "https://example.com/gpt-56-release",
+				Source:  "web",
+			},
+			{
+				Title:   "OpenAI GPT-5.6 release date rumors point to an August preview",
+				Snippet: "The coverage focuses on possible launch timing, version naming, and availability for developers.",
+				URL:     "https://example.com/openai-gpt-rumor",
+				Source:  "web",
+			},
+			{
+				Title:   "Anthropic unveils Claude Fable 5 with restricted access",
+				Snippet: "Anthropic's model update highlights safety guardrails, access limits, and frontier capability claims.",
+				URL:     "https://example.com/claude-fable-5",
+				Source:  "web",
+			},
+		},
+	}, 0)
+
+	if strings.Contains(item.Title, "近期资讯聚合") || strings.Contains(strings.ToLower(item.Title), "latest news") {
+		t.Fatalf("expected Chinese editorial title, got %q", item.Title)
+	}
+	if !strings.Contains(item.Title, "AI 模型进展") || !strings.Contains(item.Title, "GPT") {
+		t.Fatalf("expected model-focused fallback title, got %q", item.Title)
+	}
+	if strings.HasPrefix(item.Summary, "聚合 ") || strings.Contains(item.Summary, "关键线索是") {
+		t.Fatalf("expected integrated summary, got %q", item.Summary)
+	}
+	if strings.Contains(item.Summary, "GPT-5.6 reportedly supports") {
+		t.Fatalf("summary should not concatenate source titles/snippets, got %q", item.Summary)
+	}
+	if !strings.Contains(item.Summary, "发布时间") || !strings.Contains(item.Summary, "版本") {
+		t.Fatalf("expected summary to explain the actionable news angle, got %q", item.Summary)
+	}
+
+	var detail pulseItemDetail
+	if err := json.Unmarshal([]byte(item.DetailJSON), &detail); err != nil {
+		t.Fatalf("decode detail: %v", err)
+	}
+	if !strings.HasPrefix(detail.QuickContext, "综合判断：") {
+		t.Fatalf("expected synthesized quick context, got %q", detail.QuickContext)
+	}
+}
+
+func TestGeneratedPulseRewritesSearchDumpCopy(t *testing.T) {
+	payload := generatedPulsePayload{
+		Modules: []generatedPulseModule{
+			{
+				Key:     pulseSourceTopicHot,
+				Title:   "你的 AI 订阅",
+				Summary: "根据订阅生成。",
+				Items: []generatedPulseItem{
+					{
+						TopicName: "AI",
+						Category:  "关注 Topic",
+						Title:     "「AI」近期资讯聚合：GPT-5 The Latest News on AI - the latest information on machine learning",
+						Summary:   "聚合 3 条来源，关键线索是：GPT-5 The Latest News on AI，Anthropic Announces Claude Fable 5。",
+						HeatScore: 92,
+						NewsSources: []pulseNewsSource{
+							{
+								Title:   "GPT-5.6 reportedly supports longer context and new tool use",
+								Snippet: "OpenAI is expected to release GPT-5.6 later this year, but official timing is not confirmed.",
+								URL:     "https://example.com/gpt-56-release",
+								Source:  "web",
+							},
+							{
+								Title:   "Anthropic unveils Claude Fable 5 with restricted access",
+								Snippet: "Anthropic's model update highlights safety guardrails and access limits.",
+								URL:     "https://example.com/claude-fable-5",
+								Source:  "web",
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	_, items := generatedPayloadToModels("2026-06-20", payload, nil)
+	if len(items) != 1 {
+		t.Fatalf("expected one item, got %#v", items)
+	}
+	if strings.Contains(items[0].Title, "近期资讯聚合") || strings.Contains(strings.ToLower(items[0].Title), "latest news") {
+		t.Fatalf("expected rewritten title, got %q", items[0].Title)
+	}
+	if strings.HasPrefix(items[0].Summary, "聚合 ") || strings.Contains(items[0].Summary, "关键线索是") {
+		t.Fatalf("expected rewritten summary, got %q", items[0].Summary)
+	}
+	if !strings.Contains(items[0].Summary, "核验") {
+		t.Fatalf("expected rewritten summary to mention verification, got %q", items[0].Summary)
+	}
+}
+
 func writePulseTestSearchResponse(w http.ResponseWriter, r *http.Request) {
 	var req bridge.SearchRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
