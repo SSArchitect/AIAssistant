@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Settings - Agent Assistant</title>
+    <link rel="stylesheet" href="/static/css/admin.css?v=5">
+</head>
+<body>
+    <div class="admin-app">
+        <header class="admin-header">
+            <div class="header-left">
+                <svg class="header-icon" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
+                </svg>
+                <h1 data-i18n="admin.title">配置</h1>
+            </div>
+            <div class="header-actions">
+                <button class="btn-language" id="language-toggle" type="button" title="Language">EN</button>
+                <a href="/" class="btn-back">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+                    <span data-i18n="admin.back">返回聊天</span>
+                </a>
+            </div>
+        </header>
+
+        <main class="admin-content">
+            <div class="settings-container">
+                <section class="settings-card">
+                    <div class="card-header">
+                        <h2 data-i18n="basic.title">基础配置</h2>
+                        <p class="card-desc" data-i18n="basic.desc">选择默认模型服务，并在下方完成密钥和模型配置。</p>
+                    </div>
+                    <div class="card-body basic-grid">
+                        <div class="form-group">
+                            <label for="default-provider" data-i18n="basic.defaultProvider">默认 Provider</label>
+                            <select id="default-provider" class="form-select"></select>
+                        </div>
+                        <div class="config-hint">
+                            <strong data-i18n="basic.hintTitle">配置逻辑已简化</strong>
+                            <span data-i18n="basic.hintBody">保存后会自动检测已配置的 API key 是否生效；也可以在当前 provider 面板单独验证。</span>
+                        </div>
+                    </div>
+                </section>
+
+                <section class="settings-card provider-config-card">
+                    <div class="card-header">
+                        <div class="provider-title">
+                            <h2 data-i18n="provider.title">模型服务</h2>
+                            <span class="provider-badge" id="active-provider-badge">-</span>
+                        </div>
+                        <p class="card-desc" data-i18n="provider.desc">选择一个 provider，填写密钥、模型和兼容 API 地址。</p>
+                    </div>
+                    <div class="card-body">
+                        <div class="provider-tabs" id="provider-tabs"></div>
+                        <div class="provider-panels" id="provider-panels"></div>
+                    </div>
+                </section>
+
+                <section class="settings-card">
+                    <div class="card-header">
+                        <div class="provider-title">
+                            <h2 data-i18n="roles.title">角色 Personas</h2>
+                            <span class="provider-badge configured" id="role-count-badge">0</span>
+                        </div>
+                        <p class="card-desc" data-i18n="roles.desc">配置角色提示词和长期记忆范围。</p>
+                    </div>
+                    <div class="card-body">
+                        <div class="role-config-layout">
+                            <div class="role-list-panel">
+                                <div class="role-list" id="role-list"></div>
+                                <button class="btn-test btn-small" type="button" onclick="newRoleDraft()" data-i18n="roles.new">新建角色</button>
+                            </div>
+                            <div class="role-editor">
+                                <div class="form-group">
+                                    <label for="role-id" data-i18n="roles.id">角色 ID</label>
+                                    <input type="text" id="role-id" class="form-input" placeholder="custom_role">
+                                </div>
+                                <div class="form-group">
+                                    <label for="role-name" data-i18n="roles.name">名称</label>
+                                    <input type="text" id="role-name" class="form-input" data-i18n-placeholder="roles.namePlaceholder" placeholder="角色名称">
+                                </div>
+                                <div class="form-group">
+                                    <label for="role-description" data-i18n="roles.description">描述</label>
+                                    <input type="text" id="role-description" class="form-input" data-i18n-placeholder="roles.descPlaceholder" placeholder="一句话描述">
+                                </div>
+                                <div class="form-group">
+                                    <label for="role-base-persona" data-i18n="roles.basePersona">基础 Persona</label>
+                                    <textarea id="role-base-persona" class="form-input form-textarea" rows="5"></textarea>
+                                </div>
+                                <div class="form-group">
+                                    <label for="role-instructions" data-i18n="roles.instructions">指令</label>
+                                    <textarea id="role-instructions" class="form-input form-textarea" rows="4" data-i18n-placeholder="roles.instructionsPlaceholder" placeholder="每行一条指令"></textarea>
+                                </div>
+                                <div class="toggle-row">
+                                    <label><input type="checkbox" id="role-enabled" checked> <span data-i18n="roles.enabled">启用</span></label>
+                                    <label><input type="checkbox" id="role-memory-enabled" checked> <span data-i18n="roles.memory">记忆</span></label>
+                                </div>
+                                <div class="role-actions">
+                                    <button class="btn-test" type="button" onclick="saveRole()" data-i18n="roles.save">保存角色</button>
+                                    <button class="btn-danger" type="button" id="btn-delete-role" onclick="deleteSelectedRole()" data-i18n="roles.delete">删除</button>
+                                </div>
+                                <div class="test-result" id="role-save-result"></div>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <details class="settings-card advanced-settings">
+                    <summary>
+                        <span data-i18n="advanced.title">高级工具源</span>
+                        <small data-i18n="advanced.desc">检索服务、本地文档和 MCP 预留配置</small>
+                    </summary>
+                    <div class="card-body">
+                        <div class="form-group">
+                            <label for="search-http-base-url" data-i18n="advanced.searchUrl">Search HTTP Base URL</label>
+                            <input type="text" id="search-http-base-url" class="form-input" placeholder="http://localhost:9200/search">
+                        </div>
+                        <div class="form-group">
+                            <label for="search-http-api-key" data-i18n="advanced.searchKey">Search API Key</label>
+                            <div class="input-with-action">
+                                <input type="password" id="search-http-api-key" class="form-input" placeholder="optional">
+                                <button class="btn-toggle-vis" type="button" onclick="toggleVisibility('search-http-api-key')" title="Show/Hide">
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                                </button>
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <label for="search-http-query-param" data-i18n="advanced.queryParam">Search Query Param</label>
+                            <input type="text" id="search-http-query-param" class="form-input" placeholder="q">
+                        </div>
+                        <div class="form-group">
+                            <label for="search-minimax-enabled" data-i18n="advanced.minimaxSearchEnabled">MiniMax MCP Search Enabled</label>
+                            <input type="text" id="search-minimax-enabled" class="form-input" placeholder="true">
+                        </div>
+                        <div class="form-group">
+                            <label for="search-minimax-command" data-i18n="advanced.minimaxSearchCommand">MiniMax MCP Command</label>
+                            <input type="text" id="search-minimax-command" class="form-input" placeholder="uvx">
+                        </div>
+                        <div class="form-group">
+                            <label for="search-minimax-args" data-i18n="advanced.minimaxSearchArgs">MiniMax MCP Args JSON</label>
+                            <input type="text" id="search-minimax-args" class="form-input" placeholder='["minimax-coding-plan-mcp","-y"]'>
+                        </div>
+                        <div class="form-group">
+                            <label for="search-minimax-api-host" data-i18n="advanced.minimaxSearchHost">MiniMax API Host</label>
+                            <input type="text" id="search-minimax-api-host" class="form-input" placeholder="https://api.minimaxi.com">
+                        </div>
+                        <div class="form-group">
+                            <label for="search-minimax-timeout" data-i18n="advanced.minimaxSearchTimeout">MiniMax MCP Timeout Seconds</label>
+                            <input type="text" id="search-minimax-timeout" class="form-input" placeholder="60">
+                        </div>
+                        <div class="form-group">
+                            <label for="search-local-documents" data-i18n="advanced.localDocs">Local Search Documents JSON</label>
+                            <textarea id="search-local-documents" class="form-input form-textarea" rows="5" placeholder='[{"title":"Doc","content":"...","url":"..."}]'></textarea>
+                        </div>
+                        <div class="form-group">
+                            <label for="mcp-servers" data-i18n="advanced.mcp">MCP Servers JSON</label>
+                            <textarea id="mcp-servers" class="form-input form-textarea" rows="5" placeholder='[{"name":"filesystem","command":"npx","args":["..."]}]'></textarea>
+                        </div>
+                    </div>
+                </details>
+
+                <div class="save-area">
+                    <button class="btn-save" id="btn-save" onclick="saveSettings()" data-i18n="actions.saveAndValidate">保存并检测</button>
+                    <div class="save-result" id="save-result"></div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script src="/static/js/admin.js?v=5"></script>
+</body>
+</html>

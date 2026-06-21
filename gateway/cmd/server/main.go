@@ -1,0 +1,141 @@
+package main
+
+import (
+	"fmt"
+	"log/slog"
+	"os"
+	"path/filepath"
+
+	"github.com/aan/agent-assistant-gateway/internal/bridge"
+	"github.com/aan/agent-assistant-gateway/internal/config"
+	"github.com/aan/agent-assistant-gateway/internal/database"
+	"github.com/aan/agent-assistant-gateway/internal/handlers"
+	"github.com/aan/agent-assistant-gateway/internal/middleware"
+	"github.com/gin-gonic/gin"
+)
+
+func main() {
+	// Resolve project root: gateway binary lives in gateway/, project root is one level up
+	execPath, _ := os.Executable()
+	projectRoot := filepath.Dir(filepath.Dir(execPath))
+	// For `go run`, executable is in a temp dir, so fall back to PROJECT_ROOT env or cwd parent
+	if os.Getenv("PROJECT_ROOT") != "" {
+		projectRoot = os.Getenv("PROJECT_ROOT")
+	} else if _, err := os.Stat(filepath.Join(projectRoot, "config", "config.yaml")); err != nil {
+		// Try cwd parent (when running from gateway/)
+		cwd, _ := os.Getwd()
+		if _, err := os.Stat(filepath.Join(cwd, "config", "config.yaml")); err == nil {
+			projectRoot = cwd
+		} else {
+			projectRoot = filepath.Dir(cwd)
+		}
+	}
+	slog.Info("Project root", "path", projectRoot)
+
+	// Load config
+	configPath := filepath.Join(projectRoot, "config", "config.yaml")
+	if p := os.Getenv("CONFIG_PATH"); p != "" {
+		configPath = p
+	}
+
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		slog.Warn("Could not load config file, using defaults", "error", err)
+		cfg = &config.Config{
+			Server:   config.ServerConfig{Host: "0.0.0.0", Port: 8080},
+			Agent:    config.AgentConfig{URL: "http://localhost:9090", TimeoutSeconds: 180},
+			Database: config.DatabaseConfig{Path: "./data/assistant.db"},
+		}
+	}
+
+	// Resolve relative paths against project root
+	dbPath := cfg.Database.Path
+	if !filepath.IsAbs(dbPath) {
+		dbPath = filepath.Join(projectRoot, dbPath)
+	}
+
+	// Init database
+	if err := database.Init(dbPath); err != nil {
+		slog.Error("Failed to initialize database", "error", err)
+		os.Exit(1)
+	}
+	slog.Info("Database initialized", "path", dbPath)
+
+	// Init agent client
+	agentClient := bridge.NewAgentClient(cfg.Agent.URL, cfg.Agent.TimeoutDuration())
+	configSyncer := handlers.NewConfigSyncer(agentClient)
+
+	// Init handlers
+	chatHandler := handlers.NewChatHandler(agentClient, configSyncer)
+	convHandler := handlers.NewConversationHandler()
+	healthHandler := handlers.NewHealthHandler(agentClient)
+	adminHandler := handlers.NewAdminHandler(agentClient, configSyncer)
+	mediaHandler := handlers.NewMediaHandler()
+	pulseHandler := handlers.NewPulseHandler(agentClient)
+
+	// Setup router
+	r := gin.Default()
+	r.Use(middleware.CORS())
+
+	// API routes
+	api := r.Group("/api")
+	{
+		api.GET("/health", healthHandler.Health)
+		api.POST("/chat", chatHandler.Chat)
+		api.GET("/agents", chatHandler.ListAgents)
+		api.GET("/roles", chatHandler.ListRoles)
+		api.POST("/roles", chatHandler.CreateRole)
+		api.PUT("/roles/:id", chatHandler.UpdateRole)
+		api.DELETE("/roles/:id", chatHandler.DeleteRole)
+		api.GET("/tools", chatHandler.ListTools)
+		api.GET("/runs", chatHandler.ListRuns)
+		api.GET("/runs/:id", chatHandler.GetRun)
+		api.POST("/aigc/image", chatHandler.GenerateImage)
+		api.GET("/media/download", mediaHandler.Download)
+		api.GET("/pulse", pulseHandler.Get)
+		api.POST("/pulse/refresh", pulseHandler.Refresh)
+		api.GET("/pulse/topics", pulseHandler.ListTopics)
+		api.POST("/pulse/topics", pulseHandler.CreateTopic)
+		api.PUT("/pulse/topics/:id", pulseHandler.UpdateTopic)
+		api.DELETE("/pulse/topics/:id", pulseHandler.DeleteTopic)
+		api.GET("/conversations", convHandler.List)
+		api.POST("/conversations", convHandler.Create)
+		api.GET("/conversations/:id", convHandler.Get)
+		api.DELETE("/conversations/:id", convHandler.Delete)
+
+		// Admin routes
+		admin := api.Group("/admin")
+		{
+			admin.GET("/settings", adminHandler.GetSettings)
+			admin.PUT("/settings", adminHandler.UpdateSettings)
+			admin.POST("/test-provider", adminHandler.TestProvider)
+			admin.POST("/validate-provider", adminHandler.ValidateProvider)
+			admin.POST("/list-models", adminHandler.ListModels)
+		}
+	}
+
+	// Sync settings to agent on startup (non-blocking)
+	go func() {
+		if err := adminHandler.SyncToAgent(); err != nil {
+			slog.Warn("Failed to sync settings to agent on startup (agent may not be ready yet)", "error", err)
+		} else {
+			slog.Info("Settings synced to agent")
+		}
+	}()
+	pulseHandler.StartScheduler()
+
+	// Serve static files (Web UI)
+	webDir := filepath.Join(projectRoot, "web")
+	r.Static("/static", filepath.Join(webDir, "static"))
+	r.StaticFile("/", filepath.Join(webDir, "index.html"))
+	r.StaticFile("/index.html", filepath.Join(webDir, "index.html"))
+	r.StaticFile("/admin.html", filepath.Join(webDir, "admin.html"))
+
+	// Start server
+	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
+	slog.Info("Starting gateway server", "addr", addr)
+	if err := r.Run(addr); err != nil {
+		slog.Error("Server failed", "error", err)
+		os.Exit(1)
+	}
+}

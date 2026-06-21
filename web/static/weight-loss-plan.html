@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>30天减脂打卡板</title>
+    <link rel="stylesheet" href="css/fitness.css?v=1">
+</head>
+<body>
+    <div class="fitness-app">
+        <header class="hero-shell">
+            <div class="hero-topbar">
+                <a href="../index.html" class="back-link">返回主页面</a>
+                <span class="local-hint">数据保存在当前浏览器本地，可随时导出备份</span>
+            </div>
+
+            <section class="hero">
+                <div class="hero-copy">
+                    <p class="eyebrow">30 DAY RESET</p>
+                    <h1>30 天减脂执行表</h1>
+                    <p class="hero-text">
+                        这不是一张靠狠劲撑下来的表，而是一套帮你把体重、精力、睡眠和节奏一起拉回来的打卡板。
+                        先把每天做对 70%，比偶尔做满分更重要。
+                    </p>
+
+                    <div class="hero-pill-row">
+                        <span class="hero-pill">每周 1 到 2 斤更稳</span>
+                        <span class="hero-pill">先减 5% 到 10%</span>
+                        <span class="hero-pill">先快走，再力量</span>
+                    </div>
+                </div>
+
+                <div class="hero-panel">
+                    <div class="section-title">
+                        <p class="eyebrow">计划设置</p>
+                        <h2>把起点写清楚</h2>
+                    </div>
+
+                    <div class="profile-grid">
+                        <label class="field">
+                            <span>计划开始日期</span>
+                            <input type="date" id="start-date">
+                        </label>
+                        <label class="field">
+                            <span>起始体重（kg）</span>
+                            <input type="number" id="start-weight" min="40" max="300" step="0.1">
+                        </label>
+                        <label class="field">
+                            <span>30天目标体重（kg）</span>
+                            <input type="number" id="goal-weight" min="40" max="300" step="0.1">
+                        </label>
+                        <label class="field">
+                            <span>每天步行目标（分钟）</span>
+                            <input type="number" id="walk-goal" min="15" max="120" step="5">
+                        </label>
+                    </div>
+
+                    <div class="hero-actions">
+                        <button class="btn btn-primary" id="save-profile">保存计划</button>
+                        <button class="btn btn-secondary" id="export-data">导出数据</button>
+                        <button class="btn btn-ghost" id="import-data-trigger">导入数据</button>
+                        <button class="btn btn-danger" id="reset-plan">重新开始</button>
+                        <input type="file" id="import-data-file" accept="application/json" hidden>
+                    </div>
+                </div>
+            </section>
+        </header>
+
+        <main class="dashboard">
+            <section class="panel">
+                <div class="panel-head">
+                    <div>
+                        <p class="eyebrow">本月进度</p>
+                        <h2>你不是在拼命，是在稳稳往回走</h2>
+                    </div>
+                    <button class="btn btn-secondary" id="jump-today">跳到今天</button>
+                </div>
+
+                <div class="stats-grid">
+                    <article class="stat-card warm">
+                        <p class="stat-label">当前计划天数</p>
+                        <strong class="stat-value" id="stat-current-day">第 1 天</strong>
+                        <span class="stat-note" id="stat-day-note">从今天开始</span>
+                    </article>
+                    <article class="stat-card calm">
+                        <p class="stat-label">已完成打卡</p>
+                        <strong class="stat-value" id="stat-completed-days">0 / 30</strong>
+                        <span class="stat-note" id="stat-streak">连续打卡 0 天</span>
+                    </article>
+                    <article class="stat-card earth">
+                        <p class="stat-label">体重变化</p>
+                        <strong class="stat-value" id="stat-weight-change">0.0 kg</strong>
+                        <span class="stat-note" id="stat-latest-weight">还没有记录今日体重</span>
+                    </article>
+                    <article class="stat-card sky">
+                        <p class="stat-label">近 7 天平均睡眠</p>
+                        <strong class="stat-value" id="stat-sleep-average">0.0 小时</strong>
+                        <span class="stat-note" id="stat-sleep-note">把起床时间固定下来</span>
+                    </article>
+                </div>
+
+                <div class="chart-shell">
+                    <div class="chart-copy">
+                        <p class="eyebrow">体重趋势</p>
+                        <h3>看周趋势，不盯单日波动</h3>
+                        <p id="chart-caption">只要在稳步往下，就说明你在走对方向。</p>
+                    </div>
+                    <div class="chart-card">
+                        <svg id="weight-chart" viewBox="0 0 420 180" preserveAspectRatio="none" aria-label="体重趋势图"></svg>
+                    </div>
+                </div>
+            </section>
+
+            <section class="panel">
+                <div class="panel-head">
+                    <div>
+                        <p class="eyebrow" id="selected-day-label">DAY 1</p>
+                        <h2 id="selected-day-title">把开局先稳住</h2>
+                    </div>
+                    <div class="selected-day-badges">
+                        <span class="mini-badge" id="selected-day-phase">启动周</span>
+                        <span class="mini-badge" id="selected-day-date">今天</span>
+                    </div>
+                </div>
+
+                <div class="focus-grid">
+                    <article class="focus-card">
+                        <p class="focus-label">走路目标</p>
+                        <h3 id="selected-day-walk">25 分钟</h3>
+                        <p id="selected-day-walk-note">饭后走最好，拆成两段也可以。</p>
+                    </article>
+                    <article class="focus-card">
+                        <p class="focus-label">饮食重点</p>
+                        <h3 id="selected-day-food">先把饮料换掉</h3>
+                        <p id="selected-day-food-note">每餐先吃蛋白质，主食先定量。</p>
+                    </article>
+                    <article class="focus-card">
+                        <p class="focus-label">身体恢复</p>
+                        <h3 id="selected-day-recovery">睡前降速</h3>
+                        <p id="selected-day-recovery-note">下午两点后少咖啡，晚上尽量侧卧。</p>
+                    </article>
+                    <article class="focus-card">
+                        <p class="focus-label">今天提醒</p>
+                        <h3 id="selected-day-prompt">今天的保底动作也算完成</h3>
+                        <p id="selected-day-prompt-note">累的时候先保住吃和走，不用硬扛。</p>
+                    </article>
+                </div>
+
+                <div class="detail-layout">
+                    <section class="detail-card">
+                        <div class="detail-head">
+                            <div>
+                                <p class="eyebrow">打卡清单</p>
+                                <h3>只盯今天</h3>
+                            </div>
+                            <button class="btn btn-secondary" id="toggle-done">标记今天完成</button>
+                        </div>
+                        <div id="task-list" class="task-list"></div>
+                    </section>
+
+                    <section class="detail-card">
+                        <div class="detail-head">
+                            <div>
+                                <p class="eyebrow">记录区</p>
+                                <h3>把你的状态记下来</h3>
+                            </div>
+                            <span class="soft-tip">填一点就行，别追求完美</span>
+                        </div>
+
+                        <div class="log-grid">
+                            <label class="field">
+                                <span>今日体重（kg）</span>
+                                <input type="number" id="log-weight" min="40" max="300" step="0.1" placeholder="例如 119.2">
+                            </label>
+                            <label class="field">
+                                <span>睡了几小时</span>
+                                <input type="number" id="log-sleep" min="0" max="24" step="0.1" placeholder="例如 7.2">
+                            </label>
+                            <label class="field">
+                                <span>今天走了几分钟</span>
+                                <input type="number" id="log-walk" min="0" max="300" step="1" placeholder="例如 38">
+                            </label>
+                            <label class="field">
+                                <span>今天精力（1-10）</span>
+                                <input type="number" id="log-energy" min="1" max="10" step="1" placeholder="例如 6">
+                            </label>
+                            <label class="field field-wide">
+                                <span>今天哪件事最容易破功</span>
+                                <textarea id="log-note" rows="5" placeholder="例如：下午焦虑时想喝奶茶，晚上容易边看手机边吃东西。"></textarea>
+                            </label>
+                        </div>
+                    </section>
+                </div>
+            </section>
+
+            <section class="panel">
+                <div class="panel-head">
+                    <div>
+                        <p class="eyebrow">执行日历</p>
+                        <h2>30 天安排一页看完</h2>
+                    </div>
+                    <p class="panel-subtitle">点任何一天，都可以切到上面的打卡区继续填。</p>
+                </div>
+                <div id="plan-grid" class="plan-grid"></div>
+            </section>
+
+            <section class="panel">
+                <div class="panel-head">
+                    <div>
+                        <p class="eyebrow">保底规则</p>
+                        <h2>低状态时也别全盘放弃</h2>
+                    </div>
+                </div>
+
+                <div class="guide-grid">
+                    <article class="guide-card">
+                        <h3>吃饭模板</h3>
+                        <p>每餐先守住这个结构：半盘蔬菜，一掌心蛋白质，一拳头主食。饮料尽量只留白水、无糖茶和黑咖啡。</p>
+                    </article>
+                    <article class="guide-card">
+                        <h3>最低完成线</h3>
+                        <p>如果今天状态差，就只做 3 件事：不喝含糖饮料、走 15 分钟、晚饭别失控。保底完成也算继续往前。</p>
+                    </article>
+                    <article class="guide-card">
+                        <h3>别这样减</h3>
+                        <p>别跑步硬冲、别断碳水、别靠饿。你要的是能走 3 个月的节奏，不是 3 天的猛劲。</p>
+                    </article>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <script src="js/fitness.js?v=1"></script>
+</body>
+</html>

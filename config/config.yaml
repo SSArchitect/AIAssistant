@@ -1,0 +1,54 @@
+server:
+  host: 0.0.0.0
+  port: 8080
+
+agent:
+  url: http://localhost:9090
+  timeout: 180
+
+database:
+  path: ./data/assistant.db
+
+llm:
+  default_provider: minimax
+  providers:
+    claude:
+      # API key is read from ANTHROPIC_API_KEY env var
+      model: claude-sonnet-4-20250514
+    openai:
+      # API key is read from OPENAI_API_KEY env var
+      model: gpt-4o
+    gemini:
+      # API key is read from GOOGLE_API_KEY env var
+      model: gemini-2.0-flash
+    deepseek:
+      # API key is read from DEEPSEEK_API_KEY env var
+      model: deepseek-chat
+    doubao:
+      # API key is read from DOUBAO_API_KEY env var
+      model: doubao-1-5-pro-256k-250115
+    minimax:
+      # API key is read from MINIMAX_API_KEY env var or admin settings
+      base_url: https://api.minimaxi.com/v1
+      model: MiniMax-M3
+      thinking: disabled
+    ollama:
+      base_url: http://localhost:11434
+      model: llama3
+
+aigc:
+  minimax:
+    base_url: https://api.minimaxi.com
+    image_model: image-01
+    speech_model: speech-2.8-turbo
+    voice_id: male-qn-qingse
+
+search:
+  minimax:
+    enabled: true
+    command: /opt/homebrew/bin/uvx
+    args:
+      - minimax-coding-plan-mcp
+      - -y
+    api_host: https://api.minimaxi.com
+    timeout: 120

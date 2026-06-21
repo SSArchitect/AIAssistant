@@ -1,0 +1,29 @@
+# Data & Runtime
+data/
+logs/
+.pids/
+tmp/
+*.db
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Go
+gateway/gateway
+gateway/server
+gateway/tmp/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Env
+.env
+*.env
+
+# OS
+.DS_Store

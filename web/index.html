@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>阿安的工作台</title>
+    <link rel="stylesheet" href="/static/css/style.css?v=30">
+</head>
+<body>
+    <div class="app">
+        <aside class="sidebar" id="sidebar">
+            <div class="sidebar-header">
+                <div class="logo">
+                    <svg class="logo-icon" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M12 3 3 8l9 5 9-5-9-5Z"/>
+                        <path d="m3 14 9 5 9-5"/>
+                        <path d="m3 11 9 5 9-5"/>
+                    </svg>
+                    <span data-i18n="app.name">阿安的工作台</span>
+                </div>
+            </div>
+
+            <section class="sidebar-section nav-section" data-sidebar-section="nav">
+                <button class="sidebar-section-toggle" type="button"
+                        data-toggle-sidebar-section="nav"
+                        aria-expanded="true"
+                        aria-controls="sidebar-nav">
+                    <span data-i18n="sidebar.navigation">导航</span>
+                    <span class="section-count" id="nav-section-count"></span>
+                    <svg class="section-chevron" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.4">
+                        <path d="m6 9 6 6 6-6"/>
+                    </svg>
+                </button>
+            <nav class="workbench-nav" id="sidebar-nav" aria-label="Workbench">
+                <button class="nav-item active" type="button" data-view="chat">
+                    <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4Z"/>
+                    </svg>
+                    <span data-i18n="nav.chat">Super Chat</span>
+                </button>
+                <button class="nav-item" type="button" data-view="pulse">
+                    <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M4 4v5h5"/>
+                        <path d="M20 20v-5h-5"/>
+                        <path d="M5 19A9 9 0 0 0 19 5"/>
+                    </svg>
+                    <span data-i18n="nav.pulse">Pulse</span>
+                </button>
+                <button class="nav-item" type="button" data-view="agents">
+                    <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M12 8V4H8"/>
+                        <rect x="4" y="8" width="16" height="12" rx="2"/>
+                        <path d="M2 14h2M20 14h2M9 13v2M15 13v2"/>
+                    </svg>
+                    <span data-i18n="nav.agents">Agents</span>
+                    <span class="nav-count" id="agent-count"></span>
+                </button>
+                <button class="nav-item" type="button" data-view="tools">
+                    <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.8-3.8a6 6 0 0 1-7.9 7.9l-6.7 6.7a2.1 2.1 0 0 1-3-3l6.7-6.7a6 6 0 0 1 7.9-7.9l-3.8 3.8Z"/>
+                    </svg>
+                    <span data-i18n="nav.tools">Tools</span>
+                    <span class="nav-count" id="tool-count"></span>
+                </button>
+                <button class="nav-item" type="button" data-view="trace">
+                    <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M4 19V5"/>
+                        <path d="M4 12h6l2-4 3 8 2-4h3"/>
+                    </svg>
+                    <span data-i18n="nav.trace">Trace</span>
+                    <span class="nav-count" id="run-count"></span>
+                </button>
+                <button class="nav-item" type="button" data-view="settings">
+                    <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M12 15.5A3.5 3.5 0 1 0 12 8a3.5 3.5 0 0 0 0 7.5Z"/>
+                        <path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 1.55V21a2 2 0 1 1-4 0v-.05a1.7 1.7 0 0 0-1-1.55 1.7 1.7 0 0 0-1.88.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-1.55-1H3a2 2 0 1 1 0-4h.05A1.7 1.7 0 0 0 4.6 9a1.7 1.7 0 0 0-.34-1.88l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-1.55V3a2 2 0 1 1 4 0v.05A1.7 1.7 0 0 0 15 4.6a1.7 1.7 0 0 0 1.88-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.7 1.7 0 0 0 19.4 9c.16.32.35.64.55.95H21a2 2 0 1 1 0 4h-1.05A1.7 1.7 0 0 0 19.4 15Z"/>
+                    </svg>
+                    <span data-i18n="nav.settings">Settings</span>
+                </button>
+            </nav>
+            </section>
+
+            <section class="sidebar-section pinned-section" data-sidebar-section="pinned">
+                <button class="sidebar-section-toggle" type="button"
+                        data-toggle-sidebar-section="pinned"
+                        aria-expanded="true"
+                        aria-controls="pinned-agent-list">
+                    <span data-i18n="sidebar.pinned">固定 Agent</span>
+                    <span class="section-count" id="pinned-section-count"></span>
+                    <svg class="section-chevron" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.4">
+                        <path d="m6 9 6 6 6-6"/>
+                    </svg>
+                </button>
+                <div class="pinned-agent-list" id="pinned-agent-list"></div>
+            </section>
+
+            <section class="sidebar-section conversations-section" data-sidebar-section="conversations">
+                <button class="sidebar-section-toggle" type="button"
+                        data-toggle-sidebar-section="conversations"
+                        aria-expanded="true"
+                        aria-controls="conversation-list">
+                    <span data-i18n="sidebar.recent">最近会话</span>
+                    <span class="section-count" id="conversation-section-count"></span>
+                    <svg class="section-chevron" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.4">
+                        <path d="m6 9 6 6 6-6"/>
+                    </svg>
+                </button>
+                <div class="conversation-list" id="conversation-list"></div>
+            </section>
+
+            <div class="sidebar-footer">
+                <div class="model-picker">
+                    <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M12 2v20M2 12h20M4.9 4.9l14.2 14.2M19.1 4.9 4.9 19.1"/>
+                    </svg>
+                    <select id="model-select" class="model-select" aria-label="模型选择" data-i18n-aria-label="sidebar.modelSelect">
+                        <option value="" data-i18n="sidebar.defaultModel">Default Model</option>
+                    </select>
+                </div>
+                <a href="/admin.html" class="admin-link">
+                    <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M15 3h6v6M14 10l7-7"/>
+                        <path d="M19 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h6"/>
+                    </svg>
+                    <span data-i18n="sidebar.fullConfig">完整配置</span>
+                </a>
+            </div>
+        </aside>
+
+        <main class="workspace">
+            <header class="topbar">
+                <button class="icon-button" id="btn-toggle-sidebar" type="button" title="切换侧边栏" data-i18n-title="actions.toggleSidebar">
+                    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M3 6h18M3 12h18M3 18h18"/>
+                    </svg>
+                </button>
+                <div class="topbar-title">
+                    <h1 id="view-title">Super Chat</h1>
+                    <p id="view-subtitle">意图识别、Agent 调用与汇总回答入口</p>
+                </div>
+                <div class="topbar-actions">
+                    <button class="language-toggle" id="language-toggle" type="button" title="Language">EN</button>
+                    <button class="btn-secondary new-topic-button" id="btn-new-chat" type="button" title="新话题" data-i18n-title="actions.newChat">
+                        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.4">
+                            <path d="M12 5v14M5 12h14"/>
+                        </svg>
+                        <span data-i18n="actions.newChat">新话题</span>
+                    </button>
+                    <select id="agent-select" hidden aria-hidden="true" tabindex="-1"></select>
+                    <span class="model-pill" id="current-model"></span>
+                    <button class="icon-button" id="btn-refresh" type="button" title="刷新数据" data-i18n-title="actions.refresh">
+                        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M21 12a9 9 0 0 1-9 9 9.8 9.8 0 0 1-6.7-2.7"/>
+                            <path d="M3 12a9 9 0 0 1 9-9 9.8 9.8 0 0 1 6.7 2.7"/>
+                            <path d="M3 20v-5h5M21 4v5h-5"/>
+                        </svg>
+                    </button>
+                </div>
+            </header>
+
+            <section class="view active" id="view-chat" data-view-panel="chat">
+                <div class="messages" id="messages"></div>
+                <div class="input-area" id="input-area">
+                    <div class="agent-command-bar" id="agent-command-bar"></div>
+                    <div class="mode-chips" id="mode-chips"></div>
+                    <div class="input-container">
+                        <div class="mode-menu" id="mode-menu">
+                            <button class="mode-toggle" id="btn-mode-toggle" type="button" title="功能" data-i18n-title="modes.toggle">
+                                <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.5">
+                                    <path d="M12 5v14M5 12h14"/>
+                                </svg>
+                                <span class="mode-count" id="mode-count"></span>
+                            </button>
+                            <div class="mode-popover hidden" id="mode-popover">
+                                <div class="mode-popover-head">
+                                    <strong data-i18n="modes.title">Super Chat 功能</strong>
+                                </div>
+                                <div class="mode-options" id="mode-options"></div>
+                            </div>
+                        </div>
+                        <button class="attachment-toggle" id="btn-attach" type="button" title="上传附件" data-i18n-title="actions.attach">
+                            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.4">
+                                <path d="m21.4 11.6-8.5 8.5a6 6 0 0 1-8.5-8.5l9.2-9.2a4 4 0 0 1 5.7 5.7l-9.2 9.2a2 2 0 1 1-2.8-2.8l8.5-8.5"/>
+                            </svg>
+                        </button>
+                        <input id="attachment-input" type="file" multiple hidden
+                               accept=".txt,.md,.markdown,.csv,.tsv,.json,.jsonl,.yaml,.yml,.xml,.html,.htm,.log,.ini,.toml,.env,.js,.jsx,.ts,.tsx,.css,.scss,.less,.py,.go,.java,.c,.h,.cpp,.hpp,.cs,.rs,.rb,.php,.sh,.bash,.zsh,.sql,text/*,application/json,application/xml,image/*,audio/*,video/*">
+                        <textarea id="message-input" placeholder="输入任务，Cmd/Ctrl + Enter 发送" rows="1" data-i18n-placeholder="chat.placeholder"></textarea>
+                        <button class="btn-send" id="btn-send" type="button" disabled title="发送" data-i18n-title="actions.send">
+                            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.5">
+                                <path d="M12 19V5"/>
+                                <path d="m5 12 7-7 7 7"/>
+                            </svg>
+                        </button>
+                    </div>
+                </div>
+            </section>
+
+            <section class="view" id="view-pulse" data-view-panel="pulse">
+                <div class="pulse-workbench">
+                    <div class="pulse-feed">
+                        <div class="pulse-feed-toolbar">
+                            <div>
+                                <h2 id="pulse-date-title">Pulse</h2>
+                                <p id="pulse-generated-at"></p>
+                            </div>
+                            <button class="btn-secondary" type="button" data-pulse-refresh>
+                                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.3">
+                                    <path d="M21 12a9 9 0 0 1-9 9 9.8 9.8 0 0 1-6.7-2.7"/>
+                                    <path d="M3 12a9 9 0 0 1 9-9 9.8 9.8 0 0 1 6.7 2.7"/>
+                                    <path d="M3 20v-5h5M21 4v5h-5"/>
+                                </svg>
+                                <span data-i18n="pulse.refresh">刷新今日推荐</span>
+                            </button>
+                        </div>
+                        <div class="pulse-items" id="pulse-items"></div>
+                    </div>
+
+                    <aside class="pulse-topic-panel">
+                        <div class="pulse-panel-head">
+                            <div>
+                                <h2 data-i18n="pulse.topicsTitle">Topic 订阅</h2>
+                                <p data-i18n="pulse.topicsSubtitle">每天为订阅主题预生成学习入口</p>
+                            </div>
+                        </div>
+                        <form class="pulse-topic-form" id="pulse-topic-form">
+                            <label>
+                                <span data-i18n="pulse.topicName">Topic</span>
+                                <input id="pulse-topic-input" type="text" autocomplete="off" data-i18n-placeholder="pulse.topicPlaceholder" placeholder="例如：AI 应用开发">
+                            </label>
+                            <label>
+                                <span data-i18n="pulse.keywords">关键词</span>
+                                <input id="pulse-keywords-input" type="text" autocomplete="off" data-i18n-placeholder="pulse.keywordsPlaceholder" placeholder="Agent, RAG, 多模态">
+                            </label>
+                            <button class="btn-primary pulse-submit" type="submit">
+                                <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2.5">
+                                    <path d="M12 5v14M5 12h14"/>
+                                </svg>
+                                <span data-i18n="pulse.subscribe">订阅</span>
+                            </button>
+                        </form>
+                        <div class="pulse-topic-list" id="pulse-topic-list"></div>
+                    </aside>
+                </div>
+            </section>
+
+            <section class="view" id="view-agents" data-view-panel="agents">
+                <div class="content-grid" id="agents-grid"></div>
+            </section>
+
+            <section class="view" id="view-tools" data-view-panel="tools">
+                <div class="content-grid" id="tools-grid"></div>
+            </section>
+
+            <section class="view" id="view-trace" data-view-panel="trace">
+                <div class="runs-layout">
+                    <div class="run-list" id="run-list"></div>
+                    <div class="run-detail" id="run-detail"></div>
+                </div>
+            </section>
+
+            <section class="view" id="view-settings" data-view-panel="settings">
+                <div class="content-grid" id="settings-grid"></div>
+            </section>
+        </main>
+    </div>
+
+    <div class="media-lightbox hidden" id="media-lightbox" role="dialog" aria-modal="true" aria-labelledby="media-lightbox-title">
+        <div class="media-lightbox-backdrop" data-media-preview-close></div>
+        <div class="media-lightbox-panel">
+            <div class="media-lightbox-toolbar">
+                <div class="media-lightbox-title" id="media-lightbox-title"></div>
+                <div class="media-lightbox-actions">
+                    <button class="media-tool-button" type="button" data-media-preview-zoom-out title="缩小" aria-label="缩小" data-i18n-title="media.zoomOut" data-i18n-aria-label="media.zoomOut">
+                        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.3">
+                            <path d="M5 12h14"/>
+                        </svg>
+                    </button>
+                    <button class="media-tool-button" type="button" data-media-preview-zoom-in title="放大" aria-label="放大" data-i18n-title="media.zoomIn" data-i18n-aria-label="media.zoomIn">
+                        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.3">
+                            <path d="M12 5v14M5 12h14"/>
+                        </svg>
+                    </button>
+                    <button class="media-tool-button" type="button" data-media-preview-rotate title="旋转" aria-label="旋转" data-i18n-title="media.rotate" data-i18n-aria-label="media.rotate">
+                        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.1">
+                            <path d="M3 12a9 9 0 0 1 15.3-6.4"/>
+                            <path d="M18 3v5h-5"/>
+                            <path d="M21 12a9 9 0 0 1-15.3 6.4"/>
+                            <path d="M6 21v-5h5"/>
+                        </svg>
+                    </button>
+                    <button class="media-tool-button" type="button" data-media-preview-download title="下载图片" aria-label="下载图片" data-i18n-title="media.download" data-i18n-aria-label="media.download">
+                        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2">
+                            <path d="M12 3v12"/>
+                            <path d="m7 10 5 5 5-5"/>
+                            <path d="M5 21h14"/>
+                        </svg>
+                    </button>
+                    <button class="media-tool-button" type="button" data-media-preview-close title="关闭" aria-label="关闭" data-i18n-title="media.close" data-i18n-aria-label="media.close">
+                        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.4">
+                            <path d="M18 6 6 18M6 6l12 12"/>
+                        </svg>
+                    </button>
+                </div>
+            </div>
+            <div class="media-lightbox-status" id="media-lightbox-status" role="status" hidden></div>
+            <div class="media-lightbox-stage" id="media-lightbox-stage">
+                <img class="media-lightbox-image" id="media-lightbox-image" alt="" draggable="false">
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/js/app.js?v=40"></script>
+</body>
+</html>
