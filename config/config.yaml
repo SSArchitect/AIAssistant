@@ -46,7 +46,7 @@ aigc:
 search:
   minimax:
     enabled: true
-    command: /opt/homebrew/bin/uvx
+    command: uvx
     args:
       - minimax-coding-plan-mcp
       - -y
