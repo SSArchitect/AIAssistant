@@ -43,7 +43,7 @@ func main() {
 		slog.Warn("Could not load config file, using defaults", "error", err)
 		cfg = &config.Config{
 			Server:   config.ServerConfig{Host: "0.0.0.0", Port: 8080},
-			Agent:    config.AgentConfig{URL: "http://localhost:9090", TimeoutSeconds: 180},
+			Agent:    config.AgentConfig{URL: "http://localhost:9090", TimeoutSeconds: 1800},
 			Database: config.DatabaseConfig{Path: "./data/assistant.db"},
 		}
 	}

@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/aan/agent-assistant-gateway/internal/database"
@@ -17,7 +18,8 @@ func NewConversationHandler() *ConversationHandler {
 }
 
 type conversationCreateRequest struct {
-	UserID string `json:"user_id,omitempty"`
+	UserID  string `json:"user_id,omitempty"`
+	AgentID string `json:"agent_id,omitempty"`
 }
 
 func (h *ConversationHandler) List(c *gin.Context) {
@@ -31,10 +33,15 @@ func (h *ConversationHandler) Create(c *gin.Context) {
 	var req conversationCreateRequest
 	_ = c.ShouldBindJSON(&req)
 	userID := requestUserIDWithBody(c, req.UserID)
+	agentID := strings.TrimSpace(req.AgentID)
+	if agentID == "" {
+		agentID = "super_chat"
+	}
 
 	conv := models.Conversation{
 		ID:        uuid.New().String(),
 		UserID:    userID,
+		AgentID:   agentID,
 		Title:     "New Conversation",
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),

@@ -7,7 +7,7 @@ import pytest
 from unittest.mock import AsyncMock, patch, MagicMock
 
 from agent.aigc.share_card_renderer import ShareCardRenderResult
-from agent.orchestrator.engine import AgentEngine
+from agent.orchestrator.engine import AgentEngine, DEEP_RESEARCH_PLAN_MARKER
 from agent.llm.base import LLMResponse, ToolCall, LLMMessage
 from agent.schemas.chat import ChatAttachment, ChatRequest
 from agent.schemas.memory import MemoryContext, RoleProfile
@@ -446,7 +446,7 @@ async def test_system_prompt_includes_temporal_context(engine):
 async def test_super_chat_mode_prompts_are_injected(engine):
     """Selected Super Chat modes should add hidden system instructions."""
     response = LLMResponse(
-        content="I will research and plan.",
+        content="I will think through the task.",
         tool_calls=[],
         model="test-model",
         usage={},
@@ -462,10 +462,9 @@ async def test_super_chat_mode_prompts_are_injected(engine):
                 conversation_id="conv-mode",
                 message="帮我调研这个方向",
                 agent_id="super_chat",
-                mode_ids=["research", "plan"],
+                mode_ids=["thinking"],
                 mode_prompts=[
-                    "使用研究模式并对比可靠来源。",
-                    "使用计划模式并列出下一步行动。",
+                    "使用思考模式：先规划，再按需检索和分析。",
                 ],
             )
         )
@@ -474,15 +473,362 @@ async def test_super_chat_mode_prompts_are_injected(engine):
     system_prompt = first_call_messages[0].content
     assert "Super Chat 模式指令：" in system_prompt
     assert "AI 生图 (image_generation_v1)" in system_prompt
-    assert "使用研究模式并对比可靠来源。" in system_prompt
-    assert "使用计划模式并列出下一步行动。" in system_prompt
+    assert "深度研究 (deep_research_v1)" in system_prompt
+    assert "使用思考模式：先规划，再按需检索和分析。" in system_prompt
     assert first_call_messages[-1].content == "帮我调研这个方向"
     context_event = next(event for event in result.events if event.type == "context.built")
-    assert context_event.payload["mode_ids"] == ["research", "plan"]
+    assert context_event.payload["mode_ids"] == ["thinking"]
     assert context_event.payload["mode_prompts"] == [
-        "使用研究模式并对比可靠来源。",
-        "使用计划模式并列出下一步行动。",
+        "使用思考模式：先规划，再按需检索和分析。",
     ]
+
+
+@pytest.mark.asyncio
+async def test_deep_research_generates_plan_before_execution(engine):
+    """Deep Research should produce a confirmable plan before searching."""
+    response = LLMResponse(
+        content="## 研究计划大纲\n\n1. 明确问题。\n2. 检索来源。\n\n确认后回复 /start。",
+        tool_calls=[],
+        model="research-planner",
+        usage={"input": 10, "output": 20},
+    )
+
+    with patch.object(engine, "_get_provider") as mock_provider:
+        provider = AsyncMock()
+        provider.chat = AsyncMock(return_value=response)
+        mock_provider.return_value = provider
+
+        result = await engine.process(
+            ChatRequest(
+                conversation_id="conv-deep-plan",
+                message="/plan AI Agent 商业化趋势",
+                agent_id="deep_research_v1",
+            )
+        )
+
+    assert "研究计划大纲" in result.response
+    assert DEEP_RESEARCH_PLAN_MARKER not in result.response
+    assert result.agent_id == "deep_research_v1"
+    assert result.plan[0].skill == "research_plan"
+    assert result.plan[0].status == "pending"
+    event_types = [event.type for event in result.events]
+    assert "research.plan.started" in event_types
+    assert "research.plan.completed" in event_types
+    assert "research.search.started" not in event_types
+
+
+@pytest.mark.asyncio
+async def test_super_chat_deep_research_mode_routes_to_research_agent(engine):
+    """The Super Chat Deep Research mode should route into the research agent."""
+    response = LLMResponse(
+        content="## 研究计划大纲\n\n确认后回复 /start。",
+        tool_calls=[],
+        model="research-planner",
+        usage={},
+    )
+
+    with patch.object(engine, "_get_provider") as mock_provider:
+        provider = AsyncMock()
+        provider.chat = AsyncMock(return_value=response)
+        mock_provider.return_value = provider
+
+        result = await engine.process(
+            ChatRequest(
+                conversation_id="conv-super-deep-research-mode",
+                message="研究 AI Agent 商业化趋势",
+                agent_id="super_chat",
+                mode_ids=["deep_research"],
+                mode_prompts=["【深度研究】先确认研究计划，再执行。"],
+            )
+        )
+
+    assert result.agent_id == "deep_research_v1"
+    assert "研究计划大纲" in result.response
+    event_types = [event.type for event in result.events]
+    assert "research.plan.completed" in event_types
+    assert "model.started" not in event_types
+
+
+@pytest.mark.asyncio
+async def test_deep_research_executes_approved_plan_with_search(engine):
+    """After confirmation, Deep Research should search, summarize, and report."""
+
+    class FakeSearchSkill(Skill):
+        def __init__(self):
+            self.calls = []
+
+        def metadata(self) -> SkillMetadata:
+            return SkillMetadata(
+                name="search",
+                description="fake search",
+                parameters=[
+                    SkillParameter(name="query", type="string", description="query"),
+                    SkillParameter(name="sources", type="string", description="sources", required=False),
+                    SkillParameter(name="limit", type="integer", description="limit", required=False),
+                ],
+            )
+
+        async def execute(self, **kwargs) -> SkillResult:
+            self.calls.append(kwargs)
+            index = len(self.calls)
+            return SkillResult(
+                success=True,
+                data={
+                    "query": kwargs["query"],
+                    "results": [
+                        {
+                            "title": f"Source {index}",
+                            "url": f"https://example.com/source-{index}",
+                            "snippet": f"Evidence snippet {index}",
+                            "source": "web",
+                        }
+                    ],
+                },
+                display_text=f"Source {index}",
+            )
+
+    fake_search = FakeSearchSkill()
+    engine.skill_registry.register(fake_search)
+    engine.memory.add_many(
+        "user:0:conversation:conv-deep-exec",
+        [
+            LLMMessage(role="user", content="/plan AI Agent 商业化趋势"),
+            LLMMessage(
+                role="assistant",
+                content=(
+                    f"{DEEP_RESEARCH_PLAN_MARKER}\n"
+                    "## 研究计划大纲\n\n覆盖市场、技术、案例和风险。"
+                ),
+            ),
+        ],
+    )
+
+    query_response = LLMResponse(
+        content=json.dumps({"queries": ["AI Agent commercialization trend"]}),
+        tool_calls=[],
+        model="query-model",
+        usage={"input": 5, "output": 5},
+    )
+    summary_response = LLMResponse(
+        content="分块摘要：来源显示商业化在增长 [1]。",
+        tool_calls=[],
+        model="summary-model",
+        usage={"input": 6, "output": 6},
+    )
+    report_response = LLMResponse(
+        content="# 研究报告\n\nAI Agent 商业化趋势正在形成 [1]。",
+        tool_calls=[],
+        model="report-model",
+        usage={"input": 7, "output": 7},
+    )
+
+    with patch.object(engine, "_get_provider") as mock_provider:
+        provider = AsyncMock()
+        provider.chat = AsyncMock(side_effect=[query_response, summary_response, report_response])
+        mock_provider.return_value = provider
+
+        result = await engine.process(
+            ChatRequest(
+                conversation_id="conv-deep-exec",
+                message="/start",
+                agent_id="deep_research_v1",
+            )
+        )
+
+    assert result.response.startswith("# 研究报告")
+    assert result.agent_id == "deep_research_v1"
+    assert "search" in result.skills_used
+    assert len(fake_search.calls) == 20
+    assert len(result.citations) == 20
+    assert result.plan[-1].skill == "research_report"
+    event_types = [event.type for event in result.events]
+    assert "research.queries.created" in event_types
+    assert "research.step_summary.completed" in event_types
+    assert "research.report.completed" in event_types
+
+
+@pytest.mark.asyncio
+async def test_deep_research_continues_when_chunk_summary_is_rejected(engine):
+    """A rejected source chunk summary should use fallback text and keep executing."""
+
+    class FakeSearchSkill(Skill):
+        def __init__(self):
+            self.calls = []
+
+        def metadata(self) -> SkillMetadata:
+            return SkillMetadata(
+                name="search",
+                description="fake search",
+                parameters=[
+                    SkillParameter(name="query", type="string", description="query"),
+                    SkillParameter(name="sources", type="string", description="sources", required=False),
+                    SkillParameter(name="limit", type="integer", description="limit", required=False),
+                ],
+            )
+
+        async def execute(self, **kwargs) -> SkillResult:
+            self.calls.append(kwargs)
+            call_index = len(self.calls)
+            return SkillResult(
+                success=True,
+                data={
+                    "query": kwargs["query"],
+                    "results": [
+                        {
+                            "title": f"Source {call_index}-{item_index}",
+                            "url": f"https://example.com/source-{call_index}-{item_index}",
+                            "snippet": f"Evidence snippet {call_index}-{item_index}",
+                            "source": "web",
+                        }
+                        for item_index in range(3)
+                    ],
+                },
+                display_text=f"Sources {call_index}",
+            )
+
+    fake_search = FakeSearchSkill()
+    engine.skill_registry.register(fake_search)
+    engine.memory.add_many(
+        "user:0:conversation:conv-deep-summary-rejected",
+        [
+            LLMMessage(role="user", content="/plan SpaceX 投资可行性"),
+            LLMMessage(
+                role="assistant",
+                content=f"{DEEP_RESEARCH_PLAN_MARKER}\n## 研究计划大纲\n\n覆盖估值、收入、风险。",
+            ),
+        ],
+    )
+
+    query_response = LLMResponse(
+        content=json.dumps({"queries": ["SpaceX valuation"]}),
+        tool_calls=[],
+        model="query-model",
+        usage={"input": 5, "output": 5},
+    )
+    first_summary_response = LLMResponse(
+        content="第一批摘要 [1]。",
+        tool_calls=[],
+        model="summary-model",
+        usage={"input": 6, "output": 6},
+    )
+    report_response = LLMResponse(
+        content="# 研究报告\n\n继续完成报告，包含降级分块。",
+        tool_calls=[],
+        model="report-model",
+        usage={"input": 7, "output": 7},
+    )
+
+    with patch.object(engine, "_get_provider") as mock_provider:
+        provider = AsyncMock()
+        provider.chat = AsyncMock(
+            side_effect=[
+                query_response,
+                first_summary_response,
+                RuntimeError("input new_sensitive (1026)"),
+                report_response,
+            ]
+        )
+        mock_provider.return_value = provider
+
+        result = await engine.process(
+            ChatRequest(
+                conversation_id="conv-deep-summary-rejected",
+                message="/start",
+                agent_id="deep_research_v1",
+            )
+        )
+
+    assert result.response.startswith("# 研究报告")
+    assert len(fake_search.calls) == 20
+    assert len(result.citations) == 60
+    event_types = [event.type for event in result.events]
+    assert "research.step_summary.failed" in event_types
+    assert "research.report.completed" in event_types
+    assert event_types[-1] == "run.completed"
+
+
+@pytest.mark.asyncio
+async def test_deep_research_returns_fallback_when_report_generation_fails(engine):
+    """A failed final report call should return a conservative fallback report."""
+
+    class FakeSearchSkill(Skill):
+        def __init__(self):
+            self.calls = []
+
+        def metadata(self) -> SkillMetadata:
+            return SkillMetadata(
+                name="search",
+                description="fake search",
+                parameters=[
+                    SkillParameter(name="query", type="string", description="query"),
+                    SkillParameter(name="sources", type="string", description="sources", required=False),
+                    SkillParameter(name="limit", type="integer", description="limit", required=False),
+                ],
+            )
+
+        async def execute(self, **kwargs) -> SkillResult:
+            self.calls.append(kwargs)
+            index = len(self.calls)
+            return SkillResult(
+                success=True,
+                data={
+                    "query": kwargs["query"],
+                    "results": [
+                        {
+                            "title": f"Source {index}",
+                            "url": f"https://example.com/source-{index}",
+                            "snippet": f"Evidence snippet {index}",
+                            "source": "web",
+                        }
+                    ],
+                },
+                display_text=f"Source {index}",
+            )
+
+    fake_search = FakeSearchSkill()
+    engine.skill_registry.register(fake_search)
+    engine.memory.add_many(
+        "user:0:conversation:conv-deep-report-failed",
+        [
+            LLMMessage(role="user", content="/plan AI Agent 商业化趋势"),
+            LLMMessage(
+                role="assistant",
+                content=f"{DEEP_RESEARCH_PLAN_MARKER}\n## 研究计划大纲\n\n覆盖市场、技术、案例和风险。",
+            ),
+        ],
+    )
+
+    query_response = LLMResponse(
+        content=json.dumps({"queries": ["AI Agent commercialization trend"]}),
+        tool_calls=[],
+        model="query-model",
+        usage={"input": 5, "output": 5},
+    )
+    summary_response = LLMResponse(
+        content="分块摘要：来源显示商业化在增长 [1]。",
+        tool_calls=[],
+        model="summary-model",
+        usage={"input": 6, "output": 6},
+    )
+
+    with patch.object(engine, "_get_provider") as mock_provider:
+        provider = AsyncMock()
+        provider.chat = AsyncMock(side_effect=[query_response, summary_response, RuntimeError("report blocked")])
+        mock_provider.return_value = provider
+
+        result = await engine.process(
+            ChatRequest(
+                conversation_id="conv-deep-report-failed",
+                message="/start",
+                agent_id="deep_research_v1",
+            )
+        )
+
+    assert result.response.startswith("# 研究报告（降级生成）")
+    assert "分块摘要：来源显示商业化在增长 [1]。" in result.response
+    event_types = [event.type for event in result.events]
+    assert "research.report.failed" in event_types
+    assert event_types[-1] == "run.completed"
 
 
 @pytest.mark.asyncio

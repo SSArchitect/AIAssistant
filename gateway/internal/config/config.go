@@ -25,7 +25,7 @@ type AgentConfig struct {
 
 func (a AgentConfig) TimeoutDuration() time.Duration {
 	if a.TimeoutSeconds <= 0 {
-		return 180 * time.Second
+		return 1800 * time.Second
 	}
 	return time.Duration(a.TimeoutSeconds) * time.Second
 }
@@ -42,7 +42,7 @@ func Load(path string) (*Config, error) {
 
 	cfg := &Config{
 		Server:   ServerConfig{Host: "0.0.0.0", Port: 8080},
-		Agent:    AgentConfig{URL: "http://localhost:9090", TimeoutSeconds: 180},
+		Agent:    AgentConfig{URL: "http://localhost:9090", TimeoutSeconds: 1800},
 		Database: DatabaseConfig{Path: "./data/assistant.db"},
 	}
 

@@ -87,3 +87,65 @@ func TestConversationCreateSessionUserOverridesBodyUserID(t *testing.T) {
 		t.Fatalf("expected session user, got %q", conv.UserID)
 	}
 }
+
+func TestConversationCreatePersistsAgentID(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	if err := database.Init(filepath.Join(t.TempDir(), "assistant.db")); err != nil {
+		t.Fatalf("init database: %v", err)
+	}
+
+	router := gin.New()
+	handler := NewConversationHandler()
+	router.POST("/api/conversations", handler.Create)
+
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/api/conversations",
+		strings.NewReader(`{"user_id":"user-a","agent_id":"deep_research_v1"}`),
+	)
+	req.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("unexpected status %d: %s", recorder.Code, recorder.Body.String())
+	}
+	var conv models.Conversation
+	if err := json.Unmarshal(recorder.Body.Bytes(), &conv); err != nil {
+		t.Fatalf("decode conversation: %v", err)
+	}
+	if conv.AgentID != "deep_research_v1" {
+		t.Fatalf("expected conversation agent to persist, got %q", conv.AgentID)
+	}
+}
+
+func TestConversationCreateDefaultsAgentIDToSuperChat(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	if err := database.Init(filepath.Join(t.TempDir(), "assistant.db")); err != nil {
+		t.Fatalf("init database: %v", err)
+	}
+
+	router := gin.New()
+	handler := NewConversationHandler()
+	router.POST("/api/conversations", handler.Create)
+
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/api/conversations",
+		strings.NewReader(`{"user_id":"user-a"}`),
+	)
+	req.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("unexpected status %d: %s", recorder.Code, recorder.Body.String())
+	}
+	var conv models.Conversation
+	if err := json.Unmarshal(recorder.Body.Bytes(), &conv); err != nil {
+		t.Fatalf("decode conversation: %v", err)
+	}
+	if conv.AgentID != "super_chat" {
+		t.Fatalf("expected default conversation agent super_chat, got %q", conv.AgentID)
+	}
+}

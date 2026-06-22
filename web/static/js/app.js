@@ -1,6 +1,11 @@
 const API_BASE = '';
 const LANGUAGE_KEY = 'agent_assistant_language';
 const MODE_STORAGE_KEY = 'super_chat_mode_ids';
+const SUPER_CHAT_AGENT_ID = 'super_chat';
+const THINKING_MODE_ID = 'thinking';
+const DEEP_RESEARCH_MODE_ID = 'deep_research';
+const DEEP_RESEARCH_AGENT_ID = 'deep_research_v1';
+const LEGACY_THINKING_MODE_IDS = new Set(['research', 'plan']);
 const CURRENT_CONVERSATION_STORAGE_KEY = 'agent_assistant_current_conversation_id';
 const CURRENT_ROLE_ID_STORAGE_KEY = 'agent_assistant_current_role_id';
 const SIDEBAR_COLLAPSE_STORAGE_KEY = 'agent_assistant_sidebar_collapsed_sections';
@@ -216,8 +221,10 @@ const I18N = {
             imageTitle: 'AI 生图功能',
             active: '已启用：{names}',
             items: {
-                research: ['研究', '拆解问题、对比来源、标明证据'],
-                plan: ['计划模式', '必须输出计划、风险和下一步'],
+                thinking: ['思考', '先规划、再分析、按需检索证据'],
+                deep_research: ['深度研究', '先确认计划，再多轮检索出报告'],
+                research: ['思考', '先规划、再分析、按需检索证据'],
+                plan: ['思考', '先规划、再分析、按需检索证据'],
                 image_generation: ['AI 生图', '强制交给 AI 生图 Agent 执行'],
                 image_prompt_refine: ['专业修饰', '先审查并补全画面提示词，再生图'],
             },
@@ -239,7 +246,7 @@ const I18N = {
             groups: {
                 entry: ['入口 Agent', '日常任务、意图识别和后续总控入口'],
                 creative: ['内容生成', 'AIGC、生图、长文创作等专业工作区'],
-                research: ['研究实验', 'LangGraph、CrewAI、AutoGen 等框架实验'],
+                research: ['研究 Agent', '深度研究、资料整理与实验性框架'],
                 general: ['通用能力', '基础助手和工具调用能力'],
             },
             type: { entry: '入口', creative: '创作', research: '研究', general: '通用' },
@@ -330,6 +337,11 @@ const I18N = {
             state_graph: '状态图',
             checkpoint_ready: 'Checkpoint',
             ab_test: 'A/B 对比',
+            deep_research: '深度研究',
+            research_planning: '研究计划',
+            multi_round_search: '多轮检索',
+            source_synthesis: '来源综合',
+            report_generation: '报告生成',
             aigc: 'AIGC',
             image_generation: '生图',
             image_generation_planned: '生图规划',
@@ -542,8 +554,10 @@ const I18N = {
             imageTitle: 'AI Image Modes',
             active: 'Enabled: {names}',
             items: {
-                research: ['Research', 'Break down, compare sources, cite evidence'],
-                plan: ['Plan Mode', 'Must show plan, risks, next action'],
+                thinking: ['Thinking', 'Plan first, analyze, retrieve evidence when needed'],
+                deep_research: ['Deep Research', 'Confirm a plan, then search and report'],
+                research: ['Thinking', 'Plan first, analyze, retrieve evidence when needed'],
+                plan: ['Thinking', 'Plan first, analyze, retrieve evidence when needed'],
                 image_generation: ['AI Image', 'Force this turn through the AI image agent'],
                 image_prompt_refine: ['Prompt Polish', 'Review and enrich the visual prompt before generation'],
             },
@@ -565,7 +579,7 @@ const I18N = {
             groups: {
                 entry: ['Entry Agents', 'Daily tasks, intent routing, and orchestration'],
                 creative: ['Content Generation', 'AIGC, image prompts, and long-form creation'],
-                research: ['Research Experiments', 'LangGraph, CrewAI, AutoGen, and runtime trials'],
+                research: ['Research Agents', 'Deep research, source organization, and runtime trials'],
                 general: ['General Capability', 'Basic assistant and tool use'],
             },
             type: { entry: 'Entry', creative: 'Creative', research: 'Research', general: 'General' },
@@ -656,6 +670,11 @@ const I18N = {
             state_graph: 'State graph',
             checkpoint_ready: 'Checkpoint',
             ab_test: 'A/B test',
+            deep_research: 'Deep research',
+            research_planning: 'Research planning',
+            multi_round_search: 'Multi-round search',
+            source_synthesis: 'Source synthesis',
+            report_generation: 'Report generation',
             aigc: 'AIGC',
             image_generation: 'Image generation',
             image_generation_planned: 'Image generation planned',
@@ -684,17 +703,17 @@ const PROVIDERS = [
 
 const SUPER_CHAT_MODES = [
     {
-        id: 'research',
+        id: THINKING_MODE_ID,
         prompts: {
-            zh: '【研究】本轮必须先拆解研究问题，再收集/对比可靠信息。遇到时效性、事实性或外部资料问题时优先搜索，尽量使用多组不同查询并把 search limit 提高到 12-20；至少比较多个来源，保留可引用 URL、关键数字、日期和不确定性。输出时包含“问题拆解”“关键发现”“证据强度/来源”“下一步验证”。如果不能检索，明确标注依据限制。',
-            en: '[Research] For this turn, break down the research question first, then gather and compare reliable information. For time-sensitive, factual, or external-information topics, search first, use several distinct queries when useful, and raise search limit to 12-20. Compare multiple sources and keep citable URLs, key numbers, dates, and uncertainty. The visible answer must include "Question breakdown", "Key findings", "Evidence strength / sources", and "Next verification". If retrieval is unavailable, state the evidence limits.',
+            zh: '【思考】本轮先进行可见的简短任务规划，再给出分析或执行结果。遇到时效性、事实性、外部资料或需要证据的问题时优先使用搜索工具，并用多组不同查询对比可靠来源；保留可引用 URL、关键数字、日期、分歧和不确定性。回答需要包含目标/计划、关键发现或执行结果、依据与风险、下一步建议；不要暴露逐字内部推理。',
+            en: '[Thinking] For this turn, start with a brief visible task plan, then provide the analysis or execution result. For time-sensitive, factual, external-information, or evidence-heavy topics, search first and compare reliable sources with multiple distinct queries. Preserve citable URLs, key numbers, dates, disagreements, and uncertainty. The answer should include goal / plan, key findings or result, evidence and risks, and next steps. Do not expose verbatim private reasoning.',
         },
     },
     {
-        id: 'plan',
+        id: DEEP_RESEARCH_MODE_ID,
         prompts: {
-            zh: '【计划模式】本轮必须让用户看见计划。回答开头输出“计划”小节，包含目标、分阶段步骤、依赖/风险、下一步行动。若用户要的是执行结果，也先给一个简短计划，再给执行结果；不要把计划藏在思考里。',
-            en: '[Plan Mode] For this turn, the user must see the plan. Start with a visible "Plan" section containing the goal, staged steps, dependencies / risks, and next action. If the user asks for an execution result, give a compact plan first, then the result. Do not hide the plan in internal reasoning.',
+            zh: '【深度研究】本轮交给 Deep Research Agent。必须先输出研究计划大纲给用户确认；用户确认后再按计划进行多轮外网检索、分步总结，并汇总为研究报告。',
+            en: '[Deep Research] Route this turn to the Deep Research Agent. First produce a research plan for user confirmation; after approval, run multi-round web research, summarize step by step, and produce a research report.',
         },
     },
 ];
@@ -710,8 +729,7 @@ const IMAGE_CHAT_MODES = [
 ];
 
 function availableModes() {
-    if (currentAgentId === 'image_generation_v1') return [];
-    if (currentAgentId === 'weight_loss_v1') return [];
+    if (currentAgentId !== SUPER_CHAT_AGENT_ID) return [];
     return SUPER_CHAT_MODES;
 }
 
@@ -749,7 +767,7 @@ let currentLanguage = localStorage.getItem(LANGUAGE_KEY) || 'zh';
 let currentUserId = loadCurrentUserId();
 let currentAccountToken = '';
 let accounts = [];
-let currentAgentId = 'super_chat';
+let currentAgentId = SUPER_CHAT_AGENT_ID;
 let roles = [];
 let currentRoleId = loadCurrentRoleId();
 let roleMemories = [];
@@ -1042,20 +1060,43 @@ function applySidebarCollapseState() {
     });
 }
 
-function loadSelectedModes() {
+function canonicalModeId(modeId) {
+    const id = String(modeId || '').trim();
+    return LEGACY_THINKING_MODE_IDS.has(id) ? THINKING_MODE_ID : id;
+}
+
+function modeStorageKey(conversationId = currentConversationId) {
+    const suffix = conversationId ? `conversation:${conversationId}` : 'draft';
+    return accountStorageKey(`${MODE_STORAGE_KEY}:${suffix}`);
+}
+
+function normalizeModeIds(modeIds = []) {
+    if (!Array.isArray(modeIds)) return [];
+    const allowed = new Set(allModes().map((mode) => mode.id));
+    const normalized = modeIds
+        .map(canonicalModeId)
+        .filter((id) => allowed.has(id));
+    return Array.from(new Set(normalized));
+}
+
+function loadSelectedModes(conversationId = currentConversationId) {
     try {
-        const raw = localStorage.getItem(MODE_STORAGE_KEY);
+        const raw = localStorage.getItem(modeStorageKey(conversationId));
         const parsed = JSON.parse(raw || '[]');
-        if (!Array.isArray(parsed)) return [];
-        const allowed = new Set(allModes().map((mode) => mode.id));
-        return parsed.filter((id) => allowed.has(id));
+        return normalizeModeIds(parsed);
     } catch {
         return [];
     }
 }
 
-function saveSelectedModes() {
-    localStorage.setItem(MODE_STORAGE_KEY, JSON.stringify(selectedModeIds));
+function saveSelectedModes(conversationId = currentConversationId) {
+    localStorage.setItem(modeStorageKey(conversationId), JSON.stringify(normalizeModeIds(selectedModeIds)));
+}
+
+function setSelectedModesForConversation(conversationId = currentConversationId, modeIds = null, { persist = false } = {}) {
+    selectedModeIds = normalizeModeIds(Array.isArray(modeIds) ? modeIds : loadSelectedModes(conversationId));
+    if (persist) saveSelectedModes(conversationId);
+    renderModes();
 }
 
 function loadCurrentConversationId() {
@@ -1102,6 +1143,18 @@ function saveAccountSessionToken(userId, token) {
 
 function accountStorageKey(key) {
     return `${key}:${currentUserId || 'anonymous'}`;
+}
+
+function conversationAgentId(conversation = null) {
+    return String(conversation?.agent_id || SUPER_CHAT_AGENT_ID).trim() || SUPER_CHAT_AGENT_ID;
+}
+
+function currentConversationRecord(id = currentConversationId) {
+    return conversations.find((conv) => conv.id === id) || null;
+}
+
+function applyConversationAgent(conversation = null) {
+    setCurrentAgent(conversationAgentId(conversation));
 }
 
 function loadCurrentRoleId() {
@@ -1209,6 +1262,7 @@ async function switchAccount(userId, options = {}) {
     if (options.token) saveAccountSessionToken(nextUserId, options.token);
     saveCurrentUserId(currentUserId);
     currentConversationId = loadCurrentConversationId();
+    selectedModeIds = loadSelectedModes(currentConversationId);
     currentRoleId = loadCurrentRoleId();
     roleMemories = [];
     roleMemoryError = '';
@@ -1262,8 +1316,9 @@ function getSelectedModes() {
 }
 
 function modeCopy(mode) {
-    const fallback = I18N.en.modes.items[mode.id] || [mode.id, ''];
-    const localized = I18N[currentLanguage].modes.items[mode.id] || fallback;
+    const id = canonicalModeId(mode.id);
+    const fallback = I18N.en.modes.items[id] || [id, ''];
+    const localized = I18N[currentLanguage].modes.items[id] || fallback;
     return {
         name: localized[0],
         detail: localized[1],
@@ -1382,12 +1437,15 @@ function renderAttachmentChip(item) {
 }
 
 function setModeSelected(modeId, selected) {
-    const allowed = availableModes().some((mode) => mode.id === modeId);
+    const normalizedModeId = canonicalModeId(modeId);
+    const allowed = availableModes().some((mode) => mode.id === normalizedModeId);
     if (!allowed) return;
     if (selected) {
-        selectedModeIds = Array.from(new Set([...selectedModeIds, modeId]));
+        selectedModeIds = Array.from(new Set([...selectedModeIds.map(canonicalModeId), normalizedModeId]));
     } else {
-        selectedModeIds = selectedModeIds.filter((id) => id !== modeId);
+        selectedModeIds = selectedModeIds
+            .map(canonicalModeId)
+            .filter((id) => id !== normalizedModeId);
     }
     saveSelectedModes();
     renderModes();
@@ -1410,6 +1468,12 @@ function selectedModePayload() {
         mode_ids: modeIds,
         mode_prompts: modePrompts,
     };
+}
+
+function selectedModeAgentId(fallbackAgentId = currentAgentId) {
+    return getSelectedModes().some((mode) => mode.id === DEEP_RESEARCH_MODE_ID)
+        ? DEEP_RESEARCH_AGENT_ID
+        : fallbackAgentId;
 }
 
 function hasReadyAttachments() {
@@ -1843,15 +1907,21 @@ function togglePinnedAgent(agentId) {
 async function loadConversations() {
     const data = await apiCall('GET', '/api/conversations');
     conversations = data.conversations || [];
+    const current = currentConversationRecord();
+    if (current) applyConversationAgent(current);
     renderConversationList();
     updateTopbar();
 }
 
 async function createConversation() {
-    const conv = await apiCall('POST', '/api/conversations', { user_id: currentUserId });
+    const conv = await apiCall('POST', '/api/conversations', {
+        user_id: currentUserId,
+        agent_id: currentAgentId || SUPER_CHAT_AGENT_ID,
+    });
     conversations.unshift(conv);
     currentConversationId = conv.id;
     saveCurrentConversationId(currentConversationId);
+    saveSelectedModes(currentConversationId);
     renderConversationList();
     updateTopbar();
     return conv;
@@ -4735,8 +4805,12 @@ async function renderConversationMessages(id, options = {}) {
         const messages = data.messages || [];
         const runMatches = await loadConversationRunMatches(id, messages);
         if (currentConversationId !== id) return;
+        if (data.conversation) {
+            const index = conversations.findIndex((conv) => conv.id === data.conversation.id);
+            if (index >= 0) conversations[index] = data.conversation;
+            applyConversationAgent(data.conversation);
+        }
         syncQuestionHistoryFromMessages(messages);
-        syncAgentToConversation(messages, runMatches);
         if (!messages.length) {
             showWelcome();
         } else {
@@ -4866,22 +4940,7 @@ function inferAgentIdFromTraceEvents(events = []) {
         const payload = event?.payload || {};
         if (event?.type === 'agent.delegated' && payload.target_agent_id) return payload.target_agent_id;
         if (event?.type === 'agent.command.routed' && payload.target_agent_id) return payload.target_agent_id;
-    }
-    for (const event of reversed) {
-        const payload = event?.payload || {};
         if (event?.type === 'run.started' && payload.agent_id) return payload.agent_id;
-    }
-    return '';
-}
-
-function inferConversationAgentId(messages = [], runMatches = new Map()) {
-    for (let index = messages.length - 1; index >= 0; index -= 1) {
-        const msg = messages[index];
-        if (msg?.role !== 'assistant') continue;
-        const matchedRun = runMatches.get(index);
-        if (matchedRun?.agent_id) return matchedRun.agent_id;
-        const traceAgentId = inferAgentIdFromTraceEvents(parseTraceEvents(msg.trace_events));
-        if (traceAgentId) return traceAgentId;
     }
     return '';
 }
@@ -4891,8 +4950,8 @@ function agentIsSelectable(agentId) {
 }
 
 function setCurrentAgent(agentId, { refreshWelcome = false } = {}) {
-    const nextAgentId = agentId || 'super_chat';
-    if (!agentIsSelectable(nextAgentId) && nextAgentId !== 'super_chat') return false;
+    const nextAgentId = agentId || SUPER_CHAT_AGENT_ID;
+    if (!agentIsSelectable(nextAgentId) && nextAgentId !== SUPER_CHAT_AGENT_ID) return false;
     currentAgentId = nextAgentId;
     if (agentSelect) agentSelect.value = currentAgentId;
     renderAgentCommandBar();
@@ -4902,12 +4961,6 @@ function setCurrentAgent(agentId, { refreshWelcome = false } = {}) {
     updateTopbar();
     if (refreshWelcome) refreshWelcomeIfEmpty();
     return true;
-}
-
-function syncAgentToConversation(messages = [], runMatches = new Map()) {
-    const conversationAgentId = inferConversationAgentId(messages, runMatches);
-    if (!conversationAgentId || conversationAgentId === currentAgentId) return;
-    setCurrentAgent(conversationAgentId);
 }
 
 function stopActiveRunWatcher() {
@@ -5051,6 +5104,8 @@ async function selectConversation(id) {
     stopActiveRunWatcher();
     currentConversationId = id;
     saveCurrentConversationId(id);
+    applyConversationAgent(currentConversationRecord(id));
+    setSelectedModesForConversation(id);
     setView('chat', { restore: false });
     renderConversationList();
     await renderConversationMessages(id);
@@ -5068,6 +5123,8 @@ async function restoreInitialConversation() {
     }
 
     if (currentConversationId && conversations.some((conv) => conv.id === currentConversationId)) {
+        applyConversationAgent(currentConversationRecord(currentConversationId));
+        setSelectedModesForConversation(currentConversationId);
         renderConversationList();
         await renderConversationMessages(currentConversationId);
     } else {
@@ -5075,6 +5132,8 @@ async function restoreInitialConversation() {
         saveCurrentConversationId(null);
         stopActiveRunWatcher();
         clearQuestionHistory();
+        setCurrentAgent(SUPER_CHAT_AGENT_ID);
+        setSelectedModesForConversation(null, [], { persist: true });
         showWelcome();
     }
 }
@@ -5087,6 +5146,7 @@ async function startAgentTask(agentId) {
     currentConversationId = null;
     saveCurrentConversationId(null);
     clearQuestionHistory();
+    setSelectedModesForConversation(null, [], { persist: true });
     setCurrentAgent(agentId || 'super_chat');
     setView('chat', { restore: false });
     showWelcome();
@@ -5104,7 +5164,8 @@ function openPulseChat(query = '') {
 	saveCurrentConversationId(null);
 	clearQuestionHistory();
 	clearAttachments();
-	setCurrentAgent('super_chat');
+	setSelectedModesForConversation(null, [], { persist: true });
+	setCurrentAgent(SUPER_CHAT_AGENT_ID);
 	setView('chat', { restore: false });
 	showWelcome();
 	renderConversationList();
@@ -5118,6 +5179,8 @@ async function startNewTopic() {
 	stopActiveRunWatcher();
 	setView('chat', { restore: false });
 	clearQuestionHistory();
+    setCurrentAgent(SUPER_CHAT_AGENT_ID);
+    setSelectedModesForConversation(null, [], { persist: true });
     messageInput.value = '';
     clearAttachments();
     updateSendState();
@@ -5237,13 +5300,14 @@ async function regenerateAssistantAnswer(button) {
 async function sendMessage(conversationId, query, attachmentContext = '', attachments = []) {
     const model = modelSelect.value || undefined;
     const modePayload = selectedModePayload();
+    const targetAgentId = selectedModeAgentId();
     return apiCall('POST', '/api/chat', {
         conversation_id: conversationId,
         user_id: currentUserId,
         query,
         stream: false,
         model_preference: model || undefined,
-        agent_id: currentAgentId,
+        agent_id: targetAgentId,
         role_id: currentRoleId || undefined,
         context_blocks: attachmentContext ? [attachmentContext] : [],
         attachments,
@@ -5254,6 +5318,7 @@ async function sendMessage(conversationId, query, attachmentContext = '', attach
 async function sendMessageStream(conversationId, query, streamView, attachmentContext = '', attachments = [], extraPayload = {}) {
     const model = modelSelect.value || undefined;
     const modePayload = selectedModePayload();
+    const targetAgentId = selectedModeAgentId();
     const resp = await fetch(API_BASE + '/api/chat', {
         method: 'POST',
         headers: {
@@ -5267,7 +5332,7 @@ async function sendMessageStream(conversationId, query, streamView, attachmentCo
             query,
             stream: true,
             model_preference: model || undefined,
-            agent_id: currentAgentId,
+            agent_id: targetAgentId,
             role_id: currentRoleId || undefined,
             context_blocks: attachmentContext ? [attachmentContext] : [],
             attachments,

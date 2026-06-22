@@ -52,14 +52,23 @@ CONVERSATION_COMPACTION_THRESHOLD = 40
 CONVERSATION_COMPACTION_KEEP_MESSAGES = 12
 CONVERSATION_COMPACTION_MAX_MESSAGES = 80
 SUPER_CHAT_AGENT_ID = "super_chat"
+RESEARCH_AGENT_ID = "deep_research_v1"
 AIGC_AGENT_ID = "image_generation_v1"
 WEIGHT_LOSS_AGENT_ID = "weight_loss_v1"
+THINKING_MODE_ID = "thinking"
+DEEP_RESEARCH_MODE_ID = "deep_research"
+LEGACY_THINKING_MODE_IDS = {"research", "plan"}
 AIGC_FORCE_MODE_ID = "image_generation"
 AIGC_REFINE_MODE_ID = "image_prompt_refine"
-AIGC_RESEARCH_MODE_IDS = {"research", "plan"}
+AIGC_RESEARCH_MODE_IDS = {THINKING_MODE_ID, "research", "plan"}
 AIGC_RESEARCH_TOOL_ROUNDS = 8
 AIGC_RESEARCH_SEARCH_LIMIT = 12
 AIGC_RESEARCH_SEARCH_MAX_LIMIT = 20
+DEEP_RESEARCH_PLAN_MARKER = "<!-- deep_research_plan_v1 -->"
+DEEP_RESEARCH_DEFAULT_TARGET_RESULTS = 400
+DEEP_RESEARCH_SEARCH_LIMIT = 20
+DEEP_RESEARCH_MAX_QUERIES = 24
+DEEP_RESEARCH_SUMMARY_CHUNK_SIZE = 40
 AIGC_PLAN_DECOMPOSE_STEP = "task_decomposition"
 AIGC_PLAN_CONTEXT_STEP = "context_reuse"
 AIGC_PLAN_RETRIEVAL_STEP = "retrieval"
@@ -173,6 +182,9 @@ class AgentEngine:
             return ""
         return (
             "\n\n可用的专业 Agent：\n"
+            f"- 深度研究 ({RESEARCH_AGENT_ID})：当用户要像 ChatGPT 研究模式一样先确认研究计划，"
+            "再进行多轮外网检索、分步归纳并产出研究报告时，使用这个 Agent。可通过 "
+            "`/agent deep_research_v1 /plan <问题>`、`/研究 /plan <问题>` 或在 Agents 中进入。\n"
             f"- AI 生图 ({AIGC_AGENT_ID})：当用户要生成、绘制、设计或产出图片、照片、插画、海报、"
             "封面、头像、视觉概念或生图提示词时，使用这个 Agent。Super Chat 可以在识别到生图意图时"
             f"自动委派，也可以在用户启用 {AIGC_FORCE_MODE_ID} 模式时强制委派。"
@@ -1075,6 +1087,14 @@ class AgentEngine:
             return True, "intent", False
         return False, "", False
 
+    def _should_delegate_to_deep_research(self, request: ChatRequest, agent_id: str) -> tuple[bool, str, bool]:
+        if agent_id != SUPER_CHAT_AGENT_ID:
+            return False, "", False
+        mode_ids = set(request.mode_ids or [])
+        if DEEP_RESEARCH_MODE_ID in mode_ids or RESEARCH_AGENT_ID in mode_ids:
+            return True, "mode", True
+        return False, "", False
+
     def _looks_like_weight_loss_intent(self, request: ChatRequest) -> bool:
         text = " ".join(
             [
@@ -1356,6 +1376,15 @@ class AgentEngine:
                 runtime=target_agent.runtime,
                 delegation_trace=delegation_trace,
             )
+        if target_agent.id == RESEARCH_AGENT_ID:
+            return await self._process_deep_research(
+                request=request,
+                agent_id=target_agent.id,
+                role_id=target_role_id,
+                role_context=target_role_context,
+                run_id=run_id,
+                runtime=target_agent.runtime,
+            )
 
         error_msg = f"Agent '{target_agent.id}' does not expose a command handler yet."
         self.trace_store.fail_run(
@@ -1379,6 +1408,1001 @@ class AgentEngine:
             run_id=run_id,
             events=latest_run.events if latest_run else [],
             memory_context=source_role_context.records,
+        )
+
+    def _deep_research_help_response(self) -> str:
+        return (
+            "Deep Research 是两阶段流程：\n\n"
+            "1. 先发送 `/plan <研究问题>`，我会生成一份研究计划大纲给你确认。\n"
+            "2. 你确认后回复 `/start`、`/execute`、`开始研究` 或 `没问题，执行`，我会按大纲多轮检索、分步总结，并输出研究报告。\n\n"
+            "默认目标是通过多组查询尽量收集约 400 条搜索结果；如果搜索源不可用，报告会明确标注限制。"
+        )
+
+    def _normalize_deep_research_user_text(self, message: str) -> str:
+        text = (message or "").strip()
+        match = re.match(r"^/(?:plan|research)\s*(.*)$", text, flags=re.IGNORECASE | re.DOTALL)
+        if match:
+            return match.group(1).strip()
+        return text
+
+    def _is_deep_research_help_request(self, message: str) -> bool:
+        return (message or "").strip().lower() in {"/help", "help", "帮助", "/帮助"}
+
+    def _is_deep_research_start_request(self, message: str) -> bool:
+        text = re.sub(r"\s+", " ", (message or "").strip().lower())
+        if not text:
+            return False
+        if text in {"/start", "/execute", "/run", "start", "execute", "go", "go ahead", "yes", "y", "ok", "okay"}:
+            return True
+        if text.startswith(("/start ", "/execute ", "/run ")):
+            return True
+        zh_markers = [
+            "开始研究",
+            "开始执行",
+            "按计划执行",
+            "按这个计划",
+            "没问题",
+            "可以执行",
+            "确认执行",
+            "执行吧",
+            "开始吧",
+        ]
+        return len(text) <= 80 and any(marker in text for marker in zh_markers)
+
+    def _strip_deep_research_plan_marker(self, text: str) -> str:
+        return str(text or "").replace(DEEP_RESEARCH_PLAN_MARKER, "").strip()
+
+    def _find_latest_deep_research_plan(
+        self,
+        history: list[LLMMessage],
+        context_blocks: list[str] | None = None,
+    ) -> tuple[str, str]:
+        for index in range(len(history) - 1, -1, -1):
+            message = history[index]
+            if message.role != "assistant" or not isinstance(message.content, str):
+                continue
+            content = message.content
+            if DEEP_RESEARCH_PLAN_MARKER not in content and "研究计划大纲" not in content:
+                continue
+            question = ""
+            for previous in range(index - 1, -1, -1):
+                previous_message = history[previous]
+                if previous_message.role == "user" and isinstance(previous_message.content, str):
+                    question = self._normalize_deep_research_user_text(previous_message.content)
+                    break
+            return self._strip_deep_research_plan_marker(content), question
+        for block in reversed(self._normalize_context_blocks(context_blocks)):
+            if DEEP_RESEARCH_PLAN_MARKER not in block and "研究计划大纲" not in block:
+                continue
+            assistant_blocks = re.findall(
+                r"(?:^|\n)assistant:\s*([\s\S]*?)(?=\n(?:user|assistant):|\Z)",
+                block,
+                flags=re.IGNORECASE,
+            )
+            for content in reversed(assistant_blocks):
+                if DEEP_RESEARCH_PLAN_MARKER in content or "研究计划大纲" in content:
+                    return self._strip_deep_research_plan_marker(content), ""
+            return self._strip_deep_research_plan_marker(block), ""
+        return "", ""
+
+    def _ensure_deep_research_plan_marker(self, text: str) -> str:
+        content = str(text or "").strip()
+        if not content:
+            content = self._fallback_deep_research_plan("")
+        if DEEP_RESEARCH_PLAN_MARKER in content:
+            return content
+        return f"{DEEP_RESEARCH_PLAN_MARKER}\n{content}"
+
+    def _fallback_deep_research_plan(self, question: str) -> str:
+        topic = question.strip() or "待研究主题"
+        return (
+            "## 研究计划大纲\n\n"
+            f"**研究目标**：围绕“{topic}”形成可引用、可复核的研究报告。\n\n"
+            "**阶段步骤**\n"
+            "1. 明确问题边界、关键概念和需要回答的子问题。\n"
+            "2. 设计多组外网检索查询，覆盖背景、现状、数据、反方证据、风险和案例。\n"
+            "3. 分批检索并去重来源，记录 URL、标题、摘要、日期和来源类型。\n"
+            "4. 按主题分块总结证据，标注共识、分歧、不确定性和缺口。\n"
+            "5. 汇总为研究报告，包含结论、依据、风险和参考来源。\n\n"
+            "**请确认**：如果这个方向没问题，回复“开始研究”或 `/start`，我会按该大纲执行。"
+        )
+
+    def _build_deep_research_context_prompt(
+        self,
+        *,
+        role_context: MemoryContext,
+        short_term_summary: str,
+    ) -> str:
+        current_time = datetime.now(ZoneInfo("Asia/Shanghai"))
+        return (
+            "你是 Deep Research Agent，负责先生成研究计划，待用户确认后再多轮检索并输出研究报告。"
+            "不要跳过确认步骤；执行阶段需要尽量覆盖多来源、多角度和反方证据。\n\n"
+            f"当前日期/时间：{current_time.strftime('%Y-%m-%d %H:%M:%S')} Asia/Shanghai。\n\n"
+            f"角色上下文：\n{role_context.rendered[:4000]}\n\n"
+            f"短期记忆摘要：\n{short_term_summary or '暂无压缩摘要。'}"
+        )
+
+    def _build_deep_research_plan_messages(
+        self,
+        *,
+        request: ChatRequest,
+        role_context: MemoryContext,
+        history: list[LLMMessage],
+        short_term_summary: str,
+        question: str,
+    ) -> list[LLMMessage]:
+        history_text = self._format_aigc_history(history, request.context_blocks)
+        context_text = "\n\n---\n\n".join(self._normalize_context_blocks(request.context_blocks)) or "没有额外上下文。"
+        current_time = datetime.now(ZoneInfo("Asia/Shanghai"))
+        system = (
+            "你是深度研究规划器。当前阶段只生成给用户确认的研究计划大纲，不要执行搜索，不要写最终报告。"
+            "计划需要具体到可以执行检索，但保持简洁。必须用中文 Markdown 输出。\n\n"
+            "计划必须包含：研究目标、关键问题、检索策略、分阶段步骤、预期数据类型、风险/盲区、需要用户确认的一句话。"
+            "最后明确提示用户：确认后回复“开始研究”或 `/start`。\n\n"
+            f"当前日期/时间：{current_time.strftime('%Y-%m-%d %H:%M:%S')} Asia/Shanghai。"
+        )
+        user = (
+            f"研究问题：\n{question}\n\n"
+            f"角色上下文：\n{role_context.rendered[:4000]}\n\n"
+            f"短期记忆摘要：\n{short_term_summary or '暂无压缩摘要。'}\n\n"
+            f"近期会话：\n{history_text}\n\n"
+            f"本轮额外上下文：\n{context_text}"
+        )
+        return [
+            LLMMessage(role="system", content=system),
+            LLMMessage(role="user", content=user),
+        ]
+
+    def _build_deep_research_query_messages(
+        self,
+        *,
+        question: str,
+        plan_text: str,
+    ) -> list[LLMMessage]:
+        system = (
+            "你是研究检索查询设计器。只返回 JSON 对象，不要 Markdown。"
+            "为深度研究生成多组外网搜索查询，覆盖背景、最新数据、权威报告、案例、反方证据、风险和地区/时间差异。"
+        )
+        user = json.dumps(
+            {
+                "output_schema": {
+                    "target_result_count": DEEP_RESEARCH_DEFAULT_TARGET_RESULTS,
+                    "queries": ["query string"],
+                },
+                "limits": {
+                    "max_queries": DEEP_RESEARCH_MAX_QUERIES,
+                    "search_limit_per_query": DEEP_RESEARCH_SEARCH_LIMIT,
+                },
+                "question": question,
+                "approved_plan": plan_text,
+            },
+            ensure_ascii=False,
+        )
+        return [
+            LLMMessage(role="system", content=system),
+            LLMMessage(role="user", content=user),
+        ]
+
+    def _coerce_deep_research_queries(self, raw: dict[str, Any] | None, question: str) -> tuple[list[str], int]:
+        queries: list[str] = []
+        if isinstance(raw, dict):
+            raw_queries = raw.get("queries") or raw.get("search_queries") or []
+            if isinstance(raw_queries, list):
+                for item in raw_queries:
+                    if isinstance(item, dict):
+                        value = item.get("query") or item.get("q") or item.get("text")
+                    else:
+                        value = item
+                    text = " ".join(str(value or "").split()).strip()
+                    if text and text not in queries:
+                        queries.append(text[:220])
+            try:
+                requested_target = int(raw.get("target_result_count") or 0)
+            except (TypeError, ValueError):
+                requested_target = 0
+        else:
+            requested_target = 0
+
+        target_result_count = max(
+            DEEP_RESEARCH_DEFAULT_TARGET_RESULTS,
+            min(requested_target or DEEP_RESEARCH_DEFAULT_TARGET_RESULTS, DEEP_RESEARCH_MAX_QUERIES * DEEP_RESEARCH_SEARCH_LIMIT),
+        )
+        needed_queries = min(
+            DEEP_RESEARCH_MAX_QUERIES,
+            max(1, (target_result_count + DEEP_RESEARCH_SEARCH_LIMIT - 1) // DEEP_RESEARCH_SEARCH_LIMIT),
+        )
+        for query in self._fallback_deep_research_queries(question):
+            if len(queries) >= needed_queries:
+                break
+            if query not in queries:
+                queries.append(query)
+        return queries[:needed_queries], target_result_count
+
+    def _fallback_deep_research_queries(self, question: str) -> list[str]:
+        base = " ".join((question or "研究主题").split()).strip()[:160]
+        aspects = [
+            "overview",
+            "latest news",
+            "2026 data statistics",
+            "market report",
+            "academic research",
+            "official policy regulation",
+            "industry analysis",
+            "case study",
+            "risks controversy",
+            "criticism counterarguments",
+            "best practices",
+            "benchmarks",
+            "financial impact",
+            "technology trends",
+            "China",
+            "United States",
+            "Europe",
+            "专家观点",
+            "权威报告",
+            "数据 统计",
+            "风险 争议",
+            "案例 分析",
+            "政策 法规",
+            "未来趋势",
+        ]
+        return [base, *[f"{base} {aspect}" for aspect in aspects]]
+
+    def _source_digest(self, citations: list[Citation]) -> str:
+        lines: list[str] = []
+        for citation in citations:
+            parts = [
+                f"[{citation.index}] {citation.title}",
+                f"URL: {citation.url}",
+            ]
+            if citation.source:
+                parts.append(f"Source: {citation.source}")
+            pub_date = citation.metadata.get("pub_date") or citation.metadata.get("date") or citation.metadata.get("published_at")
+            if pub_date:
+                parts.append(f"Date: {pub_date}")
+            if citation.snippet:
+                parts.append(f"Snippet: {citation.snippet[:450]}")
+            lines.append(" | ".join(parts))
+        return "\n".join(lines)
+
+    def _source_catalog_without_snippets(self, citations: list[Citation], limit: int = 40) -> str:
+        lines: list[str] = []
+        for citation in citations[:limit]:
+            title = citation.title or citation.url or "Untitled source"
+            details = [f"[{citation.index}] {title}"]
+            if citation.source:
+                details.append(f"source: {citation.source}")
+            pub_date = citation.metadata.get("pub_date") or citation.metadata.get("date") or citation.metadata.get("published_at")
+            if pub_date:
+                details.append(f"date: {pub_date}")
+            details.append(citation.url)
+            lines.append("- " + " | ".join(details))
+        if len(citations) > limit:
+            lines.append(f"- 另有 {len(citations) - limit} 条来源已保留在 citations 中。")
+        return "\n".join(lines) or "- 暂无可用来源。"
+
+    def _fallback_deep_research_summary(
+        self,
+        *,
+        chunk_index: int,
+        chunk_count: int,
+        citations: list[Citation],
+        error_message: str,
+    ) -> str:
+        safe_error = str(error_message or "unknown error")[:300]
+        return (
+            f"## 第 {chunk_index}/{chunk_count} 批来源摘要（降级生成）\n\n"
+            f"该批来源的模型分块总结失败，系统已保留来源目录并继续执行后续研究。错误摘要：`{safe_error}`。\n\n"
+            "### 可用来源目录\n"
+            f"{self._source_catalog_without_snippets(citations, limit=16)}\n\n"
+            "### 复核提示\n"
+            "- 本批来源未经过模型综合摘要，最终报告引用这些来源时应保持谨慎。\n"
+            "- 优先使用标题、URL、来源、日期可核验的内容；关键事实需要和其他批次或权威来源交叉验证。"
+        )
+
+    def _fallback_deep_research_report(
+        self,
+        *,
+        question: str,
+        plan_text: str,
+        summaries: list[str],
+        citations: list[Citation],
+        search_count: int,
+        error_message: str,
+    ) -> str:
+        safe_error = str(error_message or "unknown error")[:300]
+        summary_blocks = [summary.strip() for summary in summaries if summary and summary.strip()]
+        summary_text = "\n\n---\n\n".join(summary_blocks[:10]) or "没有可用分块摘要。"
+        source_catalog = self._source_catalog_without_snippets(citations, limit=60)
+        return (
+            "# 研究报告（降级生成）\n\n"
+            f"> 自动报告撰写调用失败，以下内容基于已完成的检索、分块摘要和来源目录保守汇总。错误摘要：`{safe_error}`。\n\n"
+            "## 执行摘要\n\n"
+            f"- 研究问题：{question or '未提供'}\n"
+            f"- 检索覆盖：共执行 {search_count} 组查询，去重后保留 {len(citations)} 条来源，形成 {len(summary_blocks)} 个分块摘要。\n"
+            "- 由于最终报告模型调用失败，本报告不做超出分块摘要和来源目录的额外推断。\n\n"
+            "## 研究范围与方法\n\n"
+            f"{self._strip_deep_research_plan_marker(plan_text)[:2000] or '按用户确认的研究计划执行多轮检索和分块归纳。'}\n\n"
+            "## 已完成的分块摘要\n\n"
+            f"{summary_text}\n\n"
+            "## 风险与不确定性\n\n"
+            "- 部分搜索结果可能跑偏、重复或质量不稳定，需要在正式引用前二次核验。\n"
+            "- 降级报告未经过最终综合模型重写，结论应以分块摘要和原始来源为准。\n\n"
+            "## 参考来源目录\n\n"
+            f"{source_catalog}"
+        )
+
+    def _build_deep_research_summary_messages(
+        self,
+        *,
+        question: str,
+        plan_text: str,
+        chunk_index: int,
+        chunk_count: int,
+        citations: list[Citation],
+    ) -> list[LLMMessage]:
+        system = (
+            "你是研究资料分块总结器。基于给定搜索结果做证据摘要，不要编造来源未出现的信息。"
+            "输出中文 Markdown，保留来源编号，例如 [12]。"
+        )
+        user = (
+            f"研究问题：\n{question}\n\n"
+            f"已确认计划：\n{plan_text[:5000]}\n\n"
+            f"当前是第 {chunk_index}/{chunk_count} 批来源。请总结：核心事实、关键数字/日期、共识、分歧、风险、待验证缺口。\n\n"
+            f"来源列表：\n{self._source_digest(citations)}"
+        )
+        return [
+            LLMMessage(role="system", content=system),
+            LLMMessage(role="user", content=user[:24000]),
+        ]
+
+    def _build_deep_research_report_messages(
+        self,
+        *,
+        question: str,
+        plan_text: str,
+        summaries: list[str],
+        citations: list[Citation],
+        search_count: int,
+    ) -> list[LLMMessage]:
+        system = (
+            "你是深度研究报告撰写器。基于已确认计划、分块摘要和来源目录输出正式研究报告。"
+            "必须使用中文 Markdown；引用事实时尽量用来源编号 [n]；不要编造来源没有支持的事实。"
+            "如果证据不足或搜索失败，要明确说明。"
+        )
+        source_catalog = self._source_digest(citations[:120])
+        user = (
+            f"研究问题：\n{question}\n\n"
+            f"已确认计划：\n{plan_text[:5000]}\n\n"
+            f"检索覆盖：共执行 {search_count} 组查询，去重后来源 {len(citations)} 条。\n\n"
+            "分块摘要：\n"
+            + "\n\n---\n\n".join(summaries or ["没有可用分块摘要。"])
+            + "\n\n参考来源目录（前 120 条，引用编号与完整 citations 保持一致）：\n"
+            + source_catalog
+            + "\n\n报告结构必须包含：执行摘要、研究范围与方法、关键发现、详细分析、风险与不确定性、结论与建议、参考来源。"
+        )
+        return [
+            LLMMessage(role="system", content=system),
+            LLMMessage(role="user", content=user[:30000]),
+        ]
+
+    def _merge_usage(self, total: dict[str, int], usage: dict[str, int] | None) -> None:
+        for key, value in (usage or {}).items():
+            try:
+                total[key] = total.get(key, 0) + int(value)
+            except (TypeError, ValueError):
+                continue
+
+    async def _complete_deep_research_response(
+        self,
+        *,
+        request: ChatRequest,
+        agent_id: str,
+        role_id: str,
+        role_context: MemoryContext,
+        runtime: str,
+        run_id: str,
+        response_text: str,
+        new_messages: list[LLMMessage],
+        skills_used: list[str] | None = None,
+        citations: list[Citation] | None = None,
+        plan: list[SkillCallInfo] | None = None,
+        model_used: str = "",
+        tokens_used: dict[str, int] | None = None,
+        review_memory: bool = True,
+    ) -> ChatResponse:
+        self._add_conversation_memory(request, new_messages)
+        memory_updates: list[MemoryRecord] = []
+        if review_memory:
+            memory_updates = await self._review_and_store_memories(
+                request=request,
+                agent_id=agent_id,
+                role_context=role_context,
+                assistant_message=response_text,
+                new_messages=new_messages,
+                run_id=run_id,
+            )
+            await self._maybe_compact_conversation_memory(request=request, run_id=run_id)
+
+        unique_skills = list(dict.fromkeys(skills_used or []))
+        self.trace_store.complete_run(
+            run_id,
+            output=response_text,
+            model_used=model_used,
+            tokens_used=tokens_used or {},
+            skills_used=unique_skills,
+        )
+        latest_run = self.trace_store.get_run(run_id)
+        return ChatResponse(
+            conversation_id=request.conversation_id,
+            response=response_text,
+            skills_used=unique_skills,
+            citations=citations or [],
+            plan=plan,
+            model_used=model_used,
+            tokens_used=tokens_used or {},
+            agent_id=agent_id,
+            role_id=role_id,
+            runtime=runtime,
+            run_id=run_id,
+            events=latest_run.events if latest_run else [],
+            memory_context=role_context.records,
+            memory_updates=memory_updates,
+        )
+
+    async def _generate_deep_research_plan(
+        self,
+        *,
+        request: ChatRequest,
+        role_context: MemoryContext,
+        history: list[LLMMessage],
+        short_term_summary: str,
+        run_id: str,
+        question: str,
+    ) -> tuple[str, str, dict[str, int]]:
+        messages = self._build_deep_research_plan_messages(
+            request=request,
+            role_context=role_context,
+            history=history,
+            short_term_summary=short_term_summary,
+            question=question,
+        )
+        started = perf_counter()
+        self.trace_store.append_event(
+            run_id,
+            type="research.plan.started",
+            status="running",
+            title="Deep research plan started",
+            payload={"question": question[:500]},
+        )
+        provider = self._get_provider(request.model_preference)
+        try:
+            response = await provider.chat(messages, tools=None, temperature=0.2)
+        except Exception as e:
+            logger.exception("Deep research plan generation failed; fallback plan used")
+            plan_text = self._ensure_deep_research_plan_marker(self._fallback_deep_research_plan(question))
+            self.trace_store.append_event(
+                run_id,
+                type="research.plan.failed",
+                status="error",
+                title="Deep research plan generation failed; fallback used",
+                payload={
+                    "error_message": str(e)[:500],
+                    "plan_preview": self._strip_deep_research_plan_marker(plan_text)[:500],
+                    "fallback_used": True,
+                },
+                duration_ms=int((perf_counter() - started) * 1000),
+            )
+            return plan_text, "", {}
+        plan_text = self._ensure_deep_research_plan_marker(response.content or self._fallback_deep_research_plan(question))
+        self.trace_store.append_event(
+            run_id,
+            type="research.plan.completed",
+            status="completed",
+            title="Deep research plan completed",
+            payload={
+                "model": response.model,
+                "usage": response.usage,
+                "plan_preview": self._strip_deep_research_plan_marker(plan_text)[:500],
+            },
+            duration_ms=int((perf_counter() - started) * 1000),
+        )
+        return plan_text, response.model, dict(response.usage)
+
+    async def _execute_deep_research(
+        self,
+        *,
+        request: ChatRequest,
+        role_context: MemoryContext,
+        history: list[LLMMessage],
+        run_id: str,
+        question: str,
+        plan_text: str,
+    ) -> dict[str, Any]:
+        provider = self._get_provider(request.model_preference)
+        total_usage: dict[str, int] = {}
+        model_names: list[str] = []
+        skills_used: list[str] = []
+        plan_infos: list[SkillCallInfo] = []
+        citations: list[Citation] = []
+        citation_urls: set[str] = set()
+
+        self.trace_store.append_event(
+            run_id,
+            type="research.execution.started",
+            status="running",
+            title="Deep research execution started",
+            payload={
+                "question": question[:500],
+                "target_result_count": DEEP_RESEARCH_DEFAULT_TARGET_RESULTS,
+                "search_limit": DEEP_RESEARCH_SEARCH_LIMIT,
+            },
+        )
+
+        query_started = perf_counter()
+        try:
+            query_response = await provider.chat(
+                self._build_deep_research_query_messages(question=question, plan_text=plan_text),
+                tools=None,
+                temperature=0.2,
+            )
+            self._merge_usage(total_usage, query_response.usage)
+            if query_response.model:
+                model_names.append(query_response.model)
+            raw_queries = self._extract_json_object(query_response.content)
+            queries, target_result_count = self._coerce_deep_research_queries(raw_queries, question)
+            self.trace_store.append_event(
+                run_id,
+                type="research.queries.created",
+                status="completed",
+                title="Deep research queries created",
+                payload={
+                    "model": query_response.model,
+                    "usage": query_response.usage,
+                    "query_count": len(queries),
+                    "target_result_count": target_result_count,
+                    "queries": queries,
+                },
+                duration_ms=int((perf_counter() - query_started) * 1000),
+            )
+        except Exception as e:
+            logger.exception("Deep research query generation failed; fallback queries used")
+            queries, target_result_count = self._coerce_deep_research_queries(None, question)
+            self.trace_store.append_event(
+                run_id,
+                type="research.queries.failed",
+                status="error",
+                title="Deep research query generation failed; fallback used",
+                payload={
+                    "error_message": str(e)[:500],
+                    "query_count": len(queries),
+                    "target_result_count": target_result_count,
+                    "queries": queries,
+                    "fallback_used": True,
+                },
+                duration_ms=int((perf_counter() - query_started) * 1000),
+            )
+
+        search_skill = self.skill_registry.get("search")
+        if search_skill is None:
+            self.trace_store.append_event(
+                run_id,
+                type="research.search.failed",
+                status="error",
+                title="Search skill unavailable",
+                payload={"error_message": "search skill is not registered"},
+            )
+        else:
+            for query_index, query in enumerate(queries, start=1):
+                if len(citations) >= target_result_count:
+                    break
+                search_started = perf_counter()
+                arguments = {
+                    "query": query,
+                    "sources": "web",
+                    "limit": DEEP_RESEARCH_SEARCH_LIMIT,
+                }
+                self.trace_store.append_event(
+                    run_id,
+                    type="research.search.started",
+                    status="running",
+                    title=f"Deep research search {query_index}",
+                    payload={
+                        "query": query,
+                        "arguments": arguments,
+                        "collected_count": len(citations),
+                    },
+                )
+                try:
+                    result = await search_skill.execute(**arguments)
+                    status = "completed" if result.success else "error"
+                    result_data = result.data if isinstance(result.data, dict) else {}
+                    new_citations = (
+                        self._collect_search_citations(
+                            result_data=result_data,
+                            citations=citations,
+                            citation_urls=citation_urls,
+                        )
+                        if result.success
+                        else []
+                    )
+                    if result.success:
+                        skills_used.append("search")
+                    result_summary = (
+                        result.display_text
+                        or result.error
+                        or json.dumps(result_data, ensure_ascii=False)
+                    )
+                    self.trace_store.append_event(
+                        run_id,
+                        type="research.search.completed" if result.success else "research.search.failed",
+                        status=status,
+                        title=f"Deep research search {query_index} {status}",
+                        payload={
+                            "query": query,
+                            "success": result.success,
+                            "new_citation_count": len(new_citations),
+                            "total_citation_count": len(citations),
+                            "error": result.error,
+                            "result_preview": str(result_summary)[:500],
+                        },
+                        duration_ms=int((perf_counter() - search_started) * 1000),
+                    )
+                    plan_infos.append(
+                        SkillCallInfo(
+                            skill="search",
+                            action=str(arguments),
+                            status=status,
+                            result_summary=str(result_summary)[:200],
+                        )
+                    )
+                except Exception as e:
+                    logger.exception("Deep research search failed")
+                    self.trace_store.append_event(
+                        run_id,
+                        type="research.search.failed",
+                        status="error",
+                        title=f"Deep research search {query_index} failed",
+                        payload={"query": query, "error_message": str(e)},
+                        duration_ms=int((perf_counter() - search_started) * 1000),
+                    )
+                    plan_infos.append(
+                        SkillCallInfo(
+                            skill="search",
+                            action=str(arguments),
+                            status="error",
+                            result_summary=str(e)[:200],
+                        )
+                    )
+
+        summaries: list[str] = []
+        chunks = [
+            citations[index:index + DEEP_RESEARCH_SUMMARY_CHUNK_SIZE]
+            for index in range(0, len(citations), DEEP_RESEARCH_SUMMARY_CHUNK_SIZE)
+        ]
+        for chunk_index, chunk in enumerate(chunks, start=1):
+            summary_started = perf_counter()
+            self.trace_store.append_event(
+                run_id,
+                type="research.step_summary.started",
+                status="running",
+                title=f"Deep research source summary {chunk_index}",
+                payload={
+                    "chunk": chunk_index,
+                    "chunk_count": len(chunks),
+                    "source_count": len(chunk),
+                },
+            )
+            try:
+                summary_response = await provider.chat(
+                    self._build_deep_research_summary_messages(
+                        question=question,
+                        plan_text=plan_text,
+                        chunk_index=chunk_index,
+                        chunk_count=len(chunks),
+                        citations=chunk,
+                    ),
+                    tools=None,
+                    temperature=0.2,
+                )
+                self._merge_usage(total_usage, summary_response.usage)
+                if summary_response.model:
+                    model_names.append(summary_response.model)
+                summaries.append(summary_response.content.strip())
+                self.trace_store.append_event(
+                    run_id,
+                    type="research.step_summary.completed",
+                    status="completed",
+                    title=f"Deep research source summary {chunk_index} completed",
+                    payload={
+                        "chunk": chunk_index,
+                        "model": summary_response.model,
+                        "usage": summary_response.usage,
+                        "summary_preview": summary_response.content[:500],
+                    },
+                    duration_ms=int((perf_counter() - summary_started) * 1000),
+                )
+            except Exception as e:
+                logger.exception("Deep research source summary failed; fallback summary used")
+                fallback_summary = self._fallback_deep_research_summary(
+                    chunk_index=chunk_index,
+                    chunk_count=len(chunks),
+                    citations=chunk,
+                    error_message=str(e),
+                )
+                summaries.append(fallback_summary)
+                self.trace_store.append_event(
+                    run_id,
+                    type="research.step_summary.failed",
+                    status="error",
+                    title=f"Deep research source summary {chunk_index} failed; fallback used",
+                    payload={
+                        "chunk": chunk_index,
+                        "error_message": str(e)[:500],
+                        "source_count": len(chunk),
+                        "summary_preview": fallback_summary[:500],
+                        "fallback_used": True,
+                    },
+                    duration_ms=int((perf_counter() - summary_started) * 1000),
+                )
+
+        report_started = perf_counter()
+        self.trace_store.append_event(
+            run_id,
+            type="research.report.started",
+            status="running",
+            title="Deep research report started",
+            payload={
+                "source_count": len(citations),
+                "summary_count": len(summaries),
+            },
+        )
+        try:
+            report_response = await provider.chat(
+                self._build_deep_research_report_messages(
+                    question=question,
+                    plan_text=plan_text,
+                    summaries=summaries,
+                    citations=citations,
+                    search_count=len(plan_infos),
+                ),
+                tools=None,
+                temperature=0.2,
+            )
+            self._merge_usage(total_usage, report_response.usage)
+            if report_response.model:
+                model_names.append(report_response.model)
+            report = report_response.content.strip()
+            self.trace_store.append_event(
+                run_id,
+                type="research.report.completed",
+                status="completed",
+                title="Deep research report completed",
+                payload={
+                    "model": report_response.model,
+                    "usage": report_response.usage,
+                    "source_count": len(citations),
+                    "query_count": len(queries),
+                    "report_preview": report[:500],
+                },
+                duration_ms=int((perf_counter() - report_started) * 1000),
+            )
+        except Exception as e:
+            logger.exception("Deep research report generation failed; fallback report used")
+            report = self._fallback_deep_research_report(
+                question=question,
+                plan_text=plan_text,
+                summaries=summaries,
+                citations=citations,
+                search_count=len(plan_infos),
+                error_message=str(e),
+            )
+            self.trace_store.append_event(
+                run_id,
+                type="research.report.failed",
+                status="error",
+                title="Deep research report generation failed; fallback used",
+                payload={
+                    "error_message": str(e)[:500],
+                    "source_count": len(citations),
+                    "query_count": len(queries),
+                    "report_preview": report[:500],
+                    "fallback_used": True,
+                },
+                duration_ms=int((perf_counter() - report_started) * 1000),
+            )
+        self.trace_store.append_event(
+            run_id,
+            type="research.execution.completed",
+            status="completed",
+            title="Deep research execution completed",
+            payload={
+                "query_count": len(queries),
+                "source_count": len(citations),
+                "summary_count": len(summaries),
+            },
+        )
+        plan_infos.append(
+            SkillCallInfo(
+                skill="research_report",
+                action="synthesize approved plan, search summaries, and citations",
+                status="completed",
+                result_summary=report[:200],
+            )
+        )
+        return {
+            "report": report,
+            "model_used": ", ".join(list(dict.fromkeys(model_names))),
+            "tokens_used": total_usage,
+            "skills_used": skills_used,
+            "citations": citations,
+            "plan": plan_infos,
+        }
+
+    async def _process_deep_research(
+        self,
+        *,
+        request: ChatRequest,
+        agent_id: str,
+        role_id: str,
+        role_context: MemoryContext,
+        run_id: str,
+        runtime: str,
+    ) -> ChatResponse:
+        conversation_context = self.memory.get_context(self._conversation_memory_id(request))
+        history = conversation_context.messages if request.memory_enabled else []
+        short_term_summary = conversation_context.summary if request.memory_enabled else ""
+        tools = self.skill_registry.get_tool_definitions()
+        context_messages = [
+            LLMMessage(
+                role="system",
+                content=self._build_deep_research_context_prompt(
+                    role_context=role_context,
+                    short_term_summary=short_term_summary,
+                ),
+            ),
+            *history,
+            LLMMessage(role="user", content=request.message),
+        ]
+        self.trace_store.append_event(
+            run_id,
+            type="memory.loaded",
+            status="completed",
+            title="Role memory loaded",
+            payload={
+                "role_id": role_id,
+                "user_id": self._user_id(request),
+                "persona_count": len(role_context.persona_memories),
+                "long_term_count": len(role_context.long_term_memories),
+                "context_record_ids": [record.id for record in role_context.records],
+            },
+        )
+        self._append_context_trace(
+            run_id=run_id,
+            role_id=role_id,
+            role_context=role_context,
+            messages=context_messages,
+            tools_count=len(tools),
+            tool_names=[tool.name for tool in tools],
+            mode_ids=request.mode_ids,
+            mode_prompts=request.mode_prompts,
+            context_blocks=request.context_blocks,
+            short_term_summary=short_term_summary,
+        )
+
+        if self._is_deep_research_help_request(request.message):
+            response_text = self._deep_research_help_response()
+            return await self._complete_deep_research_response(
+                request=request,
+                agent_id=agent_id,
+                role_id=role_id,
+                role_context=role_context,
+                runtime=runtime,
+                run_id=run_id,
+                response_text=response_text,
+                new_messages=[
+                    LLMMessage(role="user", content=request.message),
+                    LLMMessage(role="assistant", content=response_text),
+                ],
+                review_memory=False,
+            )
+
+        plan_text, planned_question = self._find_latest_deep_research_plan(history, request.context_blocks)
+        if self._is_deep_research_start_request(request.message):
+            if not plan_text:
+                response_text = "我还没有可执行的研究计划。请先发送 `/plan <研究问题>`，我会给你一份计划大纲确认。"
+                return await self._complete_deep_research_response(
+                    request=request,
+                    agent_id=agent_id,
+                    role_id=role_id,
+                    role_context=role_context,
+                    runtime=runtime,
+                    run_id=run_id,
+                    response_text=response_text,
+                    new_messages=[
+                        LLMMessage(role="user", content=request.message),
+                        LLMMessage(role="assistant", content=response_text),
+                    ],
+                    review_memory=False,
+                )
+            question = planned_question or self._normalize_deep_research_user_text(request.message) or "已确认的研究问题"
+            execution = await self._execute_deep_research(
+                request=request,
+                role_context=role_context,
+                history=history,
+                run_id=run_id,
+                question=question,
+                plan_text=plan_text,
+            )
+            report = execution["report"] or "研究执行完成，但模型没有返回报告正文。"
+            return await self._complete_deep_research_response(
+                request=request,
+                agent_id=agent_id,
+                role_id=role_id,
+                role_context=role_context,
+                runtime=runtime,
+                run_id=run_id,
+                response_text=report,
+                new_messages=[
+                    LLMMessage(role="user", content=request.message),
+                    LLMMessage(role="assistant", content=report),
+                ],
+                skills_used=execution["skills_used"],
+                citations=execution["citations"],
+                plan=execution["plan"],
+                model_used=execution["model_used"],
+                tokens_used=execution["tokens_used"],
+            )
+
+        question = self._normalize_deep_research_user_text(request.message)
+        if not question:
+            response_text = "请告诉我你要研究的问题，例如：`/plan 2026 年 AI Agent 开发框架的商业化趋势`。"
+            return await self._complete_deep_research_response(
+                request=request,
+                agent_id=agent_id,
+                role_id=role_id,
+                role_context=role_context,
+                runtime=runtime,
+                run_id=run_id,
+                response_text=response_text,
+                new_messages=[
+                    LLMMessage(role="user", content=request.message),
+                    LLMMessage(role="assistant", content=response_text),
+                ],
+                review_memory=False,
+            )
+
+        stored_plan_response, model_used, usage = await self._generate_deep_research_plan(
+            request=request,
+            role_context=role_context,
+            history=history,
+            short_term_summary=short_term_summary,
+            run_id=run_id,
+            question=question,
+        )
+        visible_plan_response = self._strip_deep_research_plan_marker(stored_plan_response)
+        return await self._complete_deep_research_response(
+            request=request,
+            agent_id=agent_id,
+            role_id=role_id,
+            role_context=role_context,
+            runtime=runtime,
+            run_id=run_id,
+            response_text=visible_plan_response,
+            new_messages=[
+                LLMMessage(role="user", content=request.message),
+                LLMMessage(role="assistant", content=stored_plan_response),
+            ],
+            plan=[
+                SkillCallInfo(
+                    skill="research_plan",
+                    action=question,
+                    status="pending",
+                    result_summary="等待用户确认后执行深度研究。",
+                )
+            ],
+            model_used=model_used,
+            tokens_used=usage,
         )
 
     def _aigc_retrieval_required(self, request: ChatRequest) -> bool:
@@ -5685,6 +6709,51 @@ class AgentEngine:
                 },
             )
 
+        should_delegate_research, research_reason, forced_research = self._should_delegate_to_deep_research(
+            request,
+            agent_id,
+        )
+        if should_delegate_research:
+            target_agent = get_agent(RESEARCH_AGENT_ID)
+            if target_agent is None or not target_agent.enabled or target_agent.runtime != "self":
+                error_msg = "Deep Research Agent 当前不可用，无法执行深度研究。"
+                self.trace_store.fail_run(
+                    run.run_id,
+                    error_message=error_msg,
+                    error_type="agent_disabled",
+                    output=error_msg,
+                )
+                latest_run = self.trace_store.get_run(run.run_id) or run
+                return ChatResponse(
+                    conversation_id=request.conversation_id,
+                    response=error_msg,
+                    skills_used=[],
+                    plan=None,
+                    model_used="",
+                    tokens_used={},
+                    error_type="agent_disabled",
+                    agent_id=agent_id,
+                    role_id=role_id,
+                    runtime=runtime,
+                    run_id=run.run_id,
+                    events=latest_run.events,
+                    memory_context=role_context.records,
+                )
+            research_request = request.model_copy(update={"agent_id": target_agent.id})
+            return await self._process_target_agent(
+                request=research_request,
+                target_agent=target_agent,
+                run_id=run.run_id,
+                source_role_context=role_context,
+                delegation_trace={
+                    "source_agent_id": agent_id,
+                    "target_agent_id": target_agent.id,
+                    "reason": research_reason,
+                    "forced": forced_research,
+                    "mode_ids": request.mode_ids,
+                },
+            )
+
         should_delegate, delegate_reason, forced_delegate = self._should_delegate_to_aigc(
             request,
             agent_id,
@@ -5855,6 +6924,16 @@ class AgentEngine:
 
         if agent_id == WEIGHT_LOSS_AGENT_ID:
             return await self._process_weight_loss(
+                request=request,
+                agent_id=agent_id,
+                role_id=role_id,
+                role_context=role_context,
+                run_id=run.run_id,
+                runtime=runtime,
+            )
+
+        if agent_id == RESEARCH_AGENT_ID:
+            return await self._process_deep_research(
                 request=request,
                 agent_id=agent_id,
                 role_id=role_id,
