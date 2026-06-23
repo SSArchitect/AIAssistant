@@ -7,7 +7,7 @@ from agent.memory.conversation import ConversationMemory
 from agent.memory.hooks import HeuristicMemoryHook
 from agent.memory.role_store import RoleMemoryStore
 from agent.llm.base import LLMMessage
-from agent.schemas.memory import RoleCreateRequest, RoleProfile, RoleUpdateRequest
+from agent.schemas.memory import MemoryUpdateRequest, RoleCreateRequest, RoleProfile, RoleUpdateRequest
 
 
 class TestConversationMemory:
@@ -122,6 +122,30 @@ class TestRoleMemoryStore:
         assert "角色记忆：" in context.rendered
         assert "用户更新的角色记忆：" in context.rendered
         assert "长期记忆：" in context.rendered
+        assert context.rendered.index("长期记忆：") < context.rendered.index("角色记忆：")
+
+    def test_context_filters_unrelated_long_term_memory_by_query(self):
+        store = RoleMemoryStore()
+        game_memory = store.add_memory(
+            role_id="default",
+            kind="long_term",
+            content="用户喜欢玩游戏，对游戏推荐感兴趣",
+            tags=["游戏"],
+        )
+        store.add_memory(
+            role_id="default",
+            kind="role",
+            content="称呼用户为老板",
+        )
+
+        unrelated = store.get_context(role_id="default", query="歪")
+        related = store.get_context(role_id="default", query="推荐几个好玩的游戏")
+
+        assert unrelated is not None
+        assert related is not None
+        assert unrelated.long_term_memories == []
+        assert "用户喜欢玩游戏" not in unrelated.rendered
+        assert [record.id for record in related.long_term_memories] == [game_memory.id]
 
     def test_role_preferences_render_in_context(self):
         store = RoleMemoryStore(
@@ -162,6 +186,29 @@ class TestRoleMemoryStore:
         assert len(memories) == 1
         assert memories[0].confidence == 1.0
         assert memories[0].tags == ["first", "second"]
+
+    def test_similar_memory_updates_existing_record(self):
+        store = RoleMemoryStore()
+
+        first = store.add_memory(
+            role_id="default",
+            kind="long_term",
+            content="用户喜欢玩游戏，对游戏推荐感兴趣",
+            tags=["游戏"],
+        )
+        second = store.add_memory(
+            role_id="default",
+            kind="long_term",
+            content="用户对游戏推荐感兴趣，也喜欢玩游戏",
+            confidence=0.8,
+            tags=["推荐"],
+        )
+
+        memories = store.list_memories(role_id="default")
+        assert first.id == second.id
+        assert len(memories) == 1
+        assert memories[0].tags == ["推荐", "游戏"]
+        assert memories[0].version == 2
 
     def test_role_memories_are_scoped_by_user_id(self):
         store = RoleMemoryStore()
@@ -239,6 +286,58 @@ class TestRoleMemoryStore:
         assert len(memories) == 1
         assert memories[0].id == written.id
         assert memories[0].content == "User prefers durable memory"
+
+    def test_archived_memories_are_listed_but_not_injected(self):
+        store = RoleMemoryStore()
+        active = store.add_memory(
+            role_id="default",
+            kind="long_term",
+            content="User likes active memory",
+        )
+        archived = store.add_memory(
+            role_id="default",
+            kind="long_term",
+            content="User likes archived memory",
+            status="archived",
+        )
+
+        context = store.get_context(role_id="default")
+        all_memories = store.list_memories(role_id="default", include_inactive=True)
+
+        assert context is not None
+        assert [record.id for record in context.long_term_memories] == [active.id]
+        assert "active memory" in context.rendered
+        assert "archived memory" not in context.rendered
+        assert {record.id for record in all_memories} == {active.id, archived.id}
+
+    def test_update_memory_lifecycle_fields(self):
+        store = RoleMemoryStore()
+        memory = store.add_memory(
+            role_id="default",
+            kind="long_term",
+            content="Original memory",
+            source_trace={"run_id": "run_old"},
+        )
+
+        updated = store.update_memory(
+            role_id="default",
+            memory_id=memory.id,
+            request=MemoryUpdateRequest(
+                content="Updated memory",
+                status="archived",
+                review_state="reviewed",
+                review_notes="Reviewed by developer",
+                source_trace={"conversation_id": "conv_1"},
+            ),
+        )
+
+        assert updated.content == "Updated memory"
+        assert updated.status == "archived"
+        assert updated.review_state == "reviewed"
+        assert updated.review_notes == "Reviewed by developer"
+        assert updated.version == 2
+        assert updated.source_trace["run_id"] == "run_old"
+        assert updated.source_trace["conversation_id"] == "conv_1"
 
     def test_default_role_sync_prunes_retired_builtins_and_promotes_chuyi(self, tmp_path):
         storage_path = tmp_path / "agent_memory.json"

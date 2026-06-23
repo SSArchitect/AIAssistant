@@ -52,6 +52,7 @@ const PROVIDER_CONFIG = [
         fields: [
             { key: 'llm.minimax.api_key', id: 'minimax-api-key', type: 'password', labelKey: 'fields.apiKey', placeholder: 'sk-cp-...' },
             { key: 'llm.minimax.base_url', id: 'minimax-base-url', type: 'text', labelKey: 'fields.baseUrl', placeholder: 'https://api.minimaxi.com/v1' },
+            { key: 'llm.minimax.timeout', id: 'minimax-timeout', type: 'text', labelKey: 'fields.timeoutSeconds', placeholder: '60' },
             { key: 'llm.minimax.thinking', id: 'minimax-thinking', type: 'text', labelKey: 'fields.thinkingMode', placeholder: 'disabled' },
             { key: 'aigc.minimax.image_model', id: 'minimax-image-model', type: 'text', labelKey: 'fields.imageModel', placeholder: 'image-01' },
             { key: 'aigc.minimax.speech_model', id: 'minimax-speech-model', type: 'text', labelKey: 'fields.speechModel', placeholder: 'speech-2.8-turbo' },
@@ -116,6 +117,7 @@ const I18N = {
         fields: {
             apiKey: 'API Key',
             baseUrl: 'Base URL',
+            timeoutSeconds: 'LLM 超时秒数',
             thinkingMode: 'Thinking 模式',
             imageModel: '图片模型',
             speechModel: '语音模型',
@@ -228,6 +230,7 @@ const I18N = {
         fields: {
             apiKey: 'API Key',
             baseUrl: 'Base URL',
+            timeoutSeconds: 'LLM timeout seconds',
             thinkingMode: 'Thinking mode',
             imageModel: 'Image model',
             speechModel: 'Speech model',

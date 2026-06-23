@@ -69,6 +69,9 @@ DEEP_RESEARCH_DEFAULT_TARGET_RESULTS = 400
 DEEP_RESEARCH_SEARCH_LIMIT = 20
 DEEP_RESEARCH_MAX_QUERIES = 24
 DEEP_RESEARCH_SUMMARY_CHUNK_SIZE = 40
+THINKING_MAX_PLAN_STEPS = 6
+THINKING_SEARCH_LIMIT = 8
+THINKING_MAX_SEARCH_STEPS = 4
 AIGC_PLAN_DECOMPOSE_STEP = "task_decomposition"
 AIGC_PLAN_CONTEXT_STEP = "context_reuse"
 AIGC_PLAN_RETRIEVAL_STEP = "retrieval"
@@ -181,7 +184,7 @@ class AgentEngine:
         if agent_id != SUPER_CHAT_AGENT_ID:
             return ""
         return (
-            "\n\n可用的专业 Agent：\n"
+            "可用的专业 Agent：\n"
             f"- 深度研究 ({RESEARCH_AGENT_ID})：当用户要像 ChatGPT 研究模式一样先确认研究计划，"
             "再进行多轮外网检索、分步归纳并产出研究报告时，使用这个 Agent。可通过 "
             "`/agent deep_research_v1 /plan <问题>`、`/研究 /plan <问题>` 或在 Agents 中进入。\n"
@@ -210,17 +213,54 @@ class AgentEngine:
                 if short_term_summary
                 else "- 暂无压缩摘要；最近原始消息会作为后续对话消息提供。"
             ),
+            "- 最近原始消息会在 system prompt 之后作为对话消息提供，优先于摘要和长期记忆。",
         ]
         return "\n".join(
             [
                 "记忆系统：",
+                "- 长期记忆用于跨会话延续用户事实、偏好和项目状态。",
+                "- 角色记忆用于当前角色的人设、语气、协作习惯和用户主动更新的角色偏好。",
+                "- 短期记忆用于当前会话摘要；它不能覆盖最近原始消息。",
+                "",
                 role_context.rendered.strip(),
                 "",
                 "\n".join(short_term_lines),
             ]
         )
 
-    def _build_system_prompt(
+    def _build_context_priority_rules(self) -> str:
+        return (
+            "上下文与记忆使用规则：\n"
+            "- 系统级配置、工具权限、Agent 协议和安全边界优先级最高。\n"
+            "- 本轮选择的模式/option 是执行策略，优先于历史消息、长期记忆、角色记忆和短期摘要；"
+            "记忆不得取消或弱化 Thinking / Deep Research 等模式的执行要求。\n"
+            "- 本轮用户消息优先于历史消息、会话摘要、长期记忆和角色偏好。\n"
+            "- 最近原始消息优先于短期摘要；短期摘要优先于长期记忆。\n"
+            "- 长期记忆是可错的历史上下文；遇到冲突、过期或不确定时，以用户当前表达为准并主动确认。\n"
+            "- 角色记忆主要影响语气、协作方式和默认偏好，不得覆盖事实、工具规则或用户当前明确要求。\n"
+            "- 不得把历史回答中声称的“搜索/检索/来源”当作已执行工具；只有本轮 trace 中的工具结果才是本轮证据。\n"
+            "- 除非用户询问，否则不要暴露隐藏的记忆实现细节。"
+        )
+
+    def _prompt_section_order(self, system_prompt: str) -> list[str]:
+        section_markers = [
+            ("base_system_prompt", SYSTEM_PROMPT.splitlines()[0]),
+            ("system_config", "系统级配置："),
+            ("temporal_context", "时间上下文："),
+            ("agent_context", "可用的专业 Agent："),
+            ("mode_context", "Super Chat 模式指令："),
+            ("memory_system", "记忆系统："),
+            ("turn_context", "用户本轮提供的上下文："),
+            ("context_priority_rules", "上下文与记忆使用规则："),
+        ]
+        found = [
+            (system_prompt.index(marker), name)
+            for name, marker in section_markers
+            if marker in system_prompt
+        ]
+        return [name for _, name in sorted(found)]
+
+    def _build_system_prompt_parts(
         self,
         role_context: MemoryContext,
         mode_prompts: list[str] | None = None,
@@ -228,7 +268,7 @@ class AgentEngine:
         agent_id: str = "general_assistant",
         tool_names: list[str] | None = None,
         short_term_summary: str = "",
-    ) -> str:
+    ) -> list[dict[str, Any]]:
         current_time = datetime.now(ZoneInfo("Asia/Shanghai"))
         normalized_tool_names = [name for name in (tool_names or []) if name]
         system_config = (
@@ -256,33 +296,110 @@ class AgentEngine:
         mode_context = ""
         if normalized_mode_prompts:
             mode_context = (
-                "\n\nSuper Chat 模式指令：\n"
+                "Super Chat 模式指令：\n"
                 + "\n".join(f"- {prompt}" for prompt in normalized_mode_prompts)
             )
         normalized_context_blocks = self._normalize_context_blocks(context_blocks)
         turn_context = ""
         if normalized_context_blocks:
             turn_context = (
-                "\n\n用户本轮提供的上下文：\n"
+                "用户本轮提供的上下文：\n"
                 + "\n\n---\n\n".join(normalized_context_blocks)
             )
-        return (
-            SYSTEM_PROMPT
-            + "\n\n"
-            + system_config
-            + "\n\n"
-            + temporal_context
-            + "\n\n"
-            + self._render_memory_system(
+        sections: list[dict[str, Any]] = [
+            {
+                "id": "base_system_prompt",
+                "label": "Base System Prompt",
+                "content": SYSTEM_PROMPT.strip(),
+                "priority": 1,
+            },
+            {
+                "id": "system_config",
+                "label": "System Config / Tool Policy",
+                "content": system_config,
+                "priority": 1,
+            },
+            {
+                "id": "temporal_context",
+                "label": "Temporal Context",
+                "content": temporal_context,
+                "priority": 2,
+            },
+        ]
+        agent_context = self._agent_system_context(agent_id).strip()
+        if agent_context:
+            sections.append(
+                {
+                    "id": "agent_context",
+                    "label": "Agent Routing Context",
+                    "content": agent_context,
+                    "priority": 2,
+                }
+            )
+        if mode_context:
+            sections.append(
+                {
+                    "id": "mode_context",
+                    "label": "Mode / Option Instructions",
+                    "content": mode_context,
+                    "priority": 2,
+                }
+            )
+        sections.append(
+            {
+                "id": "memory_system",
+                "label": "Memory Context",
+                "content": self._render_memory_system(
+                    role_context,
+                    short_term_summary=short_term_summary,
+                ),
+                "priority": 4,
+            }
+        )
+        if turn_context:
+            sections.append(
+                {
+                    "id": "turn_context",
+                    "label": "Turn Context Blocks / Attachments",
+                    "content": turn_context,
+                    "priority": 3,
+                }
+            )
+        sections.append(
+            {
+                "id": "context_priority_rules",
+                "label": "Context Priority Rules",
+                "content": self._build_context_priority_rules(),
+                "priority": 1,
+            }
+        )
+        return [section for section in sections if str(section.get("content") or "").strip()]
+
+    def _build_system_prompt(
+        self,
+        role_context: MemoryContext,
+        mode_prompts: list[str] | None = None,
+        context_blocks: list[str] | None = None,
+        agent_id: str = "general_assistant",
+        tool_names: list[str] | None = None,
+        short_term_summary: str = "",
+    ) -> str:
+        return self._render_prompt_parts(
+            self._build_system_prompt_parts(
                 role_context,
+                mode_prompts=mode_prompts,
+                context_blocks=context_blocks,
+                agent_id=agent_id,
+                tool_names=tool_names,
                 short_term_summary=short_term_summary,
             )
-            + self._agent_system_context(agent_id)
-            + mode_context
-            + turn_context
-            + "\n\n记忆使用规则：\n"
-            "- 把记忆视为可能出错的上下文，而不是绝对事实。\n"
-            "- 除非用户询问，否则不要暴露隐藏的记忆实现细节。"
+        )
+
+    def _render_prompt_parts(self, parts: list[dict[str, Any]]) -> str:
+        return "\n\n".join(
+            str(part.get("content") or "").strip()
+            for part in parts
+            if str(part.get("content") or "").strip()
         )
 
     async def _emit_token(
@@ -305,6 +422,190 @@ class AgentEngine:
             "tool_calls": message.tool_calls,
         }
 
+    def _estimate_tokens(self, value: Any) -> int:
+        text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+        return max(1, len(text) // 4) if text else 0
+
+    def _memory_trace_payload(self, record: MemoryRecord) -> dict[str, Any]:
+        return {
+            "id": record.id,
+            "role_id": record.role_id,
+            "user_id": record.user_id,
+            "kind": record.kind,
+            "scope": record.scope,
+            "status": record.status,
+            "review_state": record.review_state,
+            "content": record.content,
+            "source": record.source,
+            "agent_id": record.agent_id,
+            "confidence": record.confidence,
+            "tags": record.tags,
+            "source_trace": record.source_trace,
+            "valid_from": record.valid_from.isoformat() if record.valid_from else None,
+            "valid_until": record.valid_until.isoformat() if record.valid_until else None,
+            "last_used_at": record.last_used_at.isoformat() if record.last_used_at else None,
+            "ttl_days": record.ttl_days,
+            "sensitivity": record.sensitivity,
+            "review_notes": record.review_notes,
+            "version": record.version,
+            "created_at": record.created_at.isoformat(),
+            "updated_at": record.updated_at.isoformat(),
+            "metadata": record.metadata,
+        }
+
+    def _memory_loaded_payload(
+        self,
+        *,
+        role_id: str,
+        user_id: str,
+        role_context: MemoryContext,
+    ) -> dict[str, Any]:
+        return {
+            "role_id": role_id,
+            "user_id": user_id,
+            "persona_count": len(role_context.persona_memories),
+            "long_term_count": len(role_context.long_term_memories),
+            "context_record_ids": [record.id for record in role_context.records],
+            "records": [self._memory_trace_payload(record) for record in role_context.records],
+        }
+
+    def _memory_candidate_trace_payload(self, candidate: MemoryCandidate) -> dict[str, Any]:
+        return {
+            "kind": candidate.kind,
+            "content": candidate.content,
+            "confidence": candidate.confidence,
+            "reason": candidate.reason,
+            "tags": candidate.tags,
+            "agent_id": candidate.agent_id,
+            "metadata": candidate.metadata,
+        }
+
+    def _prompt_context_nodes(
+        self,
+        *,
+        role_context: MemoryContext,
+        messages: list[LLMMessage],
+        tools_count: int,
+        tool_names: list[str],
+        context_blocks: list[str],
+        short_term_summary: str,
+        system_prompt: str,
+        prompt_sources: list[dict[str, Any]] | None = None,
+    ) -> list[dict[str, Any]]:
+        source_by_id = {
+            str(source.get("id")): source
+            for source in (prompt_sources or [])
+            if isinstance(source, dict) and source.get("id")
+        }
+        section_nodes = [
+            {
+                "id": f"prompt.section.{name}",
+                "type": "prompt_section",
+                "label": source_by_id.get(name, {}).get("label") or name,
+                "injected": True,
+                "priority": source_by_id.get(name, {}).get("priority"),
+                "content": source_by_id.get(name, {}).get("content"),
+                "chars": len(str(source_by_id.get(name, {}).get("content") or "")),
+                "token_estimate": self._estimate_tokens(
+                    source_by_id.get(name, {}).get("content") or name
+                ),
+            }
+            for name in self._prompt_section_order(system_prompt)
+        ]
+        conversation_messages = [
+            self._trace_message(message)
+            for message in messages
+            if message.role != "system"
+        ]
+        context_block_nodes = [
+            {
+                "id": f"turn_context.block.{index + 1}",
+                "type": "context_block",
+                "label": self._context_block_label(block, index),
+                "injected": True,
+                "chars": len(block),
+                "token_estimate": self._estimate_tokens(block),
+                "preview": block[:500],
+            }
+            for index, block in enumerate(context_blocks)
+        ]
+        return [
+            {
+                "id": "prompt.system",
+                "type": "system_prompt",
+                "label": "System / Developer Prompt",
+                "injected": True,
+                "chars": len(system_prompt),
+                "content": system_prompt,
+                "token_estimate": self._estimate_tokens(system_prompt),
+                "children": section_nodes,
+            },
+            {
+                "id": "memory.long_term",
+                "type": "long_term_memory",
+                "label": "Long-term Memory",
+                "injected": bool(role_context.long_term_memories),
+                "persistent": True,
+                "record_count": len(role_context.long_term_memories),
+                "records": [self._memory_trace_payload(record) for record in role_context.long_term_memories],
+            },
+            {
+                "id": "memory.role_persona",
+                "type": "role_persona_memory",
+                "label": "Role / Persona Memory",
+                "injected": True,
+                "persistent": True,
+                "role": role_context.role.model_dump(mode="json"),
+                "record_count": len(role_context.persona_memories),
+                "records": [self._memory_trace_payload(record) for record in role_context.persona_memories],
+            },
+            {
+                "id": "memory.short_term",
+                "type": "short_term_memory",
+                "label": "Short-term Conversation Memory",
+                "injected": bool(short_term_summary),
+                "persistent": False,
+                "summary": short_term_summary,
+                "token_estimate": self._estimate_tokens(short_term_summary),
+            },
+            {
+                "id": "conversation.window",
+                "type": "conversation_window",
+                "label": "Current Conversation Window",
+                "injected": bool(conversation_messages),
+                "persistent": False,
+                "message_count": len(conversation_messages),
+                "messages": conversation_messages,
+                "token_estimate": self._estimate_tokens(conversation_messages),
+            },
+            {
+                "id": "turn.context_blocks",
+                "type": "turn_context",
+                "label": "Turn Context Blocks / Attachments",
+                "injected": bool(context_block_nodes),
+                "persistent": False,
+                "block_count": len(context_block_nodes),
+                "children": context_block_nodes,
+            },
+            {
+                "id": "tools.definitions",
+                "type": "tool_definitions",
+                "label": "Tool Definitions",
+                "injected": tools_count > 0,
+                "persistent": False,
+                "tools_count": tools_count,
+                "tool_names": tool_names,
+            },
+        ]
+
+    def _context_block_label(self, block: str, index: int) -> str:
+        normalized = " ".join(block.split())
+        if normalized.lower().startswith("persisted conversation history"):
+            return "Persisted conversation history"
+        if normalized.lower().startswith("regeneration request"):
+            return "Regeneration instruction"
+        return f"Context block {index + 1}"
+
     def _append_context_trace(
         self,
         *,
@@ -318,8 +619,31 @@ class AgentEngine:
         mode_prompts: list[str] | None = None,
         context_blocks: list[str] | None = None,
         short_term_summary: str = "",
+        tools: list[Any] | None = None,
+        prompt_sources: list[dict[str, Any]] | None = None,
+        final_model_request: dict[str, Any] | None = None,
     ) -> None:
         normalized_context_blocks = self._normalize_context_blocks(context_blocks)
+        system_prompt = messages[0].content if messages else ""
+        context_nodes = self._prompt_context_nodes(
+            role_context=role_context,
+            messages=messages,
+            tools_count=tools_count,
+            tool_names=tool_names,
+            context_blocks=normalized_context_blocks,
+            short_term_summary=short_term_summary,
+            system_prompt=system_prompt,
+            prompt_sources=prompt_sources,
+        )
+        tool_definitions = [
+            tool.model_dump(mode="json") if hasattr(tool, "model_dump") else tool
+            for tool in (tools or [])
+        ]
+        default_final_model_request = {
+            "messages": [self._trace_message(message) for message in messages],
+            "tools": tool_definitions,
+            "tool_choice": "auto" if tool_definitions else "none",
+        }
         self.trace_store.append_event(
             run_id,
             type="context.built",
@@ -335,18 +659,15 @@ class AgentEngine:
                 "mode_prompts": self._normalize_mode_prompts(mode_prompts),
                 "context_block_count": len(normalized_context_blocks),
                 "context_block_chars": sum(len(block) for block in normalized_context_blocks),
-                "system_prompt": messages[0].content if messages else "",
+                "system_prompt": system_prompt,
+                "prompt_section_order": self._prompt_section_order(system_prompt),
+                "prompt_sources": prompt_sources or [],
+                "final_model_request": final_model_request or default_final_model_request,
+                "context_nodes": context_nodes,
                 "role_context": role_context.rendered,
                 "short_term_summary": short_term_summary,
                 "memory_records": [
-                    {
-                        "id": record.id,
-                        "kind": record.kind,
-                        "content": record.content,
-                        "source": record.source,
-                        "confidence": record.confidence,
-                        "tags": record.tags,
-                    }
+                    self._memory_trace_payload(record)
                     for record in role_context.records
                 ],
                 "messages": [self._trace_message(message) for message in messages],
@@ -876,6 +1197,21 @@ class AgentEngine:
                 )
                 return []
 
+        self.trace_store.append_event(
+            run_id,
+            type="memory.candidates.created",
+            status="completed",
+            title="Memory candidates created",
+            payload={
+                "role_id": role_context.role.id,
+                "candidate_count": len(candidates),
+                "candidates": [
+                    self._memory_candidate_trace_payload(candidate)
+                    for candidate in candidates
+                ],
+            },
+        )
+
         updates: list[MemoryRecord] = []
         for candidate in candidates:
             try:
@@ -884,11 +1220,20 @@ class AgentEngine:
                         role_id=role_context.role.id,
                         user_id=self._user_id(request),
                         kind=candidate.kind,
+                        scope="user",
+                        status="active",
+                        review_state="auto_accepted",
                         content=candidate.content,
                         source="hook",
                         agent_id=candidate.agent_id,
                         confidence=candidate.confidence,
                         tags=candidate.tags,
+                        source_trace={
+                            "run_id": run_id,
+                            "conversation_id": request.conversation_id,
+                            "agent_id": agent_id,
+                            "role_id": role_context.role.id,
+                        },
                         metadata={
                             **candidate.metadata,
                             "reason": candidate.reason,
@@ -921,6 +1266,10 @@ class AgentEngine:
                 "candidate_count": len(candidates),
                 "stored_count": len(updates),
                 "memory_ids": [record.id for record in updates],
+                "stored_records": [
+                    self._memory_trace_payload(record)
+                    for record in updates
+                ],
             },
         )
         return updates
@@ -1329,6 +1678,7 @@ class AgentEngine:
             role_id=target_role_id,
             user_id=self._user_id(request),
             agent_id=target_agent.id,
+            query=request.message,
         )
         if target_role_context is None or not target_role_context.role.enabled:
             error_msg = f"Unknown or disabled role: {target_role_id}"
@@ -1792,6 +2142,665 @@ class AgentEngine:
                 total[key] = total.get(key, 0) + int(value)
             except (TypeError, ValueError):
                 continue
+
+    def _thinking_mode_enabled(self, request: ChatRequest, agent_id: str) -> bool:
+        return agent_id == SUPER_CHAT_AGENT_ID and THINKING_MODE_ID in set(request.mode_ids or [])
+
+    def _build_thinking_plan_messages(
+        self,
+        *,
+        request: ChatRequest,
+        role_context: MemoryContext,
+        history: list[LLMMessage],
+        short_term_summary: str,
+    ) -> list[LLMMessage]:
+        history_text = self._format_aigc_history(history, request.context_blocks)
+        context_text = "\n\n---\n\n".join(self._normalize_context_blocks(request.context_blocks)) or "没有额外上下文。"
+        mode_text = "\n".join(f"- {prompt}" for prompt in self._normalize_mode_prompts(request.mode_prompts))
+        current_time = datetime.now(ZoneInfo("Asia/Shanghai"))
+        system = (
+            "你是 Super Chat 的 Thinking workflow 规划器。只返回 JSON 对象，不要 Markdown，不要写最终答案。"
+            "目标是在 10 分钟内完成轻量规划、必要工具执行和最终汇总。"
+            "如果用户请求涉及外部事实、公司、新闻、近期动态、员工评价、市场、产品、投资、数据或需要证据，"
+            "计划中必须先包含 search 步骤，再包含 analyze/final 步骤。"
+            "不要把历史回答中声称的搜索当成已执行搜索。\n\n"
+            "JSON schema: {"
+            '"goal":"一句话目标",'
+            '"steps":[{"id":"短id","type":"search|analyze|final","title":"短标题","description":"要做什么","query":"search 步骤必填"}]'
+            "}。最多 6 个步骤，search 步骤最多 4 个。"
+            f"\n\n当前时间：{current_time.strftime('%Y-%m-%d %H:%M:%S')} Asia/Shanghai。"
+        )
+        user = (
+            f"模式/option：\n{mode_text or 'thinking'}\n\n"
+            f"当前用户请求：\n{request.message}\n\n"
+            f"角色上下文：\n{role_context.rendered[:4000]}\n\n"
+            f"短期记忆摘要：\n{short_term_summary or '暂无压缩摘要。'}\n\n"
+            f"近期会话：\n{history_text}\n\n"
+            f"本轮额外上下文：\n{context_text}"
+        )
+        return [
+            LLMMessage(role="system", content=system),
+            LLMMessage(role="user", content=user[:30000]),
+        ]
+
+    def _thinking_retrieval_required(self, request: ChatRequest) -> bool:
+        text = " ".join(
+            [
+                request.message or "",
+                " ".join(request.mode_prompts or []),
+                " ".join(request.context_blocks or []),
+            ]
+        ).lower()
+        normalized = re.sub(r"\s+", " ", text).strip()
+        phrases = [
+            "最新",
+            "当前",
+            "近期",
+            "公司",
+            "新闻",
+            "融资",
+            "行业",
+            "市场",
+            "员工评价",
+            "工作节奏",
+            "战略",
+            "未来方向",
+            "收集",
+            "调研",
+            "搜索",
+            "查一下",
+            "了解更多",
+            "source",
+            "latest",
+            "company",
+            "market",
+            "research",
+        ]
+        return any(phrase in normalized for phrase in phrases)
+
+    def _fallback_thinking_queries(
+        self,
+        *,
+        request: ChatRequest,
+        role_context: MemoryContext,
+        history: list[LLMMessage],
+    ) -> list[str]:
+        recent_user_text = " ".join(
+            str(message.content)
+            for message in history[-4:]
+            if message.role == "user" and isinstance(message.content, str)
+        )
+        memory_text = " ".join(
+            record.content
+            for record in role_context.long_term_memories[:3]
+            if record.content
+        )
+        base = " ".join([recent_user_text, request.message or "", memory_text]).strip()
+        base = re.sub(r"\s+", " ", base)[:180] or (request.message or "用户请求")
+        candidates = [
+            base,
+            f"{base} 最新 动态 2026",
+            f"{base} 公开报道 战略 方向",
+            f"{base} 员工评价 工作节奏 加班",
+        ]
+        deduped: list[str] = []
+        for query in candidates:
+            normalized = " ".join(query.split()).strip()
+            if normalized and normalized not in deduped:
+                deduped.append(normalized[:220])
+        return deduped[:THINKING_MAX_SEARCH_STEPS]
+
+    def _coerce_thinking_plan(
+        self,
+        raw: dict[str, Any] | None,
+        *,
+        request: ChatRequest,
+        role_context: MemoryContext,
+        history: list[LLMMessage],
+    ) -> dict[str, Any]:
+        goal = ""
+        steps: list[dict[str, str]] = []
+        if isinstance(raw, dict):
+            goal = " ".join(str(raw.get("goal") or raw.get("summary") or "").split()).strip()
+            raw_steps = raw.get("steps") if isinstance(raw.get("steps"), list) else []
+            search_count = 0
+            for index, item in enumerate(raw_steps, start=1):
+                if not isinstance(item, dict):
+                    continue
+                step_type = str(item.get("type") or item.get("kind") or "").lower().strip()
+                if step_type in {"retrieve", "retrieval", "research"}:
+                    step_type = "search"
+                if step_type in {"analysis", "reason", "reasoning"}:
+                    step_type = "analyze"
+                if step_type in {"summary", "summarize", "final_summary"}:
+                    step_type = "final"
+                if step_type not in {"search", "analyze", "final"}:
+                    continue
+                if step_type == "search":
+                    if search_count >= THINKING_MAX_SEARCH_STEPS:
+                        continue
+                    query = " ".join(str(item.get("query") or item.get("q") or "").split()).strip()
+                    if not query:
+                        continue
+                    search_count += 1
+                else:
+                    query = ""
+                raw_id = str(item.get("id") or f"{step_type}_{index}")
+                step_id = re.sub(r"[^a-zA-Z0-9_-]+", "_", raw_id).strip("_")[:48] or f"{step_type}_{index}"
+                title = " ".join(str(item.get("title") or step_type).split()).strip()
+                description = " ".join(str(item.get("description") or item.get("action") or title).split()).strip()
+                steps.append(
+                    {
+                        "id": step_id,
+                        "type": step_type,
+                        "title": title[:120] or step_type,
+                        "description": description[:260] or title[:120] or step_type,
+                        "query": query[:220],
+                    }
+                )
+                if len(steps) >= THINKING_MAX_PLAN_STEPS:
+                    break
+
+        requires_retrieval = self._thinking_retrieval_required(request)
+        if requires_retrieval and not any(step["type"] == "search" for step in steps):
+            search_steps = [
+                {
+                    "id": f"search_{index}",
+                    "type": "search",
+                    "title": "检索外部资料" if index == 1 else f"补充检索 {index}",
+                    "description": "获取本轮回答需要的最新事实、来源和不确定性。",
+                    "query": query,
+                }
+                for index, query in enumerate(
+                    self._fallback_thinking_queries(
+                        request=request,
+                        role_context=role_context,
+                        history=history,
+                    ),
+                    start=1,
+                )
+            ]
+            steps = search_steps + [step for step in steps if step["type"] != "search"]
+
+        if not any(step["type"] == "analyze" for step in steps):
+            steps.append(
+                {
+                    "id": "analyze_findings",
+                    "type": "analyze",
+                    "title": "分析与交叉核对",
+                    "description": "整理工具结果、历史上下文、分歧和风险。",
+                    "query": "",
+                }
+            )
+        if not any(step["type"] == "final" for step in steps):
+            steps.append(
+                {
+                    "id": "final_summary",
+                    "type": "final",
+                    "title": "汇总回答",
+                    "description": "输出面向用户的结论、依据、风险和下一步。",
+                    "query": "",
+                }
+            )
+
+        steps = steps[:THINKING_MAX_PLAN_STEPS]
+        if steps and steps[-1]["type"] != "final":
+            steps = steps[: THINKING_MAX_PLAN_STEPS - 1] + [
+                {
+                    "id": "final_summary",
+                    "type": "final",
+                    "title": "汇总回答",
+                    "description": "输出面向用户的结论、依据、风险和下一步。",
+                    "query": "",
+                }
+            ]
+        return {
+            "goal": goal or "按 Thinking 模式先规划、再执行必要步骤，最后汇总回答。",
+            "steps": steps,
+            "fallback_used": not isinstance(raw, dict),
+        }
+
+    def _thinking_source_digest(self, citations: list[Citation], limit: int = 40) -> str:
+        if not citations:
+            return "没有本轮检索来源。"
+        lines = []
+        for citation in citations[:limit]:
+            snippet = f" - {citation.snippet}" if citation.snippet else ""
+            source = f" ({citation.source})" if citation.source else ""
+            lines.append(f"[{citation.index}] {citation.title}{source}\n{citation.url}{snippet}")
+        return "\n\n".join(lines)
+
+    def _build_thinking_summary_messages(
+        self,
+        *,
+        request: ChatRequest,
+        role_context: MemoryContext,
+        plan: dict[str, Any],
+        evidence_blocks: list[str],
+        citations: list[Citation],
+    ) -> list[LLMMessage]:
+        system = (
+            "你是 Super Chat Thinking workflow 的最终汇总器。只能基于本轮用户请求、角色上下文、"
+            "执行计划和真实工具结果回答。不要声称执行过没有出现在工具结果中的搜索。"
+            "如果某些事实没有来源，要明确标注为推断或待验证。默认中文，简洁但完整。"
+        )
+        user = (
+            f"当前用户请求：\n{request.message}\n\n"
+            f"角色上下文：\n{role_context.rendered[:3000]}\n\n"
+            f"Thinking 计划：\n{json.dumps(plan, ensure_ascii=False, indent=2)}\n\n"
+            "工具执行结果：\n"
+            + ("\n\n---\n\n".join(evidence_blocks) if evidence_blocks else "没有工具结果。")
+            + "\n\n本轮来源目录：\n"
+            + self._thinking_source_digest(citations)
+            + "\n\n请输出：目标/计划执行概况、关键发现、依据与风险、下一步建议。"
+        )
+        return [
+            LLMMessage(role="system", content=system),
+            LLMMessage(role="user", content=user[:30000]),
+        ]
+
+    async def _process_thinking_workflow(
+        self,
+        *,
+        request: ChatRequest,
+        agent_id: str,
+        role_id: str,
+        role_context: MemoryContext,
+        run_id: str,
+        runtime: str,
+    ) -> ChatResponse:
+        provider = self._get_provider(request.model_preference)
+        tools = self.skill_registry.get_tool_definitions()
+        tool_names = [tool.name for tool in tools]
+        conversation_context = self.memory.get_context(self._conversation_memory_id(request))
+        history = conversation_context.messages if request.memory_enabled else []
+        short_term_summary = conversation_context.summary if request.memory_enabled else ""
+        prompt_sources = self._build_system_prompt_parts(
+            role_context,
+            request.mode_prompts,
+            request.context_blocks,
+            agent_id=agent_id,
+            tool_names=tool_names,
+            short_term_summary=short_term_summary,
+        )
+        system_prompt = self._render_prompt_parts(prompt_sources)
+        context_messages = [LLMMessage(role="system", content=system_prompt), *history, LLMMessage(role="user", content=request.message)]
+
+        self.trace_store.append_event(
+            run_id,
+            type="memory.loaded",
+            status="completed",
+            title="Role memory loaded",
+            payload=self._memory_loaded_payload(
+                role_id=role_id,
+                user_id=self._user_id(request),
+                role_context=role_context,
+            ),
+        )
+        self._append_context_trace(
+            run_id=run_id,
+            role_id=role_id,
+            role_context=role_context,
+            messages=context_messages,
+            tools_count=len(tools),
+            tool_names=tool_names,
+            mode_ids=request.mode_ids,
+            mode_prompts=request.mode_prompts,
+            context_blocks=request.context_blocks,
+            short_term_summary=short_term_summary,
+            tools=tools,
+            prompt_sources=prompt_sources,
+            final_model_request={
+                "messages": [self._trace_message(message) for message in context_messages],
+                "tools": [tool.model_dump(mode="json") for tool in tools],
+                "tool_choice": "workflow_managed",
+                "model_preference": request.model_preference,
+                "temperature": "planner=0.1, summary=0.2",
+                "workflow": "thinking",
+            },
+        )
+
+        total_usage: dict[str, int] = {}
+        model_names: list[str] = []
+        citations: list[Citation] = []
+        citation_urls: set[str] = set()
+        skills_used: list[str] = []
+        plan_infos: list[SkillCallInfo] = []
+        evidence_blocks: list[str] = []
+        new_messages: list[LLMMessage] = [LLMMessage(role="user", content=request.message)]
+
+        self.trace_store.append_event(
+            run_id,
+            type="thinking.plan.started",
+            status="running",
+            title="Thinking plan started",
+            payload={
+                "mode_ids": request.mode_ids,
+                "target_duration_minutes": 10,
+                "max_steps": THINKING_MAX_PLAN_STEPS,
+                "max_search_steps": THINKING_MAX_SEARCH_STEPS,
+                "search_limit": THINKING_SEARCH_LIMIT,
+            },
+        )
+        plan_started = perf_counter()
+        plan_messages = self._build_thinking_plan_messages(
+            request=request,
+            role_context=role_context,
+            history=history,
+            short_term_summary=short_term_summary,
+        )
+        self.trace_store.append_event(
+            run_id,
+            type="model.started",
+            status="running",
+            title="Thinking planner model call",
+            payload={
+                "round": "thinking_plan",
+                "message_count": len(plan_messages),
+                "tools_count": 0,
+                "model_preference": request.model_preference,
+                "streaming": False,
+                "scope": "thinking_plan",
+                "final_model_request": {
+                    "messages": [self._trace_message(message) for message in plan_messages],
+                    "tools": [],
+                    "tool_choice": "none",
+                    "temperature": 0.1,
+                    "workflow": "thinking_plan",
+                },
+            },
+        )
+        raw_plan: dict[str, Any] | None = None
+        try:
+            plan_response = await provider.chat(plan_messages, tools=None, temperature=0.1)
+            self._merge_usage(total_usage, plan_response.usage)
+            if plan_response.model:
+                model_names.append(plan_response.model)
+            raw_plan = self._extract_json_object(plan_response.content)
+            self.trace_store.append_event(
+                run_id,
+                type="model.completed",
+                status="completed",
+                title="Thinking planner model completed",
+                payload={
+                    "round": "thinking_plan",
+                    "model": plan_response.model,
+                    "usage": plan_response.usage,
+                    "tool_calls": [],
+                    "content_preview": plan_response.content[:500],
+                    "scope": "thinking_plan",
+                },
+                duration_ms=int((perf_counter() - plan_started) * 1000),
+            )
+        except Exception as e:
+            logger.exception("Thinking planner failed; fallback plan used")
+            self.trace_store.append_event(
+                run_id,
+                type="model.failed",
+                status="error",
+                title="Thinking planner model failed",
+                payload={
+                    "round": "thinking_plan",
+                    "error_message": str(e),
+                    "scope": "thinking_plan",
+                },
+                duration_ms=int((perf_counter() - plan_started) * 1000),
+            )
+
+        plan = self._coerce_thinking_plan(
+            raw_plan,
+            request=request,
+            role_context=role_context,
+            history=history,
+        )
+        self.trace_store.append_event(
+            run_id,
+            type="thinking.plan.created",
+            status="completed",
+            title="Thinking plan created",
+            payload={
+                "goal": plan["goal"],
+                "steps": plan["steps"],
+                "fallback_used": plan["fallback_used"],
+                "mode_ids": request.mode_ids,
+            },
+            duration_ms=int((perf_counter() - plan_started) * 1000),
+        )
+
+        for index, step in enumerate(plan["steps"], start=1):
+            step_started = perf_counter()
+            step_id = str(step.get("id") or f"step_{index}")
+            step_type = str(step.get("type") or "analyze")
+            self.trace_store.append_event(
+                run_id,
+                type="thinking.step.started",
+                status="running",
+                title=f"Thinking step {index}: {step.get('title') or step_id}",
+                step_id=step_id,
+                payload={"step": step_id, "step_type": step_type, "step": step, "index": index},
+            )
+            if step_type != "search":
+                plan_infos.append(
+                    SkillCallInfo(
+                        skill=f"thinking_{step_type}",
+                        action=str(step.get("description") or step.get("title") or step_id),
+                        status="completed",
+                        result_summary=str(step.get("title") or step_type)[:200],
+                    )
+                )
+                self.trace_store.append_event(
+                    run_id,
+                    type="thinking.step.completed",
+                    status="completed",
+                    title=f"Thinking step {index} completed",
+                    step_id=step_id,
+                    payload={"step": step_id, "step_type": step_type, "summary": step.get("description") or ""},
+                    duration_ms=int((perf_counter() - step_started) * 1000),
+                )
+                continue
+
+            arguments = {
+                "query": step.get("query") or request.message,
+                "sources": "web",
+                "limit": THINKING_SEARCH_LIMIT,
+            }
+            search_skill = self.skill_registry.get("search")
+            self.trace_store.append_event(
+                run_id,
+                type="tool.started",
+                status="running",
+                title="Tool search",
+                step_id=step_id,
+                payload={"name": "search", "arguments": arguments, "workflow": "thinking"},
+            )
+            if search_skill is None:
+                status = "error"
+                result_text = json.dumps({"error": "search skill is not registered"}, ensure_ascii=False)
+            else:
+                try:
+                    result = await search_skill.execute(**arguments)
+                    result_data = result.data if isinstance(result.data, dict) else {}
+                    new_citations = (
+                        self._collect_search_citations(
+                            result_data=result_data,
+                            citations=citations,
+                            citation_urls=citation_urls,
+                        )
+                        if result.success
+                        else []
+                    )
+                    status = "completed" if result.success else "error"
+                    if result.success:
+                        skills_used.append("search")
+                    result_text = json.dumps(
+                        {
+                            "success": result.success,
+                            "data": result.data,
+                            "display_text": result.display_text,
+                            "error": result.error,
+                        },
+                        ensure_ascii=False,
+                    )
+                    if new_citations:
+                        self.trace_store.append_event(
+                            run_id,
+                            type="citations.collected",
+                            status="completed",
+                            title="Search citations collected",
+                            step_id=step_id,
+                            payload={
+                                "count": len(new_citations),
+                                "total": len(citations),
+                                "urls": [citation.url for citation in new_citations],
+                            },
+                        )
+                except Exception as e:
+                    logger.exception("Thinking search failed")
+                    status = "error"
+                    result_text = json.dumps({"error": str(e)}, ensure_ascii=False)
+
+            self.trace_store.append_event(
+                run_id,
+                type="tool.completed" if status == "completed" else "tool.failed",
+                status=status,
+                title=f"Tool search {status}",
+                step_id=step_id,
+                payload={
+                    "name": "search",
+                    "arguments": arguments,
+                    "result_preview": result_text[:500],
+                    "workflow": "thinking",
+                },
+                duration_ms=int((perf_counter() - step_started) * 1000),
+            )
+            evidence_blocks.append(
+                f"Step {index} / {step.get('title') or 'search'}\nArguments: {json.dumps(arguments, ensure_ascii=False)}\nResult: {result_text[:4000]}"
+            )
+            plan_infos.append(
+                SkillCallInfo(
+                    skill="search",
+                    action=str(arguments),
+                    status=status,
+                    result_summary=result_text[:200],
+                )
+            )
+            self.trace_store.append_event(
+                run_id,
+                type="thinking.step.completed" if status == "completed" else "thinking.step.failed",
+                status=status,
+                title=f"Thinking step {index} {status}",
+                step_id=step_id,
+                payload={
+                    "step": step_id,
+                    "step_type": step_type,
+                    "arguments": arguments,
+                    "citation_count": len(citations),
+                    "result_preview": result_text[:500],
+                },
+                duration_ms=int((perf_counter() - step_started) * 1000),
+            )
+
+        summary_started = perf_counter()
+        summary_messages = self._build_thinking_summary_messages(
+            request=request,
+            role_context=role_context,
+            plan=plan,
+            evidence_blocks=evidence_blocks,
+            citations=citations,
+        )
+        self.trace_store.append_event(
+            run_id,
+            type="model.started",
+            status="running",
+            title="Thinking summary model call",
+            payload={
+                "round": "thinking_summary",
+                "message_count": len(summary_messages),
+                "tools_count": 0,
+                "model_preference": request.model_preference,
+                "streaming": False,
+                "scope": "thinking_summary",
+                "final_model_request": {
+                    "messages": [self._trace_message(message) for message in summary_messages],
+                    "tools": [],
+                    "tool_choice": "none",
+                    "temperature": 0.2,
+                    "workflow": "thinking_summary",
+                },
+            },
+        )
+        summary_response = await provider.chat(summary_messages, tools=None, temperature=0.2)
+        self._merge_usage(total_usage, summary_response.usage)
+        if summary_response.model:
+            model_names.append(summary_response.model)
+        response_text = summary_response.content.strip() or "Thinking workflow completed, but the model returned no summary."
+        self.trace_store.append_event(
+            run_id,
+            type="model.completed",
+            status="completed",
+            title="Thinking summary model completed",
+            payload={
+                "round": "thinking_summary",
+                "model": summary_response.model,
+                "usage": summary_response.usage,
+                "tool_calls": [],
+                "content_preview": response_text[:500],
+                "scope": "thinking_summary",
+            },
+            duration_ms=int((perf_counter() - summary_started) * 1000),
+        )
+        self.trace_store.append_event(
+            run_id,
+            type="thinking.summary.completed",
+            status="completed",
+            title="Thinking workflow summary completed",
+            payload={
+                "step_count": len(plan["steps"]),
+                "skills_used": list(dict.fromkeys(skills_used)),
+                "citation_count": len(citations),
+                "summary_preview": response_text[:500],
+            },
+            duration_ms=int((perf_counter() - summary_started) * 1000),
+        )
+
+        new_messages.append(LLMMessage(role="assistant", content=response_text))
+        self._add_conversation_memory(request, new_messages)
+        memory_updates = await self._review_and_store_memories(
+            request=request,
+            agent_id=agent_id,
+            role_context=role_context,
+            assistant_message=response_text,
+            new_messages=new_messages,
+            run_id=run_id,
+        )
+        await self._maybe_compact_conversation_memory(request=request, run_id=run_id)
+
+        unique_skills = list(dict.fromkeys(skills_used))
+        model_used = ", ".join(dict.fromkeys(model_names))
+        self.trace_store.complete_run(
+            run_id,
+            output=response_text,
+            model_used=model_used,
+            tokens_used=total_usage,
+            skills_used=unique_skills,
+        )
+        latest_run = self.trace_store.get_run(run_id)
+        return ChatResponse(
+            conversation_id=request.conversation_id,
+            response=response_text,
+            skills_used=unique_skills,
+            citations=citations,
+            plan=plan_infos if plan_infos else None,
+            model_used=model_used,
+            tokens_used=total_usage,
+            agent_id=agent_id,
+            role_id=role_id,
+            runtime=runtime,
+            run_id=run_id,
+            events=latest_run.events if latest_run else [],
+            memory_context=role_context.records,
+            memory_updates=memory_updates,
+        )
 
     async def _complete_deep_research_response(
         self,
@@ -2269,13 +3278,11 @@ class AgentEngine:
             type="memory.loaded",
             status="completed",
             title="Role memory loaded",
-            payload={
-                "role_id": role_id,
-                "user_id": self._user_id(request),
-                "persona_count": len(role_context.persona_memories),
-                "long_term_count": len(role_context.long_term_memories),
-                "context_record_ids": [record.id for record in role_context.records],
-            },
+            payload=self._memory_loaded_payload(
+                role_id=role_id,
+                user_id=self._user_id(request),
+                role_context=role_context,
+            ),
         )
         self._append_context_trace(
             run_id=run_id,
@@ -5870,13 +6877,11 @@ class AgentEngine:
             type="memory.loaded",
             status="completed",
             title="Role memory loaded",
-            payload={
-                "role_id": role_id,
-                "user_id": self._user_id(request),
-                "persona_count": len(role_context.persona_memories),
-                "long_term_count": len(role_context.long_term_memories),
-                "context_record_ids": [record.id for record in role_context.records],
-            },
+            payload=self._memory_loaded_payload(
+                role_id=role_id,
+                user_id=self._user_id(request),
+                role_context=role_context,
+            ),
         )
 
         research_result: dict[str, Any] = {
@@ -6620,6 +7625,7 @@ class AgentEngine:
             role_id=role_id,
             user_id=self._user_id(request),
             agent_id=agent_id,
+            query=request.message,
         )
         if role_context is None or not role_context.role.enabled:
             error_msg = f"Unknown or disabled role: {role_id}"
@@ -6790,6 +7796,7 @@ class AgentEngine:
                 role_id=target_role_id,
                 user_id=self._user_id(request),
                 agent_id=AIGC_AGENT_ID,
+                query=request.message,
             )
             if target_role_context is None or not target_role_context.role.enabled:
                 error_msg = f"Unknown or disabled role: {target_role_id}"
@@ -6869,6 +7876,7 @@ class AgentEngine:
                 role_id=target_role_id,
                 user_id=self._user_id(request),
                 agent_id=WEIGHT_LOSS_AGENT_ID,
+                query=request.message,
             )
             if target_role_context is None or not target_role_context.role.enabled:
                 error_msg = f"Unknown or disabled role: {target_role_id}"
@@ -6942,6 +7950,16 @@ class AgentEngine:
                 runtime=runtime,
             )
 
+        if self._thinking_mode_enabled(request, agent_id):
+            return await self._process_thinking_workflow(
+                request=request,
+                agent_id=agent_id,
+                role_id=role_id,
+                role_context=role_context,
+                run_id=run.run_id,
+                runtime=runtime,
+            )
+
         try:
             provider = self._get_provider(request.model_preference)
         except Exception as e:
@@ -6969,17 +7987,19 @@ class AgentEngine:
         history = conversation_context.messages if request.memory_enabled else []
         short_term_summary = conversation_context.summary if request.memory_enabled else ""
         tool_names = [tool.name for tool in tools]
+        prompt_sources = self._build_system_prompt_parts(
+            role_context,
+            request.mode_prompts,
+            request.context_blocks,
+            agent_id=agent_id,
+            tool_names=tool_names,
+            short_term_summary=short_term_summary,
+        )
+        system_prompt = self._render_prompt_parts(prompt_sources)
         messages = [
             LLMMessage(
                 role="system",
-                content=self._build_system_prompt(
-                    role_context,
-                    request.mode_prompts,
-                    request.context_blocks,
-                    agent_id=agent_id,
-                    tool_names=tool_names,
-                    short_term_summary=short_term_summary,
-                ),
+                content=system_prompt,
             )
         ]
         messages.extend(history)
@@ -6989,13 +8009,11 @@ class AgentEngine:
             type="memory.loaded",
             status="completed",
             title="Role memory loaded",
-            payload={
-                "role_id": role_id,
-                "user_id": self._user_id(request),
-                "persona_count": len(role_context.persona_memories),
-                "long_term_count": len(role_context.long_term_memories),
-                "context_record_ids": [record.id for record in role_context.records],
-            },
+            payload=self._memory_loaded_payload(
+                role_id=role_id,
+                user_id=self._user_id(request),
+                role_context=role_context,
+            ),
         )
         self._append_context_trace(
             run_id=run.run_id,
@@ -7008,6 +8026,16 @@ class AgentEngine:
             mode_prompts=request.mode_prompts,
             context_blocks=request.context_blocks,
             short_term_summary=short_term_summary,
+            tools=tools,
+            prompt_sources=prompt_sources,
+            final_model_request={
+                "messages": [self._trace_message(message) for message in messages],
+                "tools": [tool.model_dump(mode="json") for tool in tools],
+                "tool_choice": "auto" if tools else "none",
+                "model_preference": request.model_preference,
+                "temperature": "provider_default",
+                "workflow": "generic_tool_loop",
+            },
         )
 
         # Track skill usage

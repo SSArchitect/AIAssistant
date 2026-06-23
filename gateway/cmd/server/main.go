@@ -93,6 +93,7 @@ func main() {
 		api.DELETE("/roles/:id", chatHandler.DeleteRole)
 		api.GET("/roles/:id/memories", chatHandler.ListRoleMemories)
 		api.POST("/roles/:id/memories", chatHandler.CreateRoleMemory)
+		api.PUT("/roles/:id/memories/:memory_id", chatHandler.UpdateRoleMemory)
 		api.DELETE("/roles/:id/memories/:memory_id", chatHandler.DeleteRoleMemory)
 		api.GET("/tools", chatHandler.ListTools)
 		api.GET("/runs", chatHandler.ListRuns)

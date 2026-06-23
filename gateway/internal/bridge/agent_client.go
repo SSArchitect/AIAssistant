@@ -95,18 +95,29 @@ type RunEvent struct {
 }
 
 type MemoryRecord struct {
-	ID         string                 `json:"id"`
-	RoleID     string                 `json:"role_id"`
-	UserID     string                 `json:"user_id,omitempty"`
-	Kind       string                 `json:"kind"`
-	Content    string                 `json:"content"`
-	Source     string                 `json:"source"`
-	AgentID    *string                `json:"agent_id,omitempty"`
-	Confidence float64                `json:"confidence"`
-	Tags       []string               `json:"tags"`
-	CreatedAt  string                 `json:"created_at"`
-	UpdatedAt  string                 `json:"updated_at"`
-	Metadata   map[string]interface{} `json:"metadata"`
+	ID          string                 `json:"id"`
+	RoleID      string                 `json:"role_id"`
+	UserID      string                 `json:"user_id,omitempty"`
+	Kind        string                 `json:"kind"`
+	Scope       string                 `json:"scope,omitempty"`
+	Status      string                 `json:"status,omitempty"`
+	ReviewState string                 `json:"review_state,omitempty"`
+	Content     string                 `json:"content"`
+	Source      string                 `json:"source"`
+	AgentID     *string                `json:"agent_id,omitempty"`
+	Confidence  float64                `json:"confidence"`
+	Tags        []string               `json:"tags"`
+	SourceTrace map[string]interface{} `json:"source_trace,omitempty"`
+	ValidFrom   *string                `json:"valid_from,omitempty"`
+	ValidUntil  *string                `json:"valid_until,omitempty"`
+	LastUsedAt  *string                `json:"last_used_at,omitempty"`
+	TTLDays     *int                   `json:"ttl_days,omitempty"`
+	Sensitivity string                 `json:"sensitivity,omitempty"`
+	ReviewNotes string                 `json:"review_notes,omitempty"`
+	Version     int                    `json:"version,omitempty"`
+	CreatedAt   string                 `json:"created_at"`
+	UpdatedAt   string                 `json:"updated_at"`
+	Metadata    map[string]interface{} `json:"metadata"`
 }
 
 type ChatResponse struct {
@@ -223,14 +234,23 @@ type MemoryListResponse struct {
 }
 
 type MemoryWriteRequest struct {
-	UserID     string                 `json:"user_id,omitempty"`
-	Kind       string                 `json:"kind,omitempty"`
-	Content    string                 `json:"content,omitempty"`
-	Source     string                 `json:"source,omitempty"`
-	AgentID    string                 `json:"agent_id,omitempty"`
-	Confidence float64                `json:"confidence,omitempty"`
-	Tags       []string               `json:"tags,omitempty"`
-	Metadata   map[string]interface{} `json:"metadata,omitempty"`
+	UserID      string                 `json:"user_id,omitempty"`
+	Kind        string                 `json:"kind,omitempty"`
+	Scope       string                 `json:"scope,omitempty"`
+	Status      string                 `json:"status,omitempty"`
+	ReviewState string                 `json:"review_state,omitempty"`
+	Content     string                 `json:"content,omitempty"`
+	Source      string                 `json:"source,omitempty"`
+	AgentID     string                 `json:"agent_id,omitempty"`
+	Confidence  float64                `json:"confidence,omitempty"`
+	Tags        []string               `json:"tags,omitempty"`
+	SourceTrace map[string]interface{} `json:"source_trace,omitempty"`
+	ValidFrom   *string                `json:"valid_from,omitempty"`
+	ValidUntil  *string                `json:"valid_until,omitempty"`
+	TTLDays     *int                   `json:"ttl_days,omitempty"`
+	Sensitivity string                 `json:"sensitivity,omitempty"`
+	ReviewNotes string                 `json:"review_notes,omitempty"`
+	Metadata    map[string]interface{} `json:"metadata,omitempty"`
 }
 
 type RunRecord struct {
@@ -470,7 +490,7 @@ func (c *AgentClient) DeleteRole(roleID string, userID string) error {
 	return nil
 }
 
-func (c *AgentClient) ListRoleMemories(roleID string, userID string, kind string, agentID string) (*MemoryListResponse, error) {
+func (c *AgentClient) ListRoleMemories(roleID string, userID string, kind string, agentID string, includeInactive bool) (*MemoryListResponse, error) {
 	params := url.Values{}
 	if userID != "" {
 		params.Set("user_id", userID)
@@ -480,6 +500,9 @@ func (c *AgentClient) ListRoleMemories(roleID string, userID string, kind string
 	}
 	if agentID != "" {
 		params.Set("agent_id", agentID)
+	}
+	if includeInactive {
+		params.Set("include_inactive", "true")
 	}
 
 	endpoint := c.baseURL + "/agent/roles/" + url.PathEscape(roleID) + "/memories"
@@ -506,23 +529,37 @@ func (c *AgentClient) ListRoleMemories(roleID string, userID string, kind string
 }
 
 func (c *AgentClient) CreateRoleMemory(roleID string, req MemoryWriteRequest) (*MemoryRecord, error) {
+	return c.writeRoleMemory(http.MethodPost, "/agent/roles/"+url.PathEscape(roleID)+"/memories", req)
+}
+
+func (c *AgentClient) UpdateRoleMemory(roleID string, memoryID string, req MemoryWriteRequest) (*MemoryRecord, error) {
+	return c.writeRoleMemory(
+		http.MethodPut,
+		"/agent/roles/"+url.PathEscape(roleID)+"/memories/"+url.PathEscape(memoryID),
+		req,
+	)
+}
+
+func (c *AgentClient) writeRoleMemory(method string, path string, req MemoryWriteRequest) (*MemoryRecord, error) {
 	body, err := json.Marshal(req)
 	if err != nil {
 		return nil, fmt.Errorf("marshal role memory request: %w", err)
 	}
-	resp, err := c.httpClient.Post(
-		c.baseURL+"/agent/roles/"+url.PathEscape(roleID)+"/memories",
-		"application/json",
-		bytes.NewReader(body),
-	)
+	httpReq, err := http.NewRequest(method, c.baseURL+path, bytes.NewReader(body))
 	if err != nil {
-		return nil, fmt.Errorf("create role memory request failed: %w", err)
+		return nil, fmt.Errorf("build role memory request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("role memory request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("create role memory returned status %d: %s", resp.StatusCode, string(respBody))
+		return nil, fmt.Errorf("role memory returned status %d: %s", resp.StatusCode, string(respBody))
 	}
 
 	var memory MemoryRecord

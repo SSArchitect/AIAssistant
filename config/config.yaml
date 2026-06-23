@@ -32,6 +32,7 @@ llm:
       base_url: https://api.minimaxi.com/v1
       model: MiniMax-M3
       thinking: disabled
+      timeout: 60
     ollama:
       base_url: http://localhost:11434
       model: llama3

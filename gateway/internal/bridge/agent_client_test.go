@@ -447,6 +447,7 @@ func TestAgentClientRolesCRUD(t *testing.T) {
 
 func TestAgentClientRoleMemoriesCRUD(t *testing.T) {
 	var created bool
+	var updated bool
 	var deleted bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -457,6 +458,9 @@ func TestAgentClientRoleMemoriesCRUD(t *testing.T) {
 			}
 			if got := r.URL.Query().Get("kind"); got != "role" {
 				t.Fatalf("unexpected kind query: %s", got)
+			}
+			if got := r.URL.Query().Get("include_inactive"); got != "" {
+				t.Fatalf("unexpected include_inactive query: %s", got)
 			}
 			_, _ = w.Write([]byte(`{
 				"memories": [
@@ -497,6 +501,30 @@ func TestAgentClientRoleMemoriesCRUD(t *testing.T) {
 				"updated_at": "2026-06-21T00:00:00Z",
 				"metadata": {}
 			}`))
+		case r.Method == http.MethodPut && r.URL.Path == "/agent/roles/default/memories/mem_1":
+			updated = true
+			var req MemoryWriteRequest
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				t.Fatalf("decode update memory: %v", err)
+			}
+			if req.UserID != "user-1" || req.Status != "archived" || req.ReviewState != "reviewed" {
+				t.Fatalf("unexpected update memory request: %#v", req)
+			}
+			_, _ = w.Write([]byte(`{
+				"id": "mem_1",
+				"role_id": "default",
+				"user_id": "user-1",
+				"kind": "role",
+				"status": "archived",
+				"review_state": "reviewed",
+				"content": "Keep answers concise",
+				"source": "manual",
+				"confidence": 1,
+				"tags": ["role_config"],
+				"created_at": "2026-06-21T00:00:00Z",
+				"updated_at": "2026-06-21T00:00:00Z",
+				"metadata": {}
+			}`))
 		case r.Method == http.MethodDelete && r.URL.Path == "/agent/roles/default/memories/mem_1":
 			deleted = true
 			if got := r.URL.Query().Get("user_id"); got != "user-1" {
@@ -510,7 +538,7 @@ func TestAgentClientRoleMemoriesCRUD(t *testing.T) {
 	defer server.Close()
 
 	client := NewAgentClient(server.URL, time.Second)
-	memories, err := client.ListRoleMemories("default", "user-1", "role", "")
+	memories, err := client.ListRoleMemories("default", "user-1", "role", "", false)
 	if err != nil {
 		t.Fatalf("ListRoleMemories returned error: %v", err)
 	}
@@ -530,6 +558,18 @@ func TestAgentClientRoleMemoriesCRUD(t *testing.T) {
 	}
 	if memory.ID != "mem_1" || !created {
 		t.Fatalf("unexpected created memory: %#v", memory)
+	}
+
+	updatedMemory, err := client.UpdateRoleMemory("default", "mem_1", MemoryWriteRequest{
+		UserID:      "user-1",
+		Status:      "archived",
+		ReviewState: "reviewed",
+	})
+	if err != nil {
+		t.Fatalf("UpdateRoleMemory returned error: %v", err)
+	}
+	if updatedMemory.Status != "archived" || updatedMemory.ReviewState != "reviewed" || !updated {
+		t.Fatalf("unexpected updated memory: %#v", updatedMemory)
 	}
 
 	if err := client.DeleteRoleMemory("default", "mem_1", "user-1"); err != nil {

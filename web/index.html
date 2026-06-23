@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>阿安的工作台</title>
-    <link rel="stylesheet" href="/static/css/style.css?v=34">
+    <link rel="stylesheet" href="/static/css/style.css?v=37">
 </head>
 <body>
     <div class="app">
@@ -79,12 +79,13 @@
                     <span data-i18n="nav.trace">Trace</span>
                     <span class="nav-count" id="run-count"></span>
                 </button>
-                <button class="nav-item" type="button" data-view="settings">
+                <button class="nav-item" type="button" data-view="developer">
                     <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2">
-                        <path d="M12 15.5A3.5 3.5 0 1 0 12 8a3.5 3.5 0 0 0 0 7.5Z"/>
-                        <path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 1.55V21a2 2 0 1 1-4 0v-.05a1.7 1.7 0 0 0-1-1.55 1.7 1.7 0 0 0-1.88.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-1.55-1H3a2 2 0 1 1 0-4h.05A1.7 1.7 0 0 0 4.6 9a1.7 1.7 0 0 0-.34-1.88l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-1.55V3a2 2 0 1 1 4 0v.05A1.7 1.7 0 0 0 15 4.6a1.7 1.7 0 0 0 1.88-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.7 1.7 0 0 0 19.4 9c.16.32.35.64.55.95H21a2 2 0 1 1 0 4h-1.05A1.7 1.7 0 0 0 19.4 15Z"/>
+                        <path d="m16 18 6-6-6-6"/>
+                        <path d="m8 6-6 6 6 6"/>
+                        <path d="m14 4-4 16"/>
                     </svg>
-                    <span data-i18n="nav.settings">Settings</span>
+                    <span data-i18n="nav.developer">Developer</span>
                 </button>
             </nav>
             </section>
@@ -299,9 +300,10 @@
                 </div>
             </section>
 
-            <section class="view" id="view-settings" data-view-panel="settings">
-                <div class="content-grid" id="settings-grid"></div>
+            <section class="view" id="view-developer" data-view-panel="developer">
+                <div class="developer-workbench" id="developer-workbench"></div>
             </section>
+
         </main>
     </div>
 
@@ -396,6 +398,6 @@
         </div>
     </div>
 
-    <script src="/static/js/app.js?v=48"></script>
+    <script src="/static/js/app.js?v=53"></script>
 </body>
 </html>

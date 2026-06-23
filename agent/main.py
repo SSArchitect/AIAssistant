@@ -29,6 +29,7 @@ from agent.schemas.memory import (
     MemoryKind,
     MemoryListResponse,
     MemoryRecord,
+    MemoryUpdateRequest,
     RoleCreateRequest,
     RoleListResponse,
     RoleProfile,
@@ -164,6 +165,7 @@ async def list_role_memories(
     kind: Optional[MemoryKind] = None,
     agent_id: Optional[str] = None,
     user_id: Optional[str] = None,
+    include_inactive: bool = False,
 ):
     if engine is None:
         raise HTTPException(status_code=503, detail="Agent engine not ready")
@@ -175,6 +177,7 @@ async def list_role_memories(
             user_id=user_id,
             kind=kind,
             agent_id=agent_id,
+            include_inactive=include_inactive,
         )
     )
 
@@ -189,14 +192,41 @@ async def create_role_memory(role_id: str, request: MemoryCreateRequest):
         role_id=role_id,
         user_id=request.user_id,
         kind=request.kind,
+        scope=request.scope,
+        status=request.status,
+        review_state=request.review_state,
         content=request.content,
         source=request.source,
         agent_id=request.agent_id,
         confidence=request.confidence,
         tags=request.tags,
+        source_trace=request.source_trace,
+        valid_from=request.valid_from,
+        valid_until=request.valid_until,
+        ttl_days=request.ttl_days,
+        sensitivity=request.sensitivity,
+        review_notes=request.review_notes,
         metadata=request.metadata,
     )
     return memory
+
+
+@app.put("/agent/roles/{role_id}/memories/{memory_id}", response_model=MemoryRecord)
+async def update_role_memory(
+    role_id: str,
+    memory_id: str,
+    request: MemoryUpdateRequest,
+):
+    if engine is None:
+        raise HTTPException(status_code=503, detail="Agent engine not ready")
+    try:
+        return engine.role_memory.update_memory(
+            role_id=role_id,
+            memory_id=memory_id,
+            request=request,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
 
 
 @app.delete("/agent/roles/{role_id}/memories/{memory_id}")
@@ -376,6 +406,12 @@ async def chat_stream(request: ChatRequest):
             yield _sse("done", {"run_id": run_id})
         except Exception as e:
             logger.exception("Streaming chat failed")
+            run = trace_store.get_run(run_id)
+            if run is not None:
+                events = run.events[yielded_events:]
+                yielded_events += len(events)
+                for event in events:
+                    yield _sse("trace", _jsonable_model(event))
             yield _sse(
                 "error",
                 {

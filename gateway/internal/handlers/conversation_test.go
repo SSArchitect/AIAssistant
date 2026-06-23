@@ -51,6 +51,101 @@ func TestConversationListIsScopedByUserID(t *testing.T) {
 	}
 }
 
+func TestConversationGetOmitsTraceEventsByDefault(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	if err := database.Init(filepath.Join(t.TempDir(), "assistant.db")); err != nil {
+		t.Fatalf("init database: %v", err)
+	}
+
+	conv := models.Conversation{
+		ID:        "conv-trace-light",
+		UserID:    "user-a",
+		Title:     "Trace Light",
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+	if err := database.DB.Create(&conv).Error; err != nil {
+		t.Fatalf("create conversation: %v", err)
+	}
+	message := models.Message{
+		ConversationID: conv.ID,
+		UserID:         conv.UserID,
+		Role:           "assistant",
+		Content:        "done",
+		RunID:          "run-heavy",
+		TraceEvents:    `[{"type":"run.completed","payload":{"prompt":"very large"}}]`,
+		CreatedAt:      time.Now(),
+	}
+	if err := database.DB.Create(&message).Error; err != nil {
+		t.Fatalf("create message: %v", err)
+	}
+
+	router := gin.New()
+	handler := NewConversationHandler()
+	router.GET("/api/conversations/:id", handler.Get)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/conversations/"+conv.ID, nil)
+	req.Header.Set("X-User-ID", conv.UserID)
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("unexpected status %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if strings.Contains(recorder.Body.String(), "trace_events") {
+		t.Fatalf("expected trace events to be omitted by default, got %s", recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), `"run_id":"run-heavy"`) {
+		t.Fatalf("expected run id to remain available, got %s", recorder.Body.String())
+	}
+}
+
+func TestConversationGetCanIncludeTraceEvents(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	if err := database.Init(filepath.Join(t.TempDir(), "assistant.db")); err != nil {
+		t.Fatalf("init database: %v", err)
+	}
+
+	conv := models.Conversation{
+		ID:        "conv-trace-full",
+		UserID:    "user-a",
+		Title:     "Trace Full",
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+	if err := database.DB.Create(&conv).Error; err != nil {
+		t.Fatalf("create conversation: %v", err)
+	}
+	message := models.Message{
+		ConversationID: conv.ID,
+		UserID:         conv.UserID,
+		Role:           "assistant",
+		Content:        "done",
+		RunID:          "run-full",
+		TraceEvents:    `[{"type":"run.completed","payload":{"prompt":"large"}}]`,
+		CreatedAt:      time.Now(),
+	}
+	if err := database.DB.Create(&message).Error; err != nil {
+		t.Fatalf("create message: %v", err)
+	}
+
+	router := gin.New()
+	handler := NewConversationHandler()
+	router.GET("/api/conversations/:id", handler.Get)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/conversations/"+conv.ID+"?include_trace=true", nil)
+	req.Header.Set("X-User-ID", conv.UserID)
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("unexpected status %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), `"trace_events"`) {
+		t.Fatalf("expected trace events when requested, got %s", recorder.Body.String())
+	}
+}
+
 func TestConversationCreateSessionUserOverridesBodyUserID(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	if err := database.Init(filepath.Join(t.TempDir(), "assistant.db")); err != nil {

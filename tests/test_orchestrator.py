@@ -351,7 +351,7 @@ async def test_memory_is_scoped_by_user_id(engine):
             ChatRequest(
                 conversation_id="shared-conv",
                 user_id="bob",
-                message="hello",
+                message="please use my detailed memory answers preference",
             )
         )
 
@@ -389,15 +389,21 @@ async def test_role_memory_is_injected_into_system_prompt(engine):
         result = await engine.process(
             ChatRequest(
                 conversation_id="conv-role",
-                message="开始吧",
+                message="开始 AI application developer interview 练习吧",
                 role_id="mentor",
             )
         )
 
     first_call_messages = provider.chat.call_args_list[0][0][0]
     assert first_call_messages[0].role == "system"
-    assert "Patient interview coach" in first_call_messages[0].content
-    assert "AI application developer interviews" in first_call_messages[0].content
+    system_prompt = first_call_messages[0].content
+    assert "Patient interview coach" in system_prompt
+    assert "AI application developer interviews" in system_prompt
+    assert system_prompt.index("系统级配置：") < system_prompt.index("记忆系统：")
+    assert system_prompt.index("长期记忆：") < system_prompt.index("角色记忆：")
+    assert system_prompt.index("角色记忆：") < system_prompt.index("短期记忆：")
+    assert system_prompt.index("短期记忆：") < system_prompt.index("上下文与记忆使用规则：")
+    assert "本轮用户消息优先于历史消息" in system_prompt
     assert result.role_id == "mentor"
     assert [record.id for record in result.memory_context] == [memory.id]
     event_types = [event.type for event in result.events]
@@ -405,10 +411,56 @@ async def test_role_memory_is_injected_into_system_prompt(engine):
     assert "context.built" in event_types
     context_event = next(event for event in result.events if event.type == "context.built")
     assert "Patient interview coach" in context_event.payload["system_prompt"]
+    assert context_event.payload["prompt_section_order"] == [
+        "base_system_prompt",
+        "system_config",
+        "temporal_context",
+        "memory_system",
+        "context_priority_rules",
+    ]
+    context_nodes = {node["id"]: node for node in context_event.payload["context_nodes"]}
+    assert context_nodes["memory.long_term"]["record_count"] == 1
+    assert context_nodes["memory.long_term"]["records"][0]["status"] == "active"
+    assert context_nodes["memory.role_persona"]["role"]["id"] == "mentor"
+    assert context_nodes["conversation.window"]["message_count"] == 1
     assert context_event.payload["memory_records"][0]["content"] == (
         "User is preparing for AI application developer interviews"
     )
-    assert context_event.payload["messages"][-1]["content"] == "开始吧"
+    assert context_event.payload["memory_records"][0]["scope"] == "user"
+    assert context_event.payload["messages"][-1]["content"] == "开始 AI application developer interview 练习吧"
+
+
+@pytest.mark.asyncio
+async def test_unrelated_long_term_memory_is_not_injected(engine):
+    engine.role_memory.add_memory(
+        role_id="default",
+        kind="long_term",
+        content="用户喜欢玩游戏，对游戏推荐感兴趣",
+        tags=["游戏"],
+    )
+    response = LLMResponse(
+        content="你好。",
+        tool_calls=[],
+        model="test-model",
+        usage={},
+    )
+
+    with patch.object(engine, "_get_provider") as mock_provider:
+        provider = AsyncMock()
+        provider.chat = AsyncMock(return_value=response)
+        mock_provider.return_value = provider
+
+        result = await engine.process(
+            ChatRequest(
+                conversation_id="conv-unrelated-memory",
+                message="歪",
+                role_id="default",
+            )
+        )
+
+    first_call_messages = provider.chat.call_args_list[0][0][0]
+    assert "用户喜欢玩游戏" not in first_call_messages[0].content
+    assert result.memory_context == []
 
 
 @pytest.mark.asyncio
@@ -445,16 +497,42 @@ async def test_system_prompt_includes_temporal_context(engine):
 @pytest.mark.asyncio
 async def test_super_chat_mode_prompts_are_injected(engine):
     """Selected Super Chat modes should add hidden system instructions."""
-    response = LLMResponse(
+    plan_response = LLMResponse(
+        content=json.dumps(
+            {
+                "goal": "调研方向",
+                "steps": [
+                    {
+                        "id": "analyze",
+                        "type": "analyze",
+                        "title": "分析",
+                        "description": "整理已有上下文。",
+                    },
+                    {
+                        "id": "final",
+                        "type": "final",
+                        "title": "汇总",
+                        "description": "给出结论。",
+                    },
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        tool_calls=[],
+        model="planner-model",
+        usage={},
+    )
+    summary_response = LLMResponse(
         content="I will think through the task.",
         tool_calls=[],
         model="test-model",
         usage={},
     )
+    memory_response = LLMResponse(content='{"memories":[]}', tool_calls=[], model="memory-model", usage={})
 
     with patch.object(engine, "_get_provider") as mock_provider:
         provider = AsyncMock()
-        provider.chat = AsyncMock(return_value=response)
+        provider.chat = AsyncMock(side_effect=[plan_response, summary_response, memory_response])
         mock_provider.return_value = provider
 
         result = await engine.process(
@@ -466,21 +544,143 @@ async def test_super_chat_mode_prompts_are_injected(engine):
                 mode_prompts=[
                     "使用思考模式：先规划，再按需检索和分析。",
                 ],
+                )
             )
-        )
 
-    first_call_messages = provider.chat.call_args_list[0][0][0]
-    system_prompt = first_call_messages[0].content
+    context_event = next(event for event in result.events if event.type == "context.built")
+    system_prompt = context_event.payload["system_prompt"]
     assert "Super Chat 模式指令：" in system_prompt
     assert "AI 生图 (image_generation_v1)" in system_prompt
     assert "深度研究 (deep_research_v1)" in system_prompt
     assert "使用思考模式：先规划，再按需检索和分析。" in system_prompt
-    assert first_call_messages[-1].content == "帮我调研这个方向"
-    context_event = next(event for event in result.events if event.type == "context.built")
+    assert system_prompt.index("可用的专业 Agent：") < system_prompt.index("记忆系统：")
+    assert system_prompt.index("Super Chat 模式指令：") < system_prompt.index("记忆系统：")
+    assert context_event.payload["messages"][-1]["content"] == "帮我调研这个方向"
     assert context_event.payload["mode_ids"] == ["thinking"]
     assert context_event.payload["mode_prompts"] == [
         "使用思考模式：先规划，再按需检索和分析。",
     ]
+    assert context_event.payload["final_model_request"]["workflow"] == "thinking"
+    assert context_event.payload["prompt_section_order"] == [
+        "base_system_prompt",
+        "system_config",
+        "temporal_context",
+        "agent_context",
+        "mode_context",
+        "memory_system",
+        "context_priority_rules",
+    ]
+    event_types = [event.type for event in result.events]
+    assert "thinking.plan.created" in event_types
+    assert "thinking.summary.completed" in event_types
+
+
+@pytest.mark.asyncio
+async def test_thinking_mode_executes_planned_search_before_summary(engine):
+    """Thinking mode should execute search steps as workflow nodes, not just describe them."""
+
+    class FakeSearchSkill(Skill):
+        def __init__(self):
+            self.calls = []
+
+        def metadata(self) -> SkillMetadata:
+            return SkillMetadata(
+                name="search",
+                description="fake search",
+                parameters=[
+                    SkillParameter(name="query", type="string", description="query"),
+                    SkillParameter(name="sources", type="string", description="sources", required=False),
+                    SkillParameter(name="limit", type="integer", description="limit", required=False),
+                ],
+            )
+
+        async def execute(self, **kwargs) -> SkillResult:
+            self.calls.append(kwargs)
+            return SkillResult(
+                success=True,
+                data={
+                    "query": kwargs["query"],
+                    "results": [
+                        {
+                            "title": "RayNeo company update",
+                            "url": "https://example.com/rayneo-update",
+                            "snippet": "RayNeo latest strategy details.",
+                            "source": "web",
+                        }
+                    ],
+                },
+                display_text="RayNeo company update",
+            )
+
+    fake_search = FakeSearchSkill()
+    engine.skill_registry.register(fake_search)
+    plan_response = LLMResponse(
+        content=json.dumps(
+            {
+                "goal": "了解雷鸟创新工作节奏和战略",
+                "steps": [
+                    {
+                        "id": "search_rayneo_strategy",
+                        "type": "search",
+                        "title": "检索公开资料",
+                        "description": "搜索公司战略和工作节奏信息。",
+                        "query": "雷鸟创新 RayNeo 工作节奏 公司战略 2026",
+                    },
+                    {
+                        "id": "analyze",
+                        "type": "analyze",
+                        "title": "分析",
+                        "description": "交叉核对来源。",
+                    },
+                    {
+                        "id": "final",
+                        "type": "final",
+                        "title": "汇总",
+                        "description": "输出结果。",
+                    },
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        tool_calls=[],
+        model="planner-model",
+        usage={"input": 10, "output": 20},
+    )
+    summary_response = LLMResponse(
+        content="基于搜索结果，雷鸟创新需要关注公司战略和岗位节奏。",
+        tool_calls=[],
+        model="summary-model",
+        usage={"input": 30, "output": 40},
+    )
+    memory_response = LLMResponse(content='{"memories":[]}', tool_calls=[], model="memory-model", usage={})
+
+    with patch.object(engine, "_get_provider") as mock_provider:
+        provider = AsyncMock()
+        provider.chat = AsyncMock(side_effect=[plan_response, summary_response, memory_response])
+        mock_provider.return_value = provider
+
+        result = await engine.process(
+            ChatRequest(
+                conversation_id="conv-thinking-search",
+                message="了解更多吧，比如工作节奏，未来方向，公司战略之类的",
+                agent_id="super_chat",
+                mode_ids=["thinking"],
+                mode_prompts=["使用思考模式：先规划，再按需检索和分析。"],
+            )
+        )
+
+    assert fake_search.calls
+    assert fake_search.calls[0]["query"] == "雷鸟创新 RayNeo 工作节奏 公司战略 2026"
+    assert fake_search.calls[0]["limit"] == 8
+    assert result.skills_used == ["search"]
+    assert len(result.citations) == 1
+    assert result.citations[0].url == "https://example.com/rayneo-update"
+    event_types = [event.type for event in result.events]
+    assert "thinking.plan.created" in event_types
+    assert "thinking.step.started" in event_types
+    assert "tool.started" in event_types
+    assert "tool.completed" in event_types
+    assert "thinking.summary.completed" in event_types
 
 
 @pytest.mark.asyncio

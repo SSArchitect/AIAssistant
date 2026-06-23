@@ -22,6 +22,22 @@ type conversationCreateRequest struct {
 	AgentID string `json:"agent_id,omitempty"`
 }
 
+type conversationMessageResponse struct {
+	ID             uint      `json:"id"`
+	ConversationID string    `json:"conversation_id"`
+	UserID         string    `json:"user_id"`
+	Role           string    `json:"role"`
+	Content        string    `json:"content"`
+	SkillsUsed     string    `json:"skills_used,omitempty"`
+	Citations      string    `json:"citations,omitempty"`
+	ModelUsed      string    `json:"model_used,omitempty"`
+	Runtime        string    `json:"runtime,omitempty"`
+	RunID          string    `json:"run_id,omitempty"`
+	TraceEvents    string    `json:"trace_events,omitempty"`
+	ErrorType      string    `json:"error_type,omitempty"`
+	CreatedAt      time.Time `json:"created_at"`
+}
+
 func (h *ConversationHandler) List(c *gin.Context) {
 	userID := requestUserID(c)
 	var conversations []models.Conversation
@@ -67,11 +83,42 @@ func (h *ConversationHandler) Get(c *gin.Context) {
 
 	var messages []models.Message
 	database.DB.Where("conversation_id = ? AND user_id = ?", id, userID).Order(messageChronologicalOrder).Find(&messages)
+	messageResponses := make([]conversationMessageResponse, 0, len(messages))
+	includeTrace := shouldIncludeConversationTrace(c)
+	for _, message := range messages {
+		messageResponses = append(messageResponses, conversationMessageFromModel(message, includeTrace))
+	}
 
 	c.JSON(http.StatusOK, gin.H{
 		"conversation": conv,
-		"messages":     messages,
+		"messages":     messageResponses,
 	})
+}
+
+func shouldIncludeConversationTrace(c *gin.Context) bool {
+	value := strings.ToLower(strings.TrimSpace(c.Query("include_trace")))
+	return value == "1" || value == "true" || value == "yes"
+}
+
+func conversationMessageFromModel(message models.Message, includeTrace bool) conversationMessageResponse {
+	response := conversationMessageResponse{
+		ID:             message.ID,
+		ConversationID: message.ConversationID,
+		UserID:         message.UserID,
+		Role:           message.Role,
+		Content:        message.Content,
+		SkillsUsed:     message.SkillsUsed,
+		Citations:      message.Citations,
+		ModelUsed:      message.ModelUsed,
+		Runtime:        message.Runtime,
+		RunID:          message.RunID,
+		ErrorType:      message.ErrorType,
+		CreatedAt:      message.CreatedAt,
+	}
+	if includeTrace {
+		response.TraceEvents = message.TraceEvents
+	}
+	return response
 }
 
 func (h *ConversationHandler) Delete(c *gin.Context) {

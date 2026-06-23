@@ -12,6 +12,7 @@ from agent.schemas.memory import (
     MemoryContext,
     MemoryKind,
     MemoryRecord,
+    MemoryUpdateRequest,
     RoleCreateRequest,
     RoleProfile,
     RoleUpdateRequest,
@@ -145,6 +146,30 @@ class RoleMemoryStore:
     The interface is intentionally small so the backend can move to SQLite,
     vector search, or an app-scoped provider without changing AgentEngine.
     """
+
+    _TERM_STOPWORDS = {
+        "the",
+        "and",
+        "for",
+        "that",
+        "this",
+        "with",
+        "user",
+        "users",
+        "我的",
+        "这个",
+        "那个",
+        "一下",
+        "帮我",
+        "用户",
+        "问题",
+        "提问",
+        "什么",
+        "怎么",
+        "可以",
+        "看看",
+    }
+    _ZH_STOP_CHARS = set("我你他她它的是了和吗呢吧啊哦嗯这那有在")
 
     def __init__(
         self,
@@ -297,10 +322,19 @@ class RoleMemoryStore:
         user_id: str | None = None,
         kind: MemoryKind,
         content: str,
+        scope: str = "user",
+        status: str = "active",
+        review_state: str = "manual",
         source: str = "manual",
         agent_id: str | None = None,
         confidence: float = 1.0,
         tags: list[str] | None = None,
+        source_trace: dict | None = None,
+        valid_from=None,
+        valid_until=None,
+        ttl_days: int | None = None,
+        sensitivity: str = "normal",
+        review_notes: str = "",
         metadata: dict | None = None,
     ) -> MemoryRecord:
         normalized_content = self._clean_content(content)
@@ -323,6 +357,16 @@ class RoleMemoryStore:
                 duplicate.updated_at = utc_now()
                 duplicate.confidence = max(duplicate.confidence, confidence)
                 duplicate.tags = sorted(set(duplicate.tags).union(tags or []))
+                duplicate.scope = scope or duplicate.scope
+                duplicate.status = status or duplicate.status
+                duplicate.review_state = review_state or duplicate.review_state
+                duplicate.source_trace.update(source_trace or {})
+                duplicate.valid_from = valid_from or duplicate.valid_from
+                duplicate.valid_until = valid_until or duplicate.valid_until
+                duplicate.ttl_days = ttl_days if ttl_days is not None else duplicate.ttl_days
+                duplicate.sensitivity = sensitivity or duplicate.sensitivity
+                duplicate.review_notes = review_notes or duplicate.review_notes
+                duplicate.version += 1
                 duplicate.metadata.update(metadata or {})
                 self._persist_locked()
                 return duplicate
@@ -333,11 +377,20 @@ class RoleMemoryStore:
                 role_id=role_id,
                 user_id=normalized_user_id,
                 kind=kind,
+                scope=scope,  # type: ignore[arg-type]
+                status=status,  # type: ignore[arg-type]
+                review_state=review_state,  # type: ignore[arg-type]
                 content=normalized_content,
                 source=source,
                 agent_id=agent_id,
                 confidence=confidence,
                 tags=tags or [],
+                source_trace=source_trace or {},
+                valid_from=valid_from,
+                valid_until=valid_until,
+                ttl_days=ttl_days,
+                sensitivity=sensitivity or "normal",
+                review_notes=review_notes,
                 created_at=now,
                 updated_at=now,
                 metadata=metadata or {},
@@ -355,6 +408,7 @@ class RoleMemoryStore:
         kind: MemoryKind | None = None,
         agent_id: str | None = None,
         include_shared: bool = True,
+        include_inactive: bool = False,
         limit: int | None = None,
     ) -> list[MemoryRecord]:
         with self._lock:
@@ -371,10 +425,76 @@ class RoleMemoryStore:
                 if record.agent_id == agent_id
                 or (include_shared and record.agent_id is None)
             ]
+        if not include_inactive:
+            records = [
+                record
+                for record in records
+                if self._memory_is_context_eligible(record)
+            ]
         records.sort(key=lambda record: record.updated_at, reverse=True)
         if limit is not None:
             return records[:limit]
         return records
+
+    def update_memory(
+        self,
+        *,
+        role_id: str,
+        memory_id: str,
+        request: MemoryUpdateRequest,
+    ) -> MemoryRecord:
+        normalized_user_id = self._normalize_user_id(request.user_id)
+        with self._lock:
+            if self.get_role(role_id, user_id=normalized_user_id) is None:
+                raise ValueError(f"unknown role: {role_id}")
+
+            record = self._find_memory_locked(
+                role_id=role_id,
+                memory_id=memory_id,
+                user_id=normalized_user_id,
+            )
+            if record is None:
+                raise ValueError(f"unknown memory: {memory_id}")
+
+            updates = request.model_dump(exclude_unset=True)
+            updates.pop("user_id", None)
+            metadata = updates.pop("metadata", None)
+            source_trace = updates.pop("source_trace", None)
+            content = updates.pop("content", None)
+            tags = updates.pop("tags", None)
+            confidence = updates.pop("confidence", None)
+
+            if content is not None:
+                normalized_content = self._clean_content(content)
+                if not normalized_content:
+                    raise ValueError("memory content cannot be empty")
+                record.content = normalized_content
+            if tags is not None:
+                record.tags = [
+                    str(tag).strip()
+                    for tag in tags
+                    if str(tag).strip()
+                ][:12]
+            if confidence is not None:
+                record.confidence = max(0.0, min(float(confidence), 1.0))
+            if metadata is not None:
+                record.metadata = {
+                    **record.metadata,
+                    **metadata,
+                }
+            if source_trace is not None:
+                record.source_trace = {
+                    **record.source_trace,
+                    **source_trace,
+                }
+
+            for field_name, value in updates.items():
+                if value is not None:
+                    setattr(record, field_name, value)
+            record.updated_at = utc_now()
+            record.version += 1
+            self._persist_locked()
+            return record
 
     def delete_memory(
         self,
@@ -406,6 +526,7 @@ class RoleMemoryStore:
         role_id: str,
         user_id: str | None = None,
         agent_id: str | None = None,
+        query: str | None = None,
     ) -> MemoryContext | None:
         role = self.get_role(role_id, user_id=user_id)
         if role is None:
@@ -429,6 +550,10 @@ class RoleMemoryStore:
             user_id=user_id,
             kind="long_term",
             agent_id=agent_id,
+        )
+        long_term_memories = self._select_relevant_memories(
+            long_term_memories,
+            query=query,
             limit=self._max_context_records,
         )
         context = MemoryContext(
@@ -436,12 +561,19 @@ class RoleMemoryStore:
             persona_memories=[*role_memories, *persona_memories],
             long_term_memories=long_term_memories,
         )
+        self._mark_used(context.records)
         context.rendered = self.render_context(context)
         return context
 
     def render_context(self, context: MemoryContext) -> str:
         role = context.role
-        lines = ["角色记忆：", f"- 角色 ID：{role.id}", f"- 角色名称：{role.name}"]
+        lines = ["长期记忆："]
+        if context.long_term_memories:
+            lines.extend(f"- {record.content}" for record in context.long_term_memories)
+        else:
+            lines.append("- 暂无。")
+
+        lines.extend(["", "角色记忆：", f"- 角色 ID：{role.id}", f"- 角色名称：{role.name}"])
         if role.description:
             lines.append(f"- 角色描述：{role.description}")
         if role.base_persona:
@@ -456,12 +588,6 @@ class RoleMemoryStore:
         if context.persona_memories:
             lines.append("- 用户更新的角色记忆：")
             lines.extend(f"  - {record.content}" for record in context.persona_memories)
-        if context.long_term_memories:
-            lines.append("")
-            lines.append("长期记忆：")
-            lines.extend(f"- {record.content}" for record in context.long_term_memories)
-        else:
-            lines.extend(["", "长期记忆：", "- 暂无。"])
         return "\n".join(lines)
 
     def _find_duplicate(
@@ -483,7 +609,123 @@ class RoleMemoryStore:
                 continue
             if self._normalize_for_dedupe(record.content) == normalized:
                 return record
+            if self._memory_similarity(record.content, content) >= 0.70:
+                return record
         return None
+
+    def _select_relevant_memories(
+        self,
+        records: list[MemoryRecord],
+        *,
+        query: str | None,
+        limit: int,
+    ) -> list[MemoryRecord]:
+        query_text = " ".join(str(query or "").split()).strip()
+        if not query_text:
+            return records[:limit]
+
+        scored = [
+            (self._memory_relevance_score(record, query_text), record)
+            for record in records
+        ]
+        relevant = [
+            (score, record)
+            for score, record in scored
+            if score > 0
+        ]
+        relevant.sort(key=lambda item: (item[0], item[1].updated_at), reverse=True)
+        return [record for _, record in relevant[:limit]]
+
+    def _memory_relevance_score(self, record: MemoryRecord, query: str) -> float:
+        query_terms = self._dedupe_terms(query)
+        if not query_terms:
+            return 0.0
+
+        content = " ".join(
+            [
+                record.content,
+                " ".join(record.tags),
+                str(record.metadata.get("reason") or ""),
+            ]
+        )
+        content_terms = self._dedupe_terms(content)
+        if not content_terms:
+            return 0.0
+
+        normalized_query = self._normalize_for_dedupe(query)
+        normalized_content = self._normalize_for_dedupe(content)
+        if len(normalized_query) >= 4 and normalized_query in normalized_content:
+            return 6.0
+
+        tag_terms = self._dedupe_terms(" ".join(record.tags))
+        overlap = query_terms.intersection(content_terms)
+        tag_overlap = query_terms.intersection(tag_terms)
+        if not overlap and not tag_overlap:
+            return 0.0
+        return float(len(overlap)) + float(len(tag_overlap) * 2)
+
+    @classmethod
+    def _memory_similarity(cls, left: str, right: str) -> float:
+        left_terms = cls._dedupe_terms(left)
+        right_terms = cls._dedupe_terms(right)
+        if not left_terms or not right_terms:
+            return 0.0
+        if cls._normalize_for_dedupe(left) in cls._normalize_for_dedupe(right):
+            return 1.0
+        if cls._normalize_for_dedupe(right) in cls._normalize_for_dedupe(left):
+            return 1.0
+        overlap = len(left_terms.intersection(right_terms))
+        union = len(left_terms.union(right_terms))
+        return overlap / union if union else 0.0
+
+    @classmethod
+    def _dedupe_terms(cls, value: str) -> set[str]:
+        text = cls._normalize_for_dedupe(value)
+        terms: set[str] = set()
+        for token in re.findall(r"[a-z0-9][a-z0-9_\-]{1,}", text):
+            if token not in cls._TERM_STOPWORDS:
+                terms.add(token)
+        for segment in re.findall(r"[\u4e00-\u9fff]+", text):
+            if len(segment) == 1:
+                if segment not in cls._ZH_STOP_CHARS:
+                    terms.add(segment)
+                continue
+            for size in (2, 3):
+                if len(segment) < size:
+                    continue
+                for index in range(0, len(segment) - size + 1):
+                    term = segment[index : index + size]
+                    if term not in cls._TERM_STOPWORDS:
+                        terms.add(term)
+        return terms
+
+    def _find_memory_locked(
+        self,
+        *,
+        role_id: str,
+        memory_id: str,
+        user_id: str,
+    ) -> MemoryRecord | None:
+        for record in self._records.get(role_id, []):
+            if record.id == memory_id and record.user_id == user_id:
+                return record
+        return None
+
+    def _mark_used(self, records: list[MemoryRecord]) -> None:
+        if not records:
+            return
+        now = utc_now()
+        for record in records:
+            record.last_used_at = now
+        with self._lock:
+            self._persist_locked()
+
+    def _memory_is_context_eligible(self, record: MemoryRecord) -> bool:
+        if record.status != "active":
+            return False
+        if record.valid_until is not None and record.valid_until <= utc_now():
+            return False
+        return True
 
     def _truncate(self, role_id: str, *, user_id: str) -> None:
         records = self._records[role_id]

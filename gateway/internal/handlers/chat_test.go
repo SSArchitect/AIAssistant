@@ -701,6 +701,100 @@ func TestStreamChatPersistsAssistantError(t *testing.T) {
 	}
 }
 
+func TestGetRunFallsBackToStoredTraceEvents(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	if err := database.Init(filepath.Join(t.TempDir(), "assistant.db")); err != nil {
+		t.Fatalf("init database: %v", err)
+	}
+
+	conv := models.Conversation{
+		ID:        "conv-stored-run",
+		UserID:    "user-a",
+		AgentID:   "super_chat",
+		Title:     "Stored Run",
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+	if err := database.DB.Create(&conv).Error; err != nil {
+		t.Fatalf("create conversation: %v", err)
+	}
+	userMsg := models.Message{
+		ConversationID: conv.ID,
+		UserID:         conv.UserID,
+		Role:           "user",
+		Content:        "hello",
+		CreatedAt:      time.Now().Add(-time.Second),
+	}
+	if err := database.DB.Create(&userMsg).Error; err != nil {
+		t.Fatalf("create user message: %v", err)
+	}
+	assistantMsg := models.Message{
+		ConversationID: conv.ID,
+		UserID:         conv.UserID,
+		Role:           "assistant",
+		Content:        "stored answer",
+		SkillsUsed:     `["memory"]`,
+		ModelUsed:      "test-model",
+		Runtime:        "self",
+		RunID:          "run_stored",
+		TraceEvents: `[{
+			"id":"evt_started",
+			"run_id":"run_stored",
+			"type":"run.started",
+			"status":"running",
+			"title":"Run started",
+			"payload":{"agent_id":"super_chat"},
+			"created_at":"2026-06-18T00:00:00Z"
+		},{
+			"id":"evt_done",
+			"run_id":"run_stored",
+			"type":"run.completed",
+			"status":"completed",
+			"title":"Run completed",
+			"payload":{},
+			"created_at":"2026-06-18T00:00:01Z"
+		}]`,
+		CreatedAt: time.Now(),
+	}
+	if err := database.DB.Create(&assistantMsg).Error; err != nil {
+		t.Fatalf("create assistant message: %v", err)
+	}
+
+	agentServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/agent/runs/run_stored" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		http.NotFound(w, r)
+	}))
+	defer agentServer.Close()
+
+	router := gin.New()
+	handler := NewChatHandler(bridge.NewAgentClient(agentServer.URL, time.Second))
+	router.GET("/api/runs/:id", handler.GetRun)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/runs/run_stored", nil)
+	req.Header.Set("X-User-ID", conv.UserID)
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("unexpected status %d: %s", recorder.Code, recorder.Body.String())
+	}
+	var run bridge.RunRecord
+	if err := json.Unmarshal(recorder.Body.Bytes(), &run); err != nil {
+		t.Fatalf("decode run: %v", err)
+	}
+	if run.RunID != "run_stored" || run.Input != "hello" || run.Output != "stored answer" {
+		t.Fatalf("unexpected stored run: %#v", run)
+	}
+	if run.Status != "completed" || len(run.Events) != 2 || run.Events[1].Type != "run.completed" {
+		t.Fatalf("expected stored trace events, got %#v", run.Events)
+	}
+	if len(run.SkillsUsed) != 1 || run.SkillsUsed[0] != "memory" {
+		t.Fatalf("expected stored skills, got %#v", run.SkillsUsed)
+	}
+}
+
 func TestStreamChatRecoversCompletedRunWithoutResponseEvent(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

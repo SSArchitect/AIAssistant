@@ -9,10 +9,21 @@ from .multimodal import content_to_plain_text, normalize_content_parts
 
 
 class OpenAIProvider(LLMProvider):
-    def __init__(self, api_key: str, model: str = "gpt-4o", base_url: str | None = None):
+    def __init__(
+        self,
+        api_key: str,
+        model: str = "gpt-4o",
+        base_url: str | None = None,
+        timeout_seconds: float | None = None,
+    ):
         kwargs = {"api_key": api_key}
         if base_url:
             kwargs["base_url"] = base_url
+        if timeout_seconds and timeout_seconds > 0:
+            kwargs["timeout"] = openai.Timeout(
+                timeout_seconds,
+                connect=timeout_seconds,
+            )
         self.client = openai.AsyncOpenAI(**kwargs)
         self.model = model
         self.provider_name = "openai"

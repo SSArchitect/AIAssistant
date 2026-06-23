@@ -19,13 +19,13 @@ const VIEW_COPY = {
     agents: ['views.agents.title', 'views.agents.subtitle'],
     tools: ['views.tools.title', 'views.tools.subtitle'],
     trace: ['views.trace.title', 'views.trace.subtitle'],
-    settings: ['views.settings.title', 'views.settings.subtitle'],
+    developer: ['views.developer.title', 'views.developer.subtitle'],
 };
 
 const I18N = {
     zh: {
         app: { name: '阿安的工作台' },
-        nav: { chat: 'Super Chat', pulse: '信息流', agents: 'Agents', tools: 'Tools', trace: 'Trace', runs: 'Runs', settings: 'Settings' },
+        nav: { chat: 'Super Chat', pulse: '信息流', agents: 'Agents', tools: 'Tools', trace: 'Trace', runs: 'Runs', developer: 'Developer' },
         sidebar: {
             navigation: '导航',
             pinned: '固定 Agent',
@@ -95,7 +95,7 @@ const I18N = {
             tools: { title: 'Tools', subtitle: '内置工具、参数和调用状态' },
             runs: { title: 'Runs', subtitle: '执行轨迹、事件和调试信息' },
             trace: { title: 'Trace', subtitle: '层级事件、节点详情与调试定位' },
-            settings: { title: 'Settings', subtitle: '模型、密钥和系统配置摘要' },
+            developer: { title: 'Developer', subtitle: 'Memory 系统、持久化记录和最近一轮注入信息' },
         },
         aigc: {
             formTitle: 'AI 生图',
@@ -140,6 +140,64 @@ const I18N = {
             deleteFailed: '删除失败：{message}',
             manual: '手动',
             ai: '对话',
+        },
+        developer: {
+            refresh: '刷新 Memory',
+            refreshing: '刷新中...',
+            storageTitle: '持久化边界',
+            storageDetail: '长期记忆和角色记忆由 RoleMemoryStore 持久化，默认写入 data/agent_memory.json；会话记忆是 ConversationMemory 的短期窗口/摘要。',
+            account: '帐号',
+            currentRole: '当前角色',
+            roles: '角色域',
+            records: '记录',
+            longTerm: '长期记忆',
+            rolePersona: '角色记忆',
+            shortTerm: '短期记忆',
+            shortTermDetail: '按 user_id + conversation_id 隔离，作为当前会话上下文窗口和摘要，不在本页的长期存量列表中展示。',
+            injectionOrder: '注入顺序',
+            injectionOrderDetail: '系统级配置 -> 记忆系统（长期记忆、角色记忆、短期摘要）-> 本轮模式与上下文块。',
+            inventoryTitle: '当前持久化 Memory',
+            lastRunTitle: '最近一轮 Memory 调试',
+            contextTitle: '本轮注入',
+            updatesTitle: '本轮新增',
+            empty: '暂无记录',
+            neverLoaded: '等待加载',
+            loadFailed: '加载 Memory 失败：{message}',
+            partialFailed: '部分角色读取失败：{message}',
+            noLastRun: '还没有捕获到本轮 memory_context 或 memory_updates。',
+            kindLongTerm: 'long_term · 长期',
+            kindRole: 'role · 角色',
+            kindPersona: 'persona · 人设兼容',
+            sourceManual: '手动',
+            sourceChat: '对话',
+            sourceUnknown: '未知来源',
+            confidence: '置信度',
+            metadata: 'Metadata',
+            currentScope: '当前角色域',
+            allScopes: '全部角色域',
+            persistentYes: '持久化',
+            persistentNo: '短期',
+            agentScope: 'Agent',
+            updatedAt: '更新',
+            createdAt: '创建',
+            lastUsed: '上次注入',
+            status: '状态',
+            reviewState: 'Review',
+            scope: 'Scope',
+            version: '版本',
+            sourceTrace: '来源 Trace',
+            edit: '编辑',
+            archive: '归档',
+            activate: '激活',
+            delete: '删除',
+            editPrompt: '编辑记忆内容',
+            deleteConfirm: '确定删除这条记忆？这个操作会从持久化存储移除它。',
+            updateFailed: '更新失败：{message}',
+            deleteFailed: '删除失败：{message}',
+            statusActive: 'active · 注入',
+            statusPending: 'pending_review · 待审',
+            statusArchived: 'archived · 不注入',
+            sourceHook: '自动抽取',
         },
         pulse: {
             topicsTitle: 'Topic 订阅',
@@ -358,7 +416,7 @@ const I18N = {
     },
     en: {
         app: { name: '阿安的工作台' },
-        nav: { chat: 'Super Chat', pulse: 'Info Flow', agents: 'Agents', tools: 'Tools', trace: 'Trace', runs: 'Runs', settings: 'Settings' },
+        nav: { chat: 'Super Chat', pulse: 'Info Flow', agents: 'Agents', tools: 'Tools', trace: 'Trace', runs: 'Runs', developer: 'Developer' },
         sidebar: {
             navigation: 'Navigation',
             pinned: 'Pinned Agents',
@@ -428,7 +486,7 @@ const I18N = {
             tools: { title: 'Tools', subtitle: 'Built-in tools, parameters, and execution status' },
             runs: { title: 'Runs', subtitle: 'Execution traces, events, and debugging details' },
             trace: { title: 'Trace', subtitle: 'Hierarchical events, node details, and debugging context' },
-            settings: { title: 'Settings', subtitle: 'Model, key, and system configuration summary' },
+            developer: { title: 'Developer', subtitle: 'Memory system, persisted records, and latest run injection' },
         },
         aigc: {
             formTitle: 'AI Image',
@@ -473,6 +531,64 @@ const I18N = {
             deleteFailed: 'Failed to delete: {message}',
             manual: 'Manual',
             ai: 'Chat',
+        },
+        developer: {
+            refresh: 'Refresh Memory',
+            refreshing: 'Refreshing...',
+            storageTitle: 'Persistence Boundary',
+            storageDetail: 'Long-term and role memories are persisted by RoleMemoryStore, defaulting to data/agent_memory.json. Conversation memory is a short-term window / summary in ConversationMemory.',
+            account: 'Account',
+            currentRole: 'Current Role',
+            roles: 'Role scopes',
+            records: 'Records',
+            longTerm: 'Long-term Memory',
+            rolePersona: 'Role Memory',
+            shortTerm: 'Short-term Memory',
+            shortTermDetail: 'Scoped by user_id + conversation_id as the active conversation window and summary; it is not listed in this persisted inventory.',
+            injectionOrder: 'Injection Order',
+            injectionOrderDetail: 'System config -> memory system (long-term, role memory, short-term summary) -> turn modes and context blocks.',
+            inventoryTitle: 'Current Persisted Memory',
+            lastRunTitle: 'Latest Run Memory Debug',
+            contextTitle: 'Injected This Turn',
+            updatesTitle: 'Stored This Turn',
+            empty: 'No records',
+            neverLoaded: 'Waiting to load',
+            loadFailed: 'Failed to load memory: {message}',
+            partialFailed: 'Some role scopes failed: {message}',
+            noLastRun: 'No memory_context or memory_updates captured yet.',
+            kindLongTerm: 'long_term · long-term',
+            kindRole: 'role · role',
+            kindPersona: 'persona · persona compat',
+            sourceManual: 'Manual',
+            sourceChat: 'Chat',
+            sourceUnknown: 'Unknown source',
+            confidence: 'Confidence',
+            metadata: 'Metadata',
+            currentScope: 'Current role scope',
+            allScopes: 'All role scopes',
+            persistentYes: 'Persisted',
+            persistentNo: 'Short-term',
+            agentScope: 'Agent',
+            updatedAt: 'Updated',
+            createdAt: 'Created',
+            lastUsed: 'Last injected',
+            status: 'Status',
+            reviewState: 'Review',
+            scope: 'Scope',
+            version: 'Version',
+            sourceTrace: 'Source Trace',
+            edit: 'Edit',
+            archive: 'Archive',
+            activate: 'Activate',
+            delete: 'Delete',
+            editPrompt: 'Edit memory content',
+            deleteConfirm: 'Delete this memory from persistent storage?',
+            updateFailed: 'Update failed: {message}',
+            deleteFailed: 'Delete failed: {message}',
+            statusActive: 'active · injected',
+            statusPending: 'pending_review · review',
+            statusArchived: 'archived · not injected',
+            sourceHook: 'Auto extracted',
         },
         pulse: {
             topicsTitle: 'Topic Subscriptions',
@@ -743,6 +859,7 @@ const MAX_ATTACHMENT_CHARS = 12000;
 const MAX_TOTAL_ATTACHMENT_CHARS = 24000;
 const ACTIVE_RUN_POLL_MS = 1500;
 const ACTIVE_RUN_MAX_POLLS = 240;
+const CONVERSATION_RENDER_CACHE_LIMIT = 20;
 const TEXT_ATTACHMENT_EXTENSIONS = new Set([
     'txt', 'md', 'markdown', 'csv', 'tsv', 'json', 'jsonl', 'yaml', 'yml',
     'xml', 'html', 'htm', 'log', 'ini', 'toml', 'env',
@@ -757,6 +874,7 @@ const VIDEO_ATTACHMENT_EXTENSIONS = new Set(['mp4', 'mov', 'webm', 'm4v', 'avi',
 let activeView = 'chat';
 let currentConversationId = null;
 let conversations = [];
+let conversationRenderCache = new Map();
 let agents = [];
 let tools = [];
 let runs = [];
@@ -775,6 +893,15 @@ let roleMemoryError = '';
 let roleMemoryStatusText = '';
 let roleMemorySaving = false;
 let roleMemoryDeletingIds = new Set();
+let developerMemoryState = {
+    memories: [],
+    loadedAt: '',
+    loading: false,
+    error: '',
+    partialErrors: [],
+};
+let developerMemoryMutatingIds = new Set();
+let lastMemoryDebug = null;
 let selectedRunId = '';
 let selectedTraceNodeId = '';
 let selectedTraceRunId = '';
@@ -855,6 +982,7 @@ const agentsGrid = document.getElementById('agents-grid');
 const toolsGrid = document.getElementById('tools-grid');
 const runList = document.getElementById('run-list');
 const runDetail = document.getElementById('run-detail');
+const developerWorkbench = document.getElementById('developer-workbench');
 const settingsGrid = document.getElementById('settings-grid');
 const pulseTopicForm = document.getElementById('pulse-topic-form');
 const pulseTopicInput = document.getElementById('pulse-topic-input');
@@ -971,6 +1099,7 @@ function applyI18n() {
 function setLanguage(language) {
     currentLanguage = language;
     localStorage.setItem(LANGUAGE_KEY, currentLanguage);
+    conversationRenderCache.clear();
     applyI18n();
     renderHealth();
     renderConversationList();
@@ -986,6 +1115,7 @@ function setLanguage(language) {
     renderAccountControls();
     renderRoleSelect();
     renderRoleMemoryList();
+    renderDeveloperView();
     renderModelSelect();
     updateTopbar();
     refreshWelcomeIfEmpty();
@@ -1939,6 +2069,7 @@ async function deleteConversation(id) {
     renderConversationList();
     try {
         await apiCall('DELETE', `/api/conversations/${encodeURIComponent(id)}`);
+        forgetConversationRender(id);
         conversations = conversations.filter((c) => c.id !== id);
         if (currentConversationId === id) {
             currentConversationId = null;
@@ -1987,6 +2118,7 @@ async function loadRoles() {
         roleMemoryError = t('roleMemory.loadFailed', { message: err.message });
         renderRoleSelect();
         renderRoleMemoryList();
+        renderDeveloperView();
     }
 }
 
@@ -2034,8 +2166,12 @@ function setCurrentRole(roleId, { refreshMemory = true } = {}) {
     saveCurrentRoleId();
     renderRoleSelect();
     roleMemoryStatusText = '';
+    renderDeveloperView();
     if (refreshMemory) {
         void loadRoleMemories();
+    }
+    if (activeView === 'developer') {
+        void loadDeveloperMemory();
     }
 }
 
@@ -2145,6 +2281,7 @@ async function saveRoleMemory() {
         roleMemoryInput.value = '';
         roleMemoryStatusText = t('roleMemory.saved');
         await loadRoleMemories();
+        if (activeView === 'developer') void loadDeveloperMemory();
     } catch (err) {
         roleMemoryError = t('roleMemory.saveFailed', { message: err.message });
         renderRoleMemoryList();
@@ -2162,12 +2299,442 @@ async function deleteRoleMemory(memoryId) {
         await apiCall('DELETE', `/api/roles/${encodeURIComponent(currentRoleId)}/memories/${encodeURIComponent(memoryId)}`);
         roleMemoryStatusText = '';
         await loadRoleMemories();
+        if (activeView === 'developer') void loadDeveloperMemory();
     } catch (err) {
         roleMemoryError = t('roleMemory.deleteFailed', { message: err.message });
         renderRoleMemoryList();
     } finally {
         roleMemoryDeletingIds.delete(memoryId);
         renderRoleMemoryList();
+    }
+}
+
+function developerRoleScopes() {
+    const selectable = selectableRoles();
+    if (selectable.length) return selectable;
+    return currentRoleId ? [{ id: currentRoleId, name: t('roleMemory.defaultRole'), enabled: true }] : [];
+}
+
+async function loadDeveloperMemory() {
+    if (!developerWorkbench) return;
+    if (!currentUserId) {
+        developerMemoryState = {
+            memories: [],
+            loadedAt: '',
+            loading: false,
+            error: '',
+            partialErrors: [],
+        };
+        renderDeveloperView();
+        return;
+    }
+
+    const scopes = developerRoleScopes();
+    if (!scopes.length) {
+        developerMemoryState = {
+            memories: [],
+            loadedAt: new Date().toISOString(),
+            loading: false,
+            error: '',
+            partialErrors: [],
+        };
+        renderDeveloperView();
+        return;
+    }
+
+    developerMemoryState = {
+        ...developerMemoryState,
+        loading: true,
+        error: '',
+        partialErrors: [],
+    };
+    renderDeveloperView();
+
+    const results = await Promise.allSettled(scopes.map(async (role) => {
+        const data = await apiCall('GET', `/api/roles/${encodeURIComponent(role.id)}/memories?include_inactive=true`);
+        const memories = Array.isArray(data.memories) ? data.memories : [];
+        return memories.map((memory) => ({
+            ...memory,
+            role_id: memory.role_id || role.id,
+        }));
+    }));
+
+    const memories = [];
+    const partialErrors = [];
+    results.forEach((result, index) => {
+        if (result.status === 'fulfilled') {
+            memories.push(...result.value);
+            return;
+        }
+        const role = scopes[index];
+        partialErrors.push(`${role?.id || 'role'}: ${result.reason?.message || result.reason || 'failed'}`);
+    });
+
+    memories.sort((a, b) => new Date(b.updated_at || b.created_at || 0) - new Date(a.updated_at || a.created_at || 0));
+    developerMemoryState = {
+        memories,
+        loadedAt: new Date().toISOString(),
+        loading: false,
+        error: memories.length || partialErrors.length < scopes.length
+            ? ''
+            : t('developer.loadFailed', { message: partialErrors.join('; ') || 'unknown error' }),
+        partialErrors: partialErrors.length < scopes.length ? partialErrors : [],
+    };
+    renderDeveloperView();
+}
+
+function captureMemoryDebug(resp = {}, conversationId = '') {
+    const context = Array.isArray(resp.memory_context) ? resp.memory_context : [];
+    const updates = Array.isArray(resp.memory_updates) ? resp.memory_updates : [];
+    const events = (Array.isArray(resp.events) ? resp.events : [])
+        .filter((event) => String(event?.type || '').startsWith('memory.'));
+
+    if (!context.length && !updates.length && !events.length) return;
+    lastMemoryDebug = {
+        runId: resp.run_id || '',
+        conversationId: resp.conversation_id || conversationId || currentConversationId || '',
+        roleId: resp.role_id || currentRoleId || '',
+        agentId: resp.agent_id || currentAgentId || '',
+        modelUsed: resp.model_used || '',
+        capturedAt: new Date().toISOString(),
+        context,
+        updates,
+        events,
+    };
+    renderDeveloperView();
+}
+
+function renderDeveloperView() {
+    if (!developerWorkbench) return;
+
+    const memories = developerMemoryState.memories || [];
+    const longTermCount = memories.filter((memory) => memory.kind === 'long_term').length;
+    const roleMemoryCount = memories.filter((memory) => memory.kind === 'role' || memory.kind === 'persona').length;
+    const scopes = developerRoleScopes();
+    const currentRole = roles.find((role) => role.id === currentRoleId) || null;
+    const currentRoleName = currentRole ? roleDisplayName(currentRole) : (currentRoleId || t('roleMemory.defaultRole'));
+    const refreshLabel = developerMemoryState.loading ? t('developer.refreshing') : t('developer.refresh');
+    const partialWarning = developerMemoryState.partialErrors?.length
+        ? `<div class="developer-banner warn">${escapeHtml(t('developer.partialFailed', { message: developerMemoryState.partialErrors.join('; ') }))}</div>`
+        : '';
+    const errorBannerHtml = developerMemoryState.error
+        ? `<div class="developer-banner error">${escapeHtml(developerMemoryState.error)}</div>`
+        : '';
+
+    developerWorkbench.innerHTML = `
+        <div class="developer-toolbar">
+            <div>
+                <h2>${escapeHtml(t('developer.storageTitle'))}</h2>
+                <p>${escapeHtml(t('developer.storageDetail'))}</p>
+            </div>
+            <button class="btn-secondary" type="button" data-developer-refresh ${developerMemoryState.loading ? 'disabled aria-busy="true"' : ''}>
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.3">
+                    <path d="M21 12a9 9 0 0 1-9 9 9.8 9.8 0 0 1-6.7-2.7"/>
+                    <path d="M3 12a9 9 0 0 1 9-9 9.8 9.8 0 0 1 6.7 2.7"/>
+                    <path d="M3 20v-5h5M21 4v5h-5"/>
+                </svg>
+                <span>${escapeHtml(refreshLabel)}</span>
+            </button>
+        </div>
+        <div class="developer-summary-grid">
+            ${renderDeveloperSummaryCard(t('developer.account'), currentUserId || '-', t('developer.persistentYes'))}
+            ${renderDeveloperSummaryCard(t('developer.currentRole'), currentRoleName, currentRoleId || '-')}
+            ${renderDeveloperSummaryCard(t('developer.roles'), String(scopes.length), t('developer.allScopes'))}
+            ${renderDeveloperSummaryCard(t('developer.records'), String(memories.length), `${t('developer.longTerm')} ${longTermCount} / ${t('developer.rolePersona')} ${roleMemoryCount}`)}
+        </div>
+        <section class="developer-panel developer-memory-model">
+            <div class="developer-memory-type persistent">
+                <span class="status-chip ok">${escapeHtml(t('developer.persistentYes'))}</span>
+                <h3>${escapeHtml(t('developer.longTerm'))}</h3>
+                <p>${escapeHtml(memoryKindExplanation('long_term'))}</p>
+            </div>
+            <div class="developer-memory-type persistent">
+                <span class="status-chip neutral">${escapeHtml(t('developer.persistentYes'))}</span>
+                <h3>${escapeHtml(t('developer.rolePersona'))}</h3>
+                <p>${escapeHtml(memoryKindExplanation('role'))}</p>
+            </div>
+            <div class="developer-memory-type short-term">
+                <span class="status-chip warn">${escapeHtml(t('developer.persistentNo'))}</span>
+                <h3>${escapeHtml(t('developer.shortTerm'))}</h3>
+                <p>${escapeHtml(t('developer.shortTermDetail'))}</p>
+            </div>
+            <div class="developer-memory-type">
+                <span class="status-chip neutral">${escapeHtml(t('developer.injectionOrder'))}</span>
+                <h3>${escapeHtml(t('developer.injectionOrder'))}</h3>
+                <p>${escapeHtml(t('developer.injectionOrderDetail'))}</p>
+            </div>
+        </section>
+        ${errorBannerHtml}
+        ${partialWarning}
+        ${renderDeveloperInventory(memories)}
+        ${renderDeveloperLastRun()}
+    `;
+}
+
+function renderDeveloperSummaryCard(label, value, detail) {
+    return `
+        <div class="developer-summary-card">
+            <span>${escapeHtml(label)}</span>
+            <strong>${escapeHtml(value)}</strong>
+            <small>${escapeHtml(detail || '')}</small>
+        </div>
+    `;
+}
+
+function renderDeveloperInventory(memories = []) {
+    const longTerm = memories.filter((memory) => memory.kind === 'long_term');
+    const rolePersona = memories.filter((memory) => memory.kind === 'role' || memory.kind === 'persona');
+    const other = memories.filter((memory) => memory.kind !== 'long_term' && memory.kind !== 'role' && memory.kind !== 'persona');
+    const loadedText = developerMemoryState.loadedAt
+        ? formatFullTime(developerMemoryState.loadedAt)
+        : t('developer.neverLoaded');
+
+    return `
+        <section class="developer-panel">
+            <div class="developer-panel-head">
+                <div>
+                    <h2>${escapeHtml(t('developer.inventoryTitle'))}</h2>
+                    <p>${escapeHtml(`${t('developer.updatedAt')}: ${loadedText}`)}</p>
+                </div>
+                <span class="section-count">${memories.length}</span>
+            </div>
+            <div class="developer-memory-columns">
+                ${renderDeveloperMemoryGroup(t('developer.longTerm'), longTerm)}
+                ${renderDeveloperMemoryGroup(t('developer.rolePersona'), rolePersona)}
+                ${other.length ? renderDeveloperMemoryGroup('Other', other) : ''}
+            </div>
+        </section>
+    `;
+}
+
+function renderDeveloperMemoryGroup(title, memories = []) {
+    return `
+        <div class="developer-memory-group">
+            <div class="developer-memory-group-head">
+                <h3>${escapeHtml(title)}</h3>
+                <span>${memories.length}</span>
+            </div>
+            <div class="developer-memory-list">
+                ${memories.length
+                    ? memories.map((memory) => renderDeveloperMemoryRecord(memory)).join('')
+                    : `<div class="empty-inline">${escapeHtml(t('developer.empty'))}</div>`}
+            </div>
+        </div>
+    `;
+}
+
+function renderDeveloperMemoryRecord(memory = {}) {
+    const roleName = memoryRoleLabel(memory.role_id);
+    const kind = memoryKindLabel(memory.kind);
+    const source = memorySourceLabel(memory.source);
+    const updated = formatFullTime(memory.updated_at || memory.created_at || '');
+    const created = formatFullTime(memory.created_at || '');
+    const lastUsed = formatFullTime(memory.last_used_at || '');
+    const status = memoryStatusLabel(memory.status || 'active');
+    const confidence = Number.isFinite(Number(memory.confidence))
+        ? `${t('developer.confidence')} ${Number(memory.confidence).toFixed(2)}`
+        : '';
+    const agent = memory.agent_id ? `${t('developer.agentScope')}: ${memory.agent_id}` : '';
+    const tags = Array.isArray(memory.tags) ? memory.tags.filter(Boolean) : [];
+    const busy = developerMemoryMutatingIds.has(memory.id);
+    const metadata = memory.metadata && typeof memory.metadata === 'object' && Object.keys(memory.metadata).length
+        ? `<details class="developer-memory-metadata">
+                <summary>${escapeHtml(t('developer.metadata'))}</summary>
+                <pre>${escapeHtml(JSON.stringify(memory.metadata, null, 2))}</pre>
+           </details>`
+        : '';
+    const sourceTrace = memory.source_trace && typeof memory.source_trace === 'object' && Object.keys(memory.source_trace).length
+        ? `<details class="developer-memory-metadata">
+                <summary>${escapeHtml(t('developer.sourceTrace'))}</summary>
+                <pre>${escapeHtml(JSON.stringify(memory.source_trace, null, 2))}</pre>
+           </details>`
+        : '';
+    const archiveAction = memory.status === 'archived'
+        ? `<button class="developer-memory-action" type="button" data-developer-memory-status="active" data-developer-memory-role="${escapeAttr(memory.role_id || currentRoleId || '')}" data-developer-memory-id="${escapeAttr(memory.id || '')}" ${busy ? 'disabled' : ''}>${escapeHtml(t('developer.activate'))}</button>`
+        : `<button class="developer-memory-action" type="button" data-developer-memory-status="archived" data-developer-memory-role="${escapeAttr(memory.role_id || currentRoleId || '')}" data-developer-memory-id="${escapeAttr(memory.id || '')}" ${busy ? 'disabled' : ''}>${escapeHtml(t('developer.archive'))}</button>`;
+
+    return `
+        <article class="developer-memory-record ${memory.kind === 'long_term' ? 'long-term' : ''}">
+            <div class="developer-memory-record-head">
+                <span class="status-chip ${memoryStatusChipClass(memory.status || 'active')}">${escapeHtml(status)}</span>
+                <code title="${escapeAttr(memory.id || '')}">${escapeHtml(shortDebugId(memory.id || ''))}</code>
+            </div>
+            <div class="developer-memory-record-subhead">
+                <span>${escapeHtml(kind)}</span>
+                <span>${escapeHtml(t('developer.version'))} ${escapeHtml(String(memory.version || 1))}</span>
+            </div>
+            <p>${escapeHtml(memory.content || '')}</p>
+            <div class="developer-memory-meta">
+                <span>${escapeHtml(roleName)}</span>
+                <span>${escapeHtml(source)}</span>
+                <span>${escapeHtml(t('developer.scope'))}: ${escapeHtml(memory.scope || 'user')}</span>
+                <span>${escapeHtml(t('developer.reviewState'))}: ${escapeHtml(memory.review_state || 'manual')}</span>
+                ${updated ? `<span>${escapeHtml(t('developer.updatedAt'))}: ${escapeHtml(updated)}</span>` : ''}
+                ${created ? `<span>${escapeHtml(t('developer.createdAt'))}: ${escapeHtml(created)}</span>` : ''}
+                ${lastUsed ? `<span>${escapeHtml(t('developer.lastUsed'))}: ${escapeHtml(lastUsed)}</span>` : ''}
+                ${confidence ? `<span>${escapeHtml(confidence)}</span>` : ''}
+                ${agent ? `<span>${escapeHtml(agent)}</span>` : ''}
+            </div>
+            ${tags.length ? `<div class="chip-row">${tags.map((tag) => `<span class="chip">${escapeHtml(tag)}</span>`).join('')}</div>` : ''}
+            <div class="developer-memory-actions">
+                <button class="developer-memory-action" type="button" data-developer-memory-edit="${escapeAttr(memory.id || '')}" data-developer-memory-role="${escapeAttr(memory.role_id || currentRoleId || '')}" ${busy ? 'disabled' : ''}>${escapeHtml(t('developer.edit'))}</button>
+                ${archiveAction}
+                <button class="developer-memory-action danger" type="button" data-developer-memory-delete="${escapeAttr(memory.id || '')}" data-developer-memory-role="${escapeAttr(memory.role_id || currentRoleId || '')}" ${busy ? 'disabled' : ''}>${escapeHtml(t('developer.delete'))}</button>
+            </div>
+            ${sourceTrace}
+            ${metadata}
+        </article>
+    `;
+}
+
+function renderDeveloperLastRun() {
+    if (!lastMemoryDebug) {
+        return `
+            <section class="developer-panel">
+                <div class="developer-panel-head">
+                    <div>
+                        <h2>${escapeHtml(t('developer.lastRunTitle'))}</h2>
+                        <p>${escapeHtml(t('developer.noLastRun'))}</p>
+                    </div>
+                </div>
+            </section>
+        `;
+    }
+
+    const eventPayload = lastMemoryDebug.events?.length
+        ? renderTraceJsonSection('Memory Events', lastMemoryDebug.events.map((event) => ({
+            type: event.type,
+            status: event.status,
+            title: event.title,
+            payload: event.payload || {},
+        })))
+        : '';
+
+    return `
+        <section class="developer-panel">
+            <div class="developer-panel-head">
+                <div>
+                    <h2>${escapeHtml(t('developer.lastRunTitle'))}</h2>
+                    <p>${escapeHtml(formatFullTime(lastMemoryDebug.capturedAt))}</p>
+                </div>
+                <span class="section-count">${(lastMemoryDebug.context || []).length + (lastMemoryDebug.updates || []).length}</span>
+            </div>
+            <div class="meta-row developer-run-meta">
+                ${lastMemoryDebug.runId ? `<span>Run ${escapeHtml(shortRunId(lastMemoryDebug.runId))}</span>` : ''}
+                ${lastMemoryDebug.conversationId ? `<span>${escapeHtml(lastMemoryDebug.conversationId)}</span>` : ''}
+                ${lastMemoryDebug.roleId ? `<span>${escapeHtml(t('developer.currentRole'))}: ${escapeHtml(lastMemoryDebug.roleId)}</span>` : ''}
+                ${lastMemoryDebug.agentId ? `<span>${escapeHtml(t('developer.agentScope'))}: ${escapeHtml(lastMemoryDebug.agentId)}</span>` : ''}
+                ${lastMemoryDebug.modelUsed ? `<span>${escapeHtml(lastMemoryDebug.modelUsed)}</span>` : ''}
+            </div>
+            <div class="developer-memory-columns">
+                ${renderDeveloperMemoryGroup(t('developer.contextTitle'), lastMemoryDebug.context || [])}
+                ${renderDeveloperMemoryGroup(t('developer.updatesTitle'), lastMemoryDebug.updates || [])}
+            </div>
+            ${eventPayload}
+        </section>
+    `;
+}
+
+function memoryKindLabel(kind = '') {
+    if (kind === 'long_term') return t('developer.kindLongTerm');
+    if (kind === 'persona') return t('developer.kindPersona');
+    if (kind === 'role') return t('developer.kindRole');
+    return kind || 'memory';
+}
+
+function memoryKindExplanation(kind = '') {
+    if (kind === 'long_term') {
+        return currentLanguage === 'zh'
+            ? '跨会话稳定事实、偏好、持续项目和长期目标；这是当前系统里的长期记忆。'
+            : 'Stable cross-conversation facts, preferences, ongoing projects, and long-term goals. This is the long-term memory layer.';
+    }
+    return currentLanguage === 'zh'
+        ? '用户对助手角色、语气和工作方式的长期调整；persona 是兼容旧 kind 的角色记忆。'
+        : 'Durable user adjustments to assistant role, tone, and working style. persona is the compatibility kind for role memory.';
+}
+
+function memorySourceLabel(source = '') {
+    if (source === 'manual') return t('developer.sourceManual');
+    if (source === 'hook') return t('developer.sourceHook');
+    if (source === 'ai' || source === 'chat') return t('developer.sourceChat');
+    return source || t('developer.sourceUnknown');
+}
+
+function memoryStatusLabel(status = '') {
+    if (status === 'active') return t('developer.statusActive');
+    if (status === 'pending_review') return t('developer.statusPending');
+    if (status === 'archived') return t('developer.statusArchived');
+    return status || t('developer.statusActive');
+}
+
+function memoryStatusChipClass(status = '') {
+    if (status === 'active') return 'ok';
+    if (status === 'archived') return 'neutral';
+    if (status === 'pending_review') return 'warn';
+    return 'neutral';
+}
+
+function memoryRoleLabel(roleId = '') {
+    if (!roleId) return t('roleMemory.defaultRole');
+    const role = roles.find((item) => item.id === roleId);
+    const name = role ? roleDisplayName(role) : roleId;
+    return roleId === currentRoleId
+        ? `${name} · ${t('developer.currentScope')}`
+        : name;
+}
+
+async function updateDeveloperMemory(roleId, memoryId, patch = {}) {
+    if (!roleId || !memoryId || developerMemoryMutatingIds.has(memoryId)) return;
+    developerMemoryMutatingIds.add(memoryId);
+    renderDeveloperView();
+    try {
+        await apiCall('PUT', `/api/roles/${encodeURIComponent(roleId)}/memories/${encodeURIComponent(memoryId)}`, patch);
+        await loadDeveloperMemory();
+        if (roleId === currentRoleId) await loadRoleMemories();
+    } catch (err) {
+        developerMemoryState = {
+            ...developerMemoryState,
+            error: t('developer.updateFailed', { message: err.message }),
+        };
+        renderDeveloperView();
+    } finally {
+        developerMemoryMutatingIds.delete(memoryId);
+        renderDeveloperView();
+    }
+}
+
+async function editDeveloperMemory(roleId, memoryId) {
+    const memory = (developerMemoryState.memories || []).find((item) => item.id === memoryId);
+    if (!memory) return;
+    const nextContent = window.prompt(t('developer.editPrompt'), memory.content || '');
+    if (nextContent === null) return;
+    const content = nextContent.trim();
+    if (!content || content === (memory.content || '').trim()) return;
+    await updateDeveloperMemory(roleId, memoryId, {
+        content,
+        review_state: 'reviewed',
+        review_notes: 'Edited from Developer view',
+    });
+}
+
+async function deleteDeveloperMemory(roleId, memoryId) {
+    if (!roleId || !memoryId || developerMemoryMutatingIds.has(memoryId)) return;
+    if (!window.confirm(t('developer.deleteConfirm'))) return;
+    developerMemoryMutatingIds.add(memoryId);
+    renderDeveloperView();
+    try {
+        await apiCall('DELETE', `/api/roles/${encodeURIComponent(roleId)}/memories/${encodeURIComponent(memoryId)}`);
+        await loadDeveloperMemory();
+        if (roleId === currentRoleId) await loadRoleMemories();
+    } catch (err) {
+        developerMemoryState = {
+            ...developerMemoryState,
+            error: t('developer.deleteFailed', { message: err.message }),
+        };
+        renderDeveloperView();
+    } finally {
+        developerMemoryMutatingIds.delete(memoryId);
+        renderDeveloperView();
     }
 }
 
@@ -2409,6 +2976,7 @@ async function refreshAll() {
         loadSettings(),
         loadPulse(),
     ]);
+    if (activeView === 'developer') await loadDeveloperMemory();
     renderModes();
     updateTopbar();
 }
@@ -2459,7 +3027,10 @@ function setView(view, options = {}) {
     if (view === 'trace' && !options.skipLoad) loadRuns();
     if (view === 'tools') renderTools();
     if (view === 'agents') renderAgents();
-    if (view === 'settings') renderSettings();
+    if (view === 'developer') {
+        renderDeveloperView();
+        if (!options.skipLoad) loadDeveloperMemory();
+    }
     if (view === 'pulse') {
         renderPulse();
         if (!pulse.items.length && !pulseError) loadPulse();
@@ -3606,21 +4177,33 @@ function attachTraceEvent(state, event = {}, index = 0) {
     const type = event.type || '';
     const payload = event.payload || {};
 
-    if (type === 'aigc.plan.created') {
-        const planNode = ensurePlanNode(state);
+    if (type === 'aigc.plan.created' || type === 'thinking.plan.created') {
+        const planNode = ensurePlanNode(state, type.startsWith('thinking.') ? 'thinking' : 'aigc');
         registerPlanSteps(state, payload.steps || []);
         addTraceEventLeaf(state, planNode, event, index);
         return;
     }
 
-    if (type.startsWith('aigc.plan.step.')) {
+    if (type.startsWith('aigc.plan.step.') || type.startsWith('thinking.step.')) {
         const stepNode = ensurePlanStepNode(state, payload.step || event.step_id || 'unknown');
         addTraceEventLeaf(state, stepNode, event, index);
         return;
     }
 
-    if (type === 'aigc.plan.completed') {
-        addTraceEventLeaf(state, ensurePlanNode(state), event, index);
+    if (type === 'aigc.plan.completed' || type === 'thinking.plan.started') {
+        addTraceEventLeaf(state, ensurePlanNode(state, type.startsWith('thinking.') ? 'thinking' : 'aigc'), event, index);
+        return;
+    }
+
+    if (type.startsWith('thinking.summary.')) {
+        const stage = ensureStageNode(
+            state,
+            state.planNode || ensureExecutionStageNode(state),
+            'thinking-summary',
+            traceCopy('思考汇总', 'Thinking Summary'),
+            traceCopy('合并计划步骤、工具结果和风险', 'Combine plan steps, tool results, and risks'),
+        );
+        addTraceEventLeaf(state, stage, event, index);
         return;
     }
 
@@ -3763,16 +4346,20 @@ function attachTraceEvent(state, event = {}, index = 0) {
     }
 
     if (type.startsWith('memory.') || type === 'context.built') {
+        const contextStage = ensureStageNode(
+            state,
+            state.root,
+            'context',
+            traceCopy('上下文与记忆', 'Context & Memory'),
+            traceCopy('角色记忆、Prompt 和会话上下文', 'Role memory, prompt, and conversation context'),
+            { stageType: 'context' },
+        );
+        if (type === 'context.built') {
+            attachContextTraceNodes(state, contextStage, payload.context_nodes || []);
+        }
         addTraceEventLeaf(
             state,
-            ensureStageNode(
-                state,
-                state.root,
-                'context',
-                traceCopy('上下文与记忆', 'Context & Memory'),
-                traceCopy('角色记忆、Prompt 和会话上下文', 'Role memory, prompt, and conversation context'),
-                { stageType: 'context' },
-            ),
+            contextStage,
             event,
             index,
         );
@@ -3833,13 +4420,13 @@ function ensureExecutionStageNode(state) {
     );
 }
 
-function ensurePlanNode(state) {
+function ensurePlanNode(state, scope = 'workflow') {
     if (!state.planNode) {
-        state.planNode = ensureTraceChild(state, state.root, `${state.root.id}:plan:aigc`, {
+        state.planNode = ensureTraceChild(state, state.root, `${state.root.id}:plan:${scope}`, {
             kind: 'plan',
             label: t('trace.plan'),
             detail: '',
-            meta: { steps: [], run: state.run },
+            meta: { steps: [], run: state.run, scope },
         });
     }
     return state.planNode;
@@ -3896,6 +4483,51 @@ function ensureToolNode(state, parent, event) {
         detail: event.step_id || payload.tool_call_id || '',
         meta: { toolName: name, stepId: key },
     });
+}
+
+function attachContextTraceNodes(state, parent, nodes = []) {
+    if (!Array.isArray(nodes)) return;
+    nodes.forEach((contextNode, index) => {
+        if (!contextNode || typeof contextNode !== 'object') return;
+        const type = contextNode.type || 'context';
+        const label = contextNodeLabel(contextNode);
+        const detail = contextNodeDetail(contextNode);
+        const node = ensureTraceChild(state, parent, `${parent.id}:context:${contextNode.id || `${type}:${index}`}`, {
+            kind: 'context-node',
+            label,
+            detail,
+            status: contextNode.injected === false ? 'neutral' : 'completed',
+            meta: { contextNode },
+        });
+        attachContextTraceNodes(state, node, contextNode.children || []);
+    });
+}
+
+function contextNodeLabel(node = {}) {
+    const type = node.type || '';
+    const labels = {
+        system_prompt: traceCopy('System / Developer Prompt', 'System / Developer Prompt'),
+        prompt_section: node.label || traceCopy('Prompt Section', 'Prompt Section'),
+        long_term_memory: traceCopy('长期记忆', 'Long-term Memory'),
+        role_persona_memory: traceCopy('角色 / 人设记忆', 'Role / Persona Memory'),
+        short_term_memory: traceCopy('短期会话记忆', 'Short-term Conversation Memory'),
+        conversation_window: traceCopy('当前对话窗口', 'Current Conversation Window'),
+        turn_context: traceCopy('本轮附加上下文', 'Turn Context Blocks / Attachments'),
+        context_block: node.label || traceCopy('Context Block', 'Context Block'),
+        tool_definitions: traceCopy('工具定义', 'Tool Definitions'),
+    };
+    return labels[type] || node.label || type || traceCopy('上下文节点', 'Context Node');
+}
+
+function contextNodeDetail(node = {}) {
+    const parts = [];
+    if (node.injected === false) parts.push(traceCopy('未注入', 'not injected'));
+    if (node.record_count != null) parts.push(traceCopy(`记录 ${node.record_count}`, `${node.record_count} records`));
+    if (node.message_count != null) parts.push(traceCopy(`消息 ${node.message_count}`, `${node.message_count} messages`));
+    if (node.block_count != null) parts.push(traceCopy(`块 ${node.block_count}`, `${node.block_count} blocks`));
+    if (node.tools_count != null) parts.push(traceCopy(`工具 ${node.tools_count}`, `${node.tools_count} tools`));
+    if (node.token_estimate != null) parts.push(traceCopy(`约 ${node.token_estimate} tokens`, `~${node.token_estimate} tokens`));
+    return parts.join(' / ');
 }
 
 function traceToolKey(event = {}) {
@@ -4012,6 +4644,12 @@ function traceEventDisplay(event = {}) {
     if (type === 'aigc.plan.step.started') return { label: traceCopy(`开始：${stepTitle}`, `Started: ${stepTitle}`), detail: payload.step || event.step_id || '' };
     if (type === 'aigc.plan.step.completed') return { label: traceCopy(`完成：${stepTitle}`, `Completed: ${stepTitle}`), detail: tracePlanStepEventSummary(payload) };
     if (type === 'aigc.plan.step.failed') return { label: traceCopy(`失败：${stepTitle}`, `Failed: ${stepTitle}`), detail: payload.error_message || '' };
+    if (type === 'thinking.plan.started') return { label: traceCopy('思考计划开始', 'Thinking plan started'), detail: traceCopy(`${payload.max_steps || 0} 个步骤上限`, `${payload.max_steps || 0} step limit`) };
+    if (type === 'thinking.plan.created') return { label: traceCopy('思考计划已创建', 'Thinking plan created'), detail: traceCopy(`${(payload.steps || []).length} 个步骤`, `${(payload.steps || []).length} steps`) };
+    if (type === 'thinking.step.started') return { label: traceCopy(`开始：${stepTitle}`, `Started: ${stepTitle}`), detail: payload.step_type || payload.step || event.step_id || '' };
+    if (type === 'thinking.step.completed') return { label: traceCopy(`完成：${stepTitle}`, `Completed: ${stepTitle}`), detail: tracePlanStepEventSummary(payload) };
+    if (type === 'thinking.step.failed') return { label: traceCopy(`失败：${stepTitle}`, `Failed: ${stepTitle}`), detail: payload.error_message || payload.result_preview || '' };
+    if (type === 'thinking.summary.completed') return { label: traceCopy('思考汇总完成', 'Thinking summary completed'), detail: traceCopy(`来源 ${payload.citation_count || 0} / 工具 ${(payload.skills_used || []).length}`, `${payload.citation_count || 0} citations / ${(payload.skills_used || []).length} tools`) };
 
     if (type === 'aigc.command.received') return { label: traceCopy('解析生图命令', 'Parsed image command'), detail: `/${payload.command || payload.raw_command || ''}` };
     if (type === 'aigc.research.started') return { label: traceCopy('资料检索开始', 'Research started'), detail: traceCopy(`${payload.tools_count || 0} 个可用工具`, `${payload.tools_count || 0} tools`) };
@@ -4165,6 +4803,9 @@ function renderTraceNodeDetails(node, run) {
     if (node.kind === 'tool') {
         return renderToolNodeDetails(node);
     }
+    if (node.kind === 'context-node') {
+        return renderContextNodeDetails(node);
+    }
     if (node.kind === 'stage') {
         return renderStageNodeDetails(node);
     }
@@ -4302,6 +4943,7 @@ function renderModelNodeDetails(node) {
         ${renderTraceDetailHead(t('trace.modelCall'), node.label, node.detail, node.status)}
         ${renderTraceDetailGrid(rows)}
         ${renderTraceJsonSection(t('trace.input'), compactObject(input))}
+        ${startPayload.final_model_request ? renderFinalModelRequest(startPayload.final_model_request) : ''}
         ${finishPayload.content_preview ? renderTraceTextSection(t('trace.output'), finishPayload.content_preview) : ''}
         ${renderTraceJsonSection(t('trace.result'), compactObject(result))}
         ${renderTraceChildList(node)}
@@ -4340,6 +4982,52 @@ function renderToolNodeDetails(node) {
     `;
 }
 
+function renderContextNodeDetails(node) {
+    const contextNode = node.meta?.contextNode || {};
+    const rows = [
+        ['Node', node.id],
+        ['Type', contextNode.type || 'context'],
+        ['Injected', contextNode.injected === false ? 'false' : 'true'],
+        ['Persistent', contextNode.persistent == null ? '' : String(Boolean(contextNode.persistent))],
+        ['Records', contextNode.record_count == null ? '' : String(contextNode.record_count)],
+        ['Messages', contextNode.message_count == null ? '' : String(contextNode.message_count)],
+        ['Blocks', contextNode.block_count == null ? '' : String(contextNode.block_count)],
+        ['Tools', contextNode.tools_count == null ? '' : String(contextNode.tools_count)],
+        ['Token estimate', contextNode.token_estimate == null ? '' : String(contextNode.token_estimate)],
+    ];
+    const records = Array.isArray(contextNode.records) ? contextNode.records : [];
+    const messages = Array.isArray(contextNode.messages) ? contextNode.messages : [];
+    const toolNames = Array.isArray(contextNode.tool_names) ? contextNode.tool_names : [];
+
+    return `
+        ${renderTraceDetailHead(traceCopy('上下文节点', 'Context Node'), node.label, node.detail, node.status)}
+        ${renderTraceDetailGrid(rows)}
+        ${contextNode.content ? renderTraceDisclosureSection(traceCopy('完整内容', 'Full Content'), contextNode.content, { pre: true }) : ''}
+        ${contextNode.summary ? renderTraceTextSection(traceCopy('摘要', 'Summary'), contextNode.summary) : ''}
+        ${contextNode.preview ? renderTraceTextSection(traceCopy('预览', 'Preview'), contextNode.preview) : ''}
+        ${records.length ? renderTraceMemoryRecordList(records) : ''}
+        ${messages.length ? renderTraceJsonSection(traceCopy('对话消息', 'Conversation Messages'), messages.map((message) => compactObject(message))) : ''}
+        ${toolNames.length ? renderTraceListSection(traceCopy('工具', 'Tools'), toolNames.map((name) => ({ title: name, detail: '' }))) : ''}
+        ${contextNode.role ? renderTraceJsonSection(traceCopy('角色', 'Role'), compactObject(contextNode.role)) : ''}
+        ${renderTraceChildList(node)}
+    `;
+}
+
+function renderTraceMemoryRecordList(records = []) {
+    return renderTraceListSection(
+        traceCopy('记忆记录', 'Memory Records'),
+        records.map((record) => ({
+            title: `${record.kind || 'memory'} · ${record.status || 'active'} · ${shortDebugId(record.id || '')}`,
+            detail: [
+                record.content || '',
+                record.source ? `${traceCopy('来源', 'Source')}: ${record.source}` : '',
+                record.confidence != null ? `${traceCopy('置信度', 'Confidence')}: ${record.confidence}` : '',
+                record.last_used_at ? `${traceCopy('上次注入', 'Last injected')}: ${formatFullTime(record.last_used_at)}` : '',
+            ].filter(Boolean).join('\n'),
+        })),
+    );
+}
+
 function renderStageNodeDetails(node) {
     const rows = [
         ['Node', node.id],
@@ -4371,7 +5059,10 @@ function renderStageNodeDetails(node) {
         ${renderTraceDetailHead(t('trace.stage'), node.label, node.detail, node.status)}
         ${renderTraceDetailGrid(rows)}
         ${contextSummary ? renderTraceJsonSection(t('trace.output'), contextSummary) : ''}
-        ${contextEvent?.payload?.system_prompt ? renderTraceTextSection('System Prompt', contextEvent.payload.system_prompt) : ''}
+        ${contextEvent?.payload?.prompt_sources ? renderPromptSources(contextEvent.payload.prompt_sources) : ''}
+        ${contextEvent?.payload?.final_model_request ? renderFinalModelRequest(contextEvent.payload.final_model_request) : ''}
+        ${contextEvent?.payload?.context_nodes ? renderTraceDisclosureSection('Context Nodes', JSON.stringify(contextEvent.payload.context_nodes.map((item) => compactObject(item)), null, 2), { pre: true }) : ''}
+        ${contextEvent?.payload?.system_prompt ? renderTraceDisclosureSection('System Prompt', contextEvent.payload.system_prompt, { pre: true }) : ''}
         ${renderTraceChildList(node)}
         ${renderTraceEventTimeline(node.events)}
     `;
@@ -4445,6 +5136,100 @@ function renderTraceJsonSection(title, value) {
         <section class="trace-detail-section">
             <h4>${escapeHtml(title)}</h4>
             <pre class="trace-detail-pre">${escapeHtml(text)}</pre>
+        </section>
+    `;
+}
+
+function renderTraceDisclosureSection(title, value, options = {}) {
+    if (!value) return '';
+    const text = typeof value === 'string' ? value : JSON.stringify(value, null, 2);
+    const body = options.pre
+        ? `<pre class="trace-detail-pre">${escapeHtml(text)}</pre>`
+        : `<div class="trace-detail-text">${escapeHtml(text)}</div>`;
+    return `
+        <details class="trace-detail-disclosure">
+            <summary>${escapeHtml(title)}</summary>
+            ${body}
+        </details>
+    `;
+}
+
+function renderPromptSources(sources = []) {
+    const normalized = Array.isArray(sources) ? sources.filter((source) => source?.content) : [];
+    if (!normalized.length) return '';
+    const items = normalized.map((source, index) => {
+        const label = source.label || source.id || `${traceCopy('片段', 'Part')} ${index + 1}`;
+        const meta = [
+            source.id ? `id=${source.id}` : '',
+            source.priority != null ? `priority=${source.priority}` : '',
+        ].filter(Boolean).join(' / ');
+        return `
+            <details class="trace-detail-disclosure nested">
+                <summary>
+                    <span>${escapeHtml(label)}</span>
+                    ${meta ? `<small>${escapeHtml(meta)}</small>` : ''}
+                </summary>
+                <pre class="trace-detail-pre">${escapeHtml(source.content || '')}</pre>
+            </details>
+        `;
+    }).join('');
+    return `
+        <section class="trace-detail-section">
+            <h4>${escapeHtml(traceCopy('Prompt 分段来源', 'Prompt Sources'))}</h4>
+            <div class="trace-disclosure-stack">${items}</div>
+        </section>
+    `;
+}
+
+function renderFinalModelRequest(request = {}) {
+    if (!request || typeof request !== 'object') return '';
+    const messages = Array.isArray(request.messages) ? request.messages : [];
+    const tools = Array.isArray(request.tools) ? request.tools : [];
+    const summary = compactObject({
+        workflow: request.workflow,
+        model_preference: request.model_preference,
+        temperature: request.temperature,
+        tool_choice: request.tool_choice,
+        message_count: messages.length,
+        tools_count: tools.length,
+    });
+    const messageBlocks = messages.map((message, index) => `
+        <details class="trace-detail-disclosure nested">
+            <summary>
+                <span>${escapeHtml(`${index + 1}. ${message.role || 'message'}`)}</span>
+                ${message.tool_call_id ? `<small>${escapeHtml(message.tool_call_id)}</small>` : ''}
+            </summary>
+            <pre class="trace-detail-pre">${escapeHtml(typeof message.content === 'string' ? message.content : JSON.stringify(message.content, null, 2))}</pre>
+            ${message.tool_calls ? `<pre class="trace-detail-pre">${escapeHtml(JSON.stringify(message.tool_calls, null, 2))}</pre>` : ''}
+        </details>
+    `).join('');
+    const toolBlocks = tools.map((tool, index) => {
+        const name = tool.name || tool.function?.name || `${traceCopy('工具', 'Tool')} ${index + 1}`;
+        return `
+            <details class="trace-detail-disclosure nested">
+                <summary><span>${escapeHtml(name)}</span></summary>
+                <pre class="trace-detail-pre">${escapeHtml(JSON.stringify(tool, null, 2))}</pre>
+            </details>
+        `;
+    }).join('');
+    return `
+        <section class="trace-detail-section">
+            <h4>${escapeHtml(traceCopy('最终模型请求', 'Final Model Request'))}</h4>
+            ${renderTraceJsonSection(traceCopy('请求摘要', 'Request Summary'), summary)}
+            <div class="trace-disclosure-stack">
+                ${messageBlocks ? `
+                    <details class="trace-detail-disclosure" open>
+                        <summary>${escapeHtml(traceCopy('Messages', 'Messages'))}</summary>
+                        ${messageBlocks}
+                    </details>
+                ` : ''}
+                ${toolBlocks ? `
+                    <details class="trace-detail-disclosure">
+                        <summary>${escapeHtml(traceCopy('Tools', 'Tools'))}</summary>
+                        ${toolBlocks}
+                    </details>
+                ` : ''}
+            </div>
         </section>
     `;
 }
@@ -4567,6 +5352,8 @@ function traceStatusChipClass(status) {
 }
 
 function renderSettings() {
+    if (!settingsGrid) return;
+
     const providerCards = PROVIDERS.map((provider) => {
         const configured = isProviderConfigured(provider);
         const status = providerSummaryStatus(provider, configured);
@@ -4795,16 +5582,19 @@ function ensureCurrentConversationVisible() {
 }
 
 async function renderConversationMessages(id, options = {}) {
+    const cachedRender = conversationRenderCache.get(id) || null;
+    const restoredFromCache = restoreConversationRenderCache(id);
+    if (!restoredFromCache) {
+        showConversationSwitchLoading();
+    }
     try {
         const data = await loadConversation(id);
         if (currentConversationId !== id) return;
         if (activeRunWatcher && activeRunWatcher.conversationId !== id) {
             stopActiveRunWatcher();
         }
-        messagesContainer.innerHTML = '';
         const messages = data.messages || [];
-        const runMatches = await loadConversationRunMatches(id, messages);
-        if (currentConversationId !== id) return;
+        const signature = conversationMessagesSignature(messages);
         if (data.conversation) {
             const index = conversations.findIndex((conv) => conv.id === data.conversation.id);
             if (index >= 0) conversations[index] = data.conversation;
@@ -4812,99 +5602,121 @@ async function renderConversationMessages(id, options = {}) {
         }
         syncQuestionHistoryFromMessages(messages);
         if (!messages.length) {
+            forgetConversationRender(id);
             showWelcome();
+        } else if (restoredFromCache && cachedRender?.signature === signature) {
+            rememberConversationRender(id, data, cachedRender.html, signature);
         } else {
-            let latestUserQuery = '';
-            messages.forEach((msg, index) => {
-                if (msg.role === 'user') {
-                    latestUserQuery = String(msg.content || '').trim();
-                }
-                const matchedRun = runMatches.get(index);
-                const skillsUsed = parseSkills(msg.skills_used);
-                const citations = parseCitations(msg.citations);
-                const savedTraceEvents = parseTraceEvents(msg.trace_events);
-                const savedRun = runRecordFromMessage(msg, skillsUsed, savedTraceEvents, matchedRun);
-                if (savedRun) mergeRuns([savedRun]);
-                const traceRun = savedRun || matchedRun;
-                appendMessage(
-                    msg.role,
-                    msg.content,
-                    skillsUsed,
-                    msg.model_used || traceRun?.model_used || '',
-                    msg.error_type || '',
-                    savedTraceEvents.length ? savedTraceEvents : (traceRun?.events || []),
-                    msg.run_id || traceRun?.run_id || '',
-                    msg.runtime || traceRun?.runtime || '',
-                    citations,
-                    null,
-                    msg.role === 'assistant' ? latestUserQuery : ''
-                );
-            });
+            const html = renderConversationMessageListHtml(messages);
+            messagesContainer.innerHTML = html;
+            rememberConversationRender(id, data, html, signature);
             scrollToBottom();
         }
         if (options.watchActiveRuns !== false) {
             watchActiveRunForConversation(id, messages);
         }
     } catch (err) {
-        appendMessage('assistant', t('chat.loadConversationFailed', { message: err.message }), [], '', 'error');
+        if (!restoredFromCache) {
+            messagesContainer.innerHTML = '';
+            appendMessage('assistant', t('chat.loadConversationFailed', { message: err.message }), [], '', 'error');
+        }
     }
 
     updateTopbar();
     focusMessageInput();
 }
 
-async function loadConversationRunMatches(id, messages = []) {
-    const hasAssistantMessages = messages.some((msg) => msg.role === 'assistant');
-    if (!id || !hasAssistantMessages) return new Map();
+function restoreConversationRenderCache(id) {
+    const cached = conversationRenderCache.get(id);
+    if (!cached) return false;
+    conversationRenderCache.delete(id);
+    conversationRenderCache.set(id, cached);
+    if (currentConversationId !== id) return false;
 
-    try {
-        const data = await apiCall('GET', `/api/runs?conversation_id=${encodeURIComponent(id)}&limit=50`);
-        const conversationRuns = data.runs || [];
-        mergeRuns(conversationRuns);
-        return matchRunsToAssistantMessages(messages, conversationRuns);
-    } catch {
-        return new Map();
+    messagesContainer.innerHTML = cached.html || '';
+    if (cached.conversation) {
+        const index = conversations.findIndex((conv) => conv.id === cached.conversation.id);
+        if (index >= 0) conversations[index] = cached.conversation;
+        applyConversationAgent(cached.conversation);
+    }
+    syncQuestionHistoryFromMessages(cached.messages || []);
+    scrollToBottom();
+    return true;
+}
+
+function rememberConversationRender(id, data = {}, html = '', signature = '') {
+    if (!id || !html) return;
+    conversationRenderCache.delete(id);
+    conversationRenderCache.set(id, {
+        conversation: data.conversation || null,
+        messages: data.messages || [],
+        html,
+        signature: signature || conversationMessagesSignature(data.messages || []),
+        cachedAt: Date.now(),
+    });
+    while (conversationRenderCache.size > CONVERSATION_RENDER_CACHE_LIMIT) {
+        const oldestKey = conversationRenderCache.keys().next().value;
+        conversationRenderCache.delete(oldestKey);
     }
 }
 
-function matchRunsToAssistantMessages(messages = [], conversationRuns = []) {
-    const matches = new Map();
-    const runsById = new Map((conversationRuns || [])
-        .filter((run) => run?.run_id)
-        .map((run) => [run.run_id, run]));
-    const availableRuns = [...(conversationRuns || [])]
-        .filter((run) => run?.run_id)
-        .sort((a, b) => new Date(a.started_at || 0) - new Date(b.started_at || 0));
-    const usedRunIds = new Set();
-
-    messages.forEach((msg, index) => {
-        if (msg.role !== 'assistant') return;
-
-        if (msg.run_id && runsById.has(msg.run_id)) {
-            const run = runsById.get(msg.run_id);
-            matches.set(index, run);
-            usedRunIds.add(run.run_id);
-            return;
-        }
-
-        const content = normalizeComparableText(msg.content);
-        if (!content) return;
-
-        const run = availableRuns.find((item) => {
-            if (usedRunIds.has(item.run_id)) return false;
-            return normalizeComparableText(item.output || item.error_message) === content;
-        });
-        if (run) {
-            matches.set(index, run);
-            usedRunIds.add(run.run_id);
-        }
-    });
-
-    return matches;
+function forgetConversationRender(id) {
+    if (!id) return;
+    conversationRenderCache.delete(id);
 }
 
-function normalizeComparableText(value = '') {
-    return String(value || '').replace(/\s+/g, ' ').trim();
+function renderConversationMessageListHtml(messages = []) {
+    const savedRuns = [];
+    let latestUserQuery = '';
+    const html = messages.map((msg) => {
+        if (msg.role === 'user') {
+            latestUserQuery = String(msg.content || '').trim();
+        }
+        const skillsUsed = parseSkills(msg.skills_used);
+        const citations = parseCitations(msg.citations);
+        const savedTraceEvents = parseTraceEvents(msg.trace_events);
+        const savedRun = runRecordFromMessage(msg, skillsUsed, savedTraceEvents);
+        if (savedRun) savedRuns.push(savedRun);
+        const traceRun = savedRun;
+        return renderMessageHtml(
+            msg.role,
+            msg.content,
+            skillsUsed,
+            msg.model_used || traceRun?.model_used || '',
+            msg.error_type || '',
+            savedTraceEvents.length ? savedTraceEvents : (traceRun?.events || []),
+            msg.run_id || traceRun?.run_id || '',
+            msg.runtime || traceRun?.runtime || '',
+            citations,
+            null,
+            msg.role === 'assistant' ? latestUserQuery : ''
+        );
+    }).join('');
+    if (savedRuns.length) mergeRuns(savedRuns);
+    return html;
+}
+
+function conversationMessagesSignature(messages = []) {
+    return (messages || []).map((msg) => [
+        msg.id || '',
+        msg.role || '',
+        msg.run_id || '',
+        msg.error_type || '',
+        msg.model_used || '',
+        msg.runtime || '',
+        msg.created_at || '',
+        msg.skills_used || '',
+        msg.citations || '',
+        msg.content || '',
+    ].join('\u001f')).join('\u001e');
+}
+
+function showConversationSwitchLoading() {
+    messagesContainer.innerHTML = `
+        <div class="conversation-switch-loading" aria-hidden="true">
+            <div class="loading-dots"><span></span><span></span><span></span></div>
+        </div>
+    `;
 }
 
 function runRecordFromMessage(msg = {}, skillsUsed = [], traceEvents = [], fallbackRun = null) {
@@ -5229,6 +6041,7 @@ async function handleSend(queryOverride = '') {
     if (!conversationId || activeConversationRequests.has(conversationId)) return;
 
     activeConversationRequests.add(conversationId);
+    forgetConversationRender(conversationId);
     appendQuestionHistory(query);
     updateSendState();
     messageInput.value = '';
@@ -5246,6 +6059,8 @@ async function handleSend(queryOverride = '') {
     try {
         const resp = await sendMessageStream(conversationId, query, streamView, attachmentContext, attachmentPayload);
         streamView.finalize(resp);
+        captureMemoryDebug(resp, conversationId);
+        if (activeView === 'developer') void loadDeveloperMemory();
         void Promise.allSettled([loadConversations(), loadRuns()]).then(() => {
             if (currentConversationId === conversationId) updateTopbar();
         });
@@ -5274,6 +6089,7 @@ async function regenerateAssistantAnswer(button) {
 
     stopActiveRunWatcher();
     activeConversationRequests.add(conversationId);
+    forgetConversationRender(conversationId);
     updateSendState();
 
     const streamView = appendStreamingAssistantMessage(query);
@@ -5282,6 +6098,8 @@ async function regenerateAssistantAnswer(button) {
     try {
         const resp = await sendMessageStream(conversationId, query, streamView, '', [], { regenerate: true });
         streamView.finalize(resp);
+        captureMemoryDebug(resp, conversationId);
+        if (activeView === 'developer') void loadDeveloperMemory();
         void Promise.allSettled([loadConversations(), loadRuns()]).then(() => {
             if (currentConversationId === conversationId) updateTopbar();
         });
@@ -5659,10 +6477,34 @@ function appendMessage(
     const welcome = messagesContainer.querySelector('.welcome-screen');
     if (welcome) welcome.remove();
 
-    const div = document.createElement('div');
-    div.className = `message ${role}`;
-    if (role === 'assistant') div.dataset.copyText = content || '';
-    if (role === 'assistant' && regenerateQuery) div.dataset.regenerateQuery = regenerateQuery;
+    messagesContainer.insertAdjacentHTML('beforeend', renderMessageHtml(
+        role,
+        content,
+        skillsUsed,
+        modelUsed,
+        errorType,
+        traceEvents,
+        runId,
+        runtime,
+        citations,
+        inputMeta,
+        regenerateQuery
+    ));
+}
+
+function renderMessageHtml(
+    role,
+    content,
+    skillsUsed = [],
+    modelUsed = '',
+    errorType = '',
+    traceEvents = [],
+    runId = '',
+    runtime = '',
+    citations = [],
+    inputMeta = null,
+    regenerateQuery = ''
+) {
     const avatar = role === 'user' ? 'You' : 'AI';
     const assistantActions = role === 'assistant'
         ? renderAssistantActions({
@@ -5691,11 +6533,19 @@ function appendMessage(
         bubbleContent = `${renderInputMeta(inputMeta)}${formatContent(content)}${renderCitationPanel(citations)}${skillBadges}${assistantActions}`;
     }
 
-    div.innerHTML = `
-        <div class="avatar">${avatar}</div>
-        <div class="bubble">${bubbleContent}</div>
+    const dataAttrs = role === 'assistant'
+        ? [
+            `data-copy-text="${escapeAttr(content || '')}"`,
+            regenerateQuery ? `data-regenerate-query="${escapeAttr(regenerateQuery)}"` : '',
+        ].filter(Boolean).join(' ')
+        : '';
+
+    return `
+        <div class="message ${escapeAttr(role)}" ${dataAttrs}>
+            <div class="avatar">${avatar}</div>
+            <div class="bubble">${bubbleContent}</div>
+        </div>
     `;
-    messagesContainer.appendChild(div);
 }
 
 function renderAssistantActions(options = {}) {
@@ -5885,20 +6735,14 @@ function renderCitationPanel(citations = []) {
     if (!normalized.length) return '';
 
     const rows = normalized.map((citation) => {
-        const title = citation.title || citation.url;
-        const source = citationSourceLabel(citation);
-        const snippet = truncateText(citation.snippet || '', 220);
-        const media = citationMedia(citation);
+        const host = hostFromUrl(citation.url);
+        const title = citation.title || host || citation.url;
         return `
-            <li class="citation-item ${media ? 'has-media' : ''}">
-                ${media}
-                <div class="citation-body">
-                    <a class="citation-link" href="${escapeAttr(citation.url)}" target="_blank" rel="noopener noreferrer">
-                        ${escapeHtml(title)}
-                    </a>
-                    ${source ? `<div class="citation-meta">${escapeHtml(source)}</div>` : ''}
-                    ${snippet ? `<div class="citation-snippet">${escapeHtml(snippet)}</div>` : ''}
-                </div>
+            <li class="citation-item">
+                <a class="citation-link" href="${escapeAttr(citation.url)}" target="_blank" rel="noopener noreferrer" title="${escapeAttr(citation.url)}">
+                    <span class="citation-link-title">${escapeHtml(title)}</span>
+                    ${host ? `<span class="citation-link-host">${escapeHtml(host)}</span>` : ''}
+                </a>
             </li>
         `;
     }).join('');
@@ -5931,68 +6775,6 @@ function normalizeCitations(citations = []) {
         });
     });
     return normalized;
-}
-
-function citationMedia(citation) {
-    const metadata = citation.metadata || {};
-    const imageUrl = firstSafeUrl(
-        metadata.thumbnail_url,
-        metadata.thumbnailUrl,
-        metadata.thumbnail,
-        metadata.image_url,
-        metadata.imageUrl,
-        metadata.image,
-        metadata.og_image,
-        metadata['og:image'],
-        metadata.cover,
-        metadata.poster
-    );
-    const videoUrl = firstSafeUrl(
-        metadata.video_url,
-        metadata.videoUrl,
-        metadata.video,
-        metadata.embed_url,
-        metadata.embedUrl,
-        metadata.media_url
-    );
-    if (videoUrl && isVideoUrl(videoUrl)) {
-        return `
-            <a class="citation-media video" href="${escapeAttr(citation.url)}" target="_blank" rel="noopener noreferrer" aria-label="${escapeAttr(citation.title || citation.url)}">
-                <video src="${escapeAttr(videoUrl)}" preload="metadata" muted playsinline></video>
-            </a>
-        `;
-    }
-    if (imageUrl) {
-        return `
-            <a class="citation-media" href="${escapeAttr(citation.url)}" target="_blank" rel="noopener noreferrer" aria-label="${escapeAttr(citation.title || citation.url)}">
-                <img src="${escapeAttr(imageUrl)}" alt="" loading="lazy">
-            </a>
-        `;
-    }
-    return '';
-}
-
-function firstSafeUrl(...values) {
-    for (const value of values) {
-        if (Array.isArray(value)) {
-            const nested = firstSafeUrl(...value);
-            if (nested) return nested;
-            continue;
-        }
-        if (value && typeof value === 'object') {
-            const nested = firstSafeUrl(value.url, value.src, value.link, value.contentUrl);
-            if (nested) return nested;
-            continue;
-        }
-        const url = String(value || '').trim();
-        if (url && isSafeContentUrl(url)) return url;
-    }
-    return '';
-}
-
-function citationSourceLabel(citation) {
-    const labels = [citation.source, hostFromUrl(citation.url)].filter(Boolean);
-    return Array.from(new Set(labels)).join(' / ');
 }
 
 function hostFromUrl(url = '') {
@@ -6877,6 +7659,48 @@ document.addEventListener('click', async (event) => {
         return;
     }
 
+    const developerRefreshButton = event.target.closest('[data-developer-refresh]');
+    if (developerRefreshButton && !developerRefreshButton.disabled) {
+        event.preventDefault();
+        await loadDeveloperMemory();
+        return;
+    }
+
+    const developerMemoryEditButton = event.target.closest('[data-developer-memory-edit]');
+    if (developerMemoryEditButton && !developerMemoryEditButton.disabled) {
+        event.preventDefault();
+        await editDeveloperMemory(
+            developerMemoryEditButton.dataset.developerMemoryRole,
+            developerMemoryEditButton.dataset.developerMemoryEdit,
+        );
+        return;
+    }
+
+    const developerMemoryStatusButton = event.target.closest('[data-developer-memory-status]');
+    if (developerMemoryStatusButton && !developerMemoryStatusButton.disabled) {
+        event.preventDefault();
+        await updateDeveloperMemory(
+            developerMemoryStatusButton.dataset.developerMemoryRole,
+            developerMemoryStatusButton.dataset.developerMemoryId,
+            {
+                status: developerMemoryStatusButton.dataset.developerMemoryStatus,
+                review_state: 'reviewed',
+                review_notes: 'Status changed from Developer view',
+            },
+        );
+        return;
+    }
+
+    const developerMemoryDeleteButton = event.target.closest('[data-developer-memory-delete]');
+    if (developerMemoryDeleteButton && !developerMemoryDeleteButton.disabled) {
+        event.preventDefault();
+        await deleteDeveloperMemory(
+            developerMemoryDeleteButton.dataset.developerMemoryRole,
+            developerMemoryDeleteButton.dataset.developerMemoryDelete,
+        );
+        return;
+    }
+
     const pulseRefreshButton = event.target.closest('[data-pulse-refresh]');
     if (pulseRefreshButton) {
         pulseRefreshButton.disabled = true;
@@ -7340,6 +8164,7 @@ renderPulse();
 renderAccountControls();
 renderRoleSelect();
 renderRoleMemoryList();
+renderDeveloperView();
 updateCounts();
 renderHealth();
 updateSendState();

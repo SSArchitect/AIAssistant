@@ -54,6 +54,7 @@ def create_provider(name: str | None = None) -> LLMProvider:
             model=model_override or runtime_config.minimax_model,
             base_url=runtime_config.minimax_base_url,
             thinking=runtime_config.minimax_thinking,
+            timeout_seconds=runtime_config.minimax_timeout,
         )
     elif provider_name == "ollama":
         return OllamaProvider(

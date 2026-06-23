@@ -365,6 +365,37 @@ async def test_chat_returns_run_trace_contract(client):
 
 
 @pytest.mark.asyncio
+async def test_chat_stream_flushes_failed_trace_before_error(client):
+    """Stream failures should include the final trace events before the error SSE."""
+    assert main_module.engine is not None
+    provider = AsyncMock()
+    provider.chat = AsyncMock(side_effect=TimeoutError("Request timed out."))
+
+    run_id = "run_stream_failure_trace"
+    with patch.object(main_module.engine, "_get_provider", return_value=provider):
+        resp = await client.post(
+            "/agent/chat/stream",
+            json={
+                "conversation_id": "api-stream-fail-conv",
+                "message": "ping",
+                "agent_id": "general_assistant",
+                "run_id": run_id,
+            },
+        )
+
+    assert resp.status_code == 200
+    text = resp.text
+    assert "event: error" in text
+    assert '"type": "model.failed"' in text
+    assert '"type": "run.failed"' in text
+    assert text.index('"type": "model.failed"') < text.index("event: error")
+
+    run = trace_store.get_run(run_id)
+    assert run is not None
+    assert run.status == "failed"
+
+
+@pytest.mark.asyncio
 async def test_list_runs_filters_by_conversation(client):
     run_a = trace_store.start_run(
         conversation_id="filter-conv-a",

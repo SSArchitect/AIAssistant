@@ -7,6 +7,9 @@ from pydantic import BaseModel, Field
 
 
 MemoryKind = Literal["role", "persona", "long_term"]
+MemoryScope = Literal["user", "chat", "agent", "workspace"]
+MemoryStatus = Literal["active", "pending_review", "archived"]
+MemoryReviewState = Literal["manual", "auto_accepted", "pending", "reviewed"]
 
 
 def utc_now() -> datetime:
@@ -52,11 +55,22 @@ class MemoryRecord(BaseModel):
     role_id: str
     user_id: str = "0"
     kind: MemoryKind
+    scope: MemoryScope = "user"
+    status: MemoryStatus = "active"
+    review_state: MemoryReviewState = "manual"
     content: str
     source: str = "manual"
     agent_id: Optional[str] = None
     confidence: float = 1.0
     tags: list[str] = Field(default_factory=list)
+    source_trace: dict[str, Any] = Field(default_factory=dict)
+    valid_from: Optional[datetime] = None
+    valid_until: Optional[datetime] = None
+    last_used_at: Optional[datetime] = None
+    ttl_days: Optional[int] = None
+    sensitivity: str = "normal"
+    review_notes: str = ""
+    version: int = 1
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -86,12 +100,41 @@ class MemoryCandidate(BaseModel):
 class MemoryCreateRequest(BaseModel):
     user_id: Optional[str] = None
     kind: MemoryKind = "long_term"
+    scope: MemoryScope = "user"
+    status: MemoryStatus = "active"
+    review_state: MemoryReviewState = "manual"
     content: str
     source: str = "manual"
     agent_id: Optional[str] = None
     confidence: float = 1.0
     tags: list[str] = Field(default_factory=list)
+    source_trace: dict[str, Any] = Field(default_factory=dict)
+    valid_from: Optional[datetime] = None
+    valid_until: Optional[datetime] = None
+    ttl_days: Optional[int] = None
+    sensitivity: str = "normal"
+    review_notes: str = ""
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class MemoryUpdateRequest(BaseModel):
+    user_id: Optional[str] = None
+    kind: Optional[MemoryKind] = None
+    scope: Optional[MemoryScope] = None
+    status: Optional[MemoryStatus] = None
+    review_state: Optional[MemoryReviewState] = None
+    content: Optional[str] = None
+    source: Optional[str] = None
+    agent_id: Optional[str] = None
+    confidence: Optional[float] = None
+    tags: Optional[list[str]] = None
+    source_trace: Optional[dict[str, Any]] = None
+    valid_from: Optional[datetime] = None
+    valid_until: Optional[datetime] = None
+    ttl_days: Optional[int] = None
+    sensitivity: Optional[str] = None
+    review_notes: Optional[str] = None
+    metadata: Optional[dict[str, Any]] = None
 
 
 class MemoryListResponse(BaseModel):

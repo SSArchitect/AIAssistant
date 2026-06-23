@@ -481,7 +481,13 @@ func (h *ChatHandler) DeleteRole(c *gin.Context) {
 }
 
 func (h *ChatHandler) ListRoleMemories(c *gin.Context) {
-	memories, err := h.agent.ListRoleMemories(c.Param("id"), requestUserID(c), c.Query("kind"), c.Query("agent_id"))
+	memories, err := h.agent.ListRoleMemories(
+		c.Param("id"),
+		requestUserID(c),
+		c.Query("kind"),
+		c.Query("agent_id"),
+		c.Query("include_inactive") == "true",
+	)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "agent error: " + err.Error()})
 		return
@@ -515,6 +521,29 @@ func (h *ChatHandler) CreateRoleMemory(c *gin.Context) {
 	req.Metadata["entrypoint"] = "super_chat_role_memory"
 
 	memory, err := h.agent.CreateRoleMemory(c.Param("id"), req)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "agent error: " + err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, memory)
+}
+
+func (h *ChatHandler) UpdateRoleMemory(c *gin.Context) {
+	var req bridge.MemoryWriteRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request: " + err.Error()})
+		return
+	}
+	req.UserID = requestUserIDWithBody(c, req.UserID)
+	if req.Content != "" {
+		req.Content = strings.TrimSpace(req.Content)
+	}
+	if req.Metadata == nil {
+		req.Metadata = map[string]interface{}{}
+	}
+	req.Metadata["entrypoint"] = "super_chat_developer_memory"
+
+	memory, err := h.agent.UpdateRoleMemory(c.Param("id"), c.Param("memory_id"), req)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "agent error: " + err.Error()})
 		return
@@ -561,16 +590,180 @@ func (h *ChatHandler) ListRuns(c *gin.Context) {
 
 func (h *ChatHandler) GetRun(c *gin.Context) {
 	userID := requestUserID(c)
-	run, err := h.agent.GetRun(c.Param("id"))
+	runID := c.Param("id")
+	run, err := h.agent.GetRun(runID)
+	if err == nil {
+		if normalizedUserID(run.UserID) != userID {
+			c.JSON(http.StatusNotFound, gin.H{"error": "run not found"})
+			return
+		}
+		c.JSON(http.StatusOK, run)
+		return
+	}
+
+	storedRun, storedErr := storedRunRecord(runID, userID)
+	if storedErr == nil {
+		c.JSON(http.StatusOK, storedRun)
+		return
+	}
+
+	c.JSON(http.StatusInternalServerError, gin.H{"error": "agent error: " + err.Error()})
+}
+
+func storedRunRecord(runID string, userID string) (*bridge.RunRecord, error) {
+	var message models.Message
+	if err := database.DB.
+		Where("run_id = ? AND user_id = ? AND role = ?", runID, normalizedUserID(userID), "assistant").
+		Order(messageReverseChronologicalOrder).
+		First(&message).Error; err != nil {
+		return nil, err
+	}
+
+	events := []bridge.RunEvent{}
+	if strings.TrimSpace(message.TraceEvents) != "" {
+		if err := json.Unmarshal([]byte(message.TraceEvents), &events); err != nil {
+			return nil, err
+		}
+	}
+	if events == nil {
+		events = []bridge.RunEvent{}
+	}
+	skills := []string{}
+	if strings.TrimSpace(message.SkillsUsed) != "" {
+		_ = json.Unmarshal([]byte(message.SkillsUsed), &skills)
+	}
+	if skills == nil {
+		skills = []string{}
+	}
+
+	input := storedRunInput(message)
+	completedAt := firstNonEmpty(storedRunCompletedAt(events), message.CreatedAt.Format(time.RFC3339))
+	errorType := storedRunErrorType(message, events)
+	errorMessage := storedRunErrorMessage(message, events)
+	return &bridge.RunRecord{
+		RunID:          runID,
+		ConversationID: message.ConversationID,
+		UserID:         message.UserID,
+		AgentID:        storedRunAgentID(message.ConversationID, events),
+		Runtime:        message.Runtime,
+		Status:         storedRunStatus(events, message.ErrorType),
+		Input:          input,
+		Output:         message.Content,
+		ModelUsed:      message.ModelUsed,
+		TokensUsed:     map[string]int{},
+		SkillsUsed:     skills,
+		ErrorType:      optionalString(errorType),
+		ErrorMessage:   optionalString(errorMessage),
+		StartedAt:      firstNonEmpty(storedRunStartedAt(events), message.CreatedAt.Format(time.RFC3339)),
+		CompletedAt:    &completedAt,
+		Events:         events,
+	}, nil
+}
+
+func storedRunInput(message models.Message) string {
+	var userMessage models.Message
+	err := database.DB.
+		Where("conversation_id = ? AND user_id = ? AND role = ? AND id < ?", message.ConversationID, message.UserID, "user", message.ID).
+		Order(messageReverseChronologicalOrder).
+		First(&userMessage).Error
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "agent error: " + err.Error()})
-		return
+		return ""
 	}
-	if normalizedUserID(run.UserID) != userID {
-		c.JSON(http.StatusNotFound, gin.H{"error": "run not found"})
-		return
+	return userMessage.Content
+}
+
+func storedRunAgentID(conversationID string, events []bridge.RunEvent) string {
+	if agentID := inferStoredRunAgentID(events); agentID != "" {
+		return agentID
 	}
-	c.JSON(http.StatusOK, run)
+	var conv models.Conversation
+	if err := database.DB.First(&conv, "id = ?", conversationID).Error; err == nil && strings.TrimSpace(conv.AgentID) != "" {
+		return conv.AgentID
+	}
+	return "super_chat"
+}
+
+func inferStoredRunAgentID(events []bridge.RunEvent) string {
+	for _, event := range events {
+		if event.Type != "run.started" && event.Type != "agent.delegated" && event.Type != "agent.command.routed" {
+			continue
+		}
+		for _, key := range []string{"agent_id", "target_agent_id"} {
+			if value, ok := event.Payload[key].(string); ok && strings.TrimSpace(value) != "" {
+				return value
+			}
+		}
+	}
+	return ""
+}
+
+func storedRunStatus(events []bridge.RunEvent, errorType string) string {
+	if strings.TrimSpace(errorType) != "" {
+		return "failed"
+	}
+	status := "completed"
+	for _, event := range events {
+		if event.Type == "run.failed" || normalizeTraceStatus(event.Status) == "error" {
+			return "failed"
+		}
+		if event.Type == "run.completed" || normalizeTraceStatus(event.Status) == "completed" {
+			status = "completed"
+		}
+	}
+	return status
+}
+
+func storedRunStartedAt(events []bridge.RunEvent) string {
+	for _, event := range events {
+		if strings.TrimSpace(event.CreatedAt) != "" {
+			return event.CreatedAt
+		}
+	}
+	return ""
+}
+
+func storedRunCompletedAt(events []bridge.RunEvent) string {
+	for i := len(events) - 1; i >= 0; i-- {
+		if strings.TrimSpace(events[i].CreatedAt) != "" {
+			return events[i].CreatedAt
+		}
+	}
+	return ""
+}
+
+func storedRunErrorType(message models.Message, events []bridge.RunEvent) string {
+	if strings.TrimSpace(message.ErrorType) != "" {
+		return message.ErrorType
+	}
+	for _, event := range events {
+		if value, ok := event.Payload["error_type"].(string); ok && strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func storedRunErrorMessage(message models.Message, events []bridge.RunEvent) string {
+	if storedRunStatus(events, message.ErrorType) == "failed" && strings.TrimSpace(message.Content) != "" {
+		return message.Content
+	}
+	for _, event := range events {
+		if value, ok := event.Payload["error_message"].(string); ok && strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func optionalString(value string) *string {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+	return &value
+}
+
+func normalizeTraceStatus(value string) string {
+	return strings.ToLower(strings.TrimSpace(value))
 }
 
 func (h *ChatHandler) GenerateImage(c *gin.Context) {
