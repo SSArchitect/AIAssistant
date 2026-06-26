@@ -2139,6 +2139,89 @@ async def test_ai_memory_review_writes_long_term_memory(registry):
 
 
 @pytest.mark.asyncio
+async def test_ai_memory_review_updates_existing_memory(registry):
+    engine = AgentEngine(registry, ai_memory_review_enabled=True)
+    existing = engine.role_memory.add_memory(
+        role_id="default",
+        kind="long_term",
+        content="用户正在重构 agent memory 系统",
+        tags=["project"],
+    )
+    assistant_response = LLMResponse(
+        content="我会更新这条记忆。",
+        tool_calls=[],
+        model="chat-model",
+        usage={},
+    )
+    review_response = LLMResponse(
+        content=json.dumps(
+            {
+                "memories": [
+                    {
+                        "action": "update",
+                        "target_id": existing.id,
+                        "kind": "long_term",
+                        "content": "用户正在重构 agent memory 系统，并优化日期收纳和合并策略",
+                        "confidence": 0.92,
+                        "reason": "同一长期项目的新增进展",
+                        "tags": ["project", "memory"],
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        tool_calls=[],
+        model="review-model",
+        usage={},
+    )
+
+    with patch.object(engine, "_get_provider") as mock_provider:
+        provider = AsyncMock()
+        provider.chat = AsyncMock(side_effect=[assistant_response, review_response])
+        mock_provider.return_value = provider
+
+        result = await engine.process(
+            ChatRequest(
+                conversation_id="conv-ai-memory-update",
+                message="memory 系统还要优化日期收纳和合并策略",
+            )
+        )
+
+    memories = engine.role_memory.list_memories(role_id="default", kind="long_term")
+    assert len(memories) == 1
+    assert result.memory_updates[0].id == existing.id
+    assert result.memory_updates[0].version == 2
+    assert "日期收纳" in memories[0].content
+
+
+def test_memory_retrieval_query_uses_context_for_continuation(engine):
+    porcelain = engine.role_memory.add_memory(
+        role_id="default",
+        kind="long_term",
+        content="用户对瓷器烧制失败率、直播开窑和汝瓷建盏工艺感兴趣",
+        tags=["瓷器"],
+    )
+    engine.role_memory.add_memory(
+        role_id="default",
+        kind="long_term",
+        content="用户喜欢玩游戏，对游戏推荐感兴趣",
+        tags=["游戏"],
+    )
+
+    query = engine._memory_retrieval_query(
+        ChatRequest(
+            conversation_id="conv-memory-continuation",
+            message="可以的，继续说吧",
+            context_blocks=["制作瓷器的失败率很高吗？我看直播开窑的失败率似乎好高"],
+        )
+    )
+    context = engine.role_memory.get_context(role_id="default", query=query)
+
+    assert context is not None
+    assert [record.id for record in context.long_term_memories] == [porcelain.id]
+
+
+@pytest.mark.asyncio
 async def test_conversation_memory_compacts_with_summary(registry):
     engine = AgentEngine(
         registry,
@@ -2171,7 +2254,12 @@ async def test_conversation_memory_compacts_with_summary(registry):
         result = await engine.process(ChatRequest(conversation_id="conv-compact", message="第二轮"))
 
     memory_id = "user:0:conversation:conv-compact"
-    assert engine.memory.get_summary(memory_id) == "用户正在分层设计 memory 系统。"
+    blocks = engine.memory.get_summary_blocks(memory_id)
+    assert len(blocks) == 1
+    assert blocks[0].content == "用户正在分层设计 memory 系统。"
+    assert engine.memory.get_summary(memory_id) == (
+        f"{blocks[0].date}:\n- 用户正在分层设计 memory 系统。"
+    )
     assert [message.content for message in engine.memory.get(memory_id)] == ["第二轮", "第二轮"]
     assert "memory.compaction.completed" in [event.type for event in result.events]
 

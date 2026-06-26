@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>阿安的工作台</title>
-    <link rel="stylesheet" href="/static/css/style.css?v=37">
+    <link rel="stylesheet" href="/static/css/style.css?v=38">
 </head>
 <body>
     <div class="app">
@@ -21,9 +21,12 @@
                 <div class="account-picker">
                     <label class="visually-hidden" for="account-select" data-i18n="account.label">帐号</label>
                     <select id="account-select" class="account-select" aria-label="帐号" data-i18n-aria-label="account.label"></select>
-                    <button class="icon-button account-add-button" id="btn-add-account" type="button" title="新帐号" data-i18n-title="account.add">
-                        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.4">
-                            <path d="M12 5v14M5 12h14"/>
+                    <button class="icon-button account-add-button" id="btn-add-account" type="button" title="切换/注册帐号" data-i18n-title="account.switch">
+                        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.3">
+                            <path d="M8 7h12"/>
+                            <path d="m16 3 4 4-4 4"/>
+                            <path d="M16 17H4"/>
+                            <path d="m8 13-4 4 4 4"/>
                         </svg>
                     </button>
                 </div>
@@ -373,7 +376,14 @@
 
     <div class="account-login hidden" id="account-login" role="dialog" aria-modal="true" aria-labelledby="account-login-title">
         <div class="account-login-panel">
-            <h2 id="account-login-title" data-i18n="account.loginTitle">选择帐号</h2>
+            <div class="account-login-head">
+                <h2 id="account-login-title" data-i18n="account.loginTitle">选择帐号</h2>
+                <button class="account-login-close" type="button" data-account-login-close aria-label="关闭" data-i18n-aria-label="account.close">
+                    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.4">
+                        <path d="M6 6l12 12M18 6 6 18"/>
+                    </svg>
+                </button>
+            </div>
             <label class="account-login-field">
                 <span data-i18n="account.existing">已有帐号</span>
                 <select id="login-account-select"></select>
@@ -398,6 +408,6 @@
         </div>
     </div>
 
-    <script src="/static/js/app.js?v=53"></script>
+    <script src="/static/js/app.js?v=57"></script>
 </body>
 </html>

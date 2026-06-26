@@ -1,4 +1,5 @@
 """Unit tests for conversation memory."""
+from datetime import datetime, timezone
 import json
 
 import pytest
@@ -56,13 +57,30 @@ class TestConversationMemory:
     def test_summary_context(self):
         mem = ConversationMemory()
         mem.add("conv1", LLMMessage(role="user", content="hello"))
-        mem.set_summary("conv1", "User is designing memory.")
+        mem.set_summary("conv1", "User is designing memory.", date_key="2026-06-25")
 
         context = mem.get_context("conv1")
 
-        assert context.summary == "User is designing memory."
+        assert context.summary == "2026-06-25:\n- User is designing memory."
+        assert len(context.summary_blocks) == 1
+        assert context.summary_blocks[0].date == "2026-06-25"
+        assert context.summary_blocks[0].content == "User is designing memory."
         assert context.total_messages == 1
         assert context.messages[0].content == "hello"
+
+    def test_summary_blocks_are_grouped_by_newest_date(self):
+        mem = ConversationMemory(max_summary_blocks=2)
+        mem.set_summary("conv1", "Old work", date_key="2026-06-23")
+        mem.set_summary("conv1", "Newest work", date_key="2026-06-25")
+        mem.set_summary("conv1", "Middle work", date_key="2026-06-24")
+
+        summary = mem.get_summary("conv1")
+        blocks = mem.get_summary_blocks("conv1")
+
+        assert [block.date for block in blocks] == ["2026-06-25", "2026-06-24"]
+        assert "2026-06-25:" in summary
+        assert "2026-06-24:" in summary
+        assert "2026-06-23:" not in summary
 
     def test_truncation(self):
         mem = ConversationMemory(max_messages=5)
@@ -210,6 +228,52 @@ class TestRoleMemoryStore:
         assert memories[0].tags == ["推荐", "游戏"]
         assert memories[0].version == 2
 
+    def test_related_memory_merges_content_into_existing_record(self):
+        store = RoleMemoryStore()
+
+        first = store.add_memory(
+            role_id="default",
+            kind="long_term",
+            content="用户正在重构 agent memory 系统",
+            tags=["memory"],
+        )
+        second = store.add_memory(
+            role_id="default",
+            kind="long_term",
+            content="用户正在重构 agent memory 系统，并优化日期收纳",
+            tags=["date"],
+        )
+
+        memories = store.list_memories(role_id="default", kind="long_term")
+        assert first.id == second.id
+        assert len(memories) == 1
+        assert "日期收纳" in memories[0].content
+        assert memories[0].tags == ["date", "memory"]
+
+    def test_memory_context_renders_long_term_by_date(self):
+        store = RoleMemoryStore()
+        older = store.add_memory(
+            role_id="default",
+            kind="long_term",
+            content="Older project memory",
+        )
+        newer = store.add_memory(
+            role_id="default",
+            kind="long_term",
+            content="Newer project memory",
+        )
+        older.updated_at = datetime(2026, 6, 24, tzinfo=timezone.utc)
+        newer.updated_at = datetime(2026, 6, 25, tzinfo=timezone.utc)
+
+        context = store.get_context(role_id="default")
+
+        assert context is not None
+        assert "- 2026-06-25：" in context.rendered
+        assert "- 2026-06-24：" in context.rendered
+        assert context.rendered.index("2026-06-25") < context.rendered.index("2026-06-24")
+        groups = store.group_memories_by_date(context.long_term_memories)
+        assert [group["date"] for group in groups] == ["2026-06-25", "2026-06-24"]
+
     def test_role_memories_are_scoped_by_user_id(self):
         store = RoleMemoryStore()
         store.add_memory(
@@ -281,11 +345,42 @@ class TestRoleMemoryStore:
 
         restored = RoleMemoryStore(storage_path=storage_path)
         memories = restored.list_memories(role_id="default", kind="long_term")
+        payload = json.loads(storage_path.read_text(encoding="utf-8"))
 
         assert storage_path.exists()
+        assert payload["schema_version"] == 2
+        assert "record_groups" in payload
+        assert "records" not in payload
         assert len(memories) == 1
         assert memories[0].id == written.id
         assert memories[0].content == "User prefers durable memory"
+
+    def test_loads_legacy_flat_records_and_migrates_to_date_groups(self, tmp_path):
+        storage_path = tmp_path / "agent_memory.json"
+        record = RoleMemoryStore().add_memory(
+            role_id="default",
+            kind="long_term",
+            content="Legacy flat memory",
+        )
+        storage_path.write_text(
+            json.dumps(
+                {
+                    "roles": [],
+                    "records": [record.model_dump(mode="json")],
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+
+        restored = RoleMemoryStore(storage_path=storage_path)
+        payload = json.loads(storage_path.read_text(encoding="utf-8"))
+        memories = restored.list_memories(role_id="default", kind="long_term")
+
+        assert len(memories) == 1
+        assert memories[0].content == "Legacy flat memory"
+        assert "record_groups" in payload
+        assert "records" not in payload
 
     def test_archived_memories_are_listed_but_not_injected(self):
         store = RoleMemoryStore()

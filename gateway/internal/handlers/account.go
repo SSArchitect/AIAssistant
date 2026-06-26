@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -14,6 +15,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
+	"gorm.io/gorm"
 )
 
 type AccountHandler struct{}
@@ -72,21 +74,33 @@ func (h *AccountHandler) Create(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+
+	nameKey := accountNameKey(name)
+	id := normalizedAccountID(req.ID)
+	if id == "" {
+		id = accountIDForNameKey(nameKey)
+	}
+
+	var existing models.Account
+	if err := database.DB.Where("name_key = ? OR lower(name) = lower(?)", nameKey, name).First(&existing).Error; err == nil {
+		c.JSON(http.StatusConflict, gin.H{"error": "account name already exists"})
+		return
+	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to check account name"})
+		return
+	}
+
 	passwordHash, err := hashAccountPassword(password)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to secure account password"})
 		return
 	}
 
-	id := normalizedAccountID(req.ID)
-	if id == "" {
-		id = uuid.NewString()
-	}
-
 	now := time.Now()
 	account := models.Account{
 		ID:           id,
 		Name:         name,
+		NameKey:      nameKey,
 		PasswordHash: passwordHash,
 		CreatedAt:    now,
 		UpdatedAt:    now,
@@ -169,6 +183,22 @@ func normalizedAccountID(value string) string {
 		}
 	}, value)
 	return strings.Trim(value, "-_")
+}
+
+func accountNameKey(name string) string {
+	key := strings.ToLower(strings.TrimSpace(name))
+	if key == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(key))
+	return hex.EncodeToString(sum[:])
+}
+
+func accountIDForNameKey(nameKey string) string {
+	if nameKey == "" {
+		return uuid.NewString()
+	}
+	return "acct_" + nameKey[:24]
 }
 
 func validateAccountPassword(password string) error {

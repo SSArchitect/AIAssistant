@@ -88,6 +88,8 @@ class MemoryContext(BaseModel):
 
 
 class MemoryCandidate(BaseModel):
+    action: Literal["create", "update"] = "create"
+    target_id: Optional[str] = None
     kind: MemoryKind
     content: str
     confidence: float = 0.7

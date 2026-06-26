@@ -34,7 +34,7 @@ from agent.schemas.handoff import (
     AgentHandoffPacket,
     AgentStageContext,
 )
-from agent.schemas.memory import MemoryCandidate, MemoryContext, MemoryRecord
+from agent.schemas.memory import MemoryCandidate, MemoryContext, MemoryRecord, MemoryUpdateRequest
 from agent.skills.registry import SkillRegistry
 from agent.trace import TraceStore
 from agent.weight_loss import WeightLossStore
@@ -179,6 +179,47 @@ class AgentEngine:
             if len(normalized) >= 4:
                 break
         return normalized
+
+    def _memory_retrieval_query(self, request: ChatRequest) -> str:
+        parts: list[str] = []
+        current_message = " ".join(str(request.message or "").split()).strip()
+        if current_message:
+            parts.append(current_message[:1200])
+
+        packet = request.agent_input or request.handoff
+        if packet is not None:
+            for value in (packet.current_request, packet.reason, packet.candidate_context_brief):
+                text = " ".join(str(value or "").split()).strip()
+                if text:
+                    parts.append(text[:2200])
+            for message in packet.messages[-4:]:
+                text = " ".join(str(message.content or "").split()).strip()
+                if text:
+                    parts.append(text[:1200])
+            for stage in packet.stage_contexts[-4:]:
+                text = " ".join(
+                    str(value or "").strip()
+                    for value in (stage.summary, stage.content)
+                    if str(value or "").strip()
+                )
+                if text:
+                    parts.append(text[:1200])
+
+        for block in self._normalize_context_blocks(request.context_blocks):
+            text = " ".join(block.split()).strip()
+            if text:
+                parts.append(text[:2200])
+
+        seen: set[str] = set()
+        deduped: list[str] = []
+        for part in parts:
+            normalized = part.lower()
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            deduped.append(part)
+
+        return "\n".join(deduped)[:6000]
 
     def _agent_system_context(self, agent_id: str) -> str:
         if agent_id != SUPER_CHAT_AGENT_ID:
@@ -453,6 +494,55 @@ class AgentEngine:
             "metadata": record.metadata,
         }
 
+    def _memory_record_groups_payload(
+        self,
+        records: list[MemoryRecord],
+    ) -> list[dict[str, Any]]:
+        groups: list[dict[str, Any]] = []
+        for group in self.role_memory.group_memories_by_date(records):
+            group_records = [
+                record
+                for record in group.get("records", [])
+                if isinstance(record, MemoryRecord)
+            ]
+            groups.append(
+                {
+                    "date": group["date"],
+                    "record_count": len(group_records),
+                    "records": [
+                        self._memory_trace_payload(record)
+                        for record in group_records
+                    ],
+                }
+            )
+        return groups
+
+    def _summary_groups_payload(self, summary: str) -> list[dict[str, Any]]:
+        text = str(summary or "").strip()
+        if not text:
+            return []
+
+        groups: list[dict[str, Any]] = []
+        current: dict[str, Any] | None = None
+        for line in text.splitlines():
+            stripped = line.strip()
+            match = re.match(r"^(?P<date>\d{4}-\d{2}-\d{2})[:：]$", stripped)
+            if match:
+                current = {"date": match.group("date"), "items": []}
+                groups.append(current)
+                continue
+            if current is None:
+                current = {"date": "", "items": []}
+                groups.append(current)
+            item = stripped.lstrip("- ").strip()
+            if item:
+                current["items"].append(item)
+
+        for group in groups:
+            group["summary"] = "\n".join(f"- {item}" for item in group.pop("items"))
+            group["token_estimate"] = self._estimate_tokens(group["summary"])
+        return [group for group in groups if group.get("summary")]
+
     def _memory_loaded_payload(
         self,
         *,
@@ -467,6 +557,9 @@ class AgentEngine:
             "long_term_count": len(role_context.long_term_memories),
             "context_record_ids": [record.id for record in role_context.records],
             "records": [self._memory_trace_payload(record) for record in role_context.records],
+            "record_groups": self._memory_record_groups_payload(role_context.records),
+            "long_term_groups": self._memory_record_groups_payload(role_context.long_term_memories),
+            "persona_groups": self._memory_record_groups_payload(role_context.persona_memories),
         }
 
     def _memory_candidate_trace_payload(self, candidate: MemoryCandidate) -> dict[str, Any]:
@@ -477,6 +570,8 @@ class AgentEngine:
             "reason": candidate.reason,
             "tags": candidate.tags,
             "agent_id": candidate.agent_id,
+            "action": candidate.action,
+            "target_id": candidate.target_id,
             "metadata": candidate.metadata,
         }
 
@@ -548,6 +643,7 @@ class AgentEngine:
                 "persistent": True,
                 "record_count": len(role_context.long_term_memories),
                 "records": [self._memory_trace_payload(record) for record in role_context.long_term_memories],
+                "record_groups": self._memory_record_groups_payload(role_context.long_term_memories),
             },
             {
                 "id": "memory.role_persona",
@@ -558,6 +654,7 @@ class AgentEngine:
                 "role": role_context.role.model_dump(mode="json"),
                 "record_count": len(role_context.persona_memories),
                 "records": [self._memory_trace_payload(record) for record in role_context.persona_memories],
+                "record_groups": self._memory_record_groups_payload(role_context.persona_memories),
             },
             {
                 "id": "memory.short_term",
@@ -566,6 +663,7 @@ class AgentEngine:
                 "injected": bool(short_term_summary),
                 "persistent": False,
                 "summary": short_term_summary,
+                "summary_groups": self._summary_groups_payload(short_term_summary),
                 "token_estimate": self._estimate_tokens(short_term_summary),
             },
             {
@@ -666,10 +764,12 @@ class AgentEngine:
                 "context_nodes": context_nodes,
                 "role_context": role_context.rendered,
                 "short_term_summary": short_term_summary,
+                "short_term_summary_groups": self._summary_groups_payload(short_term_summary),
                 "memory_records": [
                     self._memory_trace_payload(record)
                     for record in role_context.records
                 ],
+                "memory_record_groups": self._memory_record_groups_payload(role_context.records),
                 "messages": [self._trace_message(message) for message in messages],
             },
         )
@@ -714,6 +814,7 @@ class AgentEngine:
                 "content": record.content,
                 "confidence": record.confidence,
                 "tags": record.tags,
+                "updated_at": record.updated_at.isoformat(),
             }
             for record in role_context.records
         ]
@@ -722,22 +823,26 @@ class AgentEngine:
             for index, message in enumerate(new_messages)
         ]
         system = (
-            "你是长期记忆更新器。你的任务是在一轮对话结束后，判断是否有信息值得跨会话保存。"
+            "你是长期记忆更新器。你的任务是在一轮对话结束后，判断是否有信息值得跨会话保存或更新。"
             "只返回 JSON 对象，不要 Markdown。\n\n"
             "只保存这些类型：\n"
             "- long_term：稳定的用户事实、偏好、长期项目、持续目标、明确要求记住的信息。\n"
             "- role：用户要求改变助手角色、人设、语气、工作方式或长期交互规则。\n\n"
+            "优先更新 existing_memories 中相关的旧记忆：如果新信息是补充、纠正或同一主题进展，"
+            "返回 action=update、target_id 和合并后的短句；不要新增一条相近记忆。"
             "不要保存普通问题、一次性任务、临时上下文、模型回答中的猜测、搜索结果摘要、"
-            "敏感信息或隐私信息，除非用户明确要求记住。若当前消息与已有记忆重复，不要返回。"
-            "如果没有值得保存的内容，返回空数组。"
+            "敏感信息或隐私信息，除非用户明确要求记住。若当前消息与已有记忆重复，返回空数组。"
+            "最多返回 3 条高置信候选；如果没有值得保存的内容，返回空数组。"
         )
         user = json.dumps(
             {
                 "output_schema": {
                     "memories": [
                         {
+                            "action": "create|update",
+                            "target_id": "更新已有记忆时填写 existing_memories.id，否则省略",
                             "kind": "long_term|role",
-                            "content": "简短、可直接放入 prompt 的记忆",
+                            "content": "简短、合并后可直接放入 prompt 的记忆",
                             "confidence": 0.0,
                             "reason": "为什么值得保存",
                             "tags": ["可选标签"],
@@ -772,8 +877,16 @@ class AgentEngine:
             return []
 
         candidates: list[MemoryCandidate] = []
-        for item in items[:8]:
+        for item in items[:4]:
             if not isinstance(item, dict):
+                continue
+            action = str(item.get("action") or "create").strip().lower()
+            if action in {"skip", "none"}:
+                continue
+            if action not in {"create", "update"}:
+                action = "create"
+            target_id = str(item.get("target_id") or item.get("id") or "").strip()
+            if action == "update" and not target_id:
                 continue
             kind = str(item.get("kind") or "long_term").strip()
             if kind == "persona":
@@ -787,14 +900,16 @@ class AgentEngine:
                 confidence = float(item.get("confidence", 0.7))
             except (TypeError, ValueError):
                 confidence = 0.7
-            if confidence < 0.55:
+            if confidence < 0.68:
                 continue
             tags = item.get("tags") if isinstance(item.get("tags"), list) else []
             reason = str(item.get("reason") or "ai_memory_review").strip()
             candidates.append(
                 MemoryCandidate(
+                    action=action,  # type: ignore[arg-type]
+                    target_id=target_id or None,
                     kind=kind,  # type: ignore[arg-type]
-                    content=content[:240],
+                    content=content[:200],
                     confidence=max(0.0, min(confidence, 1.0)),
                     reason=reason[:160] or "ai_memory_review",
                     tags=[
@@ -873,7 +988,7 @@ class AgentEngine:
             "max_keep_message_indices": keep_messages,
             "output_schema": {
                 "should_compact": True,
-                "summary": "压缩后的短期会话记忆摘要",
+                "summary": "本次压缩后的当日短期会话记忆摘要，控制在 900 字以内",
                 "keep_message_indices": [0],
             },
         }
@@ -882,6 +997,8 @@ class AgentEngine:
             "只返回 JSON 对象，不要 Markdown。\n\n"
             "摘要要保留：用户目标、进行中的任务、关键约束、未解决问题、用户明确偏好、最近重要结论。"
             "删除：寒暄、重复内容、工具原始输出、已经过期的一次性细节。"
+            "existing_summary 已经按日期保存；summary 只写本次历史压缩后仍需保留或更新的当日内容，"
+            "不要原样复制旧日期摘要。相关内容要合并成短句，避免堆叠流水账。"
             "keep_message_indices 只保留需要作为原文继续带入的最近消息，优先保留最新用户请求和助手结论；"
             "不要保留 tool 消息。"
         )
@@ -897,8 +1014,6 @@ class AgentEngine:
         history: list[LLMMessage],
     ) -> str:
         parts: list[str] = []
-        if existing_summary:
-            parts.append(existing_summary)
         for message in history[-12:]:
             if message.role not in {"user", "assistant"}:
                 continue
@@ -907,7 +1022,9 @@ class AgentEngine:
             if not content:
                 continue
             parts.append(f"{message.role}: {content[:260]}")
-        return "\n".join(parts)[-3000:].strip()
+        if not parts and existing_summary:
+            return existing_summary[-1200:].strip()
+        return "\n".join(parts)[-1200:].strip()
 
     def _select_compaction_keep_messages(
         self,
@@ -1009,6 +1126,7 @@ class AgentEngine:
                     existing_summary=existing_summary,
                     history=history,
                 )
+            summary = summary[:1200]
             kept = self._select_compaction_keep_messages(
                 raw=raw,
                 history=history,
@@ -1016,7 +1134,7 @@ class AgentEngine:
             )
             self.memory.compact(
                 conversation_memory_id,
-                summary=summary[:3000],
+                summary=summary,
                 keep_messages=kept,
             )
             self.trace_store.append_event(
@@ -1028,7 +1146,7 @@ class AgentEngine:
                     "conversation_id": request.conversation_id,
                     "before_count": len(history),
                     "after_count": len(kept),
-                    "summary_chars": len(summary[:3000]),
+                    "summary_chars": len(summary),
                     "model": response.model,
                     "usage": response.usage,
                 },
@@ -1040,6 +1158,7 @@ class AgentEngine:
                 existing_summary=existing_summary,
                 history=history,
             )
+            summary = summary[:1200]
             kept = self._select_compaction_keep_messages(
                 raw=None,
                 history=history,
@@ -1047,7 +1166,7 @@ class AgentEngine:
             )
             self.memory.compact(
                 conversation_memory_id,
-                summary=summary[:3000],
+                summary=summary,
                 keep_messages=kept,
             )
             self.trace_store.append_event(
@@ -1215,33 +1334,57 @@ class AgentEngine:
         updates: list[MemoryRecord] = []
         for candidate in candidates:
             try:
-                updates.append(
-                    self.role_memory.add_memory(
-                        role_id=role_context.role.id,
-                        user_id=self._user_id(request),
-                        kind=candidate.kind,
-                        scope="user",
-                        status="active",
-                        review_state="auto_accepted",
-                        content=candidate.content,
-                        source="hook",
-                        agent_id=candidate.agent_id,
-                        confidence=candidate.confidence,
-                        tags=candidate.tags,
-                        source_trace={
-                            "run_id": run_id,
-                            "conversation_id": request.conversation_id,
-                            "agent_id": agent_id,
-                            "role_id": role_context.role.id,
-                        },
-                        metadata={
-                            **candidate.metadata,
-                            "reason": candidate.reason,
-                            "conversation_id": request.conversation_id,
-                            "agent_id": agent_id,
-                        },
+                source_trace = {
+                    "run_id": run_id,
+                    "conversation_id": request.conversation_id,
+                    "agent_id": agent_id,
+                    "role_id": role_context.role.id,
+                }
+                metadata = {
+                    **candidate.metadata,
+                    "reason": candidate.reason,
+                    "conversation_id": request.conversation_id,
+                    "agent_id": agent_id,
+                    "memory_action": candidate.action,
+                }
+                if candidate.action == "update" and candidate.target_id:
+                    updates.append(
+                        self.role_memory.update_memory(
+                            role_id=role_context.role.id,
+                            memory_id=candidate.target_id,
+                            request=MemoryUpdateRequest(
+                                user_id=self._user_id(request),
+                                kind=candidate.kind,
+                                status="active",
+                                review_state="auto_accepted",
+                                content=candidate.content,
+                                source="hook",
+                                agent_id=candidate.agent_id,
+                                confidence=candidate.confidence,
+                                tags=candidate.tags,
+                                source_trace=source_trace,
+                                metadata=metadata,
+                            ),
+                        )
                     )
-                )
+                else:
+                    updates.append(
+                        self.role_memory.add_memory(
+                            role_id=role_context.role.id,
+                            user_id=self._user_id(request),
+                            kind=candidate.kind,
+                            scope="user",
+                            status="active",
+                            review_state="auto_accepted",
+                            content=candidate.content,
+                            source="hook",
+                            agent_id=candidate.agent_id,
+                            confidence=candidate.confidence,
+                            tags=candidate.tags,
+                            source_trace=source_trace,
+                            metadata=metadata,
+                        )
+                    )
             except Exception as e:
                 logger.exception("Failed to store memory")
                 self.trace_store.append_event(
@@ -1678,7 +1821,7 @@ class AgentEngine:
             role_id=target_role_id,
             user_id=self._user_id(request),
             agent_id=target_agent.id,
-            query=request.message,
+            query=self._memory_retrieval_query(request),
         )
         if target_role_context is None or not target_role_context.role.enabled:
             error_msg = f"Unknown or disabled role: {target_role_id}"
@@ -7625,7 +7768,7 @@ class AgentEngine:
             role_id=role_id,
             user_id=self._user_id(request),
             agent_id=agent_id,
-            query=request.message,
+            query=self._memory_retrieval_query(request),
         )
         if role_context is None or not role_context.role.enabled:
             error_msg = f"Unknown or disabled role: {role_id}"
@@ -7796,7 +7939,7 @@ class AgentEngine:
                 role_id=target_role_id,
                 user_id=self._user_id(request),
                 agent_id=AIGC_AGENT_ID,
-                query=request.message,
+                query=self._memory_retrieval_query(request),
             )
             if target_role_context is None or not target_role_context.role.enabled:
                 error_msg = f"Unknown or disabled role: {target_role_id}"
@@ -7876,7 +8019,7 @@ class AgentEngine:
                 role_id=target_role_id,
                 user_id=self._user_id(request),
                 agent_id=WEIGHT_LOSS_AGENT_ID,
-                query=request.message,
+                query=self._memory_retrieval_query(request),
             )
             if target_role_context is None or not target_role_context.role.enabled:
                 error_msg = f"Unknown or disabled role: {target_role_id}"

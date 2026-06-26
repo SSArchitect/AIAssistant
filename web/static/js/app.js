@@ -40,11 +40,13 @@ const I18N = {
         account: {
             label: '帐号',
             add: '新帐号',
+            switch: '切换/注册帐号',
             loginTitle: '选择帐号',
             existing: '已有帐号',
             enter: '进入',
             newName: '新帐号',
             password: '密码',
+            close: '关闭帐号面板',
             namePlaceholder: '输入帐号名',
             passwordPlaceholder: '输入密码',
             create: '创建并进入',
@@ -431,11 +433,13 @@ const I18N = {
         account: {
             label: 'Account',
             add: 'New account',
+            switch: 'Switch or create account',
             loginTitle: 'Choose Account',
             existing: 'Existing account',
             enter: 'Enter',
             newName: 'New account',
             password: 'Password',
+            close: 'Close account panel',
             namePlaceholder: 'Account name',
             passwordPlaceholder: 'Password',
             create: 'Create and enter',
@@ -943,10 +947,12 @@ const sidebarBackdrop = document.getElementById('sidebar-backdrop');
 const accountSelect = document.getElementById('account-select');
 const btnAddAccount = document.getElementById('btn-add-account');
 const accountLogin = document.getElementById('account-login');
+const accountLoginClose = document.querySelector('[data-account-login-close]');
 const loginAccountSelect = document.getElementById('login-account-select');
 const loginPasswordInput = document.getElementById('login-password-input');
 const btnAccountLogin = document.getElementById('btn-account-login');
 const accountCreateForm = document.getElementById('account-create-form');
+const accountCreateButton = accountCreateForm?.querySelector('button[type="submit"]');
 const accountNameInput = document.getElementById('account-name-input');
 const accountPasswordInput = document.getElementById('account-password-input');
 const accountLoginError = document.getElementById('account-login-error');
@@ -1350,10 +1356,24 @@ function renderAccountControls() {
     if (btnAccountLogin) btnAccountLogin.disabled = accounts.length === 0;
 }
 
-function showAccountLogin(message = '', selectedUserId = '') {
+function accountLoginIsOpen() {
+    return Boolean(accountLogin && !accountLogin.classList.contains('hidden'));
+}
+
+function canDismissAccountLogin() {
+    return Boolean(currentUserId && currentAccountToken);
+}
+
+function updateAccountLoginDismissState() {
+    if (!accountLogin) return;
+    accountLogin.classList.toggle('dismissible', canDismissAccountLogin());
+}
+
+function showAccountLogin(message = '', selectedUserId = '', options = {}) {
     if (!accountLogin) return;
     accountLogin.classList.remove('hidden');
     document.body.classList.add('account-login-open');
+    updateAccountLoginDismissState();
     if (accountLoginError) accountLoginError.textContent = message || '';
     renderAccountControls();
     if (selectedUserId && loginAccountSelect && accounts.some((account) => account.id === selectedUserId)) {
@@ -1361,7 +1381,9 @@ function showAccountLogin(message = '', selectedUserId = '') {
     }
     if (loginPasswordInput) loginPasswordInput.value = '';
     requestAnimationFrame(() => {
-        if (accounts.length && loginPasswordInput) {
+        if (options.focus === 'select' && accounts.length && loginAccountSelect) {
+            loginAccountSelect.focus({ preventScroll: true });
+        } else if (accounts.length && loginPasswordInput) {
             loginPasswordInput.focus({ preventScroll: true });
         } else if (accounts.length && loginAccountSelect) {
             loginAccountSelect.focus({ preventScroll: true });
@@ -1378,6 +1400,13 @@ function hideAccountLogin() {
     if (accountLoginError) accountLoginError.textContent = '';
 }
 
+function dismissAccountLogin() {
+    if (!canDismissAccountLogin()) return false;
+    hideAccountLogin();
+    focusMessageInput({ allowMobile: false });
+    return true;
+}
+
 async function switchAccount(userId, options = {}) {
     const nextUserId = String(userId || '').trim();
     if (!nextUserId) {
@@ -1391,6 +1420,11 @@ async function switchAccount(userId, options = {}) {
     currentAccountToken = options.token || loadAccountSessionToken(nextUserId);
     if (options.token) saveAccountSessionToken(nextUserId, options.token);
     saveCurrentUserId(currentUserId);
+    if (options.reload === true) {
+        hideAccountLogin();
+        window.location.reload();
+        return;
+    }
     currentConversationId = loadCurrentConversationId();
     selectedModeIds = loadSelectedModes(currentConversationId);
     currentRoleId = loadCurrentRoleId();
@@ -2058,7 +2092,7 @@ async function createConversation() {
 }
 
 async function loadConversation(id) {
-    return apiCall('GET', `/api/conversations/${encodeURIComponent(id)}`);
+    return apiCall('GET', `/api/conversations/${encodeURIComponent(id)}?include_trace=true`);
 }
 
 async function deleteConversation(id) {
@@ -4996,6 +5030,8 @@ function renderContextNodeDetails(node) {
         ['Token estimate', contextNode.token_estimate == null ? '' : String(contextNode.token_estimate)],
     ];
     const records = Array.isArray(contextNode.records) ? contextNode.records : [];
+    const recordGroups = Array.isArray(contextNode.record_groups) ? contextNode.record_groups : [];
+    const summaryGroups = Array.isArray(contextNode.summary_groups) ? contextNode.summary_groups : [];
     const messages = Array.isArray(contextNode.messages) ? contextNode.messages : [];
     const toolNames = Array.isArray(contextNode.tool_names) ? contextNode.tool_names : [];
 
@@ -5003,14 +5039,43 @@ function renderContextNodeDetails(node) {
         ${renderTraceDetailHead(traceCopy('上下文节点', 'Context Node'), node.label, node.detail, node.status)}
         ${renderTraceDetailGrid(rows)}
         ${contextNode.content ? renderTraceDisclosureSection(traceCopy('完整内容', 'Full Content'), contextNode.content, { pre: true }) : ''}
-        ${contextNode.summary ? renderTraceTextSection(traceCopy('摘要', 'Summary'), contextNode.summary) : ''}
+        ${summaryGroups.length ? renderTraceSummaryGroups(summaryGroups) : (contextNode.summary ? renderTraceTextSection(traceCopy('摘要', 'Summary'), contextNode.summary) : '')}
         ${contextNode.preview ? renderTraceTextSection(traceCopy('预览', 'Preview'), contextNode.preview) : ''}
-        ${records.length ? renderTraceMemoryRecordList(records) : ''}
+        ${recordGroups.length ? renderTraceMemoryRecordGroups(recordGroups) : (records.length ? renderTraceMemoryRecordList(records) : '')}
         ${messages.length ? renderTraceJsonSection(traceCopy('对话消息', 'Conversation Messages'), messages.map((message) => compactObject(message))) : ''}
         ${toolNames.length ? renderTraceListSection(traceCopy('工具', 'Tools'), toolNames.map((name) => ({ title: name, detail: '' }))) : ''}
         ${contextNode.role ? renderTraceJsonSection(traceCopy('角色', 'Role'), compactObject(contextNode.role)) : ''}
         ${renderTraceChildList(node)}
     `;
+}
+
+function renderTraceSummaryGroups(groups = []) {
+    return renderTraceListSection(
+        traceCopy('短期摘要日期块', 'Short-term Summary by Date'),
+        groups.map((group) => ({
+            title: group.date || traceCopy('未标日期', 'Undated'),
+            detail: group.summary || '',
+        })),
+    );
+}
+
+function renderTraceMemoryRecordGroups(groups = []) {
+    return renderTraceListSection(
+        traceCopy('按日期收纳的记忆', 'Memory by Date'),
+        groups.map((group) => {
+            const records = Array.isArray(group.records) ? group.records : [];
+            return {
+                title: `${group.date || traceCopy('未标日期', 'Undated')} · ${records.length || group.record_count || 0}`,
+                detail: records.map((record) => [
+                    `${record.kind || 'memory'} · ${record.status || 'active'} · ${shortDebugId(record.id || '')}`,
+                    record.content || '',
+                    record.source ? `${traceCopy('来源', 'Source')}: ${record.source}` : '',
+                    record.confidence != null ? `${traceCopy('置信度', 'Confidence')}: ${record.confidence}` : '',
+                    record.updated_at ? `${traceCopy('更新', 'Updated')}: ${formatFullTime(record.updated_at)}` : '',
+                ].filter(Boolean).join('\n')).join('\n\n'),
+            };
+        }),
+    );
 }
 
 function renderTraceMemoryRecordList(records = []) {
@@ -5707,6 +5772,7 @@ function conversationMessagesSignature(messages = []) {
         msg.created_at || '',
         msg.skills_used || '',
         msg.citations || '',
+        msg.trace_events || '',
         msg.content || '',
     ].join('\u001f')).join('\u001e');
 }
@@ -5924,7 +5990,7 @@ async function selectConversation(id) {
 }
 
 async function restoreInitialConversation() {
-    const storedValue = localStorage.getItem(CURRENT_CONVERSATION_STORAGE_KEY);
+    const storedValue = localStorage.getItem(accountStorageKey(CURRENT_CONVERSATION_STORAGE_KEY));
     const hasStoredPreference = storedValue !== null;
     const storedConversationExists = currentConversationId
         && conversations.some((conv) => conv.id === currentConversationId);
@@ -7929,6 +7995,12 @@ document.addEventListener('click', async (event) => {
 });
 
 document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && accountLoginIsOpen()) {
+        event.preventDefault();
+        dismissAccountLogin();
+        return;
+    }
+
     if (event.key === 'Escape' && isMobileSidebarOpen()) {
         event.preventDefault();
         setSidebarOpen(false);
@@ -8072,8 +8144,19 @@ if (accountSelect) {
 
 if (btnAddAccount) {
     btnAddAccount.addEventListener('click', () => {
-        showAccountLogin();
-        accountNameInput?.focus({ preventScroll: true });
+        showAccountLogin('', currentUserId, { focus: 'select' });
+    });
+}
+
+if (accountLogin) {
+    accountLogin.addEventListener('click', (event) => {
+        if (event.target === accountLogin) dismissAccountLogin();
+    });
+}
+
+if (accountLoginClose) {
+    accountLoginClose.addEventListener('click', () => {
+        dismissAccountLogin();
     });
 }
 
@@ -8095,7 +8178,7 @@ if (btnAccountLogin) {
             if (data.account) {
                 accounts = [...accounts.filter((item) => item.id !== data.account.id), data.account];
             }
-            await switchAccount(data.account?.id || userId, { token: data.token });
+            await switchAccount(data.account?.id || userId, { token: data.token, reload: true });
         } catch (err) {
             if (accountLoginError) accountLoginError.textContent = t('account.loginFailed', { message: err.message });
         } finally {
@@ -8117,13 +8200,16 @@ if (accountCreateForm) {
             if (accountLoginError) accountLoginError.textContent = t('account.emptyPassword');
             return;
         }
+        if (accountCreateButton) accountCreateButton.disabled = true;
         try {
             const data = await createAccount(name, password);
             if (accountNameInput) accountNameInput.value = '';
             if (accountPasswordInput) accountPasswordInput.value = '';
-            await switchAccount(data.account.id, { token: data.token });
+            await switchAccount(data.account.id, { token: data.token, reload: true });
         } catch (err) {
             if (accountLoginError) accountLoginError.textContent = t('account.createFailed', { message: err.message });
+        } finally {
+            if (accountCreateButton) accountCreateButton.disabled = false;
         }
     });
 }

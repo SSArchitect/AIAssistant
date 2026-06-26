@@ -47,6 +47,43 @@ func TestAccountCreateRequiresPasswordAndReturnsToken(t *testing.T) {
 	if account.PasswordHash == "" || account.PasswordHash == "secret" {
 		t.Fatalf("expected password hash, got %q", account.PasswordHash)
 	}
+	if account.NameKey == "" {
+		t.Fatal("expected account name key to be set")
+	}
+}
+
+func TestAccountCreateRejectsDuplicateName(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	if err := database.Init(filepath.Join(t.TempDir(), "assistant.db")); err != nil {
+		t.Fatalf("init database: %v", err)
+	}
+
+	router := gin.New()
+	handler := NewAccountHandler()
+	router.POST("/api/accounts", handler.Create)
+
+	for i := 0; i < 2; i++ {
+		body := bytes.NewBufferString(`{"name":"Alice","password":"secret"}`)
+		req := httptest.NewRequest(http.MethodPost, "/api/accounts", body)
+		req.Header.Set("Content-Type", "application/json")
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, req)
+
+		if i == 0 && recorder.Code != http.StatusCreated {
+			t.Fatalf("unexpected first create status %d: %s", recorder.Code, recorder.Body.String())
+		}
+		if i == 1 && recorder.Code != http.StatusConflict {
+			t.Fatalf("expected duplicate create to conflict, got %d: %s", recorder.Code, recorder.Body.String())
+		}
+	}
+
+	var count int64
+	if err := database.DB.Model(&models.Account{}).Where("lower(name) = lower(?)", "Alice").Count(&count).Error; err != nil {
+		t.Fatalf("count accounts: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("expected one Alice account, got %d", count)
+	}
 }
 
 func TestAccountLoginInitializesPasswordForLegacyAccount(t *testing.T) {

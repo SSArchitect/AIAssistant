@@ -596,9 +596,40 @@ video {
     gap: 12px;
 }
 
+.account-login-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+
 .account-login-panel h2 {
     font-size: 18px;
     line-height: 1.2;
+}
+
+.account-login-close {
+    width: 30px;
+    height: 30px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+    color: var(--text-muted);
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+}
+
+.account-login-close:hover {
+    color: var(--primary);
+    border-color: var(--primary);
+    background: var(--primary-soft);
+}
+
+.account-login:not(.dismissible) .account-login-close {
+    display: none;
 }
 
 .account-login-field {
@@ -4311,6 +4342,7 @@ body.pulse-post-open {
 .trace-detail-list li small {
     display: block;
     color: var(--text-muted);
+    white-space: pre-wrap;
     overflow-wrap: anywhere;
 }
 

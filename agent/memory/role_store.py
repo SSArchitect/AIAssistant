@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_USER_ID = "0"
 ROLE_OWNER_METADATA_KEY = "owner_user_id"
+MEMORY_STORAGE_SCHEMA_VERSION = 2
 
 
 def _role_metadata(
@@ -170,6 +171,9 @@ class RoleMemoryStore:
         "看看",
     }
     _ZH_STOP_CHARS = set("我你他她它的是了和吗呢吧啊哦嗯这那有在")
+    _RELATED_MEMORY_SIMILARITY_THRESHOLD = 0.64
+    _MAX_MERGED_CONTENT_CHARS = 260
+    _MAX_RENDERED_CONTENT_CHARS = 360
 
     def __init__(
         self,
@@ -186,9 +190,13 @@ class RoleMemoryStore:
         self._storage_path = Path(storage_path) if storage_path else None
         self._max_records_per_role = max_records_per_role
         self._max_context_records = max_context_records
+        self._storage_needs_migration = False
         self._lock = RLock()
         self._load()
         self._sync_default_roles()
+        if self._storage_needs_migration:
+            with self._lock:
+                self._persist_locked()
         for role in roles or []:
             self.register_role(role)
 
@@ -354,6 +362,12 @@ class RoleMemoryStore:
                 agent_id=agent_id,
             )
             if duplicate is not None:
+                merged_content = self._merge_memory_content(
+                    duplicate.content,
+                    normalized_content,
+                )
+                if merged_content != duplicate.content:
+                    duplicate.content = merged_content
                 duplicate.updated_at = utc_now()
                 duplicate.confidence = max(duplicate.confidence, confidence)
                 duplicate.tags = sorted(set(duplicate.tags).union(tags or []))
@@ -435,6 +449,28 @@ class RoleMemoryStore:
         if limit is not None:
             return records[:limit]
         return records
+
+    @classmethod
+    def group_memories_by_date(
+        cls,
+        records: list[MemoryRecord],
+    ) -> list[dict[str, object]]:
+        grouped: dict[str, list[MemoryRecord]] = defaultdict(list)
+        for record in records:
+            grouped[cls._memory_date_key(record)].append(record)
+
+        groups: list[dict[str, object]] = []
+        for date_key, date_records in grouped.items():
+            date_records.sort(key=lambda record: record.updated_at, reverse=True)
+            groups.append(
+                {
+                    "date": date_key,
+                    "record_count": len(date_records),
+                    "records": date_records,
+                }
+            )
+        groups.sort(key=lambda group: str(group["date"]), reverse=True)
+        return groups
 
     def update_memory(
         self,
@@ -569,7 +605,12 @@ class RoleMemoryStore:
         role = context.role
         lines = ["长期记忆："]
         if context.long_term_memories:
-            lines.extend(f"- {record.content}" for record in context.long_term_memories)
+            for group in self.group_memories_by_date(context.long_term_memories):
+                lines.append(f"- {group['date']}：")
+                lines.extend(
+                    f"  - {self._render_memory_content(record.content)}"
+                    for record in group["records"]  # type: ignore[index]
+                )
         else:
             lines.append("- 暂无。")
 
@@ -587,7 +628,12 @@ class RoleMemoryStore:
             lines.extend(f"  - {item}" for item in preferences)
         if context.persona_memories:
             lines.append("- 用户更新的角色记忆：")
-            lines.extend(f"  - {record.content}" for record in context.persona_memories)
+            for group in self.group_memories_by_date(context.persona_memories):
+                lines.append(f"  - {group['date']}：")
+                lines.extend(
+                    f"    - {self._render_memory_content(record.content)}"
+                    for record in group["records"]  # type: ignore[index]
+                )
         return "\n".join(lines)
 
     def _find_duplicate(
@@ -609,9 +655,46 @@ class RoleMemoryStore:
                 continue
             if self._normalize_for_dedupe(record.content) == normalized:
                 return record
-            if self._memory_similarity(record.content, content) >= 0.70:
+            if (
+                self._memory_similarity(record.content, content)
+                >= self._RELATED_MEMORY_SIMILARITY_THRESHOLD
+            ):
                 return record
         return None
+
+    @classmethod
+    def _merge_memory_content(cls, existing: str, incoming: str) -> str:
+        existing = cls._clean_content(existing)
+        incoming = cls._clean_content(incoming)
+        if not incoming:
+            return existing
+        if not existing:
+            return incoming
+
+        normalized_existing = cls._normalize_for_dedupe(existing)
+        normalized_incoming = cls._normalize_for_dedupe(incoming)
+        if normalized_existing == normalized_incoming:
+            return existing
+        if normalized_incoming in normalized_existing:
+            return existing
+        if normalized_existing in normalized_incoming:
+            return incoming[: cls._MAX_MERGED_CONTENT_CHARS].rstrip()
+
+        parts: list[str] = []
+        for value in (existing, incoming):
+            for part in re.split(r"[\n。；;]+", value):
+                clean = cls._clean_content(part)
+                if not clean:
+                    continue
+                if any(cls._memory_similarity(clean, current) >= 0.86 for current in parts):
+                    continue
+                parts.append(clean)
+
+        separator = "；" if cls._contains_cjk(existing + incoming) else "; "
+        merged = separator.join(parts).strip()
+        if len(merged) <= cls._MAX_MERGED_CONTENT_CHARS:
+            return merged
+        return merged[: cls._MAX_MERGED_CONTENT_CHARS - 3].rstrip() + "..."
 
     def _select_relevant_memories(
         self,
@@ -661,6 +744,13 @@ class RoleMemoryStore:
         overlap = query_terms.intersection(content_terms)
         tag_overlap = query_terms.intersection(tag_terms)
         if not overlap and not tag_overlap:
+            return 0.0
+        strong_overlap = {
+            term
+            for term in overlap
+            if len(term) >= 3 or re.search(r"[a-z0-9]", term)
+        }
+        if not tag_overlap and not strong_overlap and len(overlap) < 2:
             return 0.0
         return float(len(overlap)) + float(len(tag_overlap) * 2)
 
@@ -727,6 +817,18 @@ class RoleMemoryStore:
             return False
         return True
 
+    @staticmethod
+    def _memory_date_key(record: MemoryRecord) -> str:
+        value = record.updated_at or record.created_at
+        return value.date().isoformat()
+
+    @classmethod
+    def _render_memory_content(cls, content: str) -> str:
+        text = cls._clean_content(content)
+        if len(text) <= cls._MAX_RENDERED_CONTENT_CHARS:
+            return text
+        return text[: cls._MAX_RENDERED_CONTENT_CHARS - 3].rstrip() + "..."
+
     def _truncate(self, role_id: str, *, user_id: str) -> None:
         records = self._records[role_id]
         scoped_records = [record for record in records if record.user_id == user_id]
@@ -775,13 +877,36 @@ class RoleMemoryStore:
 
         try:
             payload = json.loads(self._storage_path.read_text(encoding="utf-8"))
+            if not isinstance(payload, dict):
+                return
+            self._storage_needs_migration = (
+                payload.get("schema_version") != MEMORY_STORAGE_SCHEMA_VERSION
+            )
             for role_data in payload.get("roles", []):
                 role = RoleProfile.model_validate(role_data)
                 role = self._role_with_owner(role)
                 self._roles[self._role_storage_key(role)] = role
 
             loaded_records: dict[str, list[MemoryRecord]] = defaultdict(list)
-            for record_data in payload.get("records", []):
+            record_items: list[dict] = []
+            if isinstance(payload.get("record_groups"), list):
+                for group in payload.get("record_groups", []):
+                    if not isinstance(group, dict):
+                        continue
+                    records = group.get("records")
+                    if isinstance(records, list):
+                        record_items.extend(item for item in records if isinstance(item, dict))
+            elif isinstance(payload.get("records_by_date"), dict):
+                for records in payload.get("records_by_date", {}).values():
+                    if isinstance(records, list):
+                        record_items.extend(item for item in records if isinstance(item, dict))
+                self._storage_needs_migration = True
+            else:
+                records = payload.get("records", [])
+                if isinstance(records, list):
+                    record_items.extend(item for item in records if isinstance(item, dict))
+
+            for record_data in record_items:
                 record = MemoryRecord.model_validate(record_data)
                 loaded_records[record.role_id].append(record)
             self._records = loaded_records
@@ -799,13 +924,21 @@ class RoleMemoryStore:
             for record in role_records
         ]
         payload = {
+            "schema_version": MEMORY_STORAGE_SCHEMA_VERSION,
             "roles": [
                 role.model_dump(mode="json")
                 for role in self._roles.values()
             ],
-            "records": [
-                record.model_dump(mode="json")
-                for record in records
+            "record_groups": [
+                {
+                    "date": group["date"],
+                    "record_count": group["record_count"],
+                    "records": [
+                        record.model_dump(mode="json")
+                        for record in group["records"]  # type: ignore[index]
+                    ],
+                }
+                for group in self.group_memories_by_date(records)
             ],
         }
         tmp_path = self._storage_path.with_suffix(self._storage_path.suffix + ".tmp")
@@ -880,6 +1013,10 @@ class RoleMemoryStore:
         content = content.lower().strip()
         content = re.sub(r"\s+", " ", content)
         return content.strip("。.!? ")
+
+    @staticmethod
+    def _contains_cjk(content: str) -> bool:
+        return bool(re.search(r"[\u4e00-\u9fff]", content))
 
     @staticmethod
     def _clean_role_id(value: str) -> str:
