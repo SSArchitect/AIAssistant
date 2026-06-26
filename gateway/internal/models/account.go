@@ -2,6 +2,11 @@ package models
 
 import "time"
 
+const (
+	DefaultAccountID   = "0"
+	DefaultAccountName = "默认帐号"
+)
+
 type Account struct {
 	ID           string    `json:"id" gorm:"primaryKey;size:64"`
 	Name         string    `json:"name" gorm:"index;not null"`

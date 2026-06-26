@@ -122,3 +122,40 @@ func TestAccountLoginInitializesPasswordForLegacyAccount(t *testing.T) {
 		t.Fatalf("expected bad password to fail, got %d: %s", badRecorder.Code, badRecorder.Body.String())
 	}
 }
+
+func TestAccountGuestReturnsDefaultAccountSession(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	if err := database.Init(filepath.Join(t.TempDir(), "assistant.db")); err != nil {
+		t.Fatalf("init database: %v", err)
+	}
+
+	router := gin.New()
+	handler := NewAccountHandler()
+	router.POST("/api/accounts/guest", handler.Guest)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/accounts/guest", nil)
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("unexpected status %d: %s", recorder.Code, recorder.Body.String())
+	}
+	var payload accountAuthResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if payload.Account.ID != models.DefaultAccountID || payload.Account.PasswordSet || payload.Token == "" {
+		t.Fatalf("unexpected guest payload: %#v", payload)
+	}
+	if sessionUserID, ok := accountSessionUserID(payload.Token); !ok || sessionUserID != models.DefaultAccountID {
+		t.Fatalf("expected guest token for default account, got user=%q ok=%v", sessionUserID, ok)
+	}
+
+	var account models.Account
+	if err := database.DB.First(&account, "id = ?", models.DefaultAccountID).Error; err != nil {
+		t.Fatalf("load default account: %v", err)
+	}
+	if account.PasswordHash != "" {
+		t.Fatalf("guest login should not set a password hash, got %q", account.PasswordHash)
+	}
+}

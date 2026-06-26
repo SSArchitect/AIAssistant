@@ -658,6 +658,23 @@ video {
     border-color: var(--primary);
 }
 
+.account-guest-link {
+    justify-self: center;
+    color: var(--primary);
+    font-size: 13px;
+    font-weight: 700;
+    text-decoration: none;
+}
+
+.account-guest-link:hover {
+    text-decoration: underline;
+}
+
+.account-guest-link[aria-disabled="true"] {
+    color: var(--text-muted);
+    pointer-events: none;
+}
+
 .account-create-form {
     display: grid;
     gap: 10px;

@@ -47,10 +47,10 @@ func Init(dbPath string) error {
 func ensureDefaultAccount() error {
 	now := time.Now()
 	account := models.Account{
-		ID:        "0",
-		Name:      "默认帐号",
+		ID:        models.DefaultAccountID,
+		Name:      models.DefaultAccountName,
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
-	return DB.FirstOrCreate(&account, models.Account{ID: "0"}).Error
+	return DB.FirstOrCreate(&account, models.Account{ID: models.DefaultAccountID}).Error
 }

@@ -11,6 +11,7 @@ const CURRENT_ROLE_ID_STORAGE_KEY = 'agent_assistant_current_role_id';
 const SIDEBAR_COLLAPSE_STORAGE_KEY = 'agent_assistant_sidebar_collapsed_sections';
 const CURRENT_USER_ID_STORAGE_KEY = 'agent_assistant_current_user_id';
 const ACCOUNT_SESSION_STORAGE_KEY = 'agent_assistant_account_session';
+const GUEST_ACCOUNT_ID = '0';
 const MOBILE_BREAKPOINT_QUERY = '(max-width: 720px)';
 
 const VIEW_COPY = {
@@ -50,6 +51,9 @@ const I18N = {
             namePlaceholder: '输入帐号名',
             passwordPlaceholder: '输入密码',
             create: '创建并进入',
+            guestEnter: '访客进入默认帐号',
+            guestLoading: '正在进入访客帐号...',
+            guestFailed: '访客进入失败：{message}',
             createFailed: '创建帐号失败：{message}',
             loginFailed: '登录失败：{message}',
             loadFailed: '加载帐号失败：{message}',
@@ -443,6 +447,9 @@ const I18N = {
             namePlaceholder: 'Account name',
             passwordPlaceholder: 'Password',
             create: 'Create and enter',
+            guestEnter: 'Enter as guest',
+            guestLoading: 'Entering as guest...',
+            guestFailed: 'Failed to enter as guest: {message}',
             createFailed: 'Failed to create account: {message}',
             loginFailed: 'Failed to log in: {message}',
             loadFailed: 'Failed to load accounts: {message}',
@@ -941,6 +948,7 @@ let userQuestionHistory = [];
 let questionHistoryIndex = -1;
 let questionHistoryDraft = '';
 let applyingQuestionHistory = false;
+let guestLoginBusy = false;
 
 const sidebar = document.getElementById('sidebar');
 const sidebarBackdrop = document.getElementById('sidebar-backdrop');
@@ -951,6 +959,7 @@ const accountLoginClose = document.querySelector('[data-account-login-close]');
 const loginAccountSelect = document.getElementById('login-account-select');
 const loginPasswordInput = document.getElementById('login-password-input');
 const btnAccountLogin = document.getElementById('btn-account-login');
+const guestLoginLink = document.getElementById('guest-login-link');
 const accountCreateForm = document.getElementById('account-create-form');
 const accountCreateButton = accountCreateForm?.querySelector('button[type="submit"]');
 const accountNameInput = document.getElementById('account-name-input');
@@ -1100,6 +1109,7 @@ function applyI18n() {
     });
     document.querySelectorAll('[data-copy-answer]').forEach(resetCopyButtonFeedback);
     if (languageToggle) languageToggle.textContent = currentLanguage === 'zh' ? 'EN' : '中';
+    setGuestLoginBusy(guestLoginBusy);
 }
 
 function setLanguage(language) {
@@ -1322,6 +1332,42 @@ async function createAccount(name, password) {
 
 async function loginAccount(userId, password) {
     return publicApiCall('POST', '/api/accounts/login', { id: userId, password });
+}
+
+function guestEntryRequested() {
+    const path = window.location.pathname.replace(/\/+$/, '') || '/';
+    if (path === '/guest') return true;
+
+    const params = new URLSearchParams(window.location.search);
+    if (!params.has('guest')) return false;
+    const value = (params.get('guest') || '1').trim().toLowerCase();
+    return value !== '0' && value !== 'false' && value !== 'no';
+}
+
+function setGuestLoginBusy(isBusy) {
+    guestLoginBusy = Boolean(isBusy);
+    if (!guestLoginLink) return;
+
+    guestLoginLink.textContent = guestLoginBusy ? t('account.guestLoading') : t('account.guestEnter');
+    if (guestLoginBusy) {
+        guestLoginLink.setAttribute('aria-disabled', 'true');
+        guestLoginLink.setAttribute('aria-busy', 'true');
+    } else {
+        guestLoginLink.removeAttribute('aria-disabled');
+        guestLoginLink.removeAttribute('aria-busy');
+    }
+}
+
+async function enterGuestAccount(options = {}) {
+    const data = await publicApiCall('POST', '/api/accounts/guest');
+    if (data.account) {
+        accounts = [...accounts.filter((item) => item.id !== data.account.id), data.account];
+    }
+    await switchAccount(data.account?.id || GUEST_ACCOUNT_ID, {
+        token: data.token,
+        refresh: options.refresh,
+        reload: options.reload,
+    });
 }
 
 async function publicApiCall(method, path, body = null) {
@@ -3020,6 +3066,22 @@ async function bootApp() {
         await loadAccounts();
     } catch (err) {
         showAccountLogin(t('account.loadFailed', { message: err.message }));
+        return;
+    }
+
+    if (guestEntryRequested()) {
+        setGuestLoginBusy(true);
+        try {
+            await enterGuestAccount();
+        } catch (err) {
+            currentUserId = '';
+            currentAccountToken = '';
+            currentConversationId = null;
+            renderAccountControls();
+            showAccountLogin(t('account.guestFailed', { message: err.message }), GUEST_ACCOUNT_ID);
+        } finally {
+            setGuestLoginBusy(false);
+        }
         return;
     }
 
@@ -8157,6 +8219,23 @@ if (accountLogin) {
 if (accountLoginClose) {
     accountLoginClose.addEventListener('click', () => {
         dismissAccountLogin();
+    });
+}
+
+if (guestLoginLink) {
+    guestLoginLink.addEventListener('click', async (event) => {
+        event.preventDefault();
+        if (guestLoginBusy) return;
+
+        setGuestLoginBusy(true);
+        if (accountLoginError) accountLoginError.textContent = '';
+        try {
+            await enterGuestAccount();
+        } catch (err) {
+            if (accountLoginError) accountLoginError.textContent = t('account.guestFailed', { message: err.message });
+        } finally {
+            setGuestLoginBusy(false);
+        }
     });
 }
 

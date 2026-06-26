@@ -85,6 +85,7 @@ func main() {
 		api.GET("/accounts", accountHandler.List)
 		api.POST("/accounts", accountHandler.Create)
 		api.POST("/accounts/login", accountHandler.Login)
+		api.POST("/accounts/guest", accountHandler.Guest)
 		api.POST("/chat", chatHandler.Chat)
 		api.GET("/agents", chatHandler.ListAgents)
 		api.GET("/roles", chatHandler.ListRoles)
@@ -138,6 +139,8 @@ func main() {
 	r.Static("/static", filepath.Join(webDir, "static"))
 	r.StaticFile("/", filepath.Join(webDir, "index.html"))
 	r.StaticFile("/index.html", filepath.Join(webDir, "index.html"))
+	r.StaticFile("/guest", filepath.Join(webDir, "index.html"))
+	r.StaticFile("/guest/", filepath.Join(webDir, "index.html"))
 	r.StaticFile("/admin.html", filepath.Join(webDir, "admin.html"))
 
 	// Start server

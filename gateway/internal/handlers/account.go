@@ -166,6 +166,48 @@ func (h *AccountHandler) Login(c *gin.Context) {
 	})
 }
 
+func (h *AccountHandler) Guest(c *gin.Context) {
+	account, err := defaultGuestAccount()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load guest account"})
+		return
+	}
+
+	token, err := createAccountSession(account.ID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create guest session"})
+		return
+	}
+
+	c.JSON(http.StatusOK, accountAuthResponse{
+		Account: toAccountResponse(account),
+		Token:   token,
+	})
+}
+
+func defaultGuestAccount() (models.Account, error) {
+	var account models.Account
+	err := database.DB.First(&account, "id = ?", models.DefaultAccountID).Error
+	if err == nil {
+		return account, nil
+	}
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return models.Account{}, err
+	}
+
+	now := time.Now()
+	account = models.Account{
+		ID:        models.DefaultAccountID,
+		Name:      models.DefaultAccountName,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if err := database.DB.Create(&account).Error; err != nil {
+		return models.Account{}, err
+	}
+	return account, nil
+}
+
 func normalizedAccountID(value string) string {
 	value = strings.TrimSpace(value)
 	value = strings.Map(func(r rune) rune {
