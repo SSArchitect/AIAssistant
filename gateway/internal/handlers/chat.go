@@ -56,6 +56,8 @@ type streamRunPayload struct {
 	RunID string `json:"run_id"`
 }
 
+const superChatAgentID = "super_chat"
+
 const (
 	conversationContextMessageLimit    = 30
 	conversationContextMaxMessageRunes = 1800
@@ -69,6 +71,12 @@ func (h *ChatHandler) Chat(c *gin.Context) {
 		return
 	}
 	req.UserID = requestUserIDWithBody(c, req.UserID)
+	disabledTools, err := disabledToolsForUser(req.UserID)
+	if err != nil {
+		slog.Warn("Failed to load user tool settings", "user_id", req.UserID, "error", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load tool settings"})
+		return
+	}
 
 	// Ensure conversation exists
 	var conv models.Conversation
@@ -111,6 +119,7 @@ func (h *ChatHandler) Chat(c *gin.Context) {
 		Attachments:     req.Attachments,
 		AgentInput:      req.AgentInput,
 		Handoff:         req.Handoff,
+		DisabledTools:   disabledTools,
 	}
 
 	if !h.syncConfigToAgent(c) {
@@ -129,7 +138,8 @@ func (h *ChatHandler) Chat(c *gin.Context) {
 		return
 	}
 
-	h.saveAssistantMessage(req.ConversationID, req.UserID, agentResp)
+	assistantMsg := h.saveAssistantMessage(req.ConversationID, req.UserID, agentResp)
+	h.generateFollowUpsAsync(req, assistantMsg, agentResp)
 	h.updateConversationTitle(conv, req.Query)
 
 	c.JSON(http.StatusOK, agentResp)
@@ -255,7 +265,8 @@ func (h *ChatHandler) streamChat(
 		if len(finalResp.Events) == 0 && len(streamEvents) > 0 {
 			finalResp.Events = streamEvents
 		}
-		h.saveAssistantMessage(req.ConversationID, req.UserID, &finalResp)
+		assistantMsg := h.saveAssistantMessage(req.ConversationID, req.UserID, &finalResp)
+		h.generateFollowUpsAsync(req, assistantMsg, &finalResp)
 		h.updateConversationTitle(conv, req.Query)
 	} else if streamErr.Error != "" || traceErrorMessage != "" {
 		errorMessage := streamErr.Error
@@ -379,7 +390,7 @@ func (h *ChatHandler) syncConfigToAgent(c *gin.Context) bool {
 	return true
 }
 
-func (h *ChatHandler) saveAssistantMessage(conversationID string, userID string, agentResp *bridge.ChatResponse) {
+func (h *ChatHandler) saveAssistantMessage(conversationID string, userID string, agentResp *bridge.ChatResponse) *models.Message {
 	skillsJSON, _ := json.Marshal(agentResp.SkillsUsed)
 	citationsJSON, _ := json.Marshal(agentResp.Citations)
 	traceEventsJSON, _ := json.Marshal(agentResp.Events)
@@ -399,7 +410,103 @@ func (h *ChatHandler) saveAssistantMessage(conversationID string, userID string,
 	}
 	if err := database.DB.Create(&assistantMsg).Error; err != nil {
 		slog.Error("Failed to save assistant message", "error", err)
+		return nil
 	}
+	return &assistantMsg
+}
+
+func (h *ChatHandler) generateFollowUpsAsync(req ChatRequestBody, assistantMsg *models.Message, agentResp *bridge.ChatResponse) {
+	if assistantMsg == nil || agentResp == nil {
+		return
+	}
+	if strings.TrimSpace(agentResp.ErrorType) != "" || strings.TrimSpace(agentResp.Response) == "" {
+		return
+	}
+	agentID := strings.TrimSpace(req.AgentID)
+	if agentID != "" && agentID != superChatAgentID {
+		return
+	}
+	userQuestion := strings.TrimSpace(req.Query)
+	assistantAnswer := strings.TrimSpace(agentResp.Response)
+	messageID := assistantMsg.ID
+	userID := normalizedUserID(req.UserID)
+	modelPreference := req.ModelPreference
+	language := followUpLanguage(userQuestion + "\n" + assistantAnswer)
+
+	go func() {
+		var stored models.Message
+		if err := database.DB.First(&stored, "id = ? AND user_id = ?", messageID, userID).Error; err != nil {
+			slog.Warn("Follow-up generation skipped; assistant message not found", "message_id", messageID, "error", err)
+			return
+		}
+		if strings.TrimSpace(stored.FollowUps) != "" {
+			return
+		}
+
+		resp, err := h.agent.GenerateFollowUps(bridge.FollowUpRequest{
+			UserQuestion:    userQuestion,
+			AssistantAnswer: assistantAnswer,
+			Language:        language,
+			ModelPreference: modelPreference,
+		})
+		if err != nil {
+			slog.Warn("Follow-up generation failed", "message_id", messageID, "error", err)
+			return
+		}
+		questions := normalizeFollowUpQuestions(resp.Questions)
+		if len(questions) == 0 {
+			return
+		}
+		payload, err := json.Marshal(questions)
+		if err != nil {
+			slog.Warn("Failed to marshal follow-ups", "message_id", messageID, "error", err)
+			return
+		}
+		if err := database.DB.Model(&models.Message{}).
+			Where("id = ? AND user_id = ? AND (follow_ups = '' OR follow_ups IS NULL)", messageID, userID).
+			Update("follow_ups", string(payload)).Error; err != nil {
+			slog.Warn("Failed to persist follow-ups", "message_id", messageID, "error", err)
+		}
+	}()
+}
+
+func followUpLanguage(text string) string {
+	chinese := 0
+	total := 0
+	for _, r := range text {
+		if r == ' ' || r == '\n' || r == '\t' {
+			continue
+		}
+		total++
+		if r >= '\u4e00' && r <= '\u9fff' {
+			chinese++
+		}
+	}
+	if chinese >= 4 && total > 0 && float64(chinese)/float64(total) > 0.08 {
+		return "zh"
+	}
+	return "en"
+}
+
+func normalizeFollowUpQuestions(values []string) []string {
+	questions := make([]string, 0, 3)
+	seen := map[string]bool{}
+	for _, value := range values {
+		question := strings.Join(strings.Fields(value), " ")
+		if question == "" {
+			continue
+		}
+		key := strings.ToLower(question)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		questions = append(questions, question)
+		if len(questions) >= 3 {
+			break
+		}
+	}
+	return questions
 }
 
 func firstNonEmpty(values ...string) string {
@@ -560,11 +667,18 @@ func (h *ChatHandler) DeleteRoleMemory(c *gin.Context) {
 }
 
 func (h *ChatHandler) ListTools(c *gin.Context) {
+	userID := requestUserID(c)
 	tools, err := h.agent.ListSkills()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "agent error: " + err.Error()})
 		return
 	}
+	settings, err := loadUserSettings(userID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load tool settings"})
+		return
+	}
+	applyToolUserSettings(tools, settings)
 	c.JSON(http.StatusOK, tools)
 }
 

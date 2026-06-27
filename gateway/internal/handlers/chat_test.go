@@ -956,6 +956,151 @@ func TestStreamChatPersistsFinalResponseAfterClientDisconnect(t *testing.T) {
 	}
 }
 
+func TestListToolsAppliesUserScopedSettings(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	if err := database.Init(filepath.Join(t.TempDir(), "assistant.db")); err != nil {
+		t.Fatalf("init database: %v", err)
+	}
+	if err := database.DB.Save(&models.UserSetting{
+		UserID: "user-a",
+		Key:    "tool.search.enabled",
+		Value:  "false",
+	}).Error; err != nil {
+		t.Fatalf("save user setting: %v", err)
+	}
+
+	agentServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/agent/skills" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"skills": [
+				{"name": "search", "description": "Search", "enabled": true, "source": "builtin"},
+				{"name": "calculator", "description": "Calculator", "enabled": true, "source": "builtin"}
+			]
+		}`))
+	}))
+	defer agentServer.Close()
+
+	router := gin.New()
+	handler := NewChatHandler(bridge.NewAgentClient(agentServer.URL, time.Second))
+	router.GET("/api/tools", handler.ListTools)
+
+	reqA := httptest.NewRequest(http.MethodGet, "/api/tools", nil)
+	reqA.Header.Set("X-User-ID", "user-a")
+	recA := httptest.NewRecorder()
+	router.ServeHTTP(recA, reqA)
+	if recA.Code != http.StatusOK {
+		t.Fatalf("unexpected status for user-a %d: %s", recA.Code, recA.Body.String())
+	}
+	var payloadA bridge.SkillListResponse
+	if err := json.Unmarshal(recA.Body.Bytes(), &payloadA); err != nil {
+		t.Fatalf("decode user-a payload: %v", err)
+	}
+	if len(payloadA.Disabled) != 1 || payloadA.Disabled[0] != "search" {
+		t.Fatalf("expected search disabled for user-a, got %#v", payloadA.Disabled)
+	}
+	for _, skill := range payloadA.Skills {
+		if skill.Name == "search" && skill.EffectiveEnabled {
+			t.Fatalf("expected search to be disabled for user-a: %#v", skill)
+		}
+		if skill.Name == "calculator" && !skill.EffectiveEnabled {
+			t.Fatalf("expected calculator to remain enabled for user-a: %#v", skill)
+		}
+	}
+
+	reqB := httptest.NewRequest(http.MethodGet, "/api/tools", nil)
+	reqB.Header.Set("X-User-ID", "user-b")
+	recB := httptest.NewRecorder()
+	router.ServeHTTP(recB, reqB)
+	if recB.Code != http.StatusOK {
+		t.Fatalf("unexpected status for user-b %d: %s", recB.Code, recB.Body.String())
+	}
+	var payloadB bridge.SkillListResponse
+	if err := json.Unmarshal(recB.Body.Bytes(), &payloadB); err != nil {
+		t.Fatalf("decode user-b payload: %v", err)
+	}
+	if len(payloadB.Disabled) != 0 {
+		t.Fatalf("expected no disabled tools for user-b, got %#v", payloadB.Disabled)
+	}
+	for _, skill := range payloadB.Skills {
+		if skill.Name == "search" && !skill.EffectiveEnabled {
+			t.Fatalf("expected search to remain enabled for user-b: %#v", skill)
+		}
+	}
+}
+
+func TestChatPassesDisabledToolsForUser(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	if err := database.Init(filepath.Join(t.TempDir(), "assistant.db")); err != nil {
+		t.Fatalf("init database: %v", err)
+	}
+	if err := database.DB.Save(&models.UserSetting{
+		UserID: "user-a",
+		Key:    "tool.search.enabled",
+		Value:  "false",
+	}).Error; err != nil {
+		t.Fatalf("save user setting: %v", err)
+	}
+	conv := models.Conversation{
+		ID:        "conv-disabled-tools",
+		UserID:    "user-a",
+		Title:     "New Conversation",
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+	if err := database.DB.Create(&conv).Error; err != nil {
+		t.Fatalf("create conversation: %v", err)
+	}
+
+	agentServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/agent/chat" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		var payload bridge.ChatRequest
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode chat payload: %v", err)
+		}
+		if len(payload.DisabledTools) != 1 || payload.DisabledTools[0] != "search" {
+			t.Fatalf("expected disabled search in agent payload, got %#v", payload.DisabledTools)
+		}
+		_, _ = w.Write([]byte(`{
+			"conversation_id": "conv-disabled-tools",
+			"response": "ok",
+			"skills_used": [],
+			"citations": [],
+			"model_used": "test-model",
+			"tokens_used": {},
+			"agent_id": "super_chat",
+			"runtime": "self"
+		}`))
+	}))
+	defer agentServer.Close()
+
+	router := gin.New()
+	handler := NewChatHandler(bridge.NewAgentClient(agentServer.URL, time.Second))
+	router.POST("/api/chat", handler.Chat)
+
+	body := bytes.NewBufferString(`{
+		"conversation_id": "conv-disabled-tools",
+		"query": "hello",
+		"stream": false,
+		"agent_id": "super_chat"
+	}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", body)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-User-ID", "user-a")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
 type failingStreamWriter struct {
 	header              http.Header
 	body                bytes.Buffer

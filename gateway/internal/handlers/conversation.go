@@ -1,20 +1,29 @@
 package handlers
 
 import (
+	"encoding/json"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/aan/agent-assistant-gateway/internal/bridge"
 	"github.com/aan/agent-assistant-gateway/internal/database"
 	"github.com/aan/agent-assistant-gateway/internal/models"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
 
-type ConversationHandler struct{}
+type ConversationHandler struct {
+	agent *bridge.AgentClient
+}
 
-func NewConversationHandler() *ConversationHandler {
-	return &ConversationHandler{}
+func NewConversationHandler(agent ...*bridge.AgentClient) *ConversationHandler {
+	var agentClient *bridge.AgentClient
+	if len(agent) > 0 {
+		agentClient = agent[0]
+	}
+	return &ConversationHandler{agent: agentClient}
 }
 
 type conversationCreateRequest struct {
@@ -34,6 +43,7 @@ type conversationMessageResponse struct {
 	Runtime        string    `json:"runtime,omitempty"`
 	RunID          string    `json:"run_id,omitempty"`
 	TraceEvents    string    `json:"trace_events,omitempty"`
+	FollowUps      string    `json:"follow_ups,omitempty"`
 	ErrorType      string    `json:"error_type,omitempty"`
 	CreatedAt      time.Time `json:"created_at"`
 }
@@ -88,6 +98,7 @@ func (h *ConversationHandler) Get(c *gin.Context) {
 	for _, message := range messages {
 		messageResponses = append(messageResponses, conversationMessageFromModel(message, includeTrace))
 	}
+	h.ensureLatestFollowUpsAsync(conv, messages, userID)
 
 	c.JSON(http.StatusOK, gin.H{
 		"conversation": conv,
@@ -112,6 +123,7 @@ func conversationMessageFromModel(message models.Message, includeTrace bool) con
 		ModelUsed:      message.ModelUsed,
 		Runtime:        message.Runtime,
 		RunID:          message.RunID,
+		FollowUps:      message.FollowUps,
 		ErrorType:      message.ErrorType,
 		CreatedAt:      message.CreatedAt,
 	}
@@ -119,6 +131,71 @@ func conversationMessageFromModel(message models.Message, includeTrace bool) con
 		response.TraceEvents = message.TraceEvents
 	}
 	return response
+}
+
+func (h *ConversationHandler) ensureLatestFollowUpsAsync(conv models.Conversation, messages []models.Message, userID string) {
+	if h.agent == nil || conv.AgentID != superChatAgentID || len(messages) == 0 {
+		return
+	}
+
+	latestIndex := len(messages) - 1
+	latest := messages[latestIndex]
+	if latest.Role != "assistant" ||
+		strings.TrimSpace(latest.ErrorType) != "" ||
+		strings.TrimSpace(latest.Content) == "" ||
+		strings.TrimSpace(latest.FollowUps) != "" {
+		return
+	}
+
+	userQuestion := ""
+	for i := latestIndex - 1; i >= 0; i-- {
+		if messages[i].Role == "user" {
+			userQuestion = strings.TrimSpace(messages[i].Content)
+			break
+		}
+	}
+	if userQuestion == "" {
+		return
+	}
+
+	messageID := latest.ID
+	assistantAnswer := strings.TrimSpace(latest.Content)
+	language := followUpLanguage(userQuestion + "\n" + assistantAnswer)
+
+	go func() {
+		var stored models.Message
+		if err := database.DB.First(&stored, "id = ? AND user_id = ?", messageID, userID).Error; err != nil {
+			slog.Warn("Follow-up backfill skipped; assistant message not found", "message_id", messageID, "error", err)
+			return
+		}
+		if strings.TrimSpace(stored.FollowUps) != "" {
+			return
+		}
+
+		resp, err := h.agent.GenerateFollowUps(bridge.FollowUpRequest{
+			UserQuestion:    userQuestion,
+			AssistantAnswer: assistantAnswer,
+			Language:        language,
+		})
+		if err != nil {
+			slog.Warn("Follow-up backfill failed", "message_id", messageID, "error", err)
+			return
+		}
+		questions := normalizeFollowUpQuestions(resp.Questions)
+		if len(questions) == 0 {
+			return
+		}
+		payload, err := json.Marshal(questions)
+		if err != nil {
+			slog.Warn("Failed to marshal backfilled follow-ups", "message_id", messageID, "error", err)
+			return
+		}
+		if err := database.DB.Model(&models.Message{}).
+			Where("id = ? AND user_id = ? AND (follow_ups = '' OR follow_ups IS NULL)", messageID, userID).
+			Update("follow_ups", string(payload)).Error; err != nil {
+			slog.Warn("Failed to persist backfilled follow-ups", "message_id", messageID, "error", err)
+		}
+	}()
 }
 
 func (h *ConversationHandler) Delete(c *gin.Context) {

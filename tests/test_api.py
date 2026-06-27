@@ -437,6 +437,41 @@ async def test_chat_missing_message(client):
 
 
 @pytest.mark.asyncio
+async def test_generate_followups_uses_llm_response(client):
+    provider = AsyncMock()
+    provider.chat = AsyncMock(
+        return_value=LLMResponse(
+            content='{"questions":["能直接列一张法国清单吗","路线怎么按天安排","预算大概怎么分配","多余问题"]}',
+            model="followup-test-model",
+        )
+    )
+
+    with patch.object(main_module, "create_provider", return_value=provider):
+        resp = await client.post(
+            "/agent/followups",
+            json={
+                "user_question": "法国第一次去怎么玩？",
+                "assistant_answer": "可以先把法国最值得玩的精华浓缩成一张清单，再按天数和兴趣做路线。",
+                "language": "zh",
+                "model_preference": "claude",
+            },
+        )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["questions"] == [
+        "能直接列一张法国清单吗？",
+        "路线怎么按天安排？",
+        "预算大概怎么分配？",
+    ]
+    assert data["model_used"] == "followup-test-model"
+    provider.chat.assert_awaited_once()
+    messages = provider.chat.await_args.args[0]
+    assert "下一步追问生成器" in messages[0].content
+    assert "法国第一次去怎么玩" in messages[1].content
+
+
+@pytest.mark.asyncio
 async def test_generate_image_endpoint(client):
     minimax_client = AsyncMock()
     minimax_client.image_model = "image-01"

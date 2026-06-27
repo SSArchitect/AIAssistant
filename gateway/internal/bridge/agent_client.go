@@ -33,6 +33,7 @@ type ChatRequest struct {
 	Handoff         map[string]interface{} `json:"handoff,omitempty"`
 	MemoryEnabled   *bool                  `json:"memory_enabled,omitempty"`
 	RunID           string                 `json:"run_id,omitempty"`
+	DisabledTools   []string               `json:"disabled_tools,omitempty"`
 }
 
 type SearchRequest struct {
@@ -139,6 +140,18 @@ type ChatResponse struct {
 	MemoryUpdates  []MemoryRecord  `json:"memory_updates,omitempty"`
 }
 
+type FollowUpRequest struct {
+	UserQuestion    string  `json:"user_question"`
+	AssistantAnswer string  `json:"assistant_answer"`
+	Language        string  `json:"language,omitempty"`
+	ModelPreference *string `json:"model_preference,omitempty"`
+}
+
+type FollowUpResponse struct {
+	Questions []string `json:"questions"`
+	ModelUsed string   `json:"model_used,omitempty"`
+}
+
 type AIGCImageRequest struct {
 	Prompt           string                   `json:"prompt" binding:"required"`
 	Model            string                   `json:"model,omitempty"`
@@ -173,17 +186,28 @@ type AIGCImageResponse struct {
 }
 
 type SkillInfo struct {
-	Name        string                   `json:"name"`
-	Description string                   `json:"description"`
-	Parameters  []map[string]interface{} `json:"parameters,omitempty"`
-	Version     string                   `json:"version,omitempty"`
-	Tags        []string                 `json:"tags,omitempty"`
-	Source      string                   `json:"source,omitempty"`
-	Enabled     bool                     `json:"enabled"`
+	Name             string                   `json:"name"`
+	Description      string                   `json:"description"`
+	Parameters       []map[string]interface{} `json:"parameters,omitempty"`
+	Version          string                   `json:"version,omitempty"`
+	Tags             []string                 `json:"tags,omitempty"`
+	Source           string                   `json:"source,omitempty"`
+	Enabled          bool                     `json:"enabled"`
+	UserEnabled      *bool                    `json:"user_enabled,omitempty"`
+	EffectiveEnabled bool                     `json:"effective_enabled"`
+	Configurable     bool                     `json:"configurable"`
 }
 
 type SkillListResponse struct {
-	Skills []SkillInfo `json:"skills"`
+	Skills       []SkillInfo       `json:"skills"`
+	UserSettings map[string]string `json:"user_settings,omitempty"`
+	MCP          ToolMCPConfig     `json:"mcp,omitempty"`
+	Disabled     []string          `json:"disabled,omitempty"`
+}
+
+type ToolMCPConfig struct {
+	Enabled bool   `json:"enabled"`
+	Servers string `json:"servers"`
 }
 
 type AgentInfo struct {
@@ -367,6 +391,35 @@ func (c *AgentClient) ChatStream(req ChatRequest) (*http.Response, error) {
 	}
 
 	return resp, nil
+}
+
+func (c *AgentClient) GenerateFollowUps(req FollowUpRequest) (*FollowUpResponse, error) {
+	body, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("marshal follow-up request: %w", err)
+	}
+
+	resp, err := c.httpClient.Post(
+		c.baseURL+"/agent/followups",
+		"application/json",
+		bytes.NewReader(body),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("follow-up request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("follow-up request returned status %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	var followUpResp FollowUpResponse
+	if err := json.NewDecoder(resp.Body).Decode(&followUpResp); err != nil {
+		return nil, fmt.Errorf("decode follow-up response: %w", err)
+	}
+
+	return &followUpResp, nil
 }
 
 func (c *AgentClient) GenerateImage(req AIGCImageRequest) (*AIGCImageResponse, error) {

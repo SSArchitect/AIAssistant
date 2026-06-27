@@ -1,11 +1,22 @@
 """Unit tests for builtin skills."""
+import httpx
 import pytest
 from agent.skills.builtin.echo import EchoSkill
 from agent.skills.builtin.datetime_skill import DateTimeSkill
 from agent.skills.builtin.calculator import CalculatorSkill
+from agent.skills.builtin.agent_tool import AgentToolSkill
+from agent.skills.builtin.open_url import OpenURLSkill
 from agent.skills.builtin.search import SearchSkill
 from agent.skills.base import Skill
-from agent.search import MiniMaxMCPSearchProvider, SearchResult, SearchService, StaticSearchProvider
+from agent.runtime.registry import get_agent
+from agent.search import (
+    MiniMaxMCPSearchProvider,
+    SearchResult,
+    SearchService,
+    StaticSearchProvider,
+    WebPageContent,
+    WebPageReader,
+)
 from agent.config import runtime_config
 
 
@@ -45,6 +56,38 @@ class TestEchoSkill:
         assert td["name"] == "echo"
         assert "parameters" in td
         assert "text" in td["parameters"]["properties"]
+
+
+# ==================== Agent Tool Skill ====================
+
+class TestAgentToolSkill:
+    def setup_method(self):
+        agent = get_agent("weight_loss_v1")
+        assert agent is not None
+        self.skill = AgentToolSkill(agent)
+
+    def test_metadata_marks_terminal_routing_tool(self):
+        meta = self.skill.metadata()
+        assert meta.name == "weight_loss_v1"
+        assert "agent" in meta.tags
+        assert "terminal" in meta.tags
+        assert meta.source == "system"
+        assert "do not call it merely because the user mentions meals" in meta.description
+
+    def test_tool_definition_exposes_agent_arguments(self):
+        td = self.skill.to_tool_definition()
+        assert td["name"] == "weight_loss_v1"
+        assert set(td["parameters"]["required"]) == {"task", "reason"}
+        assert "task" in td["parameters"]["properties"]
+        assert "context" in td["parameters"]["properties"]
+
+    @pytest.mark.asyncio
+    async def test_execute_is_reserved_for_engine(self):
+        result = await self.skill.execute(task="记录午餐", reason="测试")
+        assert result.success is False
+        assert result.data["terminal"] is True
+        assert result.data["agent_id"] == "weight_loss_v1"
+        assert "agent engine" in result.error
 
 
 # ==================== DateTime Skill ====================
@@ -207,7 +250,14 @@ class TestSearchSkill:
         meta = self.skill.metadata()
         assert meta.name == "search"
         assert meta.source == "builtin"
-        assert {p.name for p in meta.parameters} == {"query", "sources", "limit"}
+        assert {p.name for p in meta.parameters} == {
+            "query",
+            "sources",
+            "limit",
+            "open_results",
+            "open_limit",
+            "page_chars",
+        }
 
     @pytest.mark.asyncio
     async def test_static_search_provider(self):
@@ -373,6 +423,71 @@ class TestSearchSkill:
         assert seen["limit"] == 20
 
     @pytest.mark.asyncio
+    async def test_web_page_reader_extracts_html(self):
+        def handler(request):
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/html; charset=utf-8"},
+                text="""
+                <html>
+                  <head>
+                    <title>Example Article</title>
+                    <meta name="description" content="Short summary.">
+                    <script>ignoreMe()</script>
+                  </head>
+                  <body>
+                    <article>
+                      <h1>Example Article</h1>
+                      <p>First paragraph with useful details.</p>
+                      <p>Second paragraph.</p>
+                    </article>
+                  </body>
+                </html>
+                """,
+            )
+
+        reader = WebPageReader(transport=httpx.MockTransport(handler))
+
+        page = await reader.open("https://example.com/article", max_chars=1000)
+
+        assert page.title == "Example Article"
+        assert page.description == "Short summary."
+        assert "First paragraph with useful details." in page.content
+        assert "ignoreMe" not in page.content
+
+    @pytest.mark.asyncio
+    async def test_search_service_opens_result_pages(self):
+        class Provider:
+            name = "web"
+
+            async def search(self, query, *, limit=5):
+                return [
+                    SearchResult(
+                        title="Result",
+                        snippet="",
+                        url="https://example.com/article",
+                        source=self.name,
+                    )
+                ]
+
+        def handler(request):
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/html"},
+                text="<html><head><title>Opened</title></head><body><p>Opened page body.</p></body></html>",
+            )
+
+        service = SearchService(
+            providers=[Provider()],
+            page_reader=WebPageReader(transport=httpx.MockTransport(handler)),
+        )
+
+        results = await service.search("details", limit=1, open_results=True)
+
+        assert results[0].metadata["page"]["title"] == "Opened"
+        assert "Opened page body." in results[0].metadata["page"]["content"]
+
+    @pytest.mark.asyncio
     async def test_search_skill_reports_missing_provider(self, monkeypatch):
         monkeypatch.setattr(
             SearchService,
@@ -440,3 +555,33 @@ class TestSearchSkill:
             assert "minimax-mcp" in service.provider_names
         finally:
             runtime_config.update(previous)
+
+
+class TestOpenURLSkill:
+    def setup_method(self):
+        self.skill = OpenURLSkill()
+
+    def test_metadata(self):
+        meta = self.skill.metadata()
+        assert meta.name == "open_url"
+        assert {p.name for p in meta.parameters} == {"url", "max_chars"}
+
+    @pytest.mark.asyncio
+    async def test_execute_uses_page_reader(self, monkeypatch):
+        async def fake_open_url(self, url, *, max_chars=6000):
+            return WebPageContent(
+                url=url,
+                final_url=url,
+                title="Opened Page",
+                content="Readable page content.",
+                content_type="text/html",
+                status_code=200,
+            )
+
+        monkeypatch.setattr(SearchService, "open_url", fake_open_url)
+
+        result = await self.skill.execute(url="https://example.com/page")
+
+        assert result.success is True
+        assert result.data["page"]["title"] == "Opened Page"
+        assert "Readable page content." in result.display_text

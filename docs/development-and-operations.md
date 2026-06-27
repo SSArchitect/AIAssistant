@@ -289,6 +289,8 @@ Search 已作为一个内置 skill 接入：
 - `search.minimax.timeout`：单次 MCP 请求超时时间，默认 `60` 秒。
 - `search.web.enabled`：是否启用 DuckDuckGo HTML fallback，默认 `true`。
 
+`search` Skill 可通过 `open_results=true` 打开前几条搜索结果并把网页正文写入 `metadata.page`；已知 URL 也可直接调用 `open_url` Skill 读取公开 HTTP/HTTPS 页面正文。
+
 `mcp.servers` 目前只是通用配置入口，尚未实现通用 MCP server 启动、tool discovery、权限审批和动态注册。MiniMax Token Plan MCP 已作为 search provider 的专项集成接入。
 
 ### 6.4 Trace 事件

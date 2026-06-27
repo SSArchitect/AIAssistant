@@ -66,6 +66,7 @@ class SkillRegistry:
                         issubclass(obj, Skill)
                         and obj is not Skill
                         and not inspect.isabstract(obj)
+                        and getattr(obj, "auto_discover", True)
                     ):
                         try:
                             instance = obj()

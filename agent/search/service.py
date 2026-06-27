@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from html.parser import HTMLParser
+import ipaddress
 import json
 import logging
 import os
@@ -19,6 +20,15 @@ from agent.config import runtime_config
 logger = logging.getLogger(__name__)
 
 SEARCH_SNIPPET_MAX_CHARS = 900
+WEB_PAGE_DEFAULT_CHARS = 6000
+WEB_PAGE_HARD_MAX_CHARS = 12000
+WEB_PAGE_OPEN_RESULT_LIMIT = 3
+WEB_PAGE_PARSE_MAX_CHARS = 1_000_000
+WEB_USER_AGENT = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/124.0 Safari/537.36"
+)
 
 
 class SearchResult(BaseModel):
@@ -29,11 +39,77 @@ class SearchResult(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class WebPageContent(BaseModel):
+    url: str
+    final_url: str = ""
+    title: str = ""
+    description: str = ""
+    content: str = ""
+    content_type: str = ""
+    status_code: int = 0
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 class SearchProvider(Protocol):
     name: str
 
     async def search(self, query: str, *, limit: int = 5) -> list[SearchResult]:
         ...
+
+
+class WebPageReader:
+    """Fetch and extract readable text from public HTTP(S) pages."""
+
+    def __init__(self, *, timeout: float = 15, transport: Any | None = None):
+        self._timeout = timeout
+        self._transport = transport
+
+    async def open(self, url: str, *, max_chars: int = WEB_PAGE_DEFAULT_CHARS) -> WebPageContent:
+        normalized_url = _validate_public_http_url(url)
+        max_chars = _bounded_int(
+            max_chars,
+            default=WEB_PAGE_DEFAULT_CHARS,
+            minimum=500,
+            maximum=WEB_PAGE_HARD_MAX_CHARS,
+        )
+
+        async with httpx.AsyncClient(
+            timeout=self._timeout,
+            follow_redirects=True,
+            transport=self._transport,
+            headers={"User-Agent": WEB_USER_AGENT},
+        ) as client:
+            response = await client.get(normalized_url)
+            response.raise_for_status()
+
+        raw_content_type = response.headers.get("content-type", "")
+        content_type = raw_content_type.split(";", 1)[0].strip().lower()
+        if _is_html_content_type(content_type):
+            parser = _ReadableHTMLParser()
+            parser.feed(response.text[:WEB_PAGE_PARSE_MAX_CHARS])
+            parser.close()
+            title = parser.title
+            description = parser.description
+            content = parser.content(max_chars=max_chars)
+        elif _is_text_content_type(content_type):
+            title = ""
+            description = ""
+            content = _normalize_page_text(response.text, max_chars=max_chars)
+        else:
+            raise ValueError(f"Unsupported content type: {content_type or 'unknown'}")
+
+        return WebPageContent(
+            url=normalized_url,
+            final_url=str(response.url),
+            title=title,
+            description=description,
+            content=content,
+            content_type=content_type,
+            status_code=response.status_code,
+            metadata={
+                "content_length": response.headers.get("content-length", ""),
+            },
+        )
 
 
 class StaticSearchProvider:
@@ -537,6 +613,138 @@ class BingRSSSearchProvider:
         return results
 
 
+class _ReadableHTMLParser(HTMLParser):
+    _BLOCK_TAGS = {
+        "address",
+        "article",
+        "blockquote",
+        "br",
+        "dd",
+        "div",
+        "dl",
+        "dt",
+        "figcaption",
+        "figure",
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+        "li",
+        "main",
+        "ol",
+        "p",
+        "pre",
+        "section",
+        "table",
+        "td",
+        "th",
+        "tr",
+        "ul",
+    }
+    _SKIP_TAGS = {
+        "canvas",
+        "form",
+        "iframe",
+        "noscript",
+        "option",
+        "script",
+        "select",
+        "style",
+        "svg",
+        "template",
+    }
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self._body_depth = 0
+        self._capture_title = False
+        self._skip_depth = 0
+        self._title_parts: list[str] = []
+        self._description = ""
+        self._text_parts: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        tag = tag.lower()
+        if tag in self._SKIP_TAGS:
+            self._skip_depth += 1
+            return
+
+        attr = {key.lower(): value or "" for key, value in attrs}
+        if tag == "body":
+            self._body_depth += 1
+        elif tag == "title":
+            self._capture_title = True
+        elif tag == "meta":
+            self._handle_meta(attr)
+
+        if self._body_depth > 0 and tag in self._BLOCK_TAGS:
+            self._append_separator()
+
+    def handle_endtag(self, tag: str) -> None:
+        tag = tag.lower()
+        if tag in self._SKIP_TAGS:
+            self._skip_depth = max(0, self._skip_depth - 1)
+            return
+        if tag == "title":
+            self._capture_title = False
+        elif tag == "body":
+            self._body_depth = max(0, self._body_depth - 1)
+
+        if self._body_depth > 0 and tag in self._BLOCK_TAGS:
+            self._append_separator()
+
+    def handle_data(self, data: str) -> None:
+        if self._skip_depth > 0:
+            return
+        text = " ".join(data.split())
+        if not text:
+            return
+        if self._capture_title:
+            self._title_parts.append(text)
+            return
+        if self._body_depth > 0:
+            self._text_parts.append(text)
+
+    @property
+    def title(self) -> str:
+        return " ".join(" ".join(self._title_parts).split())
+
+    @property
+    def description(self) -> str:
+        return " ".join(self._description.split())
+
+    def content(self, *, max_chars: int) -> str:
+        return _normalize_page_text(self._joined_text(), max_chars=max_chars)
+
+    def _handle_meta(self, attr: dict[str, str]) -> None:
+        key = (attr.get("name") or attr.get("property") or "").lower()
+        content = attr.get("content", "").strip()
+        if content and not self._description and key in {
+            "description",
+            "og:description",
+            "twitter:description",
+        }:
+            self._description = content
+
+    def _append_separator(self) -> None:
+        if self._text_parts and self._text_parts[-1] != "\n":
+            self._text_parts.append("\n")
+
+    def _joined_text(self) -> str:
+        parts: list[str] = []
+        for part in self._text_parts:
+            if part == "\n":
+                if parts and parts[-1] != "\n":
+                    parts.append("\n")
+                continue
+            if parts and parts[-1] not in {" ", "\n"}:
+                parts.append(" ")
+            parts.append(part)
+        return "".join(parts)
+
+
 class SearchService:
     WEB_SOURCE_ALIASES = {"web", "internet", "online"}
     WEB_PROVIDER_PRIORITY = {
@@ -551,10 +759,12 @@ class SearchService:
         self,
         providers: list[SearchProvider] | None = None,
         *,
+        page_reader: WebPageReader | None = None,
         retry_attempts: int = 3,
         retry_delay: float = 0.5,
     ):
         self._providers = providers or []
+        self._page_reader = page_reader or WebPageReader()
         self._retry_attempts = max(1, retry_attempts)
         self._retry_delay = max(0.0, retry_delay)
         self._last_provider_errors: list[str] = []
@@ -657,6 +867,9 @@ class SearchService:
         *,
         sources: list[str] | None = None,
         limit: int = 5,
+        open_results: bool = False,
+        open_limit: int = WEB_PAGE_OPEN_RESULT_LIMIT,
+        page_chars: int = WEB_PAGE_DEFAULT_CHARS,
     ) -> list[SearchResult]:
         selected = self._normalize_sources(sources)
         providers = [
@@ -700,7 +913,72 @@ class SearchService:
         self._last_provider_errors = provider_errors
         if not results and provider_errors and len(provider_errors) == len(providers):
             raise RuntimeError("; ".join(provider_errors))
-        return results[:limit]
+        limited_results = results[:limit]
+        if open_results:
+            await self.attach_page_content(
+                limited_results,
+                open_limit=open_limit,
+                max_chars=page_chars,
+            )
+        return limited_results
+
+    async def open_url(
+        self,
+        url: str,
+        *,
+        max_chars: int = WEB_PAGE_DEFAULT_CHARS,
+    ) -> WebPageContent:
+        return await self._page_reader.open(url, max_chars=max_chars)
+
+    async def attach_page_content(
+        self,
+        results: list[SearchResult],
+        *,
+        open_limit: int = WEB_PAGE_OPEN_RESULT_LIMIT,
+        max_chars: int = WEB_PAGE_DEFAULT_CHARS,
+    ) -> list[SearchResult]:
+        open_limit = _bounded_int(
+            open_limit,
+            default=WEB_PAGE_OPEN_RESULT_LIMIT,
+            minimum=1,
+            maximum=WEB_PAGE_OPEN_RESULT_LIMIT,
+        )
+        max_chars = _bounded_int(
+            max_chars,
+            default=WEB_PAGE_DEFAULT_CHARS,
+            minimum=500,
+            maximum=WEB_PAGE_HARD_MAX_CHARS,
+        )
+        candidates = [
+            result
+            for result in results
+            if result.url and _is_public_http_url(result.url)
+        ][:open_limit]
+        if not candidates:
+            return results
+
+        pages = await asyncio.gather(
+            *[
+                self.open_url(result.url, max_chars=max_chars)
+                for result in candidates
+            ],
+            return_exceptions=True,
+        )
+        for result, page in zip(candidates, pages):
+            metadata = dict(result.metadata)
+            if isinstance(page, Exception):
+                metadata["page"] = {
+                    "url": result.url,
+                    "error": str(page)[:500],
+                }
+            else:
+                metadata["page"] = page.model_dump(mode="json")
+                if page.title and (not result.title or result.title == result.url):
+                    result.title = page.title
+                if page.description and not result.snippet:
+                    result.snippet = page.description[:SEARCH_SNIPPET_MAX_CHARS]
+            result.metadata = metadata
+        return results
 
     def _normalize_sources(self, sources: list[str] | None) -> set[str]:
         selected: set[str] = set()
@@ -756,6 +1034,91 @@ def _parse_command_args(raw: str) -> list[str]:
     except json.JSONDecodeError:
         pass
     return shlex.split(raw)
+
+
+def _bounded_int(
+    raw: Any,
+    *,
+    default: int,
+    minimum: int,
+    maximum: int,
+) -> int:
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        value = default
+    return max(minimum, min(value, maximum))
+
+
+def _validate_public_http_url(raw_url: str) -> str:
+    url = str(raw_url or "").strip()
+    parsed = urlparse(url)
+    if parsed.scheme.lower() not in {"http", "https"}:
+        raise ValueError("Only http and https URLs can be opened")
+    if not parsed.netloc or not parsed.hostname:
+        raise ValueError("URL must include a host")
+
+    hostname = parsed.hostname.strip().lower()
+    if hostname in {"localhost", "0.0.0.0"} or hostname.endswith(".local"):
+        raise ValueError("Local URLs cannot be opened by the web reader")
+
+    try:
+        ip = ipaddress.ip_address(hostname.strip("[]"))
+    except ValueError:
+        if "." not in hostname:
+            raise ValueError("Host must be a public domain or IP address")
+        return url
+
+    if (
+        ip.is_private
+        or ip.is_loopback
+        or ip.is_link_local
+        or ip.is_multicast
+        or ip.is_reserved
+        or ip.is_unspecified
+    ):
+        raise ValueError("Private or local IP addresses cannot be opened")
+    return url
+
+
+def _is_public_http_url(url: str) -> bool:
+    try:
+        _validate_public_http_url(url)
+    except ValueError:
+        return False
+    return True
+
+
+def _is_html_content_type(content_type: str) -> bool:
+    return content_type in {"", "text/html", "application/xhtml+xml"}
+
+
+def _is_text_content_type(content_type: str) -> bool:
+    return (
+        content_type.startswith("text/")
+        or content_type in {
+            "application/json",
+            "application/ld+json",
+            "application/xml",
+            "application/rss+xml",
+            "application/atom+xml",
+        }
+    )
+
+
+def _normalize_page_text(text: str, *, max_chars: int) -> str:
+    lines: list[str] = []
+    for raw_line in str(text or "").splitlines():
+        line = " ".join(raw_line.split())
+        if not line:
+            continue
+        if lines and lines[-1] == line:
+            continue
+        lines.append(line)
+    normalized = "\n".join(lines)
+    if len(normalized) <= max_chars:
+        return normalized
+    return normalized[:max_chars].rstrip()
 
 
 def _parse_float(raw: str, *, default: float) -> float:

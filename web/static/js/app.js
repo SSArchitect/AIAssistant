@@ -2,10 +2,9 @@ const API_BASE = '';
 const LANGUAGE_KEY = 'agent_assistant_language';
 const MODE_STORAGE_KEY = 'super_chat_mode_ids';
 const SUPER_CHAT_AGENT_ID = 'super_chat';
-const THINKING_MODE_ID = 'thinking';
+const AGENT_LOOP_MODE_ID = 'agent_loop';
 const DEEP_RESEARCH_MODE_ID = 'deep_research';
 const DEEP_RESEARCH_AGENT_ID = 'deep_research_v1';
-const LEGACY_THINKING_MODE_IDS = new Set(['research', 'plan']);
 const CURRENT_CONVERSATION_STORAGE_KEY = 'agent_assistant_current_conversation_id';
 const CURRENT_ROLE_ID_STORAGE_KEY = 'agent_assistant_current_role_id';
 const SIDEBAR_COLLAPSE_STORAGE_KEY = 'agent_assistant_sidebar_collapsed_sections';
@@ -26,7 +25,7 @@ const VIEW_COPY = {
 const I18N = {
     zh: {
         app: { name: '阿安的工作台' },
-        nav: { chat: 'Super Chat', pulse: '信息流', agents: 'Agents', tools: 'Tools', trace: 'Trace', runs: 'Runs', developer: 'Developer' },
+        nav: { chat: 'Super Chat', pulse: 'Pulse', agents: 'Agents', tools: 'Tools', trace: 'Trace', runs: 'Runs', developer: 'Developer' },
         sidebar: {
             navigation: '导航',
             pinned: '固定 Agent',
@@ -78,6 +77,7 @@ const I18N = {
             generating: '生成中...',
             regenerateAnswer: '重新回答',
             copyAnswer: '复制回答',
+            copyMessage: '复制消息',
             copied: '已复制',
             copyFailed: '复制失败',
             confirmDeleteConversation: '确定删除这个会话及其全部消息吗？',
@@ -96,7 +96,7 @@ const I18N = {
         },
         views: {
             chat: { title: 'Super Chat', subtitle: '意图识别、Agent 调用与汇总回答入口' },
-            pulse: { title: '信息流', subtitle: 'Topic 推荐、信息簇阅读与下一跳学习入口' },
+            pulse: { title: 'Pulse', subtitle: 'Topic 推荐、信息簇阅读与下一跳学习入口' },
             agents: { title: 'Agents', subtitle: 'Agent 功能入口、实现版本和能力状态' },
             tools: { title: 'Tools', subtitle: '内置工具、参数和调用状态' },
             runs: { title: 'Runs', subtitle: '执行轨迹、事件和调试信息' },
@@ -127,12 +127,13 @@ const I18N = {
             urlExpires: 'URL 通常会在 24 小时后失效。',
         },
         chat: {
-            placeholder: '输入任务，Cmd/Ctrl + Enter 发送',
+            placeholder: '输入任务，Enter 发送；Shift/Cmd + Enter 换行',
             currentConversation: '当前会话',
             loadConversationFailed: '加载会话失败：{message}',
             createConversationFailed: '创建会话失败：{message}',
             resumePending: 'AI 仍在生成，完成后会自动恢复到当前会话',
             citations: '引用来源',
+            followUpAria: '推荐追问',
         },
         roleMemory: {
             title: '角色记忆',
@@ -204,6 +205,26 @@ const I18N = {
             statusPending: 'pending_review · 待审',
             statusArchived: 'archived · 不注入',
             sourceHook: '自动抽取',
+            searchPlaceholder: '搜索内容、角色、标签或 ID',
+            kindFilter: '类型',
+            statusFilter: '状态',
+            sortLabel: '排序',
+            allKinds: '全部类型',
+            allStatuses: '全部状态',
+            filterOther: '其他类型',
+            sortUpdatedDesc: '最近更新',
+            sortUpdatedAsc: '最早更新',
+            sortLastUsedDesc: '最近注入',
+            sortConfidenceDesc: '置信度优先',
+            showingCount: '显示 {visible} / {total}',
+            resetFilters: '重置',
+            expandAll: '展开当前',
+            collapseAll: '收起全部',
+            details: '详情',
+            expand: '展开',
+            collapse: '收起',
+            noMatches: '没有符合筛选的记录',
+            fullContent: '完整内容',
         },
         pulse: {
             topicsTitle: 'Topic 订阅',
@@ -214,14 +235,14 @@ const I18N = {
             keywordsPlaceholder: 'Agent, RAG, 多模态',
             subscribe: '订阅',
             subscribing: '订阅中...',
-            refresh: '刷新信息流',
-            todayTitle: '今日信息流',
+            refresh: '刷新 Pulse',
+            todayTitle: '今日 Pulse',
             generatedAt: '已预计算：{time}',
             neverGenerated: '等待生成',
-            refreshing: '正在生成新的信息流...',
-            loading: '正在加载信息流...',
+            refreshing: '正在生成新的 Pulse...',
+            loading: '正在加载 Pulse...',
             emptyTitle: '还没有信息簇',
-            emptyDetail: '添加一个 Topic 或刷新信息流。',
+            emptyDetail: '添加一个 Topic 或刷新 Pulse。',
             emptyTopics: '还没有订阅 Topic',
             emptyModule: '这个模块暂时没有推荐',
             emptyFiltered: '这个 Topic 暂时没有信息簇',
@@ -285,10 +306,10 @@ const I18N = {
             imageTitle: 'AI 生图功能',
             active: '已启用：{names}',
             items: {
-                thinking: ['思考', '先规划、再分析、按需检索证据'],
+                agent_loop: ['Agent Loop', '主循环 + function call，动态调用工具或 Agent'],
                 deep_research: ['深度研究', '先确认计划，再多轮检索出报告'],
-                research: ['思考', '先规划、再分析、按需检索证据'],
-                plan: ['思考', '先规划、再分析、按需检索证据'],
+                research: ['研究', '需要资料时先整理和检索来源'],
+                plan: ['规划', '先规划执行步骤再处理'],
                 image_generation: ['AI 生图', '强制交给 AI 生图 Agent 执行'],
                 image_prompt_refine: ['专业修饰', '先审查并补全画面提示词，再生图'],
             },
@@ -329,6 +350,31 @@ const I18N = {
             emptyDetail: 'SkillRegistry 当前没有返回内置工具。',
             unnamed: 'Unnamed Tool',
             noParams: '无参数',
+            title: '工具管理',
+            detail: '按来源查看、筛选和关闭当前帐号可用的工具。',
+            search: '搜索工具、来源或标签',
+            all: '全部',
+            enabled: '启用',
+            disabled: '关闭',
+            total: '{enabled} / {total} 可用',
+            baseDisabled: '系统关闭',
+            userDisabled: '当前帐号关闭',
+            userEnabled: '当前帐号启用',
+            sourceGroup: '{source} · {count}',
+            parameters: '{count} 个参数',
+            required: '必填',
+            optional: '可选',
+            noMatches: '没有符合筛选的工具',
+            mcpTitle: 'MCP 配置',
+            mcpDetail: '保存当前帐号自己的 MCP server JSON；通用 MCP discovery 接入后会从这里读取。',
+            mcpEnabled: '启用 MCP',
+            mcpServers: 'MCP Servers JSON',
+            mcpPlaceholder: '[{"name":"filesystem","command":"npx","args":["..."]}]',
+            saveMcp: '保存 MCP',
+            saving: '保存中...',
+            saved: '已保存',
+            saveFailed: '保存失败：{message}',
+            invalidJson: '请输入合法 JSON',
         },
         runs: {
             unavailableTitle: 'Trace 接口不可用',
@@ -341,6 +387,7 @@ const I18N = {
         },
         trace: {
             open: '打开 Trace',
+            backToChat: '回到对话',
             events: '{count} 个事件',
             waiting: '等待 run id',
             hierarchy: '层级',
@@ -422,7 +469,7 @@ const I18N = {
     },
     en: {
         app: { name: '阿安的工作台' },
-        nav: { chat: 'Super Chat', pulse: 'Info Flow', agents: 'Agents', tools: 'Tools', trace: 'Trace', runs: 'Runs', developer: 'Developer' },
+        nav: { chat: 'Super Chat', pulse: 'Pulse', agents: 'Agents', tools: 'Tools', trace: 'Trace', runs: 'Runs', developer: 'Developer' },
         sidebar: {
             navigation: 'Navigation',
             pinned: 'Pinned Agents',
@@ -474,6 +521,7 @@ const I18N = {
             generating: 'Generating...',
             regenerateAnswer: 'Regenerate Answer',
             copyAnswer: 'Copy Answer',
+            copyMessage: 'Copy Message',
             copied: 'Copied',
             copyFailed: 'Copy Failed',
             confirmDeleteConversation: 'Delete this conversation and all of its messages?',
@@ -492,7 +540,7 @@ const I18N = {
         },
         views: {
             chat: { title: 'Super Chat', subtitle: 'Intent routing, agent calls, and final answers' },
-            pulse: { title: 'Info Flow', subtitle: 'Topic seeds, information clusters, and next-step reading' },
+            pulse: { title: 'Pulse', subtitle: 'Topic seeds, information clusters, and next-step reading' },
             agents: { title: 'Agents', subtitle: 'Agent entry points, runtimes, and capability status' },
             tools: { title: 'Tools', subtitle: 'Built-in tools, parameters, and execution status' },
             runs: { title: 'Runs', subtitle: 'Execution traces, events, and debugging details' },
@@ -523,12 +571,13 @@ const I18N = {
             urlExpires: 'URL results usually expire after 24 hours.',
         },
         chat: {
-            placeholder: 'Type a task. Cmd/Ctrl + Enter to send',
+            placeholder: 'Type a task. Enter to send, Shift/Cmd+Enter for newline',
             currentConversation: 'Current conversation',
             loadConversationFailed: 'Failed to load conversation: {message}',
             createConversationFailed: 'Failed to create conversation: {message}',
             resumePending: 'AI is still generating. The answer will reappear here when it finishes.',
             citations: 'Sources',
+            followUpAria: 'Suggested follow-up questions',
         },
         roleMemory: {
             title: 'Role Memory',
@@ -600,6 +649,26 @@ const I18N = {
             statusPending: 'pending_review · review',
             statusArchived: 'archived · not injected',
             sourceHook: 'Auto extracted',
+            searchPlaceholder: 'Search content, role, tags, or ID',
+            kindFilter: 'Type',
+            statusFilter: 'Status',
+            sortLabel: 'Sort',
+            allKinds: 'All types',
+            allStatuses: 'All statuses',
+            filterOther: 'Other types',
+            sortUpdatedDesc: 'Recently updated',
+            sortUpdatedAsc: 'Oldest updated',
+            sortLastUsedDesc: 'Recently injected',
+            sortConfidenceDesc: 'Confidence first',
+            showingCount: 'Showing {visible} / {total}',
+            resetFilters: 'Reset',
+            expandAll: 'Expand current',
+            collapseAll: 'Collapse all',
+            details: 'Details',
+            expand: 'Expand',
+            collapse: 'Collapse',
+            noMatches: 'No records match the filters',
+            fullContent: 'Full content',
         },
         pulse: {
             topicsTitle: 'Topic Subscriptions',
@@ -610,14 +679,14 @@ const I18N = {
             keywordsPlaceholder: 'Agents, RAG, multimodal',
             subscribe: 'Subscribe',
             subscribing: 'Subscribing...',
-            refresh: 'Refresh Flow',
-            todayTitle: "Today's Info Flow",
+            refresh: 'Refresh Pulse',
+            todayTitle: "Today's Pulse",
             generatedAt: 'Precomputed: {time}',
             neverGenerated: 'Waiting to generate',
-            refreshing: 'Generating a fresh info flow...',
-            loading: 'Loading info flow...',
+            refreshing: 'Generating a fresh Pulse...',
+            loading: 'Loading Pulse...',
             emptyTitle: 'No clusters yet',
-            emptyDetail: 'Add a topic or refresh the flow.',
+            emptyDetail: 'Add a topic or refresh Pulse.',
             emptyTopics: 'No topic subscriptions yet',
             emptyModule: 'No recommendations in this module yet',
             emptyFiltered: 'No clusters for this topic yet',
@@ -681,10 +750,10 @@ const I18N = {
             imageTitle: 'AI Image Modes',
             active: 'Enabled: {names}',
             items: {
-                thinking: ['Thinking', 'Plan first, analyze, retrieve evidence when needed'],
+                agent_loop: ['Agent Loop', 'Main loop + function calling with dynamic tools and agents'],
                 deep_research: ['Deep Research', 'Confirm a plan, then search and report'],
-                research: ['Thinking', 'Plan first, analyze, retrieve evidence when needed'],
-                plan: ['Thinking', 'Plan first, analyze, retrieve evidence when needed'],
+                research: ['Research', 'Organize and retrieve sources when needed'],
+                plan: ['Plan', 'Plan execution steps before handling'],
                 image_generation: ['AI Image', 'Force this turn through the AI image agent'],
                 image_prompt_refine: ['Prompt Polish', 'Review and enrich the visual prompt before generation'],
             },
@@ -725,6 +794,31 @@ const I18N = {
             emptyDetail: 'SkillRegistry did not return built-in tools.',
             unnamed: 'Unnamed Tool',
             noParams: 'No parameters',
+            title: 'Tool Management',
+            detail: 'Browse, filter, and disable tools for the current account.',
+            search: 'Search tools, sources, or tags',
+            all: 'All',
+            enabled: 'Enabled',
+            disabled: 'Disabled',
+            total: '{enabled} / {total} available',
+            baseDisabled: 'System off',
+            userDisabled: 'Off for this account',
+            userEnabled: 'On for this account',
+            sourceGroup: '{source} · {count}',
+            parameters: '{count} parameters',
+            required: 'Required',
+            optional: 'Optional',
+            noMatches: 'No tools match this filter',
+            mcpTitle: 'MCP Config',
+            mcpDetail: 'Save MCP server JSON for this account; generic MCP discovery can read it later.',
+            mcpEnabled: 'Enable MCP',
+            mcpServers: 'MCP Servers JSON',
+            mcpPlaceholder: '[{"name":"filesystem","command":"npx","args":["..."]}]',
+            saveMcp: 'Save MCP',
+            saving: 'Saving...',
+            saved: 'Saved',
+            saveFailed: 'Save failed: {message}',
+            invalidJson: 'Enter valid JSON',
         },
         runs: {
             unavailableTitle: 'Trace API unavailable',
@@ -737,6 +831,7 @@ const I18N = {
         },
         trace: {
             open: 'Open Trace',
+            backToChat: 'Back to chat',
             events: '{count} events',
             waiting: 'Waiting for run id',
             hierarchy: 'Hierarchy',
@@ -830,10 +925,10 @@ const PROVIDERS = [
 
 const SUPER_CHAT_MODES = [
     {
-        id: THINKING_MODE_ID,
+        id: AGENT_LOOP_MODE_ID,
         prompts: {
-            zh: '【思考】本轮先进行可见的简短任务规划，再给出分析或执行结果。遇到时效性、事实性、外部资料或需要证据的问题时优先使用搜索工具，并用多组不同查询对比可靠来源；保留可引用 URL、关键数字、日期、分歧和不确定性。回答需要包含目标/计划、关键发现或执行结果、依据与风险、下一步建议；不要暴露逐字内部推理。',
-            en: '[Thinking] For this turn, start with a brief visible task plan, then provide the analysis or execution result. For time-sensitive, factual, external-information, or evidence-heavy topics, search first and compare reliable sources with multiple distinct queries. Preserve citable URLs, key numbers, dates, disagreements, and uncertainty. The answer should include goal / plan, key findings or result, evidence and risks, and next steps. Do not expose verbatim private reasoning.',
+            zh: '【Agent Loop】本轮使用主循环 + function calling。模型每轮根据工具 schema 自主选择普通工具或 terminal Agent tool；不要走固定 DAG。trace 需要保留真实 model/tool/agent 事件。',
+            en: '[Agent Loop] Use the main loop + function calling for this turn. Each model round chooses normal tools or terminal agent tools from schemas; do not use a fixed DAG. Keep raw model/tool/agent events visible in trace.',
         },
     },
     {
@@ -871,6 +966,8 @@ const MAX_TOTAL_ATTACHMENT_CHARS = 24000;
 const ACTIVE_RUN_POLL_MS = 1500;
 const ACTIVE_RUN_MAX_POLLS = 240;
 const CONVERSATION_RENDER_CACHE_LIMIT = 20;
+const FOLLOW_UP_QUESTION_COUNT = 3;
+const FOLLOW_UP_POLL_DELAYS_MS = [500, 1000, 1500, 2000, 3000, 4000];
 const TEXT_ATTACHMENT_EXTENSIONS = new Set([
     'txt', 'md', 'markdown', 'csv', 'tsv', 'json', 'jsonl', 'yaml', 'yml',
     'xml', 'html', 'htm', 'log', 'ini', 'toml', 'env',
@@ -888,6 +985,13 @@ let conversations = [];
 let conversationRenderCache = new Map();
 let agents = [];
 let tools = [];
+let toolUserSettings = {};
+let toolMcpConfig = { enabled: false, servers: '' };
+let toolFilter = 'all';
+let toolSearchQuery = '';
+let toolSettingsSaving = false;
+let toolSettingsStatus = '';
+let toolSettingsStatusType = 'muted';
 let runs = [];
 let settings = {};
 let health = null;
@@ -911,7 +1015,17 @@ let developerMemoryState = {
     error: '',
     partialErrors: [],
 };
+const DEFAULT_DEVELOPER_MEMORY_VIEW_STATE = {
+    query: '',
+    kind: 'all',
+    status: 'active',
+    sort: 'updated_desc',
+};
+let developerMemoryViewState = { ...DEFAULT_DEVELOPER_MEMORY_VIEW_STATE };
 let developerMemoryMutatingIds = new Set();
+let expandedDeveloperMemoryIds = new Set();
+let developerMemoryHoverCard = null;
+let developerMemoryHoverHideTimer = null;
 let lastMemoryDebug = null;
 let selectedRunId = '';
 let selectedTraceNodeId = '';
@@ -949,6 +1063,7 @@ let questionHistoryIndex = -1;
 let questionHistoryDraft = '';
 let applyingQuestionHistory = false;
 let guestLoginBusy = false;
+let followUpRenderToken = 0;
 
 const sidebar = document.getElementById('sidebar');
 const sidebarBackdrop = document.getElementById('sidebar-backdrop');
@@ -1155,6 +1270,10 @@ async function apiCall(method, path, body = null) {
     return resp.json();
 }
 
+function wait(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function loadPinnedAgents() {
     try {
         const raw = localStorage.getItem('pinned_agent_ids');
@@ -1207,8 +1326,7 @@ function applySidebarCollapseState() {
 }
 
 function canonicalModeId(modeId) {
-    const id = String(modeId || '').trim();
-    return LEGACY_THINKING_MODE_IDS.has(id) ? THINKING_MODE_ID : id;
+    return String(modeId || '').trim();
 }
 
 function modeStorageKey(conversationId = currentConversationId) {
@@ -1479,6 +1597,11 @@ async function switchAccount(userId, options = {}) {
     roleMemoryStatusText = '';
     roleMemoryDeletingIds = new Set();
     conversations = [];
+    tools = [];
+    toolUserSettings = {};
+    toolMcpConfig = { enabled: false, servers: '' };
+    toolSettingsStatus = '';
+    toolSettingsStatusType = 'muted';
     runs = [];
     pulse = { date: '', generated_at: '', topics: [], suggested_topics: [], items: [] };
     runsError = '';
@@ -1706,6 +1829,7 @@ function updateSendState() {
         btnAttach.classList.toggle('active', attachedContexts.length > 0);
     }
     updateRegenerateButtonsState();
+    updateFollowUpButtonsState();
 }
 
 function updateRegenerateButtonsState() {
@@ -1722,6 +1846,29 @@ function updateRegenerateButtonsState() {
             button.setAttribute('aria-disabled', 'true');
         }
     });
+}
+
+function updateFollowUpButtonsState() {
+    const disabled = isCurrentConversationLoading() || hasPendingAttachments() || !currentConversationId;
+    messagesContainer.querySelectorAll('[data-follow-up-question]').forEach((button) => {
+        button.disabled = disabled;
+        if (disabled) {
+            button.setAttribute('aria-disabled', 'true');
+        } else {
+            button.removeAttribute('aria-disabled');
+        }
+    });
+}
+
+function clearFollowUpMessagesOnly() {
+    messagesContainer.querySelectorAll('[data-follow-up-container]').forEach((node) => {
+        node.remove();
+    });
+}
+
+function removeFollowUpMessages() {
+    followUpRenderToken += 1;
+    clearFollowUpMessagesOnly();
 }
 
 function resetQuestionHistoryBrowse() {
@@ -2451,6 +2598,10 @@ async function loadDeveloperMemory() {
     });
 
     memories.sort((a, b) => new Date(b.updated_at || b.created_at || 0) - new Date(a.updated_at || a.created_at || 0));
+    const availableMemoryKeys = new Set(memories.map((memory) => developerMemoryKey(memory)));
+    expandedDeveloperMemoryIds = new Set(
+        [...expandedDeveloperMemoryIds].filter((key) => availableMemoryKeys.has(key)),
+    );
     developerMemoryState = {
         memories,
         loadedAt: new Date().toISOString(),
@@ -2562,48 +2713,122 @@ function renderDeveloperSummaryCard(label, value, detail) {
 }
 
 function renderDeveloperInventory(memories = []) {
-    const longTerm = memories.filter((memory) => memory.kind === 'long_term');
-    const rolePersona = memories.filter((memory) => memory.kind === 'role' || memory.kind === 'persona');
-    const other = memories.filter((memory) => memory.kind !== 'long_term' && memory.kind !== 'role' && memory.kind !== 'persona');
+    const visibleMemories = filterDeveloperMemories(memories);
+    const longTerm = visibleMemories.filter((memory) => memory.kind === 'long_term');
+    const rolePersona = visibleMemories.filter((memory) => memory.kind === 'role' || memory.kind === 'persona');
+    const other = visibleMemories.filter((memory) => memory.kind !== 'long_term' && memory.kind !== 'role' && memory.kind !== 'persona');
     const loadedText = developerMemoryState.loadedAt
         ? formatFullTime(developerMemoryState.loadedAt)
         : t('developer.neverLoaded');
+    const groups = [
+        { key: 'long_term', title: t('developer.longTerm'), memories: longTerm },
+        { key: 'role', title: t('developer.rolePersona'), memories: rolePersona },
+        { key: 'other', title: t('developer.filterOther'), memories: other },
+    ].filter((group) => group.memories.length || developerMemoryViewState.kind === 'all');
+    const memoryGroups = visibleMemories.length
+        ? groups.map((group) => renderDeveloperMemoryGroup(group.title, group.memories, { groupKey: group.key })).join('')
+        : `<div class="empty-inline developer-memory-no-results">${escapeHtml(memories.length ? t('developer.noMatches') : t('developer.empty'))}</div>`;
 
     return `
-        <section class="developer-panel">
+        <section class="developer-panel developer-inventory-panel">
             <div class="developer-panel-head">
                 <div>
                     <h2>${escapeHtml(t('developer.inventoryTitle'))}</h2>
                     <p>${escapeHtml(`${t('developer.updatedAt')}: ${loadedText}`)}</p>
                 </div>
-                <span class="section-count">${memories.length}</span>
+                <span class="section-count">${visibleMemories.length}/${memories.length}</span>
             </div>
-            <div class="developer-memory-columns">
-                ${renderDeveloperMemoryGroup(t('developer.longTerm'), longTerm)}
-                ${renderDeveloperMemoryGroup(t('developer.rolePersona'), rolePersona)}
-                ${other.length ? renderDeveloperMemoryGroup('Other', other) : ''}
+            ${renderDeveloperMemoryControls(memories.length, visibleMemories.length)}
+            <div class="developer-memory-columns developer-memory-inventory">
+                ${memoryGroups}
             </div>
         </section>
     `;
 }
 
-function renderDeveloperMemoryGroup(title, memories = []) {
+function renderDeveloperMemoryControls(totalCount = 0, visibleCount = 0) {
+    const state = developerMemoryViewState;
     return `
-        <div class="developer-memory-group">
+        <div class="developer-memory-controls">
+            <label class="developer-memory-control developer-memory-search">
+                <span class="visually-hidden">${escapeHtml(t('developer.searchPlaceholder'))}</span>
+                <input type="search"
+                       data-developer-memory-search
+                       placeholder="${escapeAttr(t('developer.searchPlaceholder'))}"
+                       value="${escapeAttr(state.query || '')}">
+            </label>
+            <label class="developer-memory-control">
+                <span>${escapeHtml(t('developer.kindFilter'))}</span>
+                <select data-developer-memory-filter="kind">
+                    ${renderDeveloperSelectOption('all', t('developer.allKinds'), state.kind)}
+                    ${renderDeveloperSelectOption('long_term', t('developer.longTerm'), state.kind)}
+                    ${renderDeveloperSelectOption('role', t('developer.rolePersona'), state.kind)}
+                    ${renderDeveloperSelectOption('other', t('developer.filterOther'), state.kind)}
+                </select>
+            </label>
+            <label class="developer-memory-control">
+                <span>${escapeHtml(t('developer.statusFilter'))}</span>
+                <select data-developer-memory-filter="status">
+                    ${renderDeveloperSelectOption('all', t('developer.allStatuses'), state.status)}
+                    ${renderDeveloperSelectOption('active', t('developer.statusActive'), state.status)}
+                    ${renderDeveloperSelectOption('pending_review', t('developer.statusPending'), state.status)}
+                    ${renderDeveloperSelectOption('archived', t('developer.statusArchived'), state.status)}
+                </select>
+            </label>
+            <label class="developer-memory-control">
+                <span>${escapeHtml(t('developer.sortLabel'))}</span>
+                <select data-developer-memory-filter="sort">
+                    ${renderDeveloperSelectOption('updated_desc', t('developer.sortUpdatedDesc'), state.sort)}
+                    ${renderDeveloperSelectOption('updated_asc', t('developer.sortUpdatedAsc'), state.sort)}
+                    ${renderDeveloperSelectOption('last_used_desc', t('developer.sortLastUsedDesc'), state.sort)}
+                    ${renderDeveloperSelectOption('confidence_desc', t('developer.sortConfidenceDesc'), state.sort)}
+                </select>
+            </label>
+            <div class="developer-memory-control developer-memory-count">
+                <span>${escapeHtml(t('developer.showingCount', { visible: visibleCount, total: totalCount }))}</span>
+                <button class="developer-memory-action" type="button" data-developer-memory-reset>
+                    ${escapeHtml(t('developer.resetFilters'))}
+                </button>
+            </div>
+            <div class="developer-memory-bulk-actions">
+                <button class="developer-memory-action" type="button" data-developer-memory-bulk="expand">
+                    ${escapeHtml(t('developer.expandAll'))}
+                </button>
+                <button class="developer-memory-action" type="button" data-developer-memory-bulk="collapse">
+                    ${escapeHtml(t('developer.collapseAll'))}
+                </button>
+            </div>
+        </div>
+    `;
+}
+
+function renderDeveloperSelectOption(value, label, currentValue) {
+    return `<option value="${escapeAttr(value)}" ${value === currentValue ? 'selected' : ''}>${escapeHtml(label)}</option>`;
+}
+
+function renderDeveloperMemoryGroup(title, memories = [], options = {}) {
+    const compact = options.compact !== false;
+    const groupKey = options.groupKey || 'memory';
+    return `
+        <div class="developer-memory-group developer-memory-group-${escapeAttr(groupKey)}">
             <div class="developer-memory-group-head">
                 <h3>${escapeHtml(title)}</h3>
                 <span>${memories.length}</span>
             </div>
-            <div class="developer-memory-list">
+            <div class="developer-memory-list" data-developer-memory-list="${escapeAttr(groupKey)}">
                 ${memories.length
-                    ? memories.map((memory) => renderDeveloperMemoryRecord(memory)).join('')
+                    ? memories.map((memory) => renderDeveloperMemoryRecord(memory, { forceExpanded: !compact })).join('')
                     : `<div class="empty-inline">${escapeHtml(t('developer.empty'))}</div>`}
             </div>
         </div>
     `;
 }
 
-function renderDeveloperMemoryRecord(memory = {}) {
+function renderDeveloperMemoryRecord(memory = {}, options = {}) {
+    const key = developerMemoryKey(memory);
+    const forceExpanded = options.forceExpanded === true;
+    const isLongTerm = memory.kind === 'long_term';
+    const expanded = !isLongTerm && (forceExpanded || expandedDeveloperMemoryIds.has(key));
     const roleName = memoryRoleLabel(memory.role_id);
     const kind = memoryKindLabel(memory.kind);
     const source = memorySourceLabel(memory.source);
@@ -2617,6 +2842,9 @@ function renderDeveloperMemoryRecord(memory = {}) {
     const agent = memory.agent_id ? `${t('developer.agentScope')}: ${memory.agent_id}` : '';
     const tags = Array.isArray(memory.tags) ? memory.tags.filter(Boolean) : [];
     const busy = developerMemoryMutatingIds.has(memory.id);
+    const preview = isLongTerm
+        ? String(memory.content || '').replace(/\s+/g, ' ').trim()
+        : compactDeveloperMemoryContent(memory.content || '', 180);
     const metadata = memory.metadata && typeof memory.metadata === 'object' && Object.keys(memory.metadata).length
         ? `<details class="developer-memory-metadata">
                 <summary>${escapeHtml(t('developer.metadata'))}</summary>
@@ -2632,39 +2860,255 @@ function renderDeveloperMemoryRecord(memory = {}) {
     const archiveAction = memory.status === 'archived'
         ? `<button class="developer-memory-action" type="button" data-developer-memory-status="active" data-developer-memory-role="${escapeAttr(memory.role_id || currentRoleId || '')}" data-developer-memory-id="${escapeAttr(memory.id || '')}" ${busy ? 'disabled' : ''}>${escapeHtml(t('developer.activate'))}</button>`
         : `<button class="developer-memory-action" type="button" data-developer-memory-status="archived" data-developer-memory-role="${escapeAttr(memory.role_id || currentRoleId || '')}" data-developer-memory-id="${escapeAttr(memory.id || '')}" ${busy ? 'disabled' : ''}>${escapeHtml(t('developer.archive'))}</button>`;
+    const compactMeta = [
+        roleName,
+        source,
+        updated ? `${t('developer.updatedAt')}: ${updated}` : '',
+        lastUsed ? `${t('developer.lastUsed')}: ${lastUsed}` : '',
+        confidence,
+    ].filter(Boolean);
+    const detailMeta = `
+        <div class="developer-memory-meta">
+            <span>${escapeHtml(roleName)}</span>
+            <span>${escapeHtml(source)}</span>
+            <span>${escapeHtml(t('developer.scope'))}: ${escapeHtml(memory.scope || 'user')}</span>
+            <span>${escapeHtml(t('developer.reviewState'))}: ${escapeHtml(memory.review_state || 'manual')}</span>
+            ${updated ? `<span>${escapeHtml(t('developer.updatedAt'))}: ${escapeHtml(updated)}</span>` : ''}
+            ${created ? `<span>${escapeHtml(t('developer.createdAt'))}: ${escapeHtml(created)}</span>` : ''}
+            ${lastUsed ? `<span>${escapeHtml(t('developer.lastUsed'))}: ${escapeHtml(lastUsed)}</span>` : ''}
+            ${confidence ? `<span>${escapeHtml(confidence)}</span>` : ''}
+            ${agent ? `<span>${escapeHtml(agent)}</span>` : ''}
+        </div>
+    `;
+    const toggleLabel = expanded ? t('developer.collapse') : t('developer.details');
+    const toggleButton = forceExpanded || isLongTerm
+        ? ''
+        : `<button class="developer-memory-toggle" type="button"
+                   data-developer-memory-toggle="${escapeAttr(key)}"
+                   aria-expanded="${expanded ? 'true' : 'false'}"
+                   title="${escapeAttr(expanded ? t('developer.collapse') : t('developer.expand'))}">
+                <span class="developer-memory-toggle-icon" aria-hidden="true"></span>
+                <span>${escapeHtml(toggleLabel)}</span>
+           </button>`;
+    const detailHtml = expanded && !isLongTerm
+        ? `<div class="developer-memory-detail" data-developer-memory-record-detail="${escapeAttr(key)}">
+                <div class="developer-memory-full">
+                    <span>${escapeHtml(t('developer.fullContent'))}</span>
+                    <p>${escapeHtml(memory.content || '')}</p>
+                </div>
+                ${detailMeta}
+                ${tags.length ? `<div class="chip-row">${tags.map((tag) => `<span class="chip">${escapeHtml(tag)}</span>`).join('')}</div>` : ''}
+                <div class="developer-memory-actions">
+                    <button class="developer-memory-action" type="button" data-developer-memory-edit="${escapeAttr(memory.id || '')}" data-developer-memory-role="${escapeAttr(memory.role_id || currentRoleId || '')}" ${busy ? 'disabled' : ''}>${escapeHtml(t('developer.edit'))}</button>
+                    ${archiveAction}
+                    <button class="developer-memory-action danger" type="button" data-developer-memory-delete="${escapeAttr(memory.id || '')}" data-developer-memory-role="${escapeAttr(memory.role_id || currentRoleId || '')}" ${busy ? 'disabled' : ''}>${escapeHtml(t('developer.delete'))}</button>
+                </div>
+                ${sourceTrace}
+                ${metadata}
+           </div>`
+        : '';
+    const hoverContent = isLongTerm
+        ? `data-memory-content="${escapeAttr(memory.content || '')}"`
+        : '';
 
     return `
-        <article class="developer-memory-record ${memory.kind === 'long_term' ? 'long-term' : ''}">
+        <article class="developer-memory-record ${isLongTerm ? 'long-term' : ''} ${expanded ? 'expanded' : 'compact'}"
+                 data-developer-memory-record="${escapeAttr(key)}"
+                 ${hoverContent}>
             <div class="developer-memory-record-head">
-                <span class="status-chip ${memoryStatusChipClass(memory.status || 'active')}">${escapeHtml(status)}</span>
-                <code title="${escapeAttr(memory.id || '')}">${escapeHtml(shortDebugId(memory.id || ''))}</code>
+                ${toggleButton}
+                <div class="developer-memory-record-main">
+                    <div class="developer-memory-record-line">
+                        <p class="developer-memory-preview" ${isLongTerm ? '' : `title="${escapeAttr(memory.content || '')}"`}>${escapeHtml(preview || '-')}</p>
+                        <div class="developer-memory-record-badges">
+                            <span class="status-chip ${memoryStatusChipClass(memory.status || 'active')}">${escapeHtml(status)}</span>
+                            <span class="status-chip neutral">${escapeHtml(kind)}</span>
+                            <span class="status-chip neutral">${escapeHtml(`${t('developer.version')} ${String(memory.version || 1)}`)}</span>
+                            ${memory.id ? `<code title="${escapeAttr(memory.id || '')}">${escapeHtml(shortDebugId(memory.id || ''))}</code>` : ''}
+                        </div>
+                    </div>
+                    <div class="developer-memory-record-subhead">
+                        ${compactMeta.map((item) => `<span>${escapeHtml(item)}</span>`).join('')}
+                    </div>
+                </div>
             </div>
-            <div class="developer-memory-record-subhead">
-                <span>${escapeHtml(kind)}</span>
-                <span>${escapeHtml(t('developer.version'))} ${escapeHtml(String(memory.version || 1))}</span>
-            </div>
-            <p>${escapeHtml(memory.content || '')}</p>
-            <div class="developer-memory-meta">
-                <span>${escapeHtml(roleName)}</span>
-                <span>${escapeHtml(source)}</span>
-                <span>${escapeHtml(t('developer.scope'))}: ${escapeHtml(memory.scope || 'user')}</span>
-                <span>${escapeHtml(t('developer.reviewState'))}: ${escapeHtml(memory.review_state || 'manual')}</span>
-                ${updated ? `<span>${escapeHtml(t('developer.updatedAt'))}: ${escapeHtml(updated)}</span>` : ''}
-                ${created ? `<span>${escapeHtml(t('developer.createdAt'))}: ${escapeHtml(created)}</span>` : ''}
-                ${lastUsed ? `<span>${escapeHtml(t('developer.lastUsed'))}: ${escapeHtml(lastUsed)}</span>` : ''}
-                ${confidence ? `<span>${escapeHtml(confidence)}</span>` : ''}
-                ${agent ? `<span>${escapeHtml(agent)}</span>` : ''}
-            </div>
-            ${tags.length ? `<div class="chip-row">${tags.map((tag) => `<span class="chip">${escapeHtml(tag)}</span>`).join('')}</div>` : ''}
-            <div class="developer-memory-actions">
-                <button class="developer-memory-action" type="button" data-developer-memory-edit="${escapeAttr(memory.id || '')}" data-developer-memory-role="${escapeAttr(memory.role_id || currentRoleId || '')}" ${busy ? 'disabled' : ''}>${escapeHtml(t('developer.edit'))}</button>
-                ${archiveAction}
-                <button class="developer-memory-action danger" type="button" data-developer-memory-delete="${escapeAttr(memory.id || '')}" data-developer-memory-role="${escapeAttr(memory.role_id || currentRoleId || '')}" ${busy ? 'disabled' : ''}>${escapeHtml(t('developer.delete'))}</button>
-            </div>
-            ${sourceTrace}
-            ${metadata}
+            ${detailHtml}
         </article>
     `;
+}
+
+function filterDeveloperMemories(memories = []) {
+    const query = normalizeDeveloperMemorySearch(developerMemoryViewState.query || '');
+    const filtered = memories.filter((memory) => {
+        const kindValue = developerMemoryKindFilterValue(memory.kind);
+        if (developerMemoryViewState.kind !== 'all' && kindValue !== developerMemoryViewState.kind) return false;
+
+        const statusValue = memory.status || 'active';
+        if (developerMemoryViewState.status !== 'all' && statusValue !== developerMemoryViewState.status) return false;
+
+        return !query || developerMemorySearchText(memory).includes(query);
+    });
+    return sortDeveloperMemories(filtered, developerMemoryViewState.sort);
+}
+
+function sortDeveloperMemories(memories = [], sortKey = 'updated_desc') {
+    return memories
+        .map((memory, index) => ({ memory, index }))
+        .sort((left, right) => {
+            let result = 0;
+            if (sortKey === 'updated_asc') {
+                result = developerMemoryTimestamp(left.memory, 'updated_at') - developerMemoryTimestamp(right.memory, 'updated_at');
+            } else if (sortKey === 'last_used_desc') {
+                result = developerMemoryLastUsedTimestamp(right.memory) - developerMemoryLastUsedTimestamp(left.memory);
+            } else if (sortKey === 'confidence_desc') {
+                result = developerMemoryConfidence(right.memory) - developerMemoryConfidence(left.memory);
+            } else {
+                result = developerMemoryTimestamp(right.memory, 'updated_at') - developerMemoryTimestamp(left.memory, 'updated_at');
+            }
+            return result || left.index - right.index;
+        })
+        .map((item) => item.memory);
+}
+
+function developerMemoryKindFilterValue(kind = '') {
+    if (kind === 'long_term') return 'long_term';
+    if (kind === 'role' || kind === 'persona') return 'role';
+    return 'other';
+}
+
+function developerMemorySearchText(memory = {}) {
+    const tags = Array.isArray(memory.tags) ? memory.tags.filter(Boolean) : [];
+    return normalizeDeveloperMemorySearch([
+        memory.id,
+        memory.content,
+        memory.kind,
+        memory.status,
+        memory.scope,
+        memory.review_state,
+        memory.role_id,
+        memory.agent_id,
+        memoryRoleLabel(memory.role_id),
+        memoryKindLabel(memory.kind),
+        memorySourceLabel(memory.source),
+        ...tags,
+    ].filter(Boolean).join(' '));
+}
+
+function normalizeDeveloperMemorySearch(text = '') {
+    return String(text).replace(/\s+/g, ' ').trim().toLocaleLowerCase();
+}
+
+function developerMemoryTimestamp(memory = {}, primaryField = 'updated_at') {
+    const value = memory[primaryField] || memory.updated_at || memory.created_at || '';
+    const timestamp = new Date(value).getTime();
+    return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
+function developerMemoryLastUsedTimestamp(memory = {}) {
+    return developerMemoryTimestamp(
+        { ...memory, updated_at: memory.last_used_at || memory.updated_at || memory.created_at },
+        'updated_at',
+    );
+}
+
+function developerMemoryConfidence(memory = {}) {
+    const value = Number(memory.confidence);
+    return Number.isFinite(value) ? value : -1;
+}
+
+function compactDeveloperMemoryContent(content = '', limit = 180) {
+    const text = String(content).replace(/\s+/g, ' ').trim();
+    if (text.length <= limit) return text;
+    return `${text.slice(0, limit).trim()}...`;
+}
+
+function developerMemoryKey(memory = {}) {
+    const roleId = memory.role_id || currentRoleId || '';
+    if (memory.id) return `${roleId}::${memory.id}`;
+    const fallback = String(memory.content || '').replace(/\s+/g, ' ').slice(0, 64);
+    return `${roleId}::${memory.kind || 'memory'}::${memory.created_at || ''}::${fallback}`;
+}
+
+function restoreDeveloperMemoryRecord(memoryKey = '', scrollTop = null) {
+    if (!developerWorkbench || !memoryKey) return;
+    requestAnimationFrame(() => {
+        const records = developerWorkbench.querySelectorAll('[data-developer-memory-record]');
+        const record = [...records].find((item) => item.dataset.developerMemoryRecord === memoryKey);
+        const details = developerWorkbench.querySelectorAll('[data-developer-memory-record-detail]');
+        const detail = [...details].find((item) => item.dataset.developerMemoryRecordDetail === memoryKey);
+        const list = record?.closest('[data-developer-memory-list]');
+        if (list && Number.isFinite(scrollTop)) {
+            list.scrollTop = scrollTop;
+        }
+        const target = detail || record;
+        if (target && typeof target.scrollIntoView === 'function') {
+            target.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+        }
+    });
+}
+
+function ensureDeveloperMemoryHoverCard() {
+    if (developerMemoryHoverCard) return developerMemoryHoverCard;
+    developerMemoryHoverCard = document.createElement('div');
+    developerMemoryHoverCard.className = 'developer-memory-hover-card';
+    developerMemoryHoverCard.hidden = true;
+    developerMemoryHoverCard.addEventListener('mouseenter', cancelDeveloperMemoryHoverHide);
+    developerMemoryHoverCard.addEventListener('mouseleave', () => hideDeveloperMemoryHoverCard());
+    document.body.appendChild(developerMemoryHoverCard);
+    return developerMemoryHoverCard;
+}
+
+function cancelDeveloperMemoryHoverHide() {
+    if (!developerMemoryHoverHideTimer) return;
+    clearTimeout(developerMemoryHoverHideTimer);
+    developerMemoryHoverHideTimer = null;
+}
+
+function positionDeveloperMemoryHoverCard(event) {
+    if (!developerMemoryHoverCard || developerMemoryHoverCard.hidden) return;
+    const margin = 14;
+    const offset = 16;
+    const rect = developerMemoryHoverCard.getBoundingClientRect();
+    let left = event.clientX + offset;
+    let top = event.clientY + offset;
+    if (left + rect.width > window.innerWidth - margin) {
+        left = window.innerWidth - rect.width - margin;
+    }
+    if (top + rect.height > window.innerHeight - margin) {
+        top = event.clientY - rect.height - offset;
+    }
+    developerMemoryHoverCard.style.left = `${Math.max(margin, left)}px`;
+    developerMemoryHoverCard.style.top = `${Math.max(margin, top)}px`;
+}
+
+function showDeveloperMemoryHoverCard(record, event) {
+    const content = record?.dataset.memoryContent || '';
+    if (!content.trim()) return;
+    cancelDeveloperMemoryHoverHide();
+    const card = ensureDeveloperMemoryHoverCard();
+    if (card.textContent !== content) {
+        card.textContent = content;
+        card.scrollTop = 0;
+    }
+    card.hidden = false;
+    positionDeveloperMemoryHoverCard(event);
+}
+
+function hideDeveloperMemoryHoverCard(options = {}) {
+    const delay = Number(options.delay || 0);
+    cancelDeveloperMemoryHoverHide();
+    if (delay > 0) {
+        developerMemoryHoverHideTimer = window.setTimeout(() => {
+            developerMemoryHoverHideTimer = null;
+            if (developerMemoryHoverCard) {
+                developerMemoryHoverCard.hidden = true;
+            }
+        }, delay);
+        return;
+    }
+    if (developerMemoryHoverCard) {
+        developerMemoryHoverCard.hidden = true;
+    }
 }
 
 function renderDeveloperLastRun() {
@@ -2823,8 +3267,15 @@ async function loadTools() {
     try {
         const data = await apiCall('GET', '/api/tools');
         tools = data.skills || data.tools || [];
+        toolUserSettings = data.user_settings || {};
+        toolMcpConfig = data.mcp || {
+            enabled: parseBooleanSetting(toolUserSettings['mcp.enabled'], false),
+            servers: toolUserSettings['mcp.servers'] || '',
+        };
     } catch (err) {
         tools = [];
+        toolUserSettings = {};
+        toolMcpConfig = { enabled: false, servers: '' };
         toolsError = err.message;
     }
     renderTools();
@@ -3156,7 +3607,12 @@ function updateTopbar() {
 
 function updateCounts() {
     agentCount.textContent = agents.length ? String(agents.length) : '';
-    toolCount.textContent = tools.length ? String(tools.length) : '';
+    if (tools.length) {
+        const enabledTools = tools.filter(toolEffectiveEnabled).length;
+        toolCount.textContent = enabledTools === tools.length ? String(tools.length) : `${enabledTools}/${tools.length}`;
+    } else {
+        toolCount.textContent = '';
+    }
     runCount.textContent = runs.length ? String(runs.length) : '';
     if (navSectionCount) {
         const navItems = document.querySelectorAll('#sidebar-nav .nav-item').length;
@@ -4040,47 +4496,243 @@ function renderTools() {
         toolsGrid.innerHTML = emptyState(t('tools.unavailableTitle'), toolsError);
         return;
     }
-    if (!tools.length) {
-        toolsGrid.innerHTML = emptyState(t('tools.emptyTitle'), t('tools.emptyDetail'));
-        return;
-    }
+    const total = tools.length;
+    const enabledCount = tools.filter(toolEffectiveEnabled).length;
+    const visibleTools = filteredTools();
+    const grouped = groupToolsBySource(visibleTools);
+    const statusClass = toolSettingsStatusType === 'error' ? 'error' : (toolSettingsStatusType === 'ok' ? 'ok' : 'neutral');
 
-    toolsGrid.innerHTML = tools.map((tool) => {
-        const params = Array.isArray(tool.parameters) ? tool.parameters : [];
-        const tags = Array.isArray(tool.tags) ? tool.tags : [];
-        const enabled = tool.enabled !== false;
-        return `
-            <article class="data-card tool-card">
-                <div class="card-topline">
-                    <span class="status-dot ${enabled ? 'ok' : 'warn'}"></span>
-                    <span class="mono">${escapeHtml(tool.name || '')}</span>
-                    ${tool.version ? `<span class="status-chip neutral">v${escapeHtml(tool.version)}</span>` : ''}
-                    <span class="status-chip ${enabled ? 'ok' : 'warn'}">${enabled ? 'enabled' : 'disabled'}</span>
+    toolsGrid.innerHTML = `
+        <div class="tools-workbench">
+            <section class="tools-toolbar">
+                <div class="tools-toolbar-copy">
+                    <h2>${escapeHtml(t('tools.title'))}</h2>
+                    <p>${escapeHtml(t('tools.detail'))}</p>
                 </div>
-                <h2>${escapeHtml(tool.name || t('tools.unnamed'))}</h2>
+                <div class="tools-toolbar-controls">
+                    <input class="tools-search" type="search"
+                           data-tool-search
+                           placeholder="${escapeAttr(t('tools.search'))}"
+                           value="${escapeAttr(toolSearchQuery)}">
+                    <div class="segmented-control tools-filter" role="group" aria-label="${escapeAttr(t('tools.title'))}">
+                        ${['all', 'enabled', 'disabled'].map((filter) => `
+                            <button class="${toolFilter === filter ? 'active' : ''}" type="button" data-tool-filter="${escapeAttr(filter)}">
+                                ${escapeHtml(t(`tools.${filter}`))}
+                            </button>
+                        `).join('')}
+                    </div>
+                </div>
+                <span class="status-chip neutral">${escapeHtml(t('tools.total', { enabled: enabledCount, total }))}</span>
+            </section>
+
+            <section class="tool-mcp-panel">
+                <div class="tool-mcp-head">
+                    <div>
+                        <h2>${escapeHtml(t('tools.mcpTitle'))}</h2>
+                        <p>${escapeHtml(t('tools.mcpDetail'))}</p>
+                    </div>
+                    <label class="toggle-switch">
+                        <input type="checkbox" data-mcp-enabled ${toolMcpConfig.enabled ? 'checked' : ''} ${toolSettingsSaving ? 'disabled' : ''}>
+                        <span>${escapeHtml(t('tools.mcpEnabled'))}</span>
+                    </label>
+                </div>
+                <label class="tool-mcp-editor">
+                    <span>${escapeHtml(t('tools.mcpServers'))}</span>
+                    <textarea data-mcp-servers
+                              rows="5"
+                              spellcheck="false"
+                              placeholder="${escapeAttr(t('tools.mcpPlaceholder'))}"
+                              ${toolSettingsSaving ? 'disabled' : ''}>${escapeHtml(toolMcpConfig.servers || '')}</textarea>
+                </label>
+                <div class="tool-mcp-actions">
+                    <button class="btn-secondary" type="button" data-save-mcp-settings ${toolSettingsSaving ? 'disabled aria-busy="true"' : ''}>
+                        ${escapeHtml(toolSettingsSaving ? t('tools.saving') : t('tools.saveMcp'))}
+                    </button>
+                    ${toolSettingsStatus ? `<span class="status-chip ${statusClass}">${escapeHtml(toolSettingsStatus)}</span>` : ''}
+                </div>
+            </section>
+
+            ${renderToolGroups(grouped, total)}
+        </div>
+    `;
+}
+
+function renderToolGroups(grouped, total) {
+    if (!total) return emptyState(t('tools.emptyTitle'), t('tools.emptyDetail'));
+    if (!grouped.length) return emptyState(t('tools.noMatches'), t('tools.search'));
+    return grouped.map(({ source, items }) => `
+        <section class="tool-group">
+            <div class="tool-group-head">
+                <h2>${escapeHtml(t('tools.sourceGroup', { source, count: items.length }))}</h2>
+            </div>
+            <div class="tool-list">
+                ${items.map(renderToolRow).join('')}
+            </div>
+        </section>
+    `).join('');
+}
+
+function renderToolRow(tool) {
+    const params = Array.isArray(tool.parameters) ? tool.parameters : [];
+    const tags = Array.isArray(tool.tags) ? tool.tags : [];
+    const baseEnabled = tool.enabled !== false;
+    const effectiveEnabled = toolEffectiveEnabled(tool);
+    const userEnabled = toolUserEnabled(tool);
+    const statusText = !baseEnabled
+        ? t('tools.baseDisabled')
+        : (effectiveEnabled ? t('tools.userEnabled') : t('tools.userDisabled'));
+    const statusTone = effectiveEnabled ? 'ok' : 'warn';
+    const disabledAttr = (!baseEnabled || toolSettingsSaving) ? 'disabled' : '';
+    return `
+        <article class="tool-row ${effectiveEnabled ? '' : 'disabled'}">
+            <div class="tool-row-main">
+                <div class="tool-identity">
+                    <span class="status-dot ${statusTone}"></span>
+                    <span class="mono">${escapeHtml(tool.name || t('tools.unnamed'))}</span>
+                    ${tool.version ? `<span class="status-chip neutral">v${escapeHtml(tool.version)}</span>` : ''}
+                    <span class="status-chip ${statusTone}">${escapeHtml(statusText)}</span>
+                </div>
                 <p>${escapeHtml(tool.description || '')}</p>
-                <div class="chip-row">${tags.map((tag) => `<span class="chip">${escapeHtml(tag)}</span>`).join('')}</div>
-                ${tool.source ? `<div class="meta-row"><span>${escapeHtml(tool.source)}</span></div>` : ''}
-                ${renderParameters(params)}
-            </article>
-        `;
-    }).join('');
+                <div class="tool-meta-line">
+                    <div class="tool-tags">
+                        ${tool.source ? `<span class="chip">${escapeHtml(tool.source)}</span>` : ''}
+                        ${tags.slice(0, 4).map((tag) => `<span class="chip">${escapeHtml(tag)}</span>`).join('')}
+                        ${tags.length > 4 ? `<span class="chip muted">+${tags.length - 4}</span>` : ''}
+                    </div>
+                    <details class="tool-details">
+                        <summary>${escapeHtml(params.length ? t('tools.parameters', { count: params.length }) : t('tools.noParams'))}</summary>
+                        ${renderParameters(params)}
+                    </details>
+                </div>
+            </div>
+            <label class="toggle-switch tool-toggle">
+                <input type="checkbox"
+                       data-tool-enabled="${escapeAttr(tool.name || '')}"
+                       ${userEnabled ? 'checked' : ''}
+                       ${disabledAttr}>
+                <span>${escapeHtml(effectiveEnabled ? t('tools.enabled') : t('tools.disabled'))}</span>
+            </label>
+        </article>
+    `;
 }
 
 function renderParameters(params) {
     if (!params.length) return `<div class="param-list empty">${escapeHtml(t('tools.noParams'))}</div>`;
     return `
-        <div class="param-list">
+        <div class="param-list compact">
             ${params.map((param) => `
                 <div class="param-item">
                     <span class="param-name">${escapeHtml(param.name || '')}</span>
                     <span class="param-type">${escapeHtml(param.type || 'string')}</span>
-                    ${param.required ? '<span class="param-required">required</span>' : ''}
+                    <span class="param-required">${escapeHtml(param.required ? t('tools.required') : t('tools.optional'))}</span>
                     <p>${escapeHtml(param.description || '')}</p>
                 </div>
             `).join('')}
         </div>
     `;
+}
+
+function toolEffectiveEnabled(tool) {
+    if (typeof tool.effective_enabled === 'boolean') return tool.effective_enabled;
+    if (typeof tool.effectiveEnabled === 'boolean') return tool.effectiveEnabled;
+    return tool.enabled !== false && toolUserEnabled(tool);
+}
+
+function toolUserEnabled(tool) {
+    if (typeof tool.user_enabled === 'boolean') return tool.user_enabled;
+    if (typeof tool.userEnabled === 'boolean') return tool.userEnabled;
+    const key = toolEnabledSettingKey(tool.name || '');
+    if (Object.prototype.hasOwnProperty.call(toolUserSettings, key)) {
+        return parseBooleanSetting(toolUserSettings[key], true);
+    }
+    return true;
+}
+
+function toolEnabledSettingKey(toolName) {
+    return `tool.${String(toolName || '').trim()}.enabled`;
+}
+
+function parseBooleanSetting(value, fallback = false) {
+    const normalized = String(value ?? '').trim().toLowerCase();
+    if (['true', '1', 'yes', 'on'].includes(normalized)) return true;
+    if (['false', '0', 'no', 'off'].includes(normalized)) return false;
+    return fallback;
+}
+
+function filteredTools() {
+    const query = toolSearchQuery.trim().toLowerCase();
+    return tools
+        .filter((tool) => {
+            const effectiveEnabled = toolEffectiveEnabled(tool);
+            if (toolFilter === 'enabled' && !effectiveEnabled) return false;
+            if (toolFilter === 'disabled' && effectiveEnabled) return false;
+            if (!query) return true;
+            const haystack = [
+                tool.name,
+                tool.description,
+                tool.source,
+                ...(Array.isArray(tool.tags) ? tool.tags : []),
+            ].join(' ').toLowerCase();
+            return haystack.includes(query);
+        })
+        .sort((a, b) => {
+            const sourceCompare = String(a.source || 'builtin').localeCompare(String(b.source || 'builtin'));
+            if (sourceCompare !== 0) return sourceCompare;
+            return String(a.name || '').localeCompare(String(b.name || ''));
+        });
+}
+
+function groupToolsBySource(items) {
+    const groups = new Map();
+    items.forEach((tool) => {
+        const source = String(tool.source || 'builtin').trim() || 'builtin';
+        if (!groups.has(source)) groups.set(source, []);
+        groups.get(source).push(tool);
+    });
+    return Array.from(groups.entries()).map(([source, groupItems]) => ({ source, items: groupItems }));
+}
+
+async function updateToolSettings(updates) {
+    toolSettingsSaving = true;
+    toolSettingsStatus = '';
+    renderTools();
+    try {
+        const data = await apiCall('PUT', '/api/tools/settings', { settings: updates });
+        toolUserSettings = data.user_settings || { ...toolUserSettings, ...updates };
+        toolMcpConfig = data.mcp || {
+            enabled: parseBooleanSetting(toolUserSettings['mcp.enabled'], false),
+            servers: toolUserSettings['mcp.servers'] || '',
+        };
+        await loadTools();
+        toolSettingsStatus = t('tools.saved');
+        toolSettingsStatusType = 'ok';
+    } catch (err) {
+        toolSettingsStatus = t('tools.saveFailed', { message: err.message });
+        toolSettingsStatusType = 'error';
+    } finally {
+        toolSettingsSaving = false;
+        renderTools();
+        updateCounts();
+    }
+}
+
+async function saveMcpSettings() {
+    const textarea = document.querySelector('[data-mcp-servers]');
+    const servers = textarea ? textarea.value.trim() : (toolMcpConfig.servers || '');
+    if (servers) {
+        try {
+            JSON.parse(servers);
+        } catch {
+            toolSettingsStatus = t('tools.invalidJson');
+            toolSettingsStatusType = 'error';
+            renderTools();
+            return;
+        }
+    }
+    await updateToolSettings({
+        'mcp.enabled': toolMcpConfig.enabled ? 'true' : 'false',
+        'mcp.servers': servers,
+    });
 }
 
 function renderRuns() {
@@ -4151,6 +4803,7 @@ function renderRunDetail(run) {
     const tokens = Object.entries(run.tokens_used || {})
         .map(([key, value]) => `${key}: ${value}`)
         .join(' / ');
+    const returnConversationId = String(run.conversation_id || currentConversationId || '').trim();
 
     runDetail.innerHTML = `
         <article class="run-panel trace-page-panel">
@@ -4160,7 +4813,10 @@ function renderRunDetail(run) {
                         <span class="mono">${escapeHtml(run.run_id || '')}</span>
                         <h2>${escapeHtml(run.agent_id || 'agent')}</h2>
                     </div>
-                    <span class="status-chip ${run.status === 'completed' ? 'ok' : (run.status === 'failed' ? 'error' : 'warn')}">${escapeHtml(run.status || '')}</span>
+                    <div class="run-panel-actions">
+                        ${renderTraceReturnButton(returnConversationId)}
+                        <span class="status-chip ${run.status === 'completed' ? 'ok' : (run.status === 'failed' ? 'error' : 'warn')}">${escapeHtml(run.status || '')}</span>
+                    </div>
                 </div>
                 <dl class="run-facts">
                     <div><dt>Runtime</dt><dd>${escapeHtml(run.runtime || '')}</dd></div>
@@ -4184,6 +4840,47 @@ function renderRunDetail(run) {
     if (preserveTreeScroll) {
         const treePanel = runDetail.querySelector('.trace-tree-panel');
         if (treePanel) treePanel.scrollTop = previousTreeScroll;
+    }
+}
+
+function renderTraceReturnButton(conversationId = '') {
+    return `
+        <button class="btn-secondary trace-return-button" type="button"
+                data-trace-return-conversation="${escapeAttr(conversationId)}"
+                title="${escapeAttr(t('trace.backToChat'))}"
+                aria-label="${escapeAttr(t('trace.backToChat'))}">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.4">
+                <path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4Z"/>
+                <path d="m10 8-4 4 4 4"/>
+                <path d="M7 12h10"/>
+            </svg>
+            <span>${escapeHtml(t('trace.backToChat'))}</span>
+        </button>
+    `;
+}
+
+async function returnToTraceConversation(conversationId = '') {
+    const targetId = String(conversationId || currentConversationId || '').trim();
+    if (!targetId) {
+        setView('chat');
+        focusMessageInput();
+        return;
+    }
+
+    try {
+        if (!conversations.some((conv) => conv.id === targetId)) {
+            await loadConversations();
+        }
+        if (conversations.some((conv) => conv.id === targetId)) {
+            await selectConversation(targetId);
+            return;
+        }
+        setView('chat');
+        ensureCurrentConversationVisible();
+        focusMessageInput();
+    } catch {
+        setView('chat');
+        focusMessageInput();
     }
 }
 
@@ -4272,6 +4969,12 @@ function createTraceNode({ id, kind, label, detail = '', status = 'neutral', dur
 function attachTraceEvent(state, event = {}, index = 0) {
     const type = event.type || '';
     const payload = event.payload || {};
+
+    if (type.startsWith('workflow.')) {
+        const workflowNode = workflowParentNode(state, event) || ensureWorkflowRootNode(state, payload.workflow || 'workflow');
+        addTraceEventLeaf(state, workflowNode, event, index);
+        return;
+    }
 
     if (type === 'aigc.plan.created' || type === 'thinking.plan.created') {
         const planNode = ensurePlanNode(state, type.startsWith('thinking.') ? 'thinking' : 'aigc');
@@ -4378,7 +5081,7 @@ function attachTraceEvent(state, event = {}, index = 0) {
     }
 
     if (type.startsWith('model.')) {
-        const stage = ensureExecutionStageNode(state);
+        const stage = workflowParentNode(state, event) || ensureExecutionStageNode(state);
         const modelNode = ensureModelNode(state, stage, event, 'main');
         addTraceEventLeaf(state, modelNode, event, index);
         registerToolParentsFromModelEvent(state, event, modelNode);
@@ -4386,7 +5089,7 @@ function attachTraceEvent(state, event = {}, index = 0) {
     }
 
     if (type.startsWith('tool.')) {
-        const parent = toolParentNode(state, event) || ensureExecutionStageNode(state);
+        const parent = toolParentNode(state, event) || workflowParentNode(state, event) || ensureExecutionStageNode(state);
         const toolNode = ensureToolNode(state, parent, event);
         addTraceEventLeaf(state, toolNode, event, index);
         return;
@@ -4396,7 +5099,7 @@ function attachTraceEvent(state, event = {}, index = 0) {
         const toolParent = toolParentNode(state, event);
         const citationParent = toolParent || ensureStageNode(
             state,
-            state.root,
+            workflowParentNode(state, event) || state.root,
             'citations',
             traceCopy('来源整理', 'Citations'),
             'citations',
@@ -4405,10 +5108,10 @@ function attachTraceEvent(state, event = {}, index = 0) {
         return;
     }
 
-    if (type === 'agent.delegated') {
+    if (type.startsWith('agent.')) {
         addTraceEventLeaf(
             state,
-            ensureStageNode(state, state.root, 'routing', traceCopy('Agent 路由', 'Agent Routing'), payload.target_agent_id || ''),
+            ensureAgentEventParent(state, event),
             event,
             index,
         );
@@ -4513,6 +5216,94 @@ function ensureExecutionStageNode(state) {
         'execution',
         traceCopy('执行过程', 'Execution'),
         traceCopy('模型调用、工具调用和最终生成', 'Model calls, tool calls, and generation'),
+    );
+}
+
+function workflowDisplayName(workflow = '') {
+    const labels = {
+        thinking: traceCopy('Thinking Workflow', 'Thinking Workflow'),
+        agent_loop: traceCopy('Agent Loop', 'Agent Loop'),
+        generic_tool_loop: traceCopy('通用工具循环', 'Generic Tool Loop'),
+        deep_research: traceCopy('Deep Research Workflow', 'Deep Research Workflow'),
+    };
+    return labels[workflow] || workflow || traceCopy('Workflow', 'Workflow');
+}
+
+function workflowNodeDisplayName(node = '') {
+    const labels = {
+        analyze: traceCopy('Analyze', 'Analyze'),
+        plan: traceCopy('Plan', 'Plan'),
+        execute: traceCopy('Execute', 'Execute'),
+        summary: traceCopy('Summary', 'Summary'),
+        main_loop: traceCopy('Main Loop', 'Main Loop'),
+    };
+    return labels[node] || node || traceCopy('Workflow Node', 'Workflow Node');
+}
+
+function safeTraceKey(value = '') {
+    return String(value || 'unknown').trim().replace(/[^a-zA-Z0-9_-]+/g, '-').replace(/^-+|-+$/g, '') || 'unknown';
+}
+
+function ensureWorkflowRootNode(state, workflow = '') {
+    const workflowId = safeTraceKey(workflow || 'workflow');
+    return ensureStageNode(
+        state,
+        state.root,
+        `workflow:${workflowId}`,
+        workflowDisplayName(workflow),
+        workflow,
+        { workflow },
+    );
+}
+
+function ensureWorkflowNode(state, workflow = '', node = '') {
+    const workflowRoot = ensureWorkflowRootNode(state, workflow);
+    if (!node) return workflowRoot;
+    const nodeId = safeTraceKey(node);
+    return ensureStageNode(
+        state,
+        workflowRoot,
+        `node:${nodeId}`,
+        workflowNodeDisplayName(node),
+        node,
+        { workflow, workflowNode: node },
+    );
+}
+
+function workflowParentNode(state, event = {}) {
+    const payload = event.payload || {};
+    const workflow = payload.workflow || payload.final_model_request?.workflow || '';
+    if (!workflow) return null;
+    const node = payload.workflow_node || payload.node || payload.final_model_request?.workflow_node || '';
+    return ensureWorkflowNode(state, workflow, node);
+}
+
+function ensureAgentEventParent(state, event = {}) {
+    const payload = event.payload || {};
+    const packet = payload.packet || {};
+    const targetAgent = payload.target_agent_id || packet.target_agent_id || payload.agent_id || 'agent';
+    const sourceAgent = payload.source_agent_id || packet.source_agent_id || '';
+    const detail = [sourceAgent ? `${sourceAgent} -> ${targetAgent}` : targetAgent, payload.reason || '']
+        .filter(Boolean)
+        .join(' / ');
+    const agentNode = ensureStageNode(
+        state,
+        state.root,
+        `agent:${safeTraceKey(targetAgent)}`,
+        `Agent: ${targetAgent}`,
+        detail,
+        { targetAgent, sourceAgent },
+    );
+    const stageContexts = Array.isArray(packet.stage_contexts) ? packet.stage_contexts : [];
+    const latestStage = stageContexts[stageContexts.length - 1];
+    if (!latestStage?.stage_id) return agentNode;
+    return ensureStageNode(
+        state,
+        agentNode,
+        `stage:${safeTraceKey(latestStage.stage_id)}`,
+        latestStage.stage_id,
+        latestStage.summary || '',
+        { targetAgent, sourceAgent, agentStage: latestStage.stage_id },
     );
 }
 
@@ -4710,8 +5501,15 @@ function traceEventDisplay(event = {}) {
     if (type === 'run.started') return { label: traceCopy('Run 开始', 'Run started'), detail: `${payload.agent_id || ''} ${payload.runtime || ''}`.trim() };
     if (type === 'run.completed') return { label: traceCopy('Run 完成', 'Run completed'), detail: [payload.model_used, duration].filter(Boolean).join(' / ') };
     if (type === 'run.failed') return { label: traceCopy('Run 失败', 'Run failed'), detail: payload.error_message || payload.error_type || '' };
+    if (type === 'workflow.started') return { label: traceCopy('Workflow 开始', 'Workflow started'), detail: workflowDisplayName(payload.workflow) };
+    if (type === 'workflow.completed') return { label: traceCopy('Workflow 完成', 'Workflow completed'), detail: [workflowDisplayName(payload.workflow), payload.result].filter(Boolean).join(' / ') };
+    if (type === 'workflow.failed') return { label: traceCopy('Workflow 失败', 'Workflow failed'), detail: payload.error_message || payload.error_type || workflowDisplayName(payload.workflow) };
+    if (type === 'workflow.node.started') return { label: traceCopy(`节点开始：${workflowNodeDisplayName(payload.node)}`, `Node started: ${workflowNodeDisplayName(payload.node)}`), detail: payload.workflow || '' };
+    if (type === 'workflow.node.completed') return { label: traceCopy(`节点完成：${workflowNodeDisplayName(payload.node)}`, `Node completed: ${workflowNodeDisplayName(payload.node)}`), detail: [payload.result, duration].filter(Boolean).join(' / ') };
+    if (type === 'workflow.node.failed') return { label: traceCopy(`节点失败：${workflowNodeDisplayName(payload.node)}`, `Node failed: ${workflowNodeDisplayName(payload.node)}`), detail: payload.error_message || payload.error_type || '' };
     if (type === 'agent.delegated') return { label: traceCopy('转交给专业 Agent', 'Delegated to specialist agent'), detail: payload.reason || payload.target_agent_id || '' };
     if (type === 'agent.command.routed') return { label: traceCopy('路由 Agent 命令', 'Routed agent command'), detail: `${payload.target_agent_id || ''} ${payload.command_text || ''}`.trim() };
+    if (type.startsWith('agent.')) return { label: type, detail: payload.target_agent_id || payload.reason || payload.current_request_preview || '' };
     if (type === 'memory.loaded') return { label: traceCopy('读取角色记忆', 'Loaded role memory'), detail: traceCopy(`长期 ${payload.long_term_count || 0} / 角色 ${payload.persona_count || 0}`, `Long-term ${payload.long_term_count || 0} / role ${payload.persona_count || 0}`) };
     if (type === 'context.built') return { label: traceCopy('构建 Prompt 上下文', 'Built prompt context'), detail: traceCopy(`${payload.message_count || 0} 条消息 / ${payload.tools_count || 0} 个工具`, `${payload.message_count || 0} messages / ${payload.tools_count || 0} tools`) };
     if (type === 'memory.review.started') return { label: traceCopy('开始长期记忆检查', 'Started long-term memory review'), detail: payload.agent_id || '' };
@@ -5709,6 +6507,7 @@ function ensureCurrentConversationVisible() {
 }
 
 async function renderConversationMessages(id, options = {}) {
+    followUpRenderToken += 1;
     const cachedRender = conversationRenderCache.get(id) || null;
     const restoredFromCache = restoreConversationRenderCache(id);
     if (!restoredFromCache) {
@@ -5742,6 +6541,7 @@ async function renderConversationMessages(id, options = {}) {
         if (options.watchActiveRuns !== false) {
             watchActiveRunForConversation(id, messages);
         }
+        pollLatestAssistantFollowUps(messages, id);
     } catch (err) {
         if (!restoredFromCache) {
             messagesContainer.innerHTML = '';
@@ -5792,10 +6592,38 @@ function forgetConversationRender(id) {
     conversationRenderCache.delete(id);
 }
 
+function parseFollowUps(value) {
+    if (!value) return [];
+    if (Array.isArray(value)) return normalizeFollowUpQuestions(value);
+    try {
+        return normalizeFollowUpQuestions(JSON.parse(value));
+    } catch {
+        return [];
+    }
+}
+
+function normalizeFollowUpQuestions(questions = []) {
+    if (!Array.isArray(questions)) return [];
+    const seen = new Set();
+    const result = [];
+
+    questions.forEach((item) => {
+        const question = String(item || '').replace(/\s+/g, ' ').trim();
+        if (!question) return;
+        const key = question.toLowerCase();
+        if (seen.has(key)) return;
+        seen.add(key);
+        result.push(question);
+    });
+
+    return result.slice(0, FOLLOW_UP_QUESTION_COUNT);
+}
+
 function renderConversationMessageListHtml(messages = []) {
     const savedRuns = [];
     let latestUserQuery = '';
-    const html = messages.map((msg) => {
+    const lastMessageIndex = messages.length - 1;
+    const html = messages.map((msg, index) => {
         if (msg.role === 'user') {
             latestUserQuery = String(msg.content || '').trim();
         }
@@ -5805,7 +6633,7 @@ function renderConversationMessageListHtml(messages = []) {
         const savedRun = runRecordFromMessage(msg, skillsUsed, savedTraceEvents);
         if (savedRun) savedRuns.push(savedRun);
         const traceRun = savedRun;
-        return renderMessageHtml(
+        const messageHtml = renderMessageHtml(
             msg.role,
             msg.content,
             skillsUsed,
@@ -5818,9 +6646,334 @@ function renderConversationMessageListHtml(messages = []) {
             null,
             msg.role === 'assistant' ? latestUserQuery : ''
         );
+        const shouldShowFollowUps = msg.role === 'assistant'
+            && index === lastMessageIndex
+            && !msg.error_type;
+        return shouldShowFollowUps
+            ? `${messageHtml}${renderFollowUpMessages(parseFollowUps(msg.follow_ups))}`
+            : messageHtml;
     }).join('');
     if (savedRuns.length) mergeRuns(savedRuns);
     return html;
+}
+
+function renderProcessPanel(events = [], options = {}) {
+    const items = buildProcessTimeline(events);
+    if (!items.length) return '';
+
+    const expanded = Boolean(options.expanded);
+    const live = Boolean(options.live);
+    const totalDuration = processTotalDuration(events);
+    const title = traceCopy('执行过程', 'Process');
+    const durationLabel = Number.isFinite(totalDuration)
+        ? traceCopy(`总耗时 ${formatProcessDuration(totalDuration)}`, `Total ${formatProcessDuration(totalDuration)}`)
+        : '';
+
+    return `
+        <details class="process-panel ${live ? 'live' : ''}" ${expanded ? 'open' : ''}>
+            <summary class="process-summary">
+                <span class="process-summary-title">${escapeHtml(title)}</span>
+                ${durationLabel ? `<span class="process-summary-duration">${escapeHtml(durationLabel)}</span>` : ''}
+                <span class="process-summary-arrow" aria-hidden="true"></span>
+            </summary>
+            <ol class="process-list">
+                ${items.map(renderProcessTimelineItem).join('')}
+            </ol>
+        </details>
+    `;
+}
+
+function renderProcessPanelInto(container, panelHtml = '') {
+    const scrollState = captureProcessScrollState(container);
+    container.innerHTML = panelHtml;
+    restoreProcessScrollState(container, scrollState);
+}
+
+function captureProcessScrollState(container) {
+    const list = container?.querySelector?.('.process-list');
+    if (!list) return null;
+    const distanceFromBottom = list.scrollHeight - list.scrollTop - list.clientHeight;
+    return {
+        scrollTop: list.scrollTop,
+        stickToBottom: distanceFromBottom <= 24,
+    };
+}
+
+function restoreProcessScrollState(container, state) {
+    if (!state) return;
+    const list = container?.querySelector?.('.process-list');
+    if (!list) return;
+    list.scrollTop = state.stickToBottom
+        ? list.scrollHeight
+        : Math.min(state.scrollTop, Math.max(0, list.scrollHeight - list.clientHeight));
+}
+
+function processTotalDuration(events = []) {
+    if (!Array.isArray(events)) return null;
+    const completed = [...events]
+        .reverse()
+        .find((event) => (
+            (event?.type === 'run.completed' || event?.type === 'run.failed')
+            && Number.isFinite(event.duration_ms)
+        ));
+    if (completed) return completed.duration_ms;
+    const workflowCompleted = [...events]
+        .reverse()
+        .find((event) => (
+            (event?.type === 'workflow.completed' || event?.type === 'workflow.failed')
+            && Number.isFinite(event.duration_ms)
+        ));
+    return workflowCompleted?.duration_ms ?? null;
+}
+
+function formatProcessDuration(ms) {
+    if (!Number.isFinite(ms)) return '';
+    if (ms < 1000) return `${ms}ms`;
+    if (ms < 60000) return `${(ms / 1000).toFixed(ms < 10000 ? 1 : 0)}s`;
+    const minutes = Math.floor(ms / 60000);
+    const seconds = Math.round((ms % 60000) / 1000);
+    return seconds ? `${minutes}m ${seconds}s` : `${minutes}m`;
+}
+
+function buildProcessTimeline(events = []) {
+    if (!Array.isArray(events)) return [];
+    return events
+        .filter(isProcessEventVisible)
+        .map((event, index) => processTimelineItem(event, index))
+        .filter(Boolean);
+}
+
+function isProcessEventVisible(event = {}) {
+    const type = String(event.type || '');
+    if (!type) return false;
+    if (type === 'context.built' || type === 'memory.loaded') return true;
+    if (type === 'memory.review.started' || type === 'memory.review.completed' || type === 'memory.review.failed') return true;
+    if (type === 'memory.compaction.started' || type === 'memory.compaction.completed' || type === 'memory.compaction.failed' || type === 'memory.compaction.skipped') return true;
+    if (type === 'memory.extracted' || type === 'memory.failed') return true;
+    if (type.startsWith('run.')) return true;
+    if (type.startsWith('workflow.')) return true;
+    if (type.startsWith('thinking.')) return true;
+    if (type.startsWith('aigc.')) return true;
+    if (type.startsWith('model.')) return true;
+    if (type.startsWith('tool.')) return true;
+    if (type.startsWith('citations.')) return true;
+    if (type.startsWith('agent.')) return true;
+    if (type.startsWith('weight_loss.')) return true;
+    return false;
+}
+
+function processTimelineItem(event = {}, index = 0) {
+    const payload = event.payload || {};
+    const display = traceEventDisplay(event);
+    const status = normalizeTraceStatus(event.status);
+    const duration = Number.isInteger(event.duration_ms) ? formatDuration(event.duration_ms) : '';
+    return {
+        id: event.id || `${event.type || 'event'}-${index}`,
+        kind: processEventKind(event),
+        status,
+        label: display.label || event.title || event.type || t('trace.event'),
+        detail: processEventDetail(event, display.detail),
+        meta: [
+            payload.workflow_node || payload.node || '',
+            event.step_id ? `step:${shortDebugId(event.step_id)}` : '',
+            duration,
+        ].filter(Boolean),
+        links: processEventLinks(event),
+    };
+}
+
+function processEventKind(event = {}) {
+    const type = String(event.type || '');
+    if (type.startsWith('tool.') || type.startsWith('citations.')) return 'tool';
+    if (type.startsWith('model.')) return 'model';
+    if (type.startsWith('thinking.') || type.startsWith('workflow.')) return 'plan';
+    if (type.startsWith('agent.')) return 'agent';
+    if (type.startsWith('aigc.')) return 'media';
+    if (type.startsWith('weight_loss.')) return 'agent';
+    if (type.startsWith('memory.') || type === 'context.built') return 'context';
+    if (type.startsWith('run.')) return 'run';
+    return 'event';
+}
+
+function processEventDetail(event = {}, fallback = '') {
+    const type = String(event.type || '');
+    const payload = event.payload || {};
+    const parts = [];
+
+    if (type === 'thinking.plan.created') {
+        if (payload.goal) parts.push(payload.goal);
+        const steps = Array.isArray(payload.steps) ? payload.steps : [];
+        if (steps.length) {
+            parts.push(steps.map((step, index) => {
+                const title = step?.title || step?.type || step?.id || traceCopy('步骤', 'step');
+                return `${index + 1}. ${title}`;
+            }).join(' · '));
+        }
+    } else if (type === 'thinking.step.started') {
+        const step = payload.step && typeof payload.step === 'object' ? payload.step : {};
+        if (step.description) parts.push(step.description);
+        if (step.query) parts.push(`${traceCopy('检索', 'Search')}: ${step.query}`);
+        if (step.task) parts.push(`${traceCopy('任务', 'Task')}: ${step.task}`);
+    } else if (type === 'thinking.step.completed' || type === 'thinking.step.failed') {
+        if (payload.summary) parts.push(payload.summary);
+        if (payload.arguments?.query) parts.push(`${traceCopy('检索', 'Search')}: ${payload.arguments.query}`);
+        if (Number.isFinite(payload.citation_count)) parts.push(traceCopy(`累计来源 ${payload.citation_count}`, `${payload.citation_count} citations so far`));
+        parts.push(toolPreviewSummary(payload));
+    } else if (type === 'thinking.summary.completed') {
+        parts.push(traceCopy('数据和工具结果已汇总，开始生成最终回答。', 'Evidence and tool results are ready; composing the final answer.'));
+        if (Number.isFinite(payload.citation_count)) parts.push(traceCopy(`来源 ${payload.citation_count}`, `${payload.citation_count} citations`));
+    } else if (type === 'tool.started') {
+        parts.push(toolArgumentSummary(payload));
+    } else if (type === 'tool.completed' || type === 'tool.failed') {
+        parts.push(toolArgumentSummary(payload));
+        parts.push(toolPreviewSummary(payload));
+    } else if (type === 'model.started') {
+        const round = payload.round ? `${traceCopy('轮次', 'Round')} ${payload.round}` : '';
+        const tools = Number.isFinite(payload.tools_count) ? traceCopy(`可用工具 ${payload.tools_count}`, `${payload.tools_count} tools`) : '';
+        parts.push([round, tools, payload.streaming ? traceCopy('流式输出', 'streaming') : ''].filter(Boolean).join(' / '));
+    } else if (type === 'model.completed') {
+        const toolCount = Array.isArray(payload.tool_calls) ? payload.tool_calls.length : 0;
+        parts.push([
+            payload.model || '',
+            toolCount ? traceCopy(`产生 ${toolCount} 个工具调用`, `${toolCount} tool calls`) : traceCopy('未请求工具，进入回答/汇总阶段', 'No tool call; moving to answer/summarize'),
+            usageSummary(payload.usage),
+        ].filter(Boolean).join(' / '));
+    } else if (type === 'citations.collected') {
+        parts.push(traceCopy(`新增 ${payload.count || 0} 个来源，累计 ${payload.total || 0} 个。`, `${payload.count || 0} new sources, ${payload.total || 0} total.`));
+    } else if (type === 'workflow.node.completed' || type === 'workflow.completed') {
+        const summary = [
+            payload.result || '',
+            Number.isFinite(payload.citation_count) ? traceCopy(`来源 ${payload.citation_count}`, `${payload.citation_count} citations`) : '',
+            Array.isArray(payload.skills_used) && payload.skills_used.length ? traceCopy(`工具 ${payload.skills_used.join(', ')}`, `Tools: ${payload.skills_used.join(', ')}`) : '',
+        ].filter(Boolean).join(' / ');
+        if (summary) parts.push(summary);
+    } else if (type === 'aigc.plan.created') {
+        const steps = Array.isArray(payload.steps) ? payload.steps : [];
+        parts.push(traceCopy(`策略：${payload.information_strategy || 'direct'}；步骤 ${steps.length}`, `Strategy: ${payload.information_strategy || 'direct'}; ${steps.length} steps`));
+    } else if (type === 'aigc.plan.step.completed') {
+        if (payload.brief_preview) parts.push(`${traceCopy('资料摘要', 'Brief')}: ${truncateText(payload.brief_preview, 220)}`);
+        if (Number.isFinite(payload.image_count)) parts.push(traceCopy(`图片 ${payload.image_count}`, `${payload.image_count} images`));
+        if (payload.model) parts.push(`${traceCopy('模型', 'Model')}: ${payload.model}`);
+    } else if (type === 'aigc.prompt_review.completed') {
+        parts.push(traceCopy(`比例 ${payload.aspect_ratio || '-'}；提示词 ${payload.final_prompt_char_count || 0} 字符`, `Ratio ${payload.aspect_ratio || '-'}; prompt ${payload.final_prompt_char_count || 0} chars`));
+    } else if (type === 'aigc.image.completed') {
+        parts.push(traceCopy(`生成 ${payload.image_count || 0} 张图片；${payload.provider || payload.model || ''}`, `${payload.image_count || 0} images; ${payload.provider || payload.model || ''}`));
+    } else if (type === 'agent.delegated') {
+        parts.push([payload.source_agent_id && payload.target_agent_id ? `${payload.source_agent_id} -> ${payload.target_agent_id}` : payload.target_agent_id || '', payload.reason || ''].filter(Boolean).join(' / '));
+    } else if (type === 'agent.command.routed') {
+        parts.push([payload.target_agent_id || '', payload.command_text || ''].filter(Boolean).join(' / '));
+    } else if (type === 'context.built') {
+        parts.push(traceCopy(`${payload.message_count || 0} 条消息，${payload.tools_count || 0} 个工具已进入上下文。`, `${payload.message_count || 0} messages and ${payload.tools_count || 0} tools in context.`));
+    } else if (type === 'memory.loaded') {
+        parts.push(traceCopy(`长期记忆 ${payload.long_term_count || 0}，角色记忆 ${payload.persona_count || 0}。`, `Long-term ${payload.long_term_count || 0}, role ${payload.persona_count || 0}.`));
+    } else if (type === 'run.completed') {
+        parts.push(traceCopy('最终结果已生成，过程已折叠。', 'Final result generated; process folded.'));
+    } else if (type.endsWith('.failed') || event.status === 'error') {
+        parts.push(payload.error_message || payload.error_type || fallback);
+    }
+
+    return parts.filter(Boolean).join('\n') || fallback || '';
+}
+
+function toolArgumentSummary(payload = {}) {
+    const args = payload.arguments && typeof payload.arguments === 'object' ? payload.arguments : {};
+    if (!Object.keys(args).length) return '';
+    if (args.query) return `${traceCopy('输入', 'Input')}: ${args.query}`;
+    if (args.task) return `${traceCopy('任务', 'Task')}: ${truncateText(args.task, 180)}`;
+    return `${traceCopy('参数', 'Args')}: ${truncateText(JSON.stringify(compactObject(args), null, 2), 220)}`;
+}
+
+function toolPreviewSummary(payload = {}) {
+    const preview = parseToolPreview(payload.result_preview);
+    if (!preview) return payload.result_preview ? truncateText(payload.result_preview, 220) : '';
+
+    const parts = [];
+    if (preview.success === true) parts.push(traceCopy('工具成功', 'Tool succeeded'));
+    if (preview.success === false) parts.push(traceCopy('工具失败', 'Tool failed'));
+    if (preview.error) parts.push(String(preview.error));
+
+    const data = preview.data && typeof preview.data === 'object' ? preview.data : {};
+    const results = Array.isArray(data.results) ? data.results : [];
+    if (results.length) {
+        parts.push(traceCopy(`返回 ${results.length} 条结果`, `${results.length} results`));
+        const titles = results
+            .slice(0, 3)
+            .map((item) => String(item?.title || item?.url || '').trim())
+            .filter(Boolean);
+        if (titles.length) parts.push(titles.join(' · '));
+    } else if (preview.display_text) {
+        parts.push(truncateText(preview.display_text, 220));
+    } else if (Object.keys(data).length) {
+        parts.push(truncateText(summarizePayload(data), 220));
+    }
+
+    return parts.filter(Boolean).join('\n');
+}
+
+function parseToolPreview(value) {
+    if (!value) return null;
+    if (typeof value === 'object') return value;
+    if (typeof value !== 'string') return null;
+    try {
+        return JSON.parse(value);
+    } catch {
+        return null;
+    }
+}
+
+function usageSummary(usage = {}) {
+    if (!usage || typeof usage !== 'object') return '';
+    return Object.entries(usage)
+        .filter(([, value]) => value !== undefined && value !== null && value !== '')
+        .map(([key, value]) => `${key}:${value}`)
+        .join(', ');
+}
+
+function processEventLinks(event = {}) {
+    const payload = event.payload || {};
+    const urls = [];
+    if (Array.isArray(payload.urls)) urls.push(...payload.urls);
+
+    const preview = parseToolPreview(payload.result_preview);
+    const results = preview?.data && Array.isArray(preview.data.results) ? preview.data.results : [];
+    results.forEach((item) => {
+        if (item?.url) urls.push(item.url);
+    });
+
+    return [...new Set(urls.map((url) => String(url || '').trim()).filter((url) => url && isSafeContentUrl(url)))].slice(0, 4);
+}
+
+function renderProcessTimelineItem(item) {
+    const detail = item.detail
+        ? `<div class="process-item-detail">${escapeHtml(item.detail)}</div>`
+        : '';
+    const meta = item.meta.length
+        ? `<div class="process-item-meta">${item.meta.map((value) => `<span>${escapeHtml(value)}</span>`).join('')}</div>`
+        : '';
+    const links = item.links.length
+        ? `<div class="process-item-links">${item.links.map((url) => renderSafeLink(url, hostFromUrl(url) || shortDebugId(url))).join('')}</div>`
+        : '';
+    return `
+        <li class="process-item ${escapeAttr(item.status)} ${escapeAttr(item.kind)}">
+            <span class="process-item-dot" aria-hidden="true"></span>
+            <div class="process-item-body">
+                <div class="process-item-head">
+                    <strong>${escapeHtml(item.label)}</strong>
+                    <span>${escapeHtml(processStatusLabel(item.status))}</span>
+                </div>
+                ${detail}
+                ${links}
+                ${meta}
+            </div>
+        </li>
+    `;
+}
+
+function processStatusLabel(status = '') {
+    if (status === 'running') return traceCopy('进行中', 'running');
+    if (status === 'completed') return traceCopy('完成', 'done');
+    if (status === 'error') return traceCopy('异常', 'error');
+    return traceCopy('记录', 'event');
 }
 
 function conversationMessagesSignature(messages = []) {
@@ -5835,6 +6988,7 @@ function conversationMessagesSignature(messages = []) {
         msg.skills_used || '',
         msg.citations || '',
         msg.trace_events || '',
+        msg.follow_ups || '',
         msg.content || '',
     ].join('\u001f')).join('\u001e');
 }
@@ -5942,7 +7096,7 @@ async function watchActiveRunForConversation(id, messages = []) {
         }
 
         const pendingQuery = [...messages].reverse().find((msg) => msg?.role === 'user')?.content || '';
-        const streamView = appendStreamingAssistantMessage(pendingQuery);
+        const streamView = appendStreamingAssistantMessage(pendingQuery, id);
         streamView.setPending(t('chat.resumePending'));
         streamView.setTrace(run.events || [], {
             runId: run.run_id || '',
@@ -6022,7 +7176,7 @@ async function pollActiveRunWatcher() {
 }
 
 function appendRecoveredRunMessage(run) {
-    const streamView = appendStreamingAssistantMessage(run?.input || '');
+    const streamView = appendStreamingAssistantMessage(run?.input || '', run?.conversation_id || currentConversationId);
     streamView.finalize(chatResponseFromRun(run));
 }
 
@@ -6171,6 +7325,7 @@ async function handleSend(queryOverride = '') {
     activeConversationRequests.add(conversationId);
     forgetConversationRender(conversationId);
     appendQuestionHistory(query);
+    removeFollowUpMessages();
     updateSendState();
     messageInput.value = '';
     autoResizeInput();
@@ -6180,7 +7335,7 @@ async function handleSend(queryOverride = '') {
         modes: modeMeta,
         attachments: attachmentSummary(attachmentsForTurn),
     });
-    const streamView = appendStreamingAssistantMessage(query);
+    const streamView = appendStreamingAssistantMessage(query, conversationId);
     clearAttachments();
     scrollToBottom();
 
@@ -6204,6 +7359,18 @@ async function handleSend(queryOverride = '') {
     }
 }
 
+async function sendFollowUpQuestion(button) {
+    const query = String(button?.dataset.followUpQuestion || '').trim();
+    if (!query || button?.disabled) return;
+
+    removeFollowUpMessages();
+    resetQuestionHistoryBrowse();
+    messageInput.value = query;
+    autoResizeInput();
+    updateSendState();
+    await handleSend(query);
+}
+
 async function regenerateAssistantAnswer(button) {
     if (!currentUserId) {
         showAccountLogin();
@@ -6218,9 +7385,10 @@ async function regenerateAssistantAnswer(button) {
     stopActiveRunWatcher();
     activeConversationRequests.add(conversationId);
     forgetConversationRender(conversationId);
+    removeFollowUpMessages();
     updateSendState();
 
-    const streamView = appendStreamingAssistantMessage(query);
+    const streamView = appendStreamingAssistantMessage(query, conversationId);
     scrollToBottom();
 
     try {
@@ -6352,7 +7520,7 @@ async function sendMessageStream(conversationId, query, streamView, attachmentCo
     };
 }
 
-function appendStreamingAssistantMessage(regenerateQuery = '') {
+function appendStreamingAssistantMessage(regenerateQuery = '', conversationId = currentConversationId) {
     const welcome = messagesContainer.querySelector('.welcome-screen');
     if (welcome) welcome.remove();
 
@@ -6364,12 +7532,12 @@ function appendStreamingAssistantMessage(regenerateQuery = '') {
         <div class="avatar">AI</div>
         <div class="bubble">
             <div class="streaming-status"></div>
+            <div class="streaming-trace"></div>
             <div class="streaming-content">
                 <div class="loading-dots"><span></span><span></span><span></span></div>
             </div>
             <div class="streaming-citations"></div>
             <div class="streaming-skills"></div>
-            <div class="streaming-trace"></div>
             ${renderAssistantActions({ copyEnabled: false, regenerateQuery, regenerateEnabled: false })}
         </div>
     `;
@@ -6383,13 +7551,42 @@ function appendStreamingAssistantMessage(regenerateQuery = '') {
     let lastContent = '';
     let lastEvents = [];
     let lastMeta = {};
+    let processExpanded = true;
+    let processTouched = false;
+
+    function rememberProcessPanelIntent(summary) {
+        const panel = summary?.closest?.('.process-panel');
+        if (!panel || !traceEl.contains(panel)) return;
+        processExpanded = !panel.open;
+        processTouched = true;
+    }
+
+    traceEl.addEventListener('click', (event) => {
+        const summary = event.target?.closest?.('.process-summary');
+        if (summary) rememberProcessPanelIntent(summary);
+    });
+
+    traceEl.addEventListener('keydown', (event) => {
+        if (event.key !== 'Enter' && event.key !== ' ') return;
+        const summary = event.target?.closest?.('.process-summary');
+        if (summary) rememberProcessPanelIntent(summary);
+    });
 
     return {
         setContent(text) {
+            const wasEmpty = !lastContent;
             lastContent = text || '';
+            div.classList.toggle('has-final-content', Boolean(lastContent));
             div.dataset.copyText = lastContent;
             updateCopyButtonState(div, Boolean(lastContent));
             statusEl.hidden = true;
+            if (wasEmpty && lastContent && lastEvents.length) {
+                if (!processTouched) processExpanded = false;
+                renderProcessPanelInto(traceEl, renderProcessPanel(lastEvents, {
+                    expanded: processExpanded,
+                    live: false,
+                }));
+            }
             contentEl.innerHTML = formatContent(lastContent);
             scrollToBottom();
         },
@@ -6410,11 +7607,19 @@ function appendStreamingAssistantMessage(regenerateQuery = '') {
         setTrace(events = [], meta = {}) {
             lastEvents = events;
             lastMeta = { ...lastMeta, ...meta };
-            if (!lastContent) {
+            const shouldExpand = processTouched ? processExpanded : !lastContent;
+            const processPanel = renderProcessPanel(lastEvents, {
+                expanded: shouldExpand,
+                live: !lastContent,
+            });
+            renderProcessPanelInto(traceEl, processPanel);
+            if (!lastContent && !processPanel) {
                 statusEl.hidden = false;
                 statusEl.innerHTML = renderStreamingStatus(lastEvents);
+            } else {
+                statusEl.hidden = true;
+                statusEl.innerHTML = '';
             }
-            traceEl.innerHTML = '';
             updateAssistantActions(div, {
                 copyEnabled: Boolean(lastContent),
                 traceEvents: lastEvents,
@@ -6454,12 +7659,22 @@ function appendStreamingAssistantMessage(regenerateQuery = '') {
                 regenerateQuery,
                 regenerateEnabled: Boolean(regenerateQuery),
             });
+            void renderPersistedFollowUpsAfterMessage(div, conversationId, resp.run_id || lastMeta.runId || '');
+            updateFollowUpButtonsState();
             updateRegenerateButtonsState();
         },
         showError(message, type = 'error') {
             statusEl.hidden = true;
             div.dataset.copyText = message || '';
+            div.classList.toggle('has-final-content', Boolean(message));
             updateCopyButtonState(div, Boolean(message));
+            if (lastEvents.length) {
+                if (!processTouched) processExpanded = false;
+                renderProcessPanelInto(traceEl, renderProcessPanel(lastEvents, {
+                    expanded: processExpanded,
+                    live: false,
+                }));
+            }
             contentEl.innerHTML = errorBanner(
                 type === 'rate_limit' ? t('errors.rateLimit') : t('errors.error'),
                 message,
@@ -6645,26 +7860,45 @@ function renderMessageHtml(
             regenerateEnabled: Boolean(regenerateQuery),
         })
         : '';
+    const userActions = role === 'user'
+        ? renderUserMessageActions({ copyEnabled: Boolean(content) })
+        : '';
     const displayError = errorType
         ? (errorType === 'rate_limit' ? 'rate_limit' : 'error')
         : '';
 
     let bubbleContent = '';
     if (displayError === 'rate_limit') {
-        bubbleContent = errorBanner(t('errors.rateLimit'), content, 'rate-limit') + assistantActions;
+        const processPanel = renderProcessPanel(traceEvents, { expanded: false });
+        bubbleContent = `${processPanel}${processPanel ? renderMessageDivider() : ''}${errorBanner(t('errors.rateLimit'), content, 'rate-limit')}${assistantActions}`;
     } else if (displayError === 'error') {
-        bubbleContent = errorBanner(t('errors.error'), content, 'generic-error') + assistantActions;
+        const processPanel = renderProcessPanel(traceEvents, { expanded: false });
+        bubbleContent = `${processPanel}${processPanel ? renderMessageDivider() : ''}${errorBanner(t('errors.error'), content, 'generic-error')}${assistantActions}`;
     } else {
         const skillBadges = skillsUsed && skillsUsed.length
             ? `<div class="skill-badges">${skillsUsed.map((s) => `<span class="skill-badge">${escapeHtml(s)}</span>`).join('')}</div>`
             : '';
-        bubbleContent = `${renderInputMeta(inputMeta)}${formatContent(content)}${renderCitationPanel(citations)}${skillBadges}${assistantActions}`;
+        const processPanel = role === 'assistant'
+            ? renderProcessPanel(traceEvents, { expanded: false })
+            : '';
+        const citationPanel = renderCitationPanel(citations);
+        bubbleContent = [
+            renderInputMeta(inputMeta),
+            processPanel,
+            processPanel ? renderMessageDivider() : '',
+            formatContent(content),
+            citationPanel ? renderMessageDivider() : '',
+            citationPanel,
+            skillBadges,
+            assistantActions || userActions,
+        ].join('');
     }
 
-    const dataAttrs = role === 'assistant'
+    const isCopyableMessage = role === 'assistant' || role === 'user';
+    const dataAttrs = isCopyableMessage
         ? [
             `data-copy-text="${escapeAttr(content || '')}"`,
-            regenerateQuery ? `data-regenerate-query="${escapeAttr(regenerateQuery)}"` : '',
+            role === 'assistant' && regenerateQuery ? `data-regenerate-query="${escapeAttr(regenerateQuery)}"` : '',
         ].filter(Boolean).join(' ')
         : '';
 
@@ -6674,6 +7908,10 @@ function renderMessageHtml(
             <div class="bubble">${bubbleContent}</div>
         </div>
     `;
+}
+
+function renderMessageDivider() {
+    return '<div class="message-divider" aria-hidden="true"></div>';
 }
 
 function renderAssistantActions(options = {}) {
@@ -6695,11 +7933,27 @@ function renderAssistantActionButtons(options = {}) {
         modelUsed = '',
     } = options;
     const label = t('actions.copyAnswer');
-    const disabled = copyEnabled ? '' : 'disabled aria-disabled="true"';
     return `
         ${renderTraceActionButton(traceEvents, runId, runtime, modelUsed)}
         ${renderRegenerateActionButton(regenerateQuery, regenerateEnabled)}
-        <button class="assistant-action-button assistant-copy" type="button" data-copy-answer ${disabled}
+        ${renderCopyActionButton(copyEnabled, label)}
+    `;
+}
+
+function renderUserMessageActions(options = {}) {
+    const { copyEnabled = true } = options;
+    return `
+        <div class="assistant-actions user-message-actions">
+            ${renderCopyActionButton(copyEnabled, t('actions.copyMessage'), 'actions.copyMessage')}
+        </div>
+    `;
+}
+
+function renderCopyActionButton(copyEnabled = true, label = t('actions.copyAnswer'), labelKey = 'actions.copyAnswer') {
+    const disabled = copyEnabled ? '' : 'disabled aria-disabled="true"';
+    return `
+        <button class="assistant-action-button assistant-copy" type="button" data-copy-answer
+                data-copy-label-key="${escapeAttr(labelKey)}" ${disabled}
                 title="${escapeAttr(label)}" aria-label="${escapeAttr(label)}">
             <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2">
                 <rect x="9" y="9" width="10" height="10" rx="2"/>
@@ -6778,7 +8032,7 @@ function updateCopyButtonState(messageEl, enabled = true) {
 
 function resetCopyButtonFeedback(button) {
     if (!button) return;
-    const label = t('actions.copyAnswer');
+    const label = t(button.dataset.copyLabelKey || 'actions.copyAnswer');
     button.classList.remove('copied', 'failed');
     button.title = label;
     button.setAttribute('aria-label', label);
@@ -6876,10 +8130,13 @@ function renderCitationPanel(citations = []) {
     }).join('');
 
     return `
-        <section class="citation-panel" aria-label="${escapeAttr(t('chat.citations'))}">
-            <div class="citation-title">${escapeHtml(t('chat.citations'))}</div>
+        <details class="citation-panel" aria-label="${escapeAttr(t('chat.citations'))}">
+            <summary class="citation-summary">
+                <span class="citation-title">${escapeHtml(t('chat.citations'))}</span>
+                <span class="citation-count">${escapeHtml(traceCopy(`${normalized.length} 个来源`, `${normalized.length} sources`))}</span>
+            </summary>
             <ol class="citation-list">${rows}</ol>
-        </section>
+        </details>
     `;
 }
 
@@ -6917,6 +8174,93 @@ function truncateText(text = '', maxLength = 220) {
     const value = String(text).replace(/\s+/g, ' ').trim();
     if (value.length <= maxLength) return value;
     return `${value.slice(0, Math.max(0, maxLength - 3))}...`;
+}
+
+function renderFollowUpMessages(questions = []) {
+    const normalized = normalizeFollowUpQuestions(questions);
+    if (!normalized.length) return '';
+
+    return normalized.map((question) => `
+        <div class="message assistant follow-up-message" data-follow-up-container>
+            <div class="avatar follow-up-avatar" aria-hidden="true"></div>
+            <button class="bubble follow-up-question" type="button"
+                    data-follow-up-question="${escapeAttr(question)}"
+                    aria-label="${escapeAttr(t('chat.followUpAria'))}: ${escapeAttr(question)}">
+                ${escapeHtml(question)}
+            </button>
+        </div>
+    `).join('');
+}
+
+async function renderPersistedFollowUpsAfterMessage(anchorEl, conversationId, runId = '') {
+    const targetConversationId = String(conversationId || '').trim();
+    const targetRunId = String(runId || '').trim();
+    if (!targetConversationId || !targetRunId || currentAgentId !== SUPER_CHAT_AGENT_ID) return;
+
+    followUpRenderToken += 1;
+    const renderToken = followUpRenderToken;
+    clearFollowUpMessagesOnly();
+
+    for (const delay of FOLLOW_UP_POLL_DELAYS_MS) {
+        await wait(delay);
+        if (
+            renderToken !== followUpRenderToken
+            || currentConversationId !== targetConversationId
+            || !document.contains(anchorEl)
+        ) {
+            return;
+        }
+
+        let data = null;
+        try {
+            data = await loadConversation(targetConversationId);
+        } catch {
+            continue;
+        }
+
+        if (
+            renderToken !== followUpRenderToken
+            || currentConversationId !== targetConversationId
+            || !document.contains(anchorEl)
+        ) {
+            return;
+        }
+
+        const messages = data?.messages || [];
+        const message = [...messages].reverse().find((item) => (
+            item?.role === 'assistant' && String(item.run_id || '') === targetRunId
+        ));
+        const followUpHtml = renderFollowUpMessages(parseFollowUps(message?.follow_ups));
+        if (!followUpHtml) continue;
+
+        clearFollowUpMessagesOnly();
+        anchorEl.insertAdjacentHTML('afterend', followUpHtml);
+        updateFollowUpButtonsState();
+        updateRegenerateButtonsState();
+        rememberConversationRender(
+            targetConversationId,
+            data,
+            messagesContainer.innerHTML,
+            conversationMessagesSignature(messages)
+        );
+        scrollToBottom();
+        return;
+    }
+}
+
+function pollLatestAssistantFollowUps(messages = [], conversationId = currentConversationId) {
+    if (currentAgentId !== SUPER_CHAT_AGENT_ID) return;
+    const normalizedMessages = messages || [];
+    const latestAssistant = [...normalizedMessages].reverse().find((message) => message?.role === 'assistant');
+    if (latestAssistant !== normalizedMessages[normalizedMessages.length - 1]) return;
+    if (!latestAssistant || latestAssistant.error_type || parseFollowUps(latestAssistant.follow_ups).length) return;
+    const runId = String(latestAssistant.run_id || '').trim();
+    if (!runId) return;
+
+    const assistantMessages = [...messagesContainer.querySelectorAll('.message.assistant:not(.follow-up-message)')];
+    const anchorEl = assistantMessages[assistantMessages.length - 1];
+    if (!anchorEl) return;
+    void renderPersistedFollowUpsAfterMessage(anchorEl, conversationId, runId);
 }
 
 function renderTraceEvent(event) {
@@ -7652,6 +8996,22 @@ function autoResizeInput() {
     messageInput.style.height = `${Math.min(messageInput.scrollHeight, 150)}px`;
 }
 
+function insertMessageInputNewline() {
+    const start = messageInput.selectionStart ?? messageInput.value.length;
+    const end = messageInput.selectionEnd ?? start;
+
+    if (typeof messageInput.setRangeText === 'function') {
+        messageInput.setRangeText('\n', start, end, 'end');
+    } else {
+        const value = messageInput.value;
+        const cursor = start + 1;
+        messageInput.value = `${value.slice(0, start)}\n${value.slice(end)}`;
+        if (messageInput.setSelectionRange) messageInput.setSelectionRange(cursor, cursor);
+    }
+
+    messageInput.dispatchEvent(new Event('input', { bubbles: true }));
+}
+
 function focusMessageInput(options = {}) {
     const { allowMobile = true } = options;
     if (!messageInput || (!allowMobile && isMobileLayout())) return;
@@ -7794,6 +9154,46 @@ document.addEventListener('click', async (event) => {
         return;
     }
 
+    const developerMemoryResetButton = event.target.closest('[data-developer-memory-reset]');
+    if (developerMemoryResetButton) {
+        event.preventDefault();
+        developerMemoryViewState = { ...DEFAULT_DEVELOPER_MEMORY_VIEW_STATE };
+        renderDeveloperView();
+        return;
+    }
+
+    const developerMemoryBulkButton = event.target.closest('[data-developer-memory-bulk]');
+    if (developerMemoryBulkButton) {
+        event.preventDefault();
+        const action = developerMemoryBulkButton.dataset.developerMemoryBulk;
+        if (action === 'expand') {
+            filterDeveloperMemories(developerMemoryState.memories || [])
+                .filter((memory) => memory.kind !== 'long_term')
+                .forEach((memory) => expandedDeveloperMemoryIds.add(developerMemoryKey(memory)));
+        } else {
+            expandedDeveloperMemoryIds.clear();
+        }
+        renderDeveloperView();
+        return;
+    }
+
+    const developerMemoryToggleButton = event.target.closest('[data-developer-memory-toggle]');
+    if (developerMemoryToggleButton) {
+        event.preventDefault();
+        const key = developerMemoryToggleButton.dataset.developerMemoryToggle || '';
+        const willExpand = key && !expandedDeveloperMemoryIds.has(key);
+        const list = developerMemoryToggleButton.closest('[data-developer-memory-list]');
+        const scrollTop = list ? list.scrollTop : null;
+        if (!willExpand) {
+            expandedDeveloperMemoryIds.delete(key);
+        } else if (key) {
+            expandedDeveloperMemoryIds.add(key);
+        }
+        renderDeveloperView();
+        restoreDeveloperMemoryRecord(key, scrollTop);
+        return;
+    }
+
     const developerMemoryEditButton = event.target.closest('[data-developer-memory-edit]');
     if (developerMemoryEditButton && !developerMemoryEditButton.disabled) {
         event.preventDefault();
@@ -7826,6 +9226,21 @@ document.addEventListener('click', async (event) => {
             developerMemoryDeleteButton.dataset.developerMemoryRole,
             developerMemoryDeleteButton.dataset.developerMemoryDelete,
         );
+        return;
+    }
+
+    const toolFilterButton = event.target.closest('[data-tool-filter]');
+    if (toolFilterButton) {
+        event.preventDefault();
+        toolFilter = toolFilterButton.dataset.toolFilter || 'all';
+        renderTools();
+        return;
+    }
+
+    const saveMcpButton = event.target.closest('[data-save-mcp-settings]');
+    if (saveMcpButton && !saveMcpButton.disabled) {
+        event.preventDefault();
+        await saveMcpSettings();
         return;
     }
 
@@ -7942,6 +9357,14 @@ document.addEventListener('click', async (event) => {
         return;
     }
 
+    const followUpButton = event.target.closest('[data-follow-up-question]');
+    if (followUpButton) {
+        event.preventDefault();
+        event.stopPropagation();
+        await sendFollowUpQuestion(followUpButton);
+        return;
+    }
+
     const quickAction = event.target.closest('[data-query]');
     if (quickAction) {
         if (quickAction.dataset.quickMode) {
@@ -7996,7 +9419,7 @@ document.addEventListener('click', async (event) => {
         event.stopPropagation();
         if (copyAnswerButton.disabled) return;
 
-        const message = copyAnswerButton.closest('.message.assistant');
+        const message = copyAnswerButton.closest('[data-copy-text]');
         const text = message?.dataset.copyText || '';
         if (!text) return;
 
@@ -8012,6 +9435,12 @@ document.addEventListener('click', async (event) => {
     const traceJumpButton = event.target.closest('[data-open-trace-run]');
     if (traceJumpButton && !traceJumpButton.disabled) {
         await openTraceRun(traceJumpButton.dataset.openTraceRun);
+        return;
+    }
+
+    const traceReturnButton = event.target.closest('[data-trace-return-conversation]');
+    if (traceReturnButton && !traceReturnButton.disabled) {
+        await returnToTraceConversation(traceReturnButton.dataset.traceReturnConversation);
         return;
     }
 
@@ -8053,6 +9482,45 @@ document.addEventListener('click', async (event) => {
         selectedRunId = runButton.dataset.runId;
         selectedTraceNodeId = '';
         renderRuns();
+    }
+});
+
+document.addEventListener('change', async (event) => {
+    const toolToggle = event.target.closest('[data-tool-enabled]');
+    if (toolToggle && !toolToggle.disabled) {
+        const toolName = toolToggle.dataset.toolEnabled || '';
+        await updateToolSettings({
+            [toolEnabledSettingKey(toolName)]: toolToggle.checked ? 'true' : 'false',
+        });
+        return;
+    }
+
+    const mcpEnabledToggle = event.target.closest('[data-mcp-enabled]');
+    if (mcpEnabledToggle && !mcpEnabledToggle.disabled) {
+        toolMcpConfig = { ...toolMcpConfig, enabled: Boolean(mcpEnabledToggle.checked) };
+        await updateToolSettings({ 'mcp.enabled': toolMcpConfig.enabled ? 'true' : 'false' });
+    }
+});
+
+document.addEventListener('input', (event) => {
+    const toolSearch = event.target.closest('[data-tool-search]');
+    if (toolSearch) {
+        toolSearchQuery = toolSearch.value || '';
+        const cursor = toolSearch.selectionStart;
+        renderTools();
+        const nextSearch = document.querySelector('[data-tool-search]');
+        if (nextSearch) {
+            nextSearch.focus({ preventScroll: true });
+            if (typeof cursor === 'number' && nextSearch.setSelectionRange) {
+                nextSearch.setSelectionRange(cursor, cursor);
+            }
+        }
+        return;
+    }
+
+    const mcpServers = event.target.closest('[data-mcp-servers]');
+    if (mcpServers) {
+        toolMcpConfig = { ...toolMcpConfig, servers: mcpServers.value };
     }
 });
 
@@ -8156,6 +9624,79 @@ if (roleMemoryForm) {
     });
 }
 
+if (developerWorkbench) {
+    developerWorkbench.addEventListener('input', (event) => {
+        const searchInput = event.target.closest('[data-developer-memory-search]');
+        if (!searchInput) return;
+
+        const cursor = searchInput.selectionStart ?? searchInput.value.length;
+        developerMemoryViewState = {
+            ...developerMemoryViewState,
+            query: searchInput.value,
+        };
+        renderDeveloperView();
+        requestAnimationFrame(() => {
+            const nextInput = developerWorkbench.querySelector('[data-developer-memory-search]');
+            if (!nextInput) return;
+            nextInput.focus({ preventScroll: true });
+            try {
+                nextInput.setSelectionRange(cursor, cursor);
+            } catch {
+                // Some search inputs do not expose text selection in every browser.
+            }
+        });
+    });
+
+    developerWorkbench.addEventListener('change', (event) => {
+        const filterControl = event.target.closest('[data-developer-memory-filter]');
+        if (!filterControl) return;
+
+        const key = filterControl.dataset.developerMemoryFilter;
+        if (!Object.prototype.hasOwnProperty.call(developerMemoryViewState, key)) return;
+        developerMemoryViewState = {
+            ...developerMemoryViewState,
+            [key]: filterControl.value || DEFAULT_DEVELOPER_MEMORY_VIEW_STATE[key],
+        };
+        renderDeveloperView();
+    });
+
+    developerWorkbench.addEventListener('mouseover', (event) => {
+        const record = event.target.closest('.developer-memory-record.long-term[data-memory-content]');
+        if (!record || !developerWorkbench.contains(record)) return;
+        showDeveloperMemoryHoverCard(record, event);
+    });
+
+    developerWorkbench.addEventListener('mousemove', (event) => {
+        const record = event.target.closest('.developer-memory-record.long-term[data-memory-content]');
+        if (!record || !developerWorkbench.contains(record)) return;
+        showDeveloperMemoryHoverCard(record, event);
+    });
+
+    developerWorkbench.addEventListener('mouseout', (event) => {
+        const record = event.target.closest('.developer-memory-record.long-term[data-memory-content]');
+        if (!record) return;
+        const related = event.relatedTarget;
+        if (related && record.contains(related)) return;
+        if (related && developerMemoryHoverCard?.contains(related)) return;
+        hideDeveloperMemoryHoverCard({ delay: 120 });
+    });
+
+    developerWorkbench.addEventListener('scroll', hideDeveloperMemoryHoverCard, true);
+
+    document.addEventListener('mousemove', (event) => {
+        if (!developerMemoryHoverCard || developerMemoryHoverCard.hidden) return;
+        const target = event.target instanceof Element ? event.target : null;
+        if (!target) {
+            hideDeveloperMemoryHoverCard({ delay: 120 });
+            return;
+        }
+        const overMemoryRecord = target.closest('.developer-memory-record.long-term[data-memory-content]');
+        const overHoverCard = developerMemoryHoverCard.contains(target);
+        if (overMemoryRecord || overHoverCard) return;
+        hideDeveloperMemoryHoverCard({ delay: 120 });
+    });
+}
+
 messageInput.addEventListener('input', () => {
     if (!applyingQuestionHistory) resetQuestionHistoryBrowse();
     updateSendState();
@@ -8169,10 +9710,15 @@ messageInput.addEventListener('keydown', (event) => {
         return;
     }
 
-    if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
+    if (event.key !== 'Enter' || event.isComposing || event.keyCode === 229) return;
+    if (event.shiftKey || event.metaKey || event.ctrlKey || event.altKey) {
         event.preventDefault();
-        handleSend();
+        insertMessageInputNewline();
+        return;
     }
+
+    event.preventDefault();
+    handleSend();
 });
 
 btnSend.addEventListener('click', () => handleSend());

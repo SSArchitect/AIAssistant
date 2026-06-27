@@ -18,7 +18,7 @@ from agent.aigc import (
     is_text_heavy_visual_intent,
     render_share_card_svg,
 )
-from agent.llm.base import LLMMessage, LLMProvider, LLMResponse, RateLimitError
+from agent.llm.base import LLMMessage, LLMProvider, LLMResponse, RateLimitError, ToolDefinition
 from agent.llm.factory import create_provider
 from agent.memory.conversation import ConversationMemory
 from agent.memory.hooks import HeuristicMemoryHook, MemoryHook
@@ -36,6 +36,7 @@ from agent.schemas.handoff import (
 )
 from agent.schemas.memory import MemoryCandidate, MemoryContext, MemoryRecord, MemoryUpdateRequest
 from agent.skills.registry import SkillRegistry
+from agent.skills.builtin.agent_tool import AgentToolSkill
 from agent.trace import TraceStore
 from agent.weight_loss import WeightLossStore
 
@@ -55,12 +56,11 @@ SUPER_CHAT_AGENT_ID = "super_chat"
 RESEARCH_AGENT_ID = "deep_research_v1"
 AIGC_AGENT_ID = "image_generation_v1"
 WEIGHT_LOSS_AGENT_ID = "weight_loss_v1"
-THINKING_MODE_ID = "thinking"
+AGENT_LOOP_MODE_ID = "agent_loop"
 DEEP_RESEARCH_MODE_ID = "deep_research"
-LEGACY_THINKING_MODE_IDS = {"research", "plan"}
-AIGC_FORCE_MODE_ID = "image_generation"
+REMOVED_SUPER_CHAT_MODE_IDS = {"thinking"}
 AIGC_REFINE_MODE_ID = "image_prompt_refine"
-AIGC_RESEARCH_MODE_IDS = {THINKING_MODE_ID, "research", "plan"}
+AIGC_RESEARCH_MODE_IDS = {"research", "plan"}
 AIGC_RESEARCH_TOOL_ROUNDS = 8
 AIGC_RESEARCH_SEARCH_LIMIT = 12
 AIGC_RESEARCH_SEARCH_MAX_LIMIT = 20
@@ -72,6 +72,7 @@ DEEP_RESEARCH_SUMMARY_CHUNK_SIZE = 40
 THINKING_MAX_PLAN_STEPS = 6
 THINKING_SEARCH_LIMIT = 8
 THINKING_MAX_SEARCH_STEPS = 4
+THINKING_WORKFLOW_NODES = ["analyze", "plan", "execute", "summary"]
 AIGC_PLAN_DECOMPOSE_STEP = "task_decomposition"
 AIGC_PLAN_CONTEXT_STEP = "context_reuse"
 AIGC_PLAN_RETRIEVAL_STEP = "retrieval"
@@ -83,6 +84,7 @@ AIGC_GENERATE_COMMANDS = {"generate", "gen", "create", "draw", "image", "生成"
 AIGC_REFINE_COMMANDS = {"refine", "polish", "prompt", "rewrite", "修饰", "润色", "专业修饰", "提示词", "优化"}
 AIGC_REFERENCE_COMMANDS = {"reference", "references", "ref", "素材", "参考", "参考素材", "参考图"}
 AIGC_HELP_COMMANDS = {"help", "h", "?", "帮助", "命令"}
+TERMINAL_AGENT_TOOL_IDS = {AIGC_AGENT_ID, RESEARCH_AGENT_ID, WEIGHT_LOSS_AGENT_ID}
 WEIGHT_LOSS_ANALYSIS_MAX_ATTEMPTS = 5
 WEIGHT_LOSS_ANALYSIS_RETRY_DELAYS_SECONDS = (2.0, 5.0, 10.0, 20.0)
 
@@ -100,6 +102,7 @@ class AgentEngine:
         weight_loss_store: WeightLossStore | None = None,
     ):
         self.skill_registry = skill_registry
+        self._ensure_system_tools_registered()
         self.memory = ConversationMemory(max_messages=CONVERSATION_COMPACTION_MAX_MESSAGES)
         self.role_memory = role_memory or RoleMemoryStore()
         self.memory_hook = memory_hook or HeuristicMemoryHook()
@@ -109,6 +112,11 @@ class AgentEngine:
         self.trace_store = trace_store or TraceStore()
         self.weight_loss_store = weight_loss_store or WeightLossStore()
         self._providers: dict[str, LLMProvider] = {}
+
+    def _ensure_system_tools_registered(self) -> None:
+        for agent in list_agents():
+            if agent.id in TERMINAL_AGENT_TOOL_IDS and self.skill_registry.get(agent.id) is None:
+                self.skill_registry.register(AgentToolSkill(agent))
 
     def clear_providers(self) -> None:
         """Clear cached providers so they get recreated with new config."""
@@ -230,10 +238,13 @@ class AgentEngine:
             "再进行多轮外网检索、分步归纳并产出研究报告时，使用这个 Agent。可通过 "
             "`/agent deep_research_v1 /plan <问题>`、`/研究 /plan <问题>` 或在 Agents 中进入。\n"
             f"- AI 生图 ({AIGC_AGENT_ID})：当用户要生成、绘制、设计或产出图片、照片、插画、海报、"
-            "封面、头像、视觉概念或生图提示词时，使用这个 Agent。Super Chat 可以在识别到生图意图时"
-            f"自动委派，也可以在用户启用 {AIGC_FORCE_MODE_ID} 模式时强制委派。"
+            "封面、头像、视觉概念或生图提示词时，使用这个 Agent。Super Chat 应直接调用 "
+            f"`{AIGC_AGENT_ID}` 这个 terminal tool，而不是在主循环里用关键词硬判。"
             f"\n- 减肥 Agent ({WEIGHT_LOSS_AGENT_ID})：当用户上传食物图片、记录餐食热量、设置减脂目标、"
-            "统计摄入/运动/热量缺口或请求减脂建议时，使用这个 Agent。"
+            "统计摄入/运动/热量缺口或请求减脂建议时，使用这个 Agent；不要仅因为生活复盘里提到吃饭、"
+            f"外卖或餐点就委托。需要时直接调用 `{WEIGHT_LOSS_AGENT_ID}` terminal tool。"
+            f"\n\nAgent-as-tool：`{AIGC_AGENT_ID}`、`{WEIGHT_LOSS_AGENT_ID}`、`{RESEARCH_AGENT_ID}` "
+            "都是终止型工具；一旦调用，当前 Super Chat 轮次会交给目标 Agent 完成，不要同轮再调用普通工具。"
             "\n\nAgent 命令协议：当用户在 Super Chat 中输入 `/agent <agent_id或别名> <命令>`、"
             "`/<agent别名> <命令>` 或 `/<agent别名>/<命令>` 时，必须按 agent_command.v1 "
             "转交给目标 Agent 执行，不要把它当作普通聊天。示例：`/agent weight_loss_v1 /today`、"
@@ -274,7 +285,7 @@ class AgentEngine:
             "上下文与记忆使用规则：\n"
             "- 系统级配置、工具权限、Agent 协议和安全边界优先级最高。\n"
             "- 本轮选择的模式/option 是执行策略，优先于历史消息、长期记忆、角色记忆和短期摘要；"
-            "记忆不得取消或弱化 Thinking / Deep Research 等模式的执行要求。\n"
+            "记忆不得取消或弱化 Deep Research 等模式的执行要求。\n"
             "- 本轮用户消息优先于历史消息、会话摘要、长期记忆和角色偏好。\n"
             "- 最近原始消息优先于短期摘要；短期摘要优先于长期记忆。\n"
             "- 长期记忆是可错的历史上下文；遇到冲突、过期或不确定时，以用户当前表达为准并主动确认。\n"
@@ -1424,13 +1435,6 @@ class AgentEngine:
         mode_text = "\n".join(request.mode_prompts or []).lower()
         return "专业修饰" in mode_text or "prompt refine" in mode_text
 
-    def _aigc_force_mode_enabled(self, request: ChatRequest) -> bool:
-        mode_ids = set(request.mode_ids or [])
-        if AIGC_FORCE_MODE_ID in mode_ids or AIGC_AGENT_ID in mode_ids:
-            return True
-        mode_text = "\n".join(request.mode_prompts or []).lower()
-        return "ai 生图" in mode_text or "image generation" in mode_text
-
     def _parse_aigc_command(
         self,
         request: ChatRequest,
@@ -1504,178 +1508,12 @@ class AgentEngine:
             "在 Super Chat 里也可以使用 `/生图 /generate ...` 或 `/生图 /refine ...`。"
         )
 
-    def _looks_like_image_generation_intent(self, request: ChatRequest) -> bool:
-        text = " ".join(
-            [
-                request.message or "",
-                " ".join(
-                    attachment.content
-                    for attachment in request.attachments
-                    if attachment.kind in {"image", "audio", "video"} and attachment.content
-                ),
-            ]
-        ).lower()
-        normalized = re.sub(r"\s+", " ", text).strip()
-        if not normalized:
-            return False
-
-        direct_phrases = [
-            "生图",
-            "文生图",
-            "图像生成",
-            "生成图片",
-            "生成一张图",
-            "生成一张图片",
-            "对比图",
-            "关系图",
-            "流程图",
-            "架构图",
-            "总结图",
-            "信息图",
-            "可视化图",
-            "思维导图",
-            "知识图谱",
-            "学习路线图",
-            "一图看懂",
-            "出图",
-            "ai作图",
-            "ai 作图",
-            "ai绘图",
-            "ai 绘图",
-            "generate an image",
-            "generate image",
-            "create an image",
-            "text to image",
-            "text-to-image",
-        ]
-        if any(phrase in normalized for phrase in direct_phrases):
-            return True
-
-        zh_pattern = (
-            r"(生成|画|绘制|设计|做|制作|创建|出|产出|给我来|帮我来)"
-            r".{0,16}"
-            r"(图|图片|图像|画面|海报|封面|头像|插画|壁纸|视觉|logo|照片|产品图|宣传图|对比图|关系图|流程图|架构图|信息图|路线图|图谱)"
-        )
-        if re.search(zh_pattern, normalized):
-            return True
-
-        en_pattern = (
-            r"\b(generate|create|make|draw|design|produce|render)\b"
-            r".{0,40}"
-            r"\b(image|picture|photo|poster|cover|avatar|illustration|wallpaper|visual|logo|banner)\b"
-        )
-        if re.search(en_pattern, normalized):
-            return True
-
-        return False
-
-    def _should_delegate_to_aigc(self, request: ChatRequest, agent_id: str) -> tuple[bool, str, bool]:
-        if agent_id != SUPER_CHAT_AGENT_ID:
-            return False, "", False
-        forced = self._aigc_force_mode_enabled(request)
-        if forced:
-            return True, "mode", True
-        if self._looks_like_image_generation_intent(request):
-            return True, "intent", False
-        return False, "", False
-
     def _should_delegate_to_deep_research(self, request: ChatRequest, agent_id: str) -> tuple[bool, str, bool]:
         if agent_id != SUPER_CHAT_AGENT_ID:
             return False, "", False
         mode_ids = set(request.mode_ids or [])
         if DEEP_RESEARCH_MODE_ID in mode_ids or RESEARCH_AGENT_ID in mode_ids:
             return True, "mode", True
-        return False, "", False
-
-    def _looks_like_weight_loss_intent(self, request: ChatRequest) -> bool:
-        text = " ".join(
-            [
-                request.message or "",
-                " ".join(
-                    attachment.content
-                    for attachment in request.attachments
-                    if attachment.content
-                ),
-            ]
-        ).lower()
-        normalized = re.sub(r"\s+", " ", text).strip()
-        if not normalized:
-            return False
-
-        direct_phrases = [
-            "减肥",
-            "减脂",
-            "掉秤",
-            "热量",
-            "卡路里",
-            "大卡",
-            "千卡",
-            "kcal",
-            "calorie",
-            "calories",
-            "caloric deficit",
-            "热量缺口",
-            "摄入",
-            "饮食记录",
-            "食物图片",
-            "这餐",
-            "这一餐",
-            "吃了",
-            "早餐",
-            "午餐",
-            "晚餐",
-            "加餐",
-            "外卖",
-            "维持热量",
-            "tdee",
-            "基础代谢",
-            "bmr",
-        ]
-        profile_markers = [
-            "身高",
-            "体重",
-            "目标体重",
-            "年龄",
-            "性别",
-            "活动水平",
-            "久坐",
-            "轻度活动",
-            "中度活动",
-            "高强度",
-        ]
-        profile_action_markers = [
-            "设置",
-            "记录",
-            "登记",
-            "更新",
-            "写入",
-            "保存",
-            "档案",
-            "资料",
-            "我的",
-            "帮我",
-        ]
-        profile_update_intent = any(marker in normalized for marker in profile_markers) and (
-            any(marker in normalized for marker in profile_action_markers)
-            or any(marker in normalized for marker in ["减肥", "减脂", "tdee", "维持热量", "基础代谢"])
-        )
-        food_image = any(
-            attachment.kind == "image"
-            and (
-                any(marker in normalized for marker in ["吃", "餐", "食物", "热量", "卡路里", "kcal", "减脂", "减肥"])
-                or "food" in normalized
-                or "meal" in normalized
-                or "calorie" in normalized
-            )
-            for attachment in request.attachments
-        )
-        return food_image or profile_update_intent or any(phrase in normalized for phrase in direct_phrases)
-
-    def _should_delegate_to_weight_loss(self, request: ChatRequest, agent_id: str) -> tuple[bool, str, bool]:
-        if agent_id != SUPER_CHAT_AGENT_ID:
-            return False, "", False
-        if self._looks_like_weight_loss_intent(request):
-            return True, "intent", False
         return False, "", False
 
     def _normalize_agent_command_alias(self, value: str) -> str:
@@ -1756,6 +1594,227 @@ class AgentEngine:
             title="Agent command routed",
             payload=route,
         )
+
+    def _disabled_tool_names(self, request: ChatRequest) -> set[str]:
+        return {
+            str(name).strip()
+            for name in (request.disabled_tools or [])
+            if str(name).strip()
+        }
+
+    def _tool_definitions_for_agent(
+        self,
+        agent_id: str,
+        disabled_tools: set[str] | list[str] | None = None,
+    ) -> list[ToolDefinition]:
+        disabled = {
+            str(name).strip()
+            for name in (disabled_tools or [])
+            if str(name).strip()
+        }
+        return [
+            tool
+            for tool in self.skill_registry.get_tool_definitions()
+            if tool.name not in disabled
+            if tool.name not in TERMINAL_AGENT_TOOL_IDS or agent_id == SUPER_CHAT_AGENT_ID
+        ]
+
+    def _agent_tool_target(self, tool_name: str) -> AgentInfo | None:
+        if tool_name not in TERMINAL_AGENT_TOOL_IDS:
+            return None
+        agent = get_agent(tool_name)
+        if agent is None or not agent.enabled or agent.runtime != "self":
+            return None
+        return agent
+
+    async def _execute_agent_tool(
+        self,
+        *,
+        request: ChatRequest,
+        role_context: MemoryContext,
+        run_id: str,
+        tool_name: str,
+        tool_call_id: str,
+        arguments: dict[str, Any],
+        tool_started: float,
+        workflow_context: dict[str, Any] | None = None,
+    ) -> ChatResponse:
+        target_agent = self._agent_tool_target(tool_name)
+        if target_agent is None:
+            error_msg = f"Unknown or unavailable agent tool: {tool_name}"
+            duration_ms = int((perf_counter() - tool_started) * 1000)
+            self.trace_store.append_event(
+                run_id,
+                type="tool.failed",
+                status="error",
+                title=f"Tool {tool_name} error",
+                step_id=tool_call_id,
+                payload={
+                    "name": tool_name,
+                    "arguments": arguments,
+                    "result_preview": error_msg,
+                },
+                duration_ms=duration_ms,
+            )
+            self.trace_store.fail_run(
+                run_id,
+                error_message=error_msg,
+                error_type="unknown_agent_tool",
+                output=error_msg,
+            )
+            latest_run = self.trace_store.get_run(run_id)
+            return ChatResponse(
+                conversation_id=request.conversation_id,
+                response=error_msg,
+                skills_used=[],
+                plan=None,
+                model_used="",
+                tokens_used={},
+                error_type="unknown_agent_tool",
+                agent_id=request.agent_id,
+                role_id=request.role_id,
+                runtime="self",
+                run_id=run_id,
+                events=latest_run.events if latest_run else [],
+                memory_context=role_context.records,
+            )
+
+        task = str(arguments.get("task") or request.message or "").strip() or request.message
+        context = str(arguments.get("context") or "").strip()
+        reason = str(arguments.get("reason") or f"agent_tool:{target_agent.id}").strip() or f"agent_tool:{target_agent.id}"
+        delegated_context_blocks = list(request.context_blocks or [])
+        context_lines = [
+            "Agent tool context:",
+            f"- Source agent: {request.agent_id or SUPER_CHAT_AGENT_ID}",
+            f"- Tool/target agent: {target_agent.id}",
+            f"- Reason: {reason}",
+            "",
+            "Original user request:",
+            request.message or "",
+        ]
+        if context:
+            context_lines.extend(["", "Additional context:", context])
+        delegated_context_blocks.append("\n".join(context_lines).strip())
+
+        workflow = str(workflow_context.get("workflow") or "").strip() if workflow_context else ""
+        workflow_node = (
+            str(workflow_context.get("node") or workflow_context.get("workflow_node") or "").strip()
+            if workflow_context
+            else ""
+        )
+        tool_completed_payload = {
+            "name": target_agent.id,
+            "arguments": arguments,
+            "target_agent_id": target_agent.id,
+            "terminal": True,
+            "result_preview": f"Delegated to {target_agent.id}: {reason}",
+        }
+        if workflow:
+            tool_completed_payload["workflow"] = workflow
+        if workflow_node:
+            tool_completed_payload["workflow_node"] = workflow_node
+
+        duration_ms = int((perf_counter() - tool_started) * 1000)
+        self.trace_store.append_event(
+            run_id,
+            type="tool.completed",
+            status="completed",
+            title=f"Tool {target_agent.id} completed",
+            step_id=tool_call_id,
+            payload=tool_completed_payload,
+            duration_ms=duration_ms,
+        )
+        if workflow_context:
+            node = workflow_node
+            node_started = workflow_context.get("node_started")
+            workflow_started = workflow_context.get("workflow_started")
+            common_payload = {
+                key: value
+                for key, value in workflow_context.items()
+                if key not in {"workflow", "node", "workflow_node", "node_started", "workflow_started"}
+            }
+            common_payload.update(
+                {
+                    "result": common_payload.get("result") or "terminal_handoff",
+                    "terminal": True,
+                    "terminal_tool": target_agent.id,
+                    "target_agent_id": target_agent.id,
+                    "reason": reason,
+                }
+            )
+            if workflow and node:
+                self._append_workflow_event(
+                    run_id,
+                    event="workflow.node.completed",
+                    workflow=workflow,
+                    node=node,
+                    status="completed",
+                    title=f"Workflow node {node} completed",
+                    payload=common_payload,
+                    duration_ms=(
+                        int((perf_counter() - node_started) * 1000)
+                        if isinstance(node_started, (int, float))
+                        else None
+                    ),
+                )
+            if workflow:
+                self._append_workflow_event(
+                    run_id,
+                    event="workflow.completed",
+                    workflow=workflow,
+                    status="completed",
+                    title=f"Workflow {workflow} completed",
+                    payload=common_payload,
+                    duration_ms=(
+                        int((perf_counter() - workflow_started) * 1000)
+                        if isinstance(workflow_started, (int, float))
+                        else None
+                    ),
+                )
+
+        delegated_request = request.model_copy(
+            update={
+                "agent_id": target_agent.id,
+                "message": task,
+                "mode_ids": request.mode_ids,
+                "mode_prompts": request.mode_prompts,
+                "context_blocks": delegated_context_blocks,
+            }
+        )
+        response = await self._process_target_agent(
+            request=delegated_request,
+            target_agent=target_agent,
+            run_id=run_id,
+            source_role_context=role_context,
+            delegation_trace={
+                "source_agent_id": request.agent_id or SUPER_CHAT_AGENT_ID,
+                "target_agent_id": target_agent.id,
+                "reason": reason,
+                "forced": False,
+                "mode_ids": request.mode_ids,
+                "protocol_version": "agent_tool.v1",
+                "tool_name": target_agent.id,
+                "original_message": request.message,
+                "task": task,
+            },
+        )
+        response.skills_used = list(dict.fromkeys([target_agent.id, *response.skills_used]))
+        response.plan = [
+            SkillCallInfo(
+                skill=target_agent.id,
+                action=json.dumps(
+                    {
+                        "task": task,
+                        "reason": reason,
+                    },
+                    ensure_ascii=False,
+                ),
+                status="completed" if not response.error_type else "error",
+                result_summary=response.response[:200],
+            ),
+            *(response.plan or []),
+        ]
+        return response
 
     async def _process_target_agent(
         self,
@@ -1877,6 +1936,7 @@ class AgentEngine:
                 role_context=target_role_context,
                 run_id=run_id,
                 runtime=target_agent.runtime,
+                delegation_trace=delegation_trace,
             )
 
         error_msg = f"Agent '{target_agent.id}' does not expose a command handler yet."
@@ -2286,8 +2346,76 @@ class AgentEngine:
             except (TypeError, ValueError):
                 continue
 
-    def _thinking_mode_enabled(self, request: ChatRequest, agent_id: str) -> bool:
-        return agent_id == SUPER_CHAT_AGENT_ID and THINKING_MODE_ID in set(request.mode_ids or [])
+    def _is_removed_thinking_mode_prompt(self, prompt: str) -> bool:
+        normalized = " ".join(str(prompt or "").lower().split())
+        return any(
+            marker in normalized
+            for marker in [
+                "【思考】",
+                "使用思考模式",
+                "[thinking]",
+                "thinking mode",
+            ]
+        )
+
+    def _sanitize_request_modes(self, request: ChatRequest, agent_id: str) -> ChatRequest:
+        if agent_id != SUPER_CHAT_AGENT_ID:
+            return request
+
+        mode_ids = [str(mode_id).strip() for mode_id in (request.mode_ids or []) if str(mode_id).strip()]
+        mode_prompts = [str(prompt).strip() for prompt in (request.mode_prompts or []) if str(prompt).strip()]
+        if not mode_ids and not mode_prompts:
+            return request
+
+        kept_ids: list[str] = []
+        kept_prompts: list[str] = []
+        changed = False
+        max_len = max(len(mode_ids), len(mode_prompts))
+        for index in range(max_len):
+            mode_id = mode_ids[index] if index < len(mode_ids) else ""
+            prompt = mode_prompts[index] if index < len(mode_prompts) else ""
+            if mode_id in REMOVED_SUPER_CHAT_MODE_IDS or self._is_removed_thinking_mode_prompt(prompt):
+                changed = True
+                continue
+            if mode_id:
+                kept_ids.append(mode_id)
+            if prompt:
+                kept_prompts.append(prompt)
+
+        if not changed and kept_ids == (request.mode_ids or []) and kept_prompts == (request.mode_prompts or []):
+            return request
+        return request.model_copy(update={"mode_ids": kept_ids, "mode_prompts": kept_prompts})
+
+    def _agent_loop_mode_enabled(self, request: ChatRequest, agent_id: str) -> bool:
+        mode_ids = set(request.mode_ids or [])
+        return agent_id == SUPER_CHAT_AGENT_ID and AGENT_LOOP_MODE_ID in mode_ids
+
+    def _append_workflow_event(
+        self,
+        run_id: str,
+        *,
+        event: str,
+        workflow: str,
+        status: str,
+        title: str,
+        node: str | None = None,
+        payload: dict[str, Any] | None = None,
+        duration_ms: int | None = None,
+    ) -> None:
+        event_payload = {"workflow": workflow}
+        if node:
+            event_payload["node"] = node
+            event_payload["workflow_node"] = node
+        if payload:
+            event_payload.update(payload)
+        self.trace_store.append_event(
+            run_id,
+            type=event,
+            status=status,
+            title=title,
+            payload=event_payload,
+            duration_ms=duration_ms,
+        )
 
     def _build_thinking_plan_messages(
         self,
@@ -2304,12 +2432,15 @@ class AgentEngine:
         system = (
             "你是 Super Chat 的 Thinking workflow 规划器。只返回 JSON 对象，不要 Markdown，不要写最终答案。"
             "目标是在 10 分钟内完成轻量规划、必要工具执行和最终汇总。"
+            f"可用的终止型 Agent tools：{AIGC_AGENT_ID}、{WEIGHT_LOSS_AGENT_ID}、{RESEARCH_AGENT_ID}。"
+            "如果用户请求明确属于某个专业 Agent，直接把第一步 type 设为对应 tool 名称，并填写 task/reason/context；"
+            "这类步骤会终止当前 Thinking workflow 并交给目标 Agent。"
             "如果用户请求涉及外部事实、公司、新闻、近期动态、员工评价、市场、产品、投资、数据或需要证据，"
             "计划中必须先包含 search 步骤，再包含 analyze/final 步骤。"
             "不要把历史回答中声称的搜索当成已执行搜索。\n\n"
             "JSON schema: {"
             '"goal":"一句话目标",'
-            '"steps":[{"id":"短id","type":"search|analyze|final","title":"短标题","description":"要做什么","query":"search 步骤必填"}]'
+            '"steps":[{"id":"短id","type":"search|analyze|final|image_generation_v1|weight_loss_v1|deep_research_v1","title":"短标题","description":"要做什么","query":"search 步骤必填","task":"Agent tool 步骤必填","reason":"Agent tool 步骤必填","context":"可选"}]'
             "}。最多 6 个步骤，search 步骤最多 4 个。"
             f"\n\n当前时间：{current_time.strftime('%Y-%m-%d %H:%M:%S')} Asia/Shanghai。"
         )
@@ -2417,7 +2548,7 @@ class AgentEngine:
                     step_type = "analyze"
                 if step_type in {"summary", "summarize", "final_summary"}:
                     step_type = "final"
-                if step_type not in {"search", "analyze", "final"}:
+                if step_type not in {"search", "analyze", "final"} and step_type not in TERMINAL_AGENT_TOOL_IDS:
                     continue
                 if step_type == "search":
                     if search_count >= THINKING_MAX_SEARCH_STEPS:
@@ -2426,8 +2557,13 @@ class AgentEngine:
                     if not query:
                         continue
                     search_count += 1
+                elif step_type in TERMINAL_AGENT_TOOL_IDS:
+                    query = ""
                 else:
                     query = ""
+                task = " ".join(str(item.get("task") or item.get("input") or item.get("query") or request.message).split()).strip()
+                reason = " ".join(str(item.get("reason") or item.get("description") or item.get("title") or "").split()).strip()
+                context = " ".join(str(item.get("context") or "").split()).strip()
                 raw_id = str(item.get("id") or f"{step_type}_{index}")
                 step_id = re.sub(r"[^a-zA-Z0-9_-]+", "_", raw_id).strip("_")[:48] or f"{step_type}_{index}"
                 title = " ".join(str(item.get("title") or step_type).split()).strip()
@@ -2439,10 +2575,25 @@ class AgentEngine:
                         "title": title[:120] or step_type,
                         "description": description[:260] or title[:120] or step_type,
                         "query": query[:220],
+                        "task": task[:1000],
+                        "reason": reason[:260],
+                        "context": context[:2000],
                     }
                 )
                 if len(steps) >= THINKING_MAX_PLAN_STEPS:
                     break
+
+        has_terminal_agent_step = any(step["type"] in TERMINAL_AGENT_TOOL_IDS for step in steps)
+        if has_terminal_agent_step:
+            first_terminal_index = next(
+                index for index, step in enumerate(steps) if step["type"] in TERMINAL_AGENT_TOOL_IDS
+            )
+            steps = steps[: first_terminal_index + 1]
+            return {
+                "goal": goal or "通过 Agent tool 交给专业 Agent 完成本轮请求。",
+                "steps": steps,
+                "fallback_used": not isinstance(raw, dict),
+            }
 
         requires_retrieval = self._thinking_retrieval_required(request)
         if requires_retrieval and not any(step["type"] == "search" for step in steps):
@@ -2553,8 +2704,9 @@ class AgentEngine:
         runtime: str,
     ) -> ChatResponse:
         provider = self._get_provider(request.model_preference)
-        tools = self.skill_registry.get_tool_definitions()
+        tools = self._tool_definitions_for_agent(agent_id, request.disabled_tools)
         tool_names = [tool.name for tool in tools]
+        allowed_tool_names = set(tool_names)
         conversation_context = self.memory.get_context(self._conversation_memory_id(request))
         history = conversation_context.messages if request.memory_enabled else []
         short_term_summary = conversation_context.summary if request.memory_enabled else ""
@@ -2600,7 +2752,54 @@ class AgentEngine:
                 "model_preference": request.model_preference,
                 "temperature": "planner=0.1, summary=0.2",
                 "workflow": "thinking",
+                "workflow_nodes": THINKING_WORKFLOW_NODES,
+                "trace_policy": "workflow boundaries plus raw model/tool/agent events",
             },
+        )
+
+        workflow_started = perf_counter()
+        self._append_workflow_event(
+            run_id,
+            event="workflow.started",
+            workflow="thinking",
+            status="running",
+            title="Workflow thinking started",
+            payload={
+                "mode_ids": request.mode_ids,
+                "nodes": THINKING_WORKFLOW_NODES,
+                "node_policy": "analyze/plan/execute/summary are orchestration boundaries; raw events remain visible",
+            },
+        )
+        analyze_started = perf_counter()
+        self._append_workflow_event(
+            run_id,
+            event="workflow.node.started",
+            workflow="thinking",
+            node="analyze",
+            status="running",
+            title="Workflow node analyze started",
+            payload={
+                "mode_ids": request.mode_ids,
+                "tools_count": len(tools),
+                "tool_names": tool_names,
+                "message_count": len(context_messages),
+                "retrieval_required": self._thinking_retrieval_required(request),
+            },
+        )
+        self._append_workflow_event(
+            run_id,
+            event="workflow.node.completed",
+            workflow="thinking",
+            node="analyze",
+            status="completed",
+            title="Workflow node analyze completed",
+            payload={
+                "mode_ids": request.mode_ids,
+                "tools_count": len(tools),
+                "tool_names": tool_names,
+                "retrieval_required": self._thinking_retrieval_required(request),
+            },
+            duration_ms=int((perf_counter() - analyze_started) * 1000),
         )
 
         total_usage: dict[str, int] = {}
@@ -2612,6 +2811,20 @@ class AgentEngine:
         evidence_blocks: list[str] = []
         new_messages: list[LLMMessage] = [LLMMessage(role="user", content=request.message)]
 
+        plan_node_started = perf_counter()
+        self._append_workflow_event(
+            run_id,
+            event="workflow.node.started",
+            workflow="thinking",
+            node="plan",
+            status="running",
+            title="Workflow node plan started",
+            payload={
+                "mode_ids": request.mode_ids,
+                "max_steps": THINKING_MAX_PLAN_STEPS,
+                "max_search_steps": THINKING_MAX_SEARCH_STEPS,
+            },
+        )
         self.trace_store.append_event(
             run_id,
             type="thinking.plan.started",
@@ -2644,12 +2857,15 @@ class AgentEngine:
                 "model_preference": request.model_preference,
                 "streaming": False,
                 "scope": "thinking_plan",
+                "workflow": "thinking",
+                "workflow_node": "plan",
                 "final_model_request": {
                     "messages": [self._trace_message(message) for message in plan_messages],
                     "tools": [],
                     "tool_choice": "none",
                     "temperature": 0.1,
-                    "workflow": "thinking_plan",
+                    "workflow": "thinking",
+                    "workflow_node": "plan",
                 },
             },
         )
@@ -2672,6 +2888,8 @@ class AgentEngine:
                     "tool_calls": [],
                     "content_preview": plan_response.content[:500],
                     "scope": "thinking_plan",
+                    "workflow": "thinking",
+                    "workflow_node": "plan",
                 },
                 duration_ms=int((perf_counter() - plan_started) * 1000),
             )
@@ -2686,6 +2904,8 @@ class AgentEngine:
                     "round": "thinking_plan",
                     "error_message": str(e),
                     "scope": "thinking_plan",
+                    "workflow": "thinking",
+                    "workflow_node": "plan",
                 },
                 duration_ms=int((perf_counter() - plan_started) * 1000),
             )
@@ -2709,7 +2929,34 @@ class AgentEngine:
             },
             duration_ms=int((perf_counter() - plan_started) * 1000),
         )
+        self._append_workflow_event(
+            run_id,
+            event="workflow.node.completed",
+            workflow="thinking",
+            node="plan",
+            status="completed",
+            title="Workflow node plan completed",
+            payload={
+                "goal": plan["goal"],
+                "step_count": len(plan["steps"]),
+                "fallback_used": plan["fallback_used"],
+            },
+            duration_ms=int((perf_counter() - plan_node_started) * 1000),
+        )
 
+        execute_started = perf_counter()
+        self._append_workflow_event(
+            run_id,
+            event="workflow.node.started",
+            workflow="thinking",
+            node="execute",
+            status="running",
+            title="Workflow node execute started",
+            payload={
+                "step_count": len(plan["steps"]),
+                "step_types": [step.get("type") for step in plan["steps"]],
+            },
+        )
         for index, step in enumerate(plan["steps"], start=1):
             step_started = perf_counter()
             step_id = str(step.get("id") or f"step_{index}")
@@ -2720,8 +2967,78 @@ class AgentEngine:
                 status="running",
                 title=f"Thinking step {index}: {step.get('title') or step_id}",
                 step_id=step_id,
-                payload={"step": step_id, "step_type": step_type, "step": step, "index": index},
+                payload={
+                    "step": step_id,
+                    "step_type": step_type,
+                    "step": step,
+                    "index": index,
+                    "workflow": "thinking",
+                    "workflow_node": "execute",
+                },
             )
+            if step_type in TERMINAL_AGENT_TOOL_IDS:
+                if step_type not in allowed_tool_names:
+                    plan_infos.append(
+                        SkillCallInfo(
+                            skill=step_type,
+                            action=str(step.get("description") or step.get("title") or step_id),
+                            status="error",
+                            result_summary="tool disabled for this user",
+                        )
+                    )
+                    self.trace_store.append_event(
+                        run_id,
+                        type="thinking.step.failed",
+                        status="error",
+                        title=f"Thinking step {index} skipped",
+                        step_id=step_id,
+                        payload={
+                            "step": step_id,
+                            "step_type": step_type,
+                            "error_message": "tool disabled for this user",
+                            "workflow": "thinking",
+                            "workflow_node": "execute",
+                        },
+                        duration_ms=int((perf_counter() - step_started) * 1000),
+                    )
+                    continue
+                arguments = {
+                    "task": step.get("task") or request.message,
+                    "reason": step.get("reason") or step.get("description") or step.get("title") or f"thinking:{step_type}",
+                }
+                if step.get("context"):
+                    arguments["context"] = step["context"]
+                self.trace_store.append_event(
+                    run_id,
+                    type="tool.started",
+                    status="running",
+                    title=f"Tool {step_type}",
+                    step_id=step_id,
+                    payload={
+                        "name": step_type,
+                        "arguments": arguments,
+                        "workflow": "thinking",
+                        "workflow_node": "execute",
+                        "terminal": True,
+                    },
+                )
+                return await self._execute_agent_tool(
+                    request=request,
+                    role_context=role_context,
+                    run_id=run_id,
+                    tool_name=step_type,
+                    tool_call_id=step_id,
+                    arguments=arguments,
+                    tool_started=step_started,
+                    workflow_context={
+                        "workflow": "thinking",
+                        "node": "execute",
+                        "node_started": execute_started,
+                        "workflow_started": workflow_started,
+                        "result": "terminal_agent_handoff",
+                    },
+                )
+
             if step_type != "search":
                 plan_infos.append(
                     SkillCallInfo(
@@ -2737,7 +3054,13 @@ class AgentEngine:
                     status="completed",
                     title=f"Thinking step {index} completed",
                     step_id=step_id,
-                    payload={"step": step_id, "step_type": step_type, "summary": step.get("description") or ""},
+                    payload={
+                        "step": step_id,
+                        "step_type": step_type,
+                        "summary": step.get("description") or "",
+                        "workflow": "thinking",
+                        "workflow_node": "execute",
+                    },
                     duration_ms=int((perf_counter() - step_started) * 1000),
                 )
                 continue
@@ -2754,9 +3077,17 @@ class AgentEngine:
                 status="running",
                 title="Tool search",
                 step_id=step_id,
-                payload={"name": "search", "arguments": arguments, "workflow": "thinking"},
+                payload={
+                    "name": "search",
+                    "arguments": arguments,
+                    "workflow": "thinking",
+                    "workflow_node": "execute",
+                },
             )
-            if search_skill is None:
+            if "search" not in allowed_tool_names:
+                status = "error"
+                result_text = json.dumps({"error": "search tool disabled for this user"}, ensure_ascii=False)
+            elif search_skill is None:
                 status = "error"
                 result_text = json.dumps({"error": "search skill is not registered"}, ensure_ascii=False)
             else:
@@ -2813,6 +3144,7 @@ class AgentEngine:
                     "arguments": arguments,
                     "result_preview": result_text[:500],
                     "workflow": "thinking",
+                    "workflow_node": "execute",
                 },
                 duration_ms=int((perf_counter() - step_started) * 1000),
             )
@@ -2839,10 +3171,40 @@ class AgentEngine:
                     "arguments": arguments,
                     "citation_count": len(citations),
                     "result_preview": result_text[:500],
+                    "workflow": "thinking",
+                    "workflow_node": "execute",
                 },
                 duration_ms=int((perf_counter() - step_started) * 1000),
             )
 
+        self._append_workflow_event(
+            run_id,
+            event="workflow.node.completed",
+            workflow="thinking",
+            node="execute",
+            status="completed",
+            title="Workflow node execute completed",
+            payload={
+                "step_count": len(plan["steps"]),
+                "skills_used": list(dict.fromkeys(skills_used)),
+                "citation_count": len(citations),
+            },
+            duration_ms=int((perf_counter() - execute_started) * 1000),
+        )
+
+        summary_node_started = perf_counter()
+        self._append_workflow_event(
+            run_id,
+            event="workflow.node.started",
+            workflow="thinking",
+            node="summary",
+            status="running",
+            title="Workflow node summary started",
+            payload={
+                "evidence_block_count": len(evidence_blocks),
+                "citation_count": len(citations),
+            },
+        )
         summary_started = perf_counter()
         summary_messages = self._build_thinking_summary_messages(
             request=request,
@@ -2863,12 +3225,15 @@ class AgentEngine:
                 "model_preference": request.model_preference,
                 "streaming": False,
                 "scope": "thinking_summary",
+                "workflow": "thinking",
+                "workflow_node": "summary",
                 "final_model_request": {
                     "messages": [self._trace_message(message) for message in summary_messages],
                     "tools": [],
                     "tool_choice": "none",
                     "temperature": 0.2,
-                    "workflow": "thinking_summary",
+                    "workflow": "thinking",
+                    "workflow_node": "summary",
                 },
             },
         )
@@ -2889,6 +3254,8 @@ class AgentEngine:
                 "tool_calls": [],
                 "content_preview": response_text[:500],
                 "scope": "thinking_summary",
+                "workflow": "thinking",
+                "workflow_node": "summary",
             },
             duration_ms=int((perf_counter() - summary_started) * 1000),
         )
@@ -2904,6 +3271,32 @@ class AgentEngine:
                 "summary_preview": response_text[:500],
             },
             duration_ms=int((perf_counter() - summary_started) * 1000),
+        )
+        self._append_workflow_event(
+            run_id,
+            event="workflow.node.completed",
+            workflow="thinking",
+            node="summary",
+            status="completed",
+            title="Workflow node summary completed",
+            payload={
+                "summary_preview": response_text[:500],
+                "citation_count": len(citations),
+            },
+            duration_ms=int((perf_counter() - summary_node_started) * 1000),
+        )
+        self._append_workflow_event(
+            run_id,
+            event="workflow.completed",
+            workflow="thinking",
+            status="completed",
+            title="Workflow thinking completed",
+            payload={
+                "step_count": len(plan["steps"]),
+                "skills_used": list(dict.fromkeys(skills_used)),
+                "citation_count": len(citations),
+            },
+            duration_ms=int((perf_counter() - workflow_started) * 1000),
         )
 
         new_messages.append(LLMMessage(role="assistant", content=response_text))
@@ -3400,11 +3793,12 @@ class AgentEngine:
         role_context: MemoryContext,
         run_id: str,
         runtime: str,
+        delegation_trace: dict[str, Any] | None = None,
     ) -> ChatResponse:
         conversation_context = self.memory.get_context(self._conversation_memory_id(request))
         history = conversation_context.messages if request.memory_enabled else []
         short_term_summary = conversation_context.summary if request.memory_enabled else ""
-        tools = self.skill_registry.get_tool_definitions()
+        tools = self._tool_definitions_for_agent(agent_id, request.disabled_tools)
         context_messages = [
             LLMMessage(
                 role="system",
@@ -3439,6 +3833,14 @@ class AgentEngine:
             context_blocks=request.context_blocks,
             short_term_summary=short_term_summary,
         )
+        if delegation_trace:
+            self.trace_store.append_event(
+                run_id,
+                type="agent.delegated",
+                status="completed",
+                title="Delegated to Deep Research Agent",
+                payload=delegation_trace,
+            )
 
         if self._is_deep_research_help_request(request.message):
             response_text = self._deep_research_help_response()
@@ -4384,7 +4786,8 @@ class AgentEngine:
         handoff_packet: AgentHandoffPacket | None = None,
         short_term_summary: str = "",
     ) -> dict[str, Any]:
-        tools = self.skill_registry.get_tool_definitions()
+        tools = self._tool_definitions_for_agent(AIGC_AGENT_ID, request.disabled_tools)
+        allowed_tool_names = {tool.name for tool in tools}
         messages = self._build_aigc_research_messages(
             request=request,
             role_context=role_context,
@@ -4475,7 +4878,10 @@ class AgentEngine:
                     payload={"name": tc.name, "arguments": tool_arguments},
                 )
                 skill = self.skill_registry.get(tc.name)
-                if skill is None:
+                if tc.name not in allowed_tool_names:
+                    result_text = json.dumps({"error": f"Tool disabled or unavailable: {tc.name}"})
+                    status = "error"
+                elif skill is None:
                     result_text = json.dumps({"error": f"Unknown skill: {tc.name}"})
                     status = "error"
                 else:
@@ -5722,7 +6128,11 @@ class AgentEngine:
             text = " ".join(str(note or "").split())
             if not text:
                 continue
-            if re.search(r"(?:属于|意图|intent|用户.*反馈|用户.*咨询|用户.*描述)", text, flags=re.IGNORECASE):
+            if re.search(
+                r"^(?:用户|需|需要|应当|应该|避免|不要|本轮|对话|上下文)|(?:属于|意图|intent|用户.*反馈|用户.*咨询|用户.*描述)",
+                text,
+                flags=re.IGNORECASE,
+            ):
                 continue
             user_notes.append(text[:500])
             if len(user_notes) >= 4:
@@ -5746,7 +6156,12 @@ class AgentEngine:
         summary: dict[str, Any],
         model_used: str = "",
     ) -> str:
-        response = " ".join(str(analysis.get("assistant_response") or "").split())
+        response = (
+            str(analysis.get("assistant_response") or "")
+            .replace("\r\n", "\n")
+            .replace("\r", "\n")
+            .strip()
+        )
         notes = self._weight_loss_user_facing_notes(analysis.get("assistant_notes"))
         lines: list[str] = []
         if response:
@@ -7674,8 +8089,10 @@ class AgentEngine:
         on_token: Callable[[str], Awaitable[None] | None] | None = None,
     ) -> ChatResponse:
         agent_id = request.agent_id or "general_assistant"
+        request = self._sanitize_request_modes(request, agent_id)
         agent_info = get_agent(agent_id)
         runtime = agent_info.runtime if agent_info else "unknown"
+        disabled_tool_names = self._disabled_tool_names(request)
         run = self.trace_store.start_run(
             conversation_id=request.conversation_id,
             user_id=self._user_id(request),
@@ -7702,6 +8119,30 @@ class AgentEngine:
                 model_used="",
                 tokens_used={},
                 error_type="unknown_agent",
+                agent_id=agent_id,
+                role_id=request.role_id,
+                runtime=runtime,
+                run_id=run.run_id,
+                events=latest_run.events,
+            )
+
+        if agent_id in TERMINAL_AGENT_TOOL_IDS and agent_id in disabled_tool_names:
+            error_msg = f"Feature '{agent_id}' is disabled for this user."
+            self.trace_store.fail_run(
+                run.run_id,
+                error_message=error_msg,
+                error_type="tool_disabled",
+                output=error_msg,
+            )
+            latest_run = self.trace_store.get_run(run.run_id) or run
+            return ChatResponse(
+                conversation_id=request.conversation_id,
+                response=error_msg,
+                skills_used=[],
+                plan=None,
+                model_used="",
+                tokens_used={},
+                error_type="tool_disabled",
                 agent_id=agent_id,
                 role_id=request.role_id,
                 runtime=runtime,
@@ -7806,6 +8247,31 @@ class AgentEngine:
         agent_command_route = self._parse_agent_command_protocol(request, agent_id)
         if agent_command_route:
             target_agent = get_agent(str(agent_command_route["target_agent_id"]))
+            target_agent_id = str(agent_command_route["target_agent_id"])
+            if target_agent_id in disabled_tool_names:
+                error_msg = f"Feature '{target_agent_id}' is disabled for this user."
+                self.trace_store.fail_run(
+                    run.run_id,
+                    error_message=error_msg,
+                    error_type="tool_disabled",
+                    output=error_msg,
+                )
+                latest_run = self.trace_store.get_run(run.run_id) or run
+                return ChatResponse(
+                    conversation_id=request.conversation_id,
+                    response=error_msg,
+                    skills_used=[],
+                    plan=None,
+                    model_used="",
+                    tokens_used={},
+                    error_type="tool_disabled",
+                    agent_id=target_agent_id,
+                    role_id=role_id,
+                    runtime="self",
+                    run_id=run.run_id,
+                    events=latest_run.events,
+                    memory_context=role_context.records,
+                )
             if target_agent is None:
                 error_msg = f"Unknown agent: {agent_command_route['target_agent_id']}"
                 self.trace_store.fail_run(
@@ -7864,6 +8330,30 @@ class AgentEngine:
         )
         if should_delegate_research:
             target_agent = get_agent(RESEARCH_AGENT_ID)
+            if RESEARCH_AGENT_ID in disabled_tool_names:
+                error_msg = "Deep Research Agent is disabled for this user."
+                self.trace_store.fail_run(
+                    run.run_id,
+                    error_message=error_msg,
+                    error_type="tool_disabled",
+                    output=error_msg,
+                )
+                latest_run = self.trace_store.get_run(run.run_id) or run
+                return ChatResponse(
+                    conversation_id=request.conversation_id,
+                    response=error_msg,
+                    skills_used=[],
+                    plan=None,
+                    model_used="",
+                    tokens_used={},
+                    error_type="tool_disabled",
+                    agent_id=agent_id,
+                    role_id=role_id,
+                    runtime=runtime,
+                    run_id=run.run_id,
+                    events=latest_run.events,
+                    memory_context=role_context.records,
+                )
             if target_agent is None or not target_agent.enabled or target_agent.runtime != "self":
                 error_msg = "Deep Research Agent 当前不可用，无法执行深度研究。"
                 self.trace_store.fail_run(
@@ -7903,166 +8393,6 @@ class AgentEngine:
                 },
             )
 
-        should_delegate, delegate_reason, forced_delegate = self._should_delegate_to_aigc(
-            request,
-            agent_id,
-        )
-        if should_delegate:
-            target_agent = get_agent(AIGC_AGENT_ID)
-            if target_agent is None or not target_agent.enabled or target_agent.runtime != "self":
-                error_msg = "AI 生图 Agent 当前不可用，无法完成生图任务。"
-                self.trace_store.fail_run(
-                    run.run_id,
-                    error_message=error_msg,
-                    error_type="agent_disabled",
-                    output=error_msg,
-                )
-                latest_run = self.trace_store.get_run(run.run_id) or run
-                return ChatResponse(
-                    conversation_id=request.conversation_id,
-                    response=error_msg,
-                    skills_used=[],
-                    plan=None,
-                    model_used="",
-                    tokens_used={},
-                    error_type="agent_disabled",
-                    agent_id=agent_id,
-                    role_id=role_id,
-                    runtime=runtime,
-                    run_id=run.run_id,
-                    events=latest_run.events,
-                    memory_context=role_context.records,
-                )
-
-            target_role_id = self._resolve_role_id(request, target_agent.metadata)
-            target_role_context = self.role_memory.get_context(
-                role_id=target_role_id,
-                user_id=self._user_id(request),
-                agent_id=AIGC_AGENT_ID,
-                query=self._memory_retrieval_query(request),
-            )
-            if target_role_context is None or not target_role_context.role.enabled:
-                error_msg = f"Unknown or disabled role: {target_role_id}"
-                self.trace_store.fail_run(
-                    run.run_id,
-                    error_message=error_msg,
-                    error_type="unknown_role",
-                    output=error_msg,
-                )
-                latest_run = self.trace_store.get_run(run.run_id) or run
-                return ChatResponse(
-                    conversation_id=request.conversation_id,
-                    response=error_msg,
-                    skills_used=[],
-                    plan=None,
-                    model_used="",
-                    tokens_used={},
-                    error_type="unknown_role",
-                    agent_id=AIGC_AGENT_ID,
-                    role_id=target_role_id,
-                    runtime=target_agent.runtime,
-                    run_id=run.run_id,
-                    events=latest_run.events,
-                    memory_context=role_context.records,
-                )
-            target_role_context = self._apply_memory_read_policy(request, target_role_context)
-
-            return await self._process_image_generation(
-                request=request,
-                agent_id=AIGC_AGENT_ID,
-                role_id=target_role_id,
-                role_context=target_role_context,
-                run_id=run.run_id,
-                runtime=target_agent.runtime,
-                delegation_trace={
-                    "source_agent_id": agent_id,
-                    "target_agent_id": AIGC_AGENT_ID,
-                    "reason": delegate_reason,
-                    "forced": forced_delegate,
-                    "mode_ids": request.mode_ids,
-                },
-            )
-
-        should_delegate_weight_loss, weight_loss_reason, forced_weight_loss = self._should_delegate_to_weight_loss(
-            request,
-            agent_id,
-        )
-        if should_delegate_weight_loss:
-            target_agent = get_agent(WEIGHT_LOSS_AGENT_ID)
-            if target_agent is None or not target_agent.enabled or target_agent.runtime != "self":
-                error_msg = "减肥 Agent 当前不可用，无法完成热量记录或缺口统计。"
-                self.trace_store.fail_run(
-                    run.run_id,
-                    error_message=error_msg,
-                    error_type="agent_disabled",
-                    output=error_msg,
-                )
-                latest_run = self.trace_store.get_run(run.run_id) or run
-                return ChatResponse(
-                    conversation_id=request.conversation_id,
-                    response=error_msg,
-                    skills_used=[],
-                    plan=None,
-                    model_used="",
-                    tokens_used={},
-                    error_type="agent_disabled",
-                    agent_id=agent_id,
-                    role_id=role_id,
-                    runtime=runtime,
-                    run_id=run.run_id,
-                    events=latest_run.events,
-                    memory_context=role_context.records,
-                )
-
-            target_role_id = self._resolve_role_id(request, target_agent.metadata)
-            target_role_context = self.role_memory.get_context(
-                role_id=target_role_id,
-                user_id=self._user_id(request),
-                agent_id=WEIGHT_LOSS_AGENT_ID,
-                query=self._memory_retrieval_query(request),
-            )
-            if target_role_context is None or not target_role_context.role.enabled:
-                error_msg = f"Unknown or disabled role: {target_role_id}"
-                self.trace_store.fail_run(
-                    run.run_id,
-                    error_message=error_msg,
-                    error_type="unknown_role",
-                    output=error_msg,
-                )
-                latest_run = self.trace_store.get_run(run.run_id) or run
-                return ChatResponse(
-                    conversation_id=request.conversation_id,
-                    response=error_msg,
-                    skills_used=[],
-                    plan=None,
-                    model_used="",
-                    tokens_used={},
-                    error_type="unknown_role",
-                    agent_id=WEIGHT_LOSS_AGENT_ID,
-                    role_id=target_role_id,
-                    runtime=target_agent.runtime,
-                    run_id=run.run_id,
-                    events=latest_run.events,
-                    memory_context=role_context.records,
-                )
-            target_role_context = self._apply_memory_read_policy(request, target_role_context)
-
-            return await self._process_weight_loss(
-                request=request,
-                agent_id=WEIGHT_LOSS_AGENT_ID,
-                role_id=target_role_id,
-                role_context=target_role_context,
-                run_id=run.run_id,
-                runtime=target_agent.runtime,
-                delegation_trace={
-                    "source_agent_id": agent_id,
-                    "target_agent_id": WEIGHT_LOSS_AGENT_ID,
-                    "reason": weight_loss_reason,
-                    "forced": forced_weight_loss,
-                    "mode_ids": request.mode_ids,
-                },
-            )
-
         if agent_id == AIGC_AGENT_ID:
             return await self._process_image_generation(
                 request=request,
@@ -8093,16 +8423,6 @@ class AgentEngine:
                 runtime=runtime,
             )
 
-        if self._thinking_mode_enabled(request, agent_id):
-            return await self._process_thinking_workflow(
-                request=request,
-                agent_id=agent_id,
-                role_id=role_id,
-                role_context=role_context,
-                run_id=run.run_id,
-                runtime=runtime,
-            )
-
         try:
             provider = self._get_provider(request.model_preference)
         except Exception as e:
@@ -8123,13 +8443,19 @@ class AgentEngine:
             )
             raise
 
-        tools = self.skill_registry.get_tool_definitions()
+        tools = self._tool_definitions_for_agent(agent_id, disabled_tool_names)
+        agent_loop_enabled = self._agent_loop_mode_enabled(request, agent_id)
+        workflow_name = AGENT_LOOP_MODE_ID if agent_loop_enabled else "generic_tool_loop"
+        workflow_node = "main_loop" if agent_loop_enabled else ""
+        workflow_started: float | None = None
+        workflow_node_started: float | None = None
 
         # Build messages
         conversation_context = self.memory.get_context(self._conversation_memory_id(request))
         history = conversation_context.messages if request.memory_enabled else []
         short_term_summary = conversation_context.summary if request.memory_enabled else ""
         tool_names = [tool.name for tool in tools]
+        allowed_tool_names = set(tool_names)
         prompt_sources = self._build_system_prompt_parts(
             role_context,
             request.mode_prompts,
@@ -8177,9 +8503,47 @@ class AgentEngine:
                 "tool_choice": "auto" if tools else "none",
                 "model_preference": request.model_preference,
                 "temperature": "provider_default",
-                "workflow": "generic_tool_loop",
+                "workflow": workflow_name,
+                "workflow_nodes": [workflow_node] if agent_loop_enabled else [],
+                "trace_policy": (
+                    "main loop boundary plus raw model/tool/agent events"
+                    if agent_loop_enabled
+                    else "raw generic tool loop events"
+                ),
             },
         )
+        if agent_loop_enabled:
+            workflow_started = perf_counter()
+            workflow_node_started = perf_counter()
+            self._append_workflow_event(
+                run.run_id,
+                event="workflow.started",
+                workflow=workflow_name,
+                status="running",
+                title="Workflow agent_loop started",
+                payload={
+                    "mode_ids": request.mode_ids,
+                    "nodes": [workflow_node],
+                    "loop": "model_function_call",
+                    "max_rounds": MAX_TOOL_ROUNDS,
+                    "tool_names": tool_names,
+                    "node_policy": "main_loop is a boundary; raw model/tool/agent events remain visible",
+                },
+            )
+            self._append_workflow_event(
+                run.run_id,
+                event="workflow.node.started",
+                workflow=workflow_name,
+                node=workflow_node,
+                status="running",
+                title="Workflow node main_loop started",
+                payload={
+                    "mode_ids": request.mode_ids,
+                    "loop": "model_function_call",
+                    "max_rounds": MAX_TOOL_ROUNDS,
+                    "tool_names": tool_names,
+                },
+            )
 
         # Track skill usage
         skills_used: list[str] = []
@@ -8192,6 +8556,7 @@ class AgentEngine:
 
         # Tool-use loop
         response = None
+        max_rounds_reached = False
         for round_index in range(MAX_TOOL_ROUNDS):
             model_started = perf_counter()
             stream_final_answer = (
@@ -8199,18 +8564,26 @@ class AgentEngine:
                 and any(message.role == "tool" for message in messages)
                 and getattr(provider, "disable_stream_after_tools", False) is not True
             )
+            model_started_payload = {
+                "round": round_index + 1,
+                "message_count": len(messages),
+                "tools_count": len(tools),
+                "model_preference": request.model_preference,
+                "streaming": stream_final_answer,
+            }
+            if agent_loop_enabled:
+                model_started_payload.update(
+                    {
+                        "workflow": workflow_name,
+                        "workflow_node": workflow_node,
+                    }
+                )
             self.trace_store.append_event(
                 run.run_id,
                 type="model.started",
                 status="running",
                 title=f"Model call {round_index + 1}",
-                payload={
-                    "round": round_index + 1,
-                    "message_count": len(messages),
-                    "tools_count": len(tools),
-                    "model_preference": request.model_preference,
-                    "streaming": stream_final_answer,
-                },
+                payload=model_started_payload,
             )
             try:
                 if stream_final_answer:
@@ -8230,6 +8603,38 @@ class AgentEngine:
                 logger.warning(f"Rate limit hit: {e}")
                 error_msg = str(e)
                 duration_ms = int((perf_counter() - model_started) * 1000)
+                if agent_loop_enabled:
+                    self._append_workflow_event(
+                        run.run_id,
+                        event="workflow.node.failed",
+                        workflow=workflow_name,
+                        node=workflow_node,
+                        status="error",
+                        title="Workflow node main_loop failed",
+                        payload={
+                            "round": round_index + 1,
+                            "error_type": "rate_limit",
+                            "error_message": error_msg,
+                        },
+                        duration_ms=(
+                            int((perf_counter() - workflow_node_started) * 1000)
+                            if isinstance(workflow_node_started, (int, float))
+                            else None
+                        ),
+                    )
+                    self._append_workflow_event(
+                        run.run_id,
+                        event="workflow.failed",
+                        workflow=workflow_name,
+                        status="error",
+                        title="Workflow agent_loop failed",
+                        payload={"error_type": "rate_limit", "error_message": error_msg},
+                        duration_ms=(
+                            int((perf_counter() - workflow_started) * 1000)
+                            if isinstance(workflow_started, (int, float))
+                            else None
+                        ),
+                    )
                 self.trace_store.append_event(
                     run.run_id,
                     type="model.failed",
@@ -8272,6 +8677,38 @@ class AgentEngine:
                 logger.exception("Model call failed")
                 error_msg = str(e)
                 duration_ms = int((perf_counter() - model_started) * 1000)
+                if agent_loop_enabled:
+                    self._append_workflow_event(
+                        run.run_id,
+                        event="workflow.node.failed",
+                        workflow=workflow_name,
+                        node=workflow_node,
+                        status="error",
+                        title="Workflow node main_loop failed",
+                        payload={
+                            "round": round_index + 1,
+                            "error_type": "model_error",
+                            "error_message": error_msg,
+                        },
+                        duration_ms=(
+                            int((perf_counter() - workflow_node_started) * 1000)
+                            if isinstance(workflow_node_started, (int, float))
+                            else None
+                        ),
+                    )
+                    self._append_workflow_event(
+                        run.run_id,
+                        event="workflow.failed",
+                        workflow=workflow_name,
+                        status="error",
+                        title="Workflow agent_loop failed",
+                        payload={"error_type": "model_error", "error_message": error_msg},
+                        duration_ms=(
+                            int((perf_counter() - workflow_started) * 1000)
+                            if isinstance(workflow_started, (int, float))
+                            else None
+                        ),
+                    )
                 self.trace_store.append_event(
                     run.run_id,
                     type="model.failed",
@@ -8289,21 +8726,29 @@ class AgentEngine:
                 raise
 
             model_duration_ms = int((perf_counter() - model_started) * 1000)
+            model_completed_payload = {
+                "round": round_index + 1,
+                "model": response.model,
+                "usage": response.usage,
+                "tool_calls": [
+                    {"id": tc.id, "name": tc.name}
+                    for tc in response.tool_calls
+                ],
+                "content_preview": response.content[:300],
+            }
+            if agent_loop_enabled:
+                model_completed_payload.update(
+                    {
+                        "workflow": workflow_name,
+                        "workflow_node": workflow_node,
+                    }
+                )
             self.trace_store.append_event(
                 run.run_id,
                 type="model.completed",
                 status="completed",
                 title=f"Model call {round_index + 1} completed",
-                payload={
-                    "round": round_index + 1,
-                    "model": response.model,
-                    "usage": response.usage,
-                    "tool_calls": [
-                        {"id": tc.id, "name": tc.name}
-                        for tc in response.tool_calls
-                    ],
-                    "content_preview": response.content[:300],
-                },
+                payload=model_completed_payload,
                 duration_ms=model_duration_ms,
             )
 
@@ -8326,19 +8771,80 @@ class AgentEngine:
             messages.append(assistant_msg)
             all_new_messages.append(assistant_msg)
 
+            if agent_id == SUPER_CHAT_AGENT_ID:
+                agent_tool_call = next(
+                    (
+                        tc
+                        for tc in response.tool_calls
+                        if tc.name in TERMINAL_AGENT_TOOL_IDS and tc.name in allowed_tool_names
+                    ),
+                    None,
+                )
+                if agent_tool_call:
+                    tool_started = perf_counter()
+                    arguments = agent_tool_call.arguments if isinstance(agent_tool_call.arguments, dict) else {}
+                    terminal_tool_payload = {"name": agent_tool_call.name, "arguments": arguments, "terminal": True}
+                    if agent_loop_enabled:
+                        terminal_tool_payload.update(
+                            {
+                                "workflow": workflow_name,
+                                "workflow_node": workflow_node,
+                            }
+                        )
+                    self.trace_store.append_event(
+                        run.run_id,
+                        type="tool.started",
+                        status="running",
+                        title=f"Tool {agent_tool_call.name}",
+                        step_id=agent_tool_call.id,
+                        payload=terminal_tool_payload,
+                    )
+                    return await self._execute_agent_tool(
+                        request=request,
+                        role_context=role_context,
+                        run_id=run.run_id,
+                        tool_name=agent_tool_call.name,
+                        tool_call_id=agent_tool_call.id,
+                        arguments=arguments,
+                        tool_started=tool_started,
+                        workflow_context=(
+                            {
+                                "workflow": workflow_name,
+                                "node": workflow_node,
+                                "node_started": workflow_node_started,
+                                "workflow_started": workflow_started,
+                                "round": round_index + 1,
+                                "result": "terminal_agent_handoff",
+                            }
+                            if agent_loop_enabled
+                            else None
+                        ),
+                    )
+
             # Execute each tool call
             for tc in response.tool_calls:
                 tool_started = perf_counter()
+                tool_started_payload = {"name": tc.name, "arguments": tc.arguments}
+                if agent_loop_enabled:
+                    tool_started_payload.update(
+                        {
+                            "workflow": workflow_name,
+                            "workflow_node": workflow_node,
+                        }
+                    )
                 self.trace_store.append_event(
                     run.run_id,
                     type="tool.started",
                     status="running",
                     title=f"Tool {tc.name}",
                     step_id=tc.id,
-                    payload={"name": tc.name, "arguments": tc.arguments},
+                    payload=tool_started_payload,
                 )
                 skill = self.skill_registry.get(tc.name)
-                if skill is None:
+                if tc.name not in allowed_tool_names:
+                    result_text = json.dumps({"error": f"Tool disabled or unavailable: {tc.name}"})
+                    status = "error"
+                elif skill is None:
                     result_text = json.dumps({"error": f"Unknown skill: {tc.name}"})
                     status = "error"
                 else:
@@ -8381,17 +8887,25 @@ class AgentEngine:
                         status = "error"
 
                 tool_duration_ms = int((perf_counter() - tool_started) * 1000)
+                tool_completed_payload = {
+                    "name": tc.name,
+                    "arguments": tc.arguments,
+                    "result_preview": result_text[:500],
+                }
+                if agent_loop_enabled:
+                    tool_completed_payload.update(
+                        {
+                            "workflow": workflow_name,
+                            "workflow_node": workflow_node,
+                        }
+                    )
                 self.trace_store.append_event(
                     run.run_id,
                     type="tool.completed" if status == "completed" else "tool.failed",
                     status=status,
                     title=f"Tool {tc.name} {status}",
                     step_id=tc.id,
-                    payload={
-                        "name": tc.name,
-                        "arguments": tc.arguments,
-                        "result_preview": result_text[:500],
-                    },
+                    payload=tool_completed_payload,
                     duration_ms=tool_duration_ms,
                 )
 
@@ -8408,6 +8922,7 @@ class AgentEngine:
                 messages.append(tool_msg)
                 all_new_messages.append(tool_msg)
         else:
+            max_rounds_reached = True
             # Exceeded max rounds — response is guaranteed non-None here
             # because the loop body always assigns it before checking tool_calls
             fallback_content = response.content if response else ""
@@ -8417,6 +8932,45 @@ class AgentEngine:
                     content="I've reached the maximum number of tool calls. Here's what I found so far: "
                     + fallback_content,
                 )
+            )
+
+        if agent_loop_enabled:
+            workflow_result = "max_rounds_reached" if max_rounds_reached else "final_answer"
+            self._append_workflow_event(
+                run.run_id,
+                event="workflow.node.completed",
+                workflow=workflow_name,
+                node=workflow_node,
+                status="completed",
+                title="Workflow node main_loop completed",
+                payload={
+                    "result": workflow_result,
+                    "skills_used": list(dict.fromkeys(skills_used)),
+                    "citation_count": len(citations),
+                    "rounds": len([message for message in messages if message.role == "assistant"]),
+                },
+                duration_ms=(
+                    int((perf_counter() - workflow_node_started) * 1000)
+                    if isinstance(workflow_node_started, (int, float))
+                    else None
+                ),
+            )
+            self._append_workflow_event(
+                run.run_id,
+                event="workflow.completed",
+                workflow=workflow_name,
+                status="completed",
+                title="Workflow agent_loop completed",
+                payload={
+                    "result": workflow_result,
+                    "skills_used": list(dict.fromkeys(skills_used)),
+                    "citation_count": len(citations),
+                },
+                duration_ms=(
+                    int((perf_counter() - workflow_started) * 1000)
+                    if isinstance(workflow_started, (int, float))
+                    else None
+                ),
             )
 
         # Save to memory

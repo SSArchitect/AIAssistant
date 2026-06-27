@@ -7,6 +7,8 @@ from agent.search.service import (
     SearchResult,
     SearchService,
     StaticSearchProvider,
+    WebPageContent,
+    WebPageReader,
 )
 
 __all__ = [
@@ -18,4 +20,6 @@ __all__ = [
     "SearchResult",
     "SearchService",
     "StaticSearchProvider",
+    "WebPageContent",
+    "WebPageReader",
 ]

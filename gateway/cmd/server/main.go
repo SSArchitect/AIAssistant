@@ -67,7 +67,7 @@ func main() {
 
 	// Init handlers
 	chatHandler := handlers.NewChatHandler(agentClient, configSyncer)
-	convHandler := handlers.NewConversationHandler()
+	convHandler := handlers.NewConversationHandler(agentClient)
 	accountHandler := handlers.NewAccountHandler()
 	healthHandler := handlers.NewHealthHandler(agentClient)
 	adminHandler := handlers.NewAdminHandler(agentClient, configSyncer)
@@ -97,6 +97,7 @@ func main() {
 		api.PUT("/roles/:id/memories/:memory_id", chatHandler.UpdateRoleMemory)
 		api.DELETE("/roles/:id/memories/:memory_id", chatHandler.DeleteRoleMemory)
 		api.GET("/tools", chatHandler.ListTools)
+		api.PUT("/tools/settings", chatHandler.UpdateToolSettings)
 		api.GET("/runs", chatHandler.ListRuns)
 		api.GET("/runs/:id", chatHandler.GetRun)
 		api.POST("/aigc/image", chatHandler.GenerateImage)

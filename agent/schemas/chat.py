@@ -34,6 +34,7 @@ class ChatRequest(BaseModel):
     handoff: AgentInputPacket | None = None
     memory_enabled: bool = True
     run_id: Optional[str] = None
+    disabled_tools: list[str] = Field(default_factory=list)
 
 
 class SkillCallInfo(BaseModel):
@@ -70,6 +71,18 @@ class ChatResponse(BaseModel):
     memory_updates: list[MemoryRecord] = Field(default_factory=list)
 
 
+class FollowUpRequest(BaseModel):
+    user_question: str
+    assistant_answer: str
+    language: Literal["zh", "en"] = "zh"
+    model_preference: Optional[str] = None
+
+
+class FollowUpResponse(BaseModel):
+    questions: list[str] = Field(default_factory=list)
+    model_used: str = ""
+
+
 class SkillParameterSchema(BaseModel):
     name: str
     type: str
@@ -85,6 +98,9 @@ class SkillInfo(BaseModel):
     tags: list[str] = Field(default_factory=list)
     source: str = "builtin"
     enabled: bool = True
+    user_enabled: bool | None = None
+    effective_enabled: bool = True
+    configurable: bool = False
 
 
 class SkillListResponse(BaseModel):

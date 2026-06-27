@@ -33,6 +33,7 @@ func Init(dbPath string) error {
 		&models.Conversation{},
 		&models.Message{},
 		&models.Setting{},
+		&models.UserSetting{},
 		&models.PulseTopic{},
 		&models.PulseItem{},
 		&models.PulseModule{},

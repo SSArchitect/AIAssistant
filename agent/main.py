@@ -17,13 +17,22 @@ from pydantic import BaseModel
 
 from agent.aigc import MiniMaxAIGCClient
 from agent.config import settings, runtime_config
+from agent.llm.base import LLMMessage, RateLimitError
+from agent.llm.factory import create_provider
 from agent.memory import RoleMemoryStore
 from agent.orchestrator.engine import AgentEngine
 from agent.runtime.registry import list_agents
 from agent.search import SearchResult, SearchService
 from agent.schemas.agent import AgentListResponse
 from agent.schemas.aigc import ImageGenerationRequest, ImageGenerationResponse
-from agent.schemas.chat import ChatRequest, ChatResponse, SkillInfo, SkillListResponse
+from agent.schemas.chat import (
+    ChatRequest,
+    ChatResponse,
+    FollowUpRequest,
+    FollowUpResponse,
+    SkillInfo,
+    SkillListResponse,
+)
 from agent.schemas.memory import (
     MemoryCreateRequest,
     MemoryKind,
@@ -56,6 +65,9 @@ class SearchRequest(BaseModel):
     query: str
     sources: list[str] | None = None
     limit: int = 5
+    open_results: bool = False
+    open_limit: int = 3
+    page_chars: int = 6000
 
 
 class SearchResponse(BaseModel):
@@ -277,6 +289,115 @@ async def chat(request: ChatRequest):
     return await engine.process(request)
 
 
+FOLLOW_UP_SYSTEM_PROMPT = """你是聊天产品里的下一步追问生成器。
+
+输入只有两段：
+- user_question: 用户上一句真实问题
+- assistant_answer: 助手刚刚给出的回答
+
+你的任务：生成 3 个“用户看完这条回答后，最可能继续问的下一句”。它们必须像真实用户会直接点选发送的话，而不是对推荐问题本身做评价。
+
+生成原则：
+1. 每个问题都必须同时贴住 user_question 的意图和 assistant_answer 里的具体信息点。
+2. 问题应该是在答案基础上往前走一步：要清单、要展开某个答案点、要具体例子、要步骤/方案、要把答案改成可执行版本。
+3. 不要套模板，不要凭空发散新主题，不要问“是否相关/如何验证相关/优先看哪些反馈/判断能不能做”这类元问题。
+4. 不要出现“用户问题”“助手答案”“assistant”“follow-up”“推荐问题”“相关性”等产品或评估用语。
+5. 如果答案已经在邀请做某件具体事，优先把这个邀请改写成一个自然追问。
+6. 中文问题 14-32 字左右；英文问题 6-16 words。语言跟 user_question 保持一致。
+7. 只输出 JSON，不要 Markdown，不要解释。
+
+坏例子 -> 好例子：
+- 坏：如果遇到「法国最值得玩的精华浓缩成一张清单」，我应该怎么判断能不能做？
+  好：能直接列一张法国最值得玩的清单吗？
+- 坏：怎么验证「不要把换汇当投资」和「换汇注意事项」确实相关？
+  好：换汇时哪些情况最容易被银行风控？
+- 坏：继续优化「提前在国内银行 App 换汇」时，优先看哪些用户反馈？
+  好：国内银行 App 换汇具体怎么操作？
+
+输出格式：
+{"questions":["问题1","问题2","问题3"]}
+"""
+
+
+def _json_from_llm_text(text: str) -> dict:
+    value = (text or "").strip()
+    if not value:
+        return {}
+    if value.startswith("```"):
+        value = value.strip("`").strip()
+        if value.lower().startswith("json"):
+            value = value[4:].strip()
+    try:
+        parsed = json.loads(value)
+        return parsed if isinstance(parsed, dict) else {}
+    except json.JSONDecodeError:
+        start = value.find("{")
+        end = value.rfind("}")
+        if start >= 0 and end > start:
+            try:
+                parsed = json.loads(value[start : end + 1])
+                return parsed if isinstance(parsed, dict) else {}
+            except json.JSONDecodeError:
+                return {}
+    return {}
+
+
+def _clean_follow_up_questions(raw) -> list[str]:
+    if not isinstance(raw, list):
+        return []
+    questions: list[str] = []
+    seen: set[str] = set()
+    for item in raw:
+        question = " ".join(str(item or "").split()).strip()
+        if not question:
+            continue
+        if not question.endswith(("?", "？")):
+            question = question + "？"
+        key = question.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        questions.append(question[:120])
+        if len(questions) >= 3:
+            break
+    return questions
+
+
+@app.post("/agent/followups", response_model=FollowUpResponse)
+async def generate_followups(request: FollowUpRequest):
+    user_question = (request.user_question or "").strip()
+    assistant_answer = (request.assistant_answer or "").strip()
+    if not user_question or not assistant_answer:
+        raise HTTPException(status_code=400, detail="user_question and assistant_answer are required")
+
+    provider = create_provider(request.model_preference)
+    prompt_payload = {
+        "language": request.language,
+        "user_question": user_question[:2000],
+        "assistant_answer": assistant_answer[:5000],
+    }
+    try:
+        response = await provider.chat(
+            [
+                LLMMessage(role="system", content=FOLLOW_UP_SYSTEM_PROMPT),
+                LLMMessage(role="user", content=json.dumps(prompt_payload, ensure_ascii=False)),
+            ],
+            tools=None,
+            temperature=0.35,
+        )
+    except RateLimitError as e:
+        raise HTTPException(status_code=429, detail=str(e)) from e
+    except Exception as e:
+        logger.exception("Follow-up generation failed")
+        raise HTTPException(status_code=502, detail=f"follow-up generation failed: {e}") from e
+
+    parsed = _json_from_llm_text(response.content)
+    return FollowUpResponse(
+        questions=_clean_follow_up_questions(parsed.get("questions")),
+        model_used=response.model,
+    )
+
+
 @app.post("/agent/search", response_model=SearchResponse)
 async def search(request: SearchRequest):
     query = (request.query or "").strip()
@@ -290,7 +411,14 @@ async def search(request: SearchRequest):
         raise HTTPException(status_code=503, detail="no search providers configured")
 
     try:
-        results = await service.search(query, sources=sources, limit=limit)
+        results = await service.search(
+            query,
+            sources=sources,
+            limit=limit,
+            open_results=bool(request.open_results),
+            open_limit=max(1, min(int(request.open_limit or 3), 3)),
+            page_chars=max(500, min(int(request.page_chars or 6000), 12000)),
+        )
     except Exception as e:
         logger.exception("Search failed")
         raise HTTPException(status_code=502, detail=f"search failed: {e}") from e
