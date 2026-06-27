@@ -1,4 +1,5 @@
 """Unit tests for the orchestrator engine with mock LLM."""
+import asyncio
 from datetime import datetime, timezone
 import json
 from pathlib import Path
@@ -10,7 +11,7 @@ from agent.aigc.share_card_renderer import ShareCardRenderResult
 from agent.orchestrator.engine import AgentEngine, DEEP_RESEARCH_PLAN_MARKER
 from agent.llm.base import LLMResponse, ToolCall, LLMMessage
 from agent.schemas.chat import ChatAttachment, ChatRequest
-from agent.schemas.memory import MemoryContext, RoleProfile
+from agent.schemas.memory import MemoryCandidate, MemoryContext, RoleProfile
 from agent.skills.registry import SkillRegistry
 from agent.skills.builtin.echo import EchoSkill
 from agent.skills.builtin.calculator import CalculatorSkill
@@ -2201,12 +2202,69 @@ async def test_memory_hook_writes_after_turn(engine):
                 role_id="default",
             )
         )
+        await engine.wait_for_postprocessing()
 
     memories = engine.role_memory.list_memories(role_id="default", kind="long_term")
-    assert len(result.memory_updates) == 1
-    assert result.memory_updates[0].content == "我的名字是安安"
+    assert result.memory_updates == []
     assert memories[0].content == "我的名字是安安"
-    assert "memory.extracted" in [event.type for event in result.events]
+    run = engine.trace_store.get_run(result.run_id)
+    assert run is not None
+    assert "memory.extracted" in [event.type for event in run.events]
+
+
+@pytest.mark.asyncio
+async def test_memory_postprocess_does_not_block_response(engine):
+    """Long-term memory review should run after the answer is ready."""
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    class SlowMemoryHook:
+        async def review_turn(self, **kwargs):
+            started.set()
+            await release.wait()
+            return [
+                MemoryCandidate(
+                    kind="long_term",
+                    content="用户希望长期记忆检测后台执行",
+                    confidence=0.9,
+                    reason="explicit_test",
+                    tags=["test"],
+                )
+            ]
+
+    engine.memory_hook = SlowMemoryHook()
+    response = LLMResponse(
+        content="已经拆开。",
+        tool_calls=[],
+        model="test-model",
+        usage={},
+    )
+
+    with patch.object(engine, "_get_provider") as mock_provider:
+        provider = AsyncMock()
+        provider.chat = AsyncMock(return_value=response)
+        mock_provider.return_value = provider
+
+        result = await engine.process(
+            ChatRequest(
+                conversation_id="conv-memory-postprocess",
+                message="请记住：长期记忆检测后台执行",
+                role_id="default",
+            )
+        )
+
+    assert result.response == "已经拆开。"
+    assert result.memory_updates == []
+    assert [event.type for event in result.events][-1] == "run.completed"
+    assert engine.role_memory.list_memories(role_id="default", kind="long_term") == []
+
+    await asyncio.wait_for(started.wait(), timeout=1)
+    assert engine.role_memory.list_memories(role_id="default", kind="long_term") == []
+
+    release.set()
+    await engine.wait_for_postprocessing()
+    memories = engine.role_memory.list_memories(role_id="default", kind="long_term")
+    assert memories[0].content == "用户希望长期记忆检测后台执行"
 
 
 @pytest.mark.asyncio
@@ -2249,12 +2307,50 @@ async def test_ai_memory_review_writes_long_term_memory(registry):
                 message="我们现在在重构 agent memory 系统",
             )
         )
+        await engine.wait_for_postprocessing()
 
-    assert len(result.memory_updates) == 1
-    assert result.memory_updates[0].content == "用户正在重构 agent memory 系统"
-    assert result.memory_updates[0].metadata["reviewer"] == "ai"
-    event_types = [event.type for event in result.events]
+    memories = engine.role_memory.list_memories(role_id="default", kind="long_term")
+    assert result.memory_updates == []
+    assert memories[0].content == "用户正在重构 agent memory 系统"
+    assert memories[0].metadata["reviewer"] == "ai"
+    run = engine.trace_store.get_run(result.run_id)
+    assert run is not None
+    event_types = [event.type for event in run.events]
     assert "memory.review.completed" in event_types
+
+
+@pytest.mark.asyncio
+async def test_ai_memory_review_failure_skips_memory_write(registry):
+    engine = AgentEngine(registry, ai_memory_review_enabled=True)
+    assistant_response = LLMResponse(
+        content="我先回答当前问题。",
+        tool_calls=[],
+        model="chat-model",
+        usage={},
+    )
+
+    with patch.object(engine, "_get_provider") as mock_provider:
+        provider = AsyncMock()
+        provider.chat = AsyncMock(
+            side_effect=[assistant_response, RuntimeError("review blocked")]
+        )
+        mock_provider.return_value = provider
+
+        result = await engine.process(
+            ChatRequest(
+                conversation_id="conv-ai-memory-failure",
+                message="帮我计划一下澳洲旅行",
+            )
+        )
+        await engine.wait_for_postprocessing()
+
+    assert engine.role_memory.list_memories(role_id="default", kind="long_term") == []
+    run = engine.trace_store.get_run(result.run_id)
+    assert run is not None
+    event_types = [event.type for event in run.events]
+    assert "memory.review.failed" in event_types
+    assert "memory.candidates.created" not in event_types
+    assert "memory.extracted" not in event_types
 
 
 @pytest.mark.asyncio
@@ -2305,11 +2401,13 @@ async def test_ai_memory_review_updates_existing_memory(registry):
                 message="memory 系统还要优化日期收纳和合并策略",
             )
         )
+        await engine.wait_for_postprocessing()
 
     memories = engine.role_memory.list_memories(role_id="default", kind="long_term")
     assert len(memories) == 1
-    assert result.memory_updates[0].id == existing.id
-    assert result.memory_updates[0].version == 2
+    assert result.memory_updates == []
+    assert memories[0].id == existing.id
+    assert memories[0].version == 2
     assert "日期收纳" in memories[0].content
 
 
@@ -2371,6 +2469,7 @@ async def test_conversation_memory_compacts_with_summary(registry):
 
         await engine.process(ChatRequest(conversation_id="conv-compact", message="第一轮"))
         result = await engine.process(ChatRequest(conversation_id="conv-compact", message="第二轮"))
+        await engine.wait_for_postprocessing()
 
     memory_id = "user:0:conversation:conv-compact"
     blocks = engine.memory.get_summary_blocks(memory_id)
@@ -2380,7 +2479,9 @@ async def test_conversation_memory_compacts_with_summary(registry):
         f"{blocks[0].date}:\n- 用户正在分层设计 memory 系统。"
     )
     assert [message.content for message in engine.memory.get(memory_id)] == ["第二轮", "第二轮"]
-    assert "memory.compaction.completed" in [event.type for event in result.events]
+    run = engine.trace_store.get_run(result.run_id)
+    assert run is not None
+    assert "memory.compaction.completed" in [event.type for event in run.events]
 
 
 @pytest.mark.asyncio

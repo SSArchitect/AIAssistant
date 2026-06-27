@@ -47,7 +47,7 @@ class OpenURLSkill(Skill):
         except Exception as e:
             return SkillResult(
                 success=False,
-                error=f"Open URL failed: {e}",
+                error=f"Open URL failed: {_format_open_error(e)}",
                 data={"url": url},
             )
 
@@ -63,3 +63,41 @@ class OpenURLSkill(Skill):
             data={"page": page.model_dump(mode="json")},
             display_text="\n\n".join(display_parts),
         )
+
+
+def _format_open_error(error: Exception) -> str:
+    parts: list[str] = []
+    seen: set[int] = set()
+    current: BaseException | None = error
+    while current is not None and id(current) not in seen and len(parts) < 4:
+        seen.add(id(current))
+        parts.append(_exception_label(current))
+        current = current.__cause__ or current.__context__
+    return " -> ".join(parts) or "unknown error"
+
+
+def _exception_label(error: BaseException) -> str:
+    name = error.__class__.__name__
+    detail = _exception_detail(error)
+    return f"{name}: {detail}" if detail else name
+
+
+def _exception_detail(error: BaseException) -> str:
+    message = str(error).strip()
+    if message:
+        return message
+    rendered_args = [
+        _exception_arg_detail(arg)
+        for arg in getattr(error, "args", ())
+    ]
+    rendered_args = [item for item in rendered_args if item]
+    return ", ".join(rendered_args)
+
+
+def _exception_arg_detail(arg: object) -> str:
+    if isinstance(arg, BaseException):
+        return _exception_label(arg)
+    if isinstance(arg, str):
+        return arg.strip()
+    text = str(arg).strip()
+    return text or repr(arg)

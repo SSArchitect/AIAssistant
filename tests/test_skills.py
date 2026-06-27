@@ -585,3 +585,27 @@ class TestOpenURLSkill:
         assert result.success is True
         assert result.data["page"]["title"] == "Opened Page"
         assert "Readable page content." in result.display_text
+
+    @pytest.mark.asyncio
+    async def test_execute_reports_silent_network_errors(self, monkeypatch):
+        class SilentConnectError(Exception):
+            def __str__(self):
+                return ""
+
+        class EndOfStream(Exception):
+            def __str__(self):
+                return ""
+
+        async def fake_open_url(self, url, *, max_chars=6000):
+            try:
+                raise SilentConnectError(EndOfStream())
+            except SilentConnectError as cause:
+                raise SilentConnectError() from cause
+
+        monkeypatch.setattr(SearchService, "open_url", fake_open_url)
+
+        result = await self.skill.execute(url="https://example.com/page")
+
+        assert result.success is False
+        assert "Open URL failed: SilentConnectError" in result.error
+        assert "EndOfStream" in result.error

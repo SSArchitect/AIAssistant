@@ -218,6 +218,13 @@ const I18N = {
             sortConfidenceDesc: '置信度优先',
             showingCount: '显示 {visible} / {total}',
             resetFilters: '重置',
+            selectedCount: '已选 {count}',
+            selectVisible: '选中可见长期',
+            clearSelection: '清空选择',
+            deleteSelected: '删除选中',
+            selectMemory: '选择这条长期记忆',
+            deleteSelectedConfirm: '确定删除选中的 {count} 条长期记忆？这个操作会从持久化存储移除它们。',
+            deleteSelectedFailed: '{count} 条删除失败：{message}',
             expandAll: '展开当前',
             collapseAll: '收起全部',
             details: '详情',
@@ -662,6 +669,13 @@ const I18N = {
             sortConfidenceDesc: 'Confidence first',
             showingCount: 'Showing {visible} / {total}',
             resetFilters: 'Reset',
+            selectedCount: '{count} selected',
+            selectVisible: 'Select visible long-term',
+            clearSelection: 'Clear selection',
+            deleteSelected: 'Delete selected',
+            selectMemory: 'Select this long-term memory',
+            deleteSelectedConfirm: 'Delete {count} selected long-term memories from persistent storage?',
+            deleteSelectedFailed: '{count} deletions failed: {message}',
             expandAll: 'Expand current',
             collapseAll: 'Collapse all',
             details: 'Details',
@@ -1024,6 +1038,7 @@ const DEFAULT_DEVELOPER_MEMORY_VIEW_STATE = {
 let developerMemoryViewState = { ...DEFAULT_DEVELOPER_MEMORY_VIEW_STATE };
 let developerMemoryMutatingIds = new Set();
 let expandedDeveloperMemoryIds = new Set();
+let selectedDeveloperMemoryKeys = new Set();
 let developerMemoryHoverCard = null;
 let developerMemoryHoverHideTimer = null;
 let lastMemoryDebug = null;
@@ -2545,6 +2560,7 @@ function developerRoleScopes() {
 async function loadDeveloperMemory() {
     if (!developerWorkbench) return;
     if (!currentUserId) {
+        selectedDeveloperMemoryKeys.clear();
         developerMemoryState = {
             memories: [],
             loadedAt: '',
@@ -2558,6 +2574,7 @@ async function loadDeveloperMemory() {
 
     const scopes = developerRoleScopes();
     if (!scopes.length) {
+        selectedDeveloperMemoryKeys.clear();
         developerMemoryState = {
             memories: [],
             loadedAt: new Date().toISOString(),
@@ -2602,6 +2619,7 @@ async function loadDeveloperMemory() {
     expandedDeveloperMemoryIds = new Set(
         [...expandedDeveloperMemoryIds].filter((key) => availableMemoryKeys.has(key)),
     );
+    pruneSelectedDeveloperMemoryKeys(memories);
     developerMemoryState = {
         memories,
         loadedAt: new Date().toISOString(),
@@ -2714,6 +2732,8 @@ function renderDeveloperSummaryCard(label, value, detail) {
 
 function renderDeveloperInventory(memories = []) {
     const visibleMemories = filterDeveloperMemories(memories);
+    const visibleSelectableCount = visibleMemories.filter(isSelectableDeveloperMemory).length;
+    const selectedCount = selectedDeveloperMemories().length;
     const longTerm = visibleMemories.filter((memory) => memory.kind === 'long_term');
     const rolePersona = visibleMemories.filter((memory) => memory.kind === 'role' || memory.kind === 'persona');
     const other = visibleMemories.filter((memory) => memory.kind !== 'long_term' && memory.kind !== 'role' && memory.kind !== 'persona');
@@ -2738,7 +2758,7 @@ function renderDeveloperInventory(memories = []) {
                 </div>
                 <span class="section-count">${visibleMemories.length}/${memories.length}</span>
             </div>
-            ${renderDeveloperMemoryControls(memories.length, visibleMemories.length)}
+            ${renderDeveloperMemoryControls(memories.length, visibleMemories.length, selectedCount, visibleSelectableCount)}
             <div class="developer-memory-columns developer-memory-inventory">
                 ${memoryGroups}
             </div>
@@ -2746,8 +2766,9 @@ function renderDeveloperInventory(memories = []) {
     `;
 }
 
-function renderDeveloperMemoryControls(totalCount = 0, visibleCount = 0) {
+function renderDeveloperMemoryControls(totalCount = 0, visibleCount = 0, selectedCount = 0, visibleSelectableCount = 0) {
     const state = developerMemoryViewState;
+    const hasSelection = selectedCount > 0;
     return `
         <div class="developer-memory-controls">
             <label class="developer-memory-control developer-memory-search">
@@ -2791,6 +2812,16 @@ function renderDeveloperMemoryControls(totalCount = 0, visibleCount = 0) {
                 </button>
             </div>
             <div class="developer-memory-bulk-actions">
+                <span class="developer-memory-selected-count">${escapeHtml(t('developer.selectedCount', { count: selectedCount }))}</span>
+                <button class="developer-memory-action" type="button" data-developer-memory-selection="select-visible" ${visibleSelectableCount ? '' : 'disabled'}>
+                    ${escapeHtml(t('developer.selectVisible'))}
+                </button>
+                <button class="developer-memory-action" type="button" data-developer-memory-selection="clear" ${hasSelection ? '' : 'disabled'}>
+                    ${escapeHtml(t('developer.clearSelection'))}
+                </button>
+                <button class="developer-memory-action danger" type="button" data-developer-memory-delete-selected ${hasSelection ? '' : 'disabled'}>
+                    ${escapeHtml(t('developer.deleteSelected'))}
+                </button>
                 <button class="developer-memory-action" type="button" data-developer-memory-bulk="expand">
                     ${escapeHtml(t('developer.expandAll'))}
                 </button>
@@ -2828,6 +2859,7 @@ function renderDeveloperMemoryRecord(memory = {}, options = {}) {
     const key = developerMemoryKey(memory);
     const forceExpanded = options.forceExpanded === true;
     const isLongTerm = memory.kind === 'long_term';
+    const selected = selectedDeveloperMemoryKeys.has(key);
     const expanded = !isLongTerm && (forceExpanded || expandedDeveloperMemoryIds.has(key));
     const roleName = memoryRoleLabel(memory.role_id);
     const kind = memoryKindLabel(memory.kind);
@@ -2842,6 +2874,17 @@ function renderDeveloperMemoryRecord(memory = {}, options = {}) {
     const agent = memory.agent_id ? `${t('developer.agentScope')}: ${memory.agent_id}` : '';
     const tags = Array.isArray(memory.tags) ? memory.tags.filter(Boolean) : [];
     const busy = developerMemoryMutatingIds.has(memory.id);
+    const selectControl = isLongTerm && isSelectableDeveloperMemory(memory)
+        ? `<label class="developer-memory-select" title="${escapeAttr(t('developer.selectMemory'))}">
+                <input type="checkbox"
+                       data-developer-memory-select="${escapeAttr(key)}"
+                       data-developer-memory-role="${escapeAttr(memory.role_id || currentRoleId || '')}"
+                       data-developer-memory-id="${escapeAttr(memory.id || '')}"
+                       aria-label="${escapeAttr(t('developer.selectMemory'))}"
+                       ${selected ? 'checked' : ''}
+                       ${busy ? 'disabled' : ''}>
+           </label>`
+        : '';
     const preview = isLongTerm
         ? String(memory.content || '').replace(/\s+/g, ' ').trim()
         : compactDeveloperMemoryContent(memory.content || '', 180);
@@ -2912,11 +2955,11 @@ function renderDeveloperMemoryRecord(memory = {}, options = {}) {
         : '';
 
     return `
-        <article class="developer-memory-record ${isLongTerm ? 'long-term' : ''} ${expanded ? 'expanded' : 'compact'}"
+        <article class="developer-memory-record ${isLongTerm ? 'long-term' : ''} ${selected ? 'selected' : ''} ${expanded ? 'expanded' : 'compact'}"
                  data-developer-memory-record="${escapeAttr(key)}"
                  ${hoverContent}>
             <div class="developer-memory-record-head">
-                ${toggleButton}
+                ${selectControl || toggleButton}
                 <div class="developer-memory-record-main">
                     <div class="developer-memory-record-line">
                         <p class="developer-memory-preview" ${isLongTerm ? '' : `title="${escapeAttr(memory.content || '')}"`}>${escapeHtml(preview || '-')}</p>
@@ -3027,6 +3070,30 @@ function developerMemoryKey(memory = {}) {
     if (memory.id) return `${roleId}::${memory.id}`;
     const fallback = String(memory.content || '').replace(/\s+/g, ' ').slice(0, 64);
     return `${roleId}::${memory.kind || 'memory'}::${memory.created_at || ''}::${fallback}`;
+}
+
+function isSelectableDeveloperMemory(memory = {}) {
+    return memory.kind === 'long_term' && !!memory.id && !!(memory.role_id || currentRoleId);
+}
+
+function pruneSelectedDeveloperMemoryKeys(memories = []) {
+    const selectableKeys = new Set(
+        memories
+            .filter(isSelectableDeveloperMemory)
+            .map((memory) => developerMemoryKey(memory)),
+    );
+    selectedDeveloperMemoryKeys = new Set(
+        [...selectedDeveloperMemoryKeys].filter((key) => selectableKeys.has(key)),
+    );
+}
+
+function selectedDeveloperMemories() {
+    const memoryByKey = new Map(
+        (developerMemoryState.memories || []).map((memory) => [developerMemoryKey(memory), memory]),
+    );
+    return [...selectedDeveloperMemoryKeys]
+        .map((key) => memoryByKey.get(key))
+        .filter(isSelectableDeveloperMemory);
 }
 
 function restoreDeveloperMemoryRecord(memoryKey = '', scrollTop = null) {
@@ -3260,6 +3327,58 @@ async function deleteDeveloperMemory(roleId, memoryId) {
         developerMemoryMutatingIds.delete(memoryId);
         renderDeveloperView();
     }
+}
+
+async function deleteSelectedDeveloperMemories() {
+    const memories = selectedDeveloperMemories();
+    if (!memories.length) {
+        selectedDeveloperMemoryKeys.clear();
+        renderDeveloperView();
+        return;
+    }
+    if (!window.confirm(t('developer.deleteSelectedConfirm', { count: memories.length }))) return;
+
+    const mutatingIds = new Set(memories.map((memory) => memory.id).filter(Boolean));
+    mutatingIds.forEach((id) => developerMemoryMutatingIds.add(id));
+    renderDeveloperView();
+
+    const results = await Promise.allSettled(memories.map((memory) => (
+        apiCall(
+            'DELETE',
+            `/api/roles/${encodeURIComponent(memory.role_id || currentRoleId || '')}/memories/${encodeURIComponent(memory.id)}`,
+        )
+    )));
+    const failedKeys = new Set();
+    const failedMessages = [];
+    results.forEach((result, index) => {
+        if (result.status === 'fulfilled') return;
+        failedKeys.add(developerMemoryKey(memories[index]));
+        failedMessages.push(result.reason?.message || String(result.reason || 'failed'));
+    });
+    selectedDeveloperMemoryKeys = new Set(
+        [...selectedDeveloperMemoryKeys].filter((key) => failedKeys.has(key)),
+    );
+
+    try {
+        await loadDeveloperMemory();
+        const touchedCurrentRole = memories.some((memory) => (memory.role_id || currentRoleId || '') === currentRoleId);
+        if (touchedCurrentRole) await loadRoleMemories();
+    } catch (err) {
+        failedMessages.push(err.message || String(err));
+    } finally {
+        mutatingIds.forEach((id) => developerMemoryMutatingIds.delete(id));
+    }
+
+    if (failedMessages.length) {
+        developerMemoryState = {
+            ...developerMemoryState,
+            error: t('developer.deleteSelectedFailed', {
+                count: failedMessages.length,
+                message: failedMessages.slice(0, 3).join('; '),
+            }),
+        };
+    }
+    renderDeveloperView();
 }
 
 async function loadTools() {
@@ -8243,7 +8362,6 @@ async function renderPersistedFollowUpsAfterMessage(anchorEl, conversationId, ru
             messagesContainer.innerHTML,
             conversationMessagesSignature(messages)
         );
-        scrollToBottom();
         return;
     }
 }
@@ -9162,6 +9280,28 @@ document.addEventListener('click', async (event) => {
         return;
     }
 
+    const developerMemorySelectionButton = event.target.closest('[data-developer-memory-selection]');
+    if (developerMemorySelectionButton && !developerMemorySelectionButton.disabled) {
+        event.preventDefault();
+        const action = developerMemorySelectionButton.dataset.developerMemorySelection;
+        if (action === 'select-visible') {
+            filterDeveloperMemories(developerMemoryState.memories || [])
+                .filter(isSelectableDeveloperMemory)
+                .forEach((memory) => selectedDeveloperMemoryKeys.add(developerMemoryKey(memory)));
+        } else if (action === 'clear') {
+            selectedDeveloperMemoryKeys.clear();
+        }
+        renderDeveloperView();
+        return;
+    }
+
+    const developerMemoryDeleteSelectedButton = event.target.closest('[data-developer-memory-delete-selected]');
+    if (developerMemoryDeleteSelectedButton && !developerMemoryDeleteSelectedButton.disabled) {
+        event.preventDefault();
+        await deleteSelectedDeveloperMemories();
+        return;
+    }
+
     const developerMemoryBulkButton = event.target.closest('[data-developer-memory-bulk]');
     if (developerMemoryBulkButton) {
         event.preventDefault();
@@ -9648,6 +9788,18 @@ if (developerWorkbench) {
     });
 
     developerWorkbench.addEventListener('change', (event) => {
+        const memorySelect = event.target.closest('[data-developer-memory-select]');
+        if (memorySelect) {
+            const key = memorySelect.dataset.developerMemorySelect || '';
+            if (key && memorySelect.checked) {
+                selectedDeveloperMemoryKeys.add(key);
+            } else if (key) {
+                selectedDeveloperMemoryKeys.delete(key);
+            }
+            renderDeveloperView();
+            return;
+        }
+
         const filterControl = event.target.closest('[data-developer-memory-filter]');
         if (!filterControl) return;
 

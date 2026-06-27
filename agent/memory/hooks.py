@@ -117,10 +117,11 @@ class HeuristicMemoryHook:
                 key = match.groupdict().get("key")
                 if key and key.strip() in self._ignored_fact_keys:
                     continue
+                content = self._trim(match.group(0))
                 return [
                     MemoryCandidate(
                         kind="long_term",
-                        content=self._trim(match.group(0)),
+                        content=content,
                         confidence=0.7,
                         reason="user_preference_or_fact",
                         tags=["user_fact"],

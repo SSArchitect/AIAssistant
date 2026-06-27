@@ -112,6 +112,7 @@ class AgentEngine:
         self.trace_store = trace_store or TraceStore()
         self.weight_loss_store = weight_loss_store or WeightLossStore()
         self._providers: dict[str, LLMProvider] = {}
+        self._postprocess_tasks: set[asyncio.Task[None]] = set()
 
     def _ensure_system_tools_registered(self) -> None:
         for agent in list_agents():
@@ -464,6 +465,82 @@ class AgentEngine:
         result = on_token(token)
         if inspect.isawaitable(result):
             await result
+
+    def _snapshot_run_events(self, run_id: str) -> list:
+        run = self.trace_store.get_run(run_id)
+        return list(run.events) if run else []
+
+    def _schedule_memory_postprocess(
+        self,
+        *,
+        request: ChatRequest,
+        agent_id: str,
+        role_context: MemoryContext,
+        assistant_message: str,
+        new_messages: list[LLMMessage],
+        run_id: str,
+    ) -> None:
+        if not request.memory_enabled:
+            return
+
+        conversation_message_count = len(
+            self.memory.get(self._conversation_memory_id(request))
+        )
+        task = asyncio.create_task(
+            self._run_memory_postprocess(
+                request=request,
+                agent_id=agent_id,
+                role_context=role_context,
+                assistant_message=assistant_message,
+                new_messages=list(new_messages),
+                run_id=run_id,
+                conversation_message_count=conversation_message_count,
+            )
+        )
+        self._postprocess_tasks.add(task)
+
+        def _discard(done: asyncio.Task[None]) -> None:
+            self._postprocess_tasks.discard(done)
+            if done.cancelled():
+                return
+            try:
+                done.result()
+            except asyncio.CancelledError:
+                return
+            except Exception:
+                logger.exception("Memory post-processing task failed")
+
+        task.add_done_callback(_discard)
+
+    async def _run_memory_postprocess(
+        self,
+        *,
+        request: ChatRequest,
+        agent_id: str,
+        role_context: MemoryContext,
+        assistant_message: str,
+        new_messages: list[LLMMessage],
+        run_id: str,
+        conversation_message_count: int,
+    ) -> None:
+        await self._review_and_store_memories(
+            request=request,
+            agent_id=agent_id,
+            role_context=role_context,
+            assistant_message=assistant_message,
+            new_messages=new_messages,
+            run_id=run_id,
+        )
+        await self._maybe_compact_conversation_memory(
+            request=request,
+            run_id=run_id,
+            expected_message_count=conversation_message_count,
+        )
+
+    async def wait_for_postprocessing(self) -> None:
+        while self._postprocess_tasks:
+            tasks = list(self._postprocess_tasks)
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     def _trace_message(self, message: LLMMessage) -> dict:
         content = message.content
@@ -1078,11 +1155,31 @@ class AgentEngine:
         *,
         request: ChatRequest,
         run_id: str,
+        expected_message_count: int | None = None,
     ) -> None:
         if not request.memory_enabled:
             return
         conversation_memory_id = self._conversation_memory_id(request)
         threshold = max(1, self.conversation_compaction_threshold)
+        current_message_count = len(self.memory.get(conversation_memory_id))
+        if (
+            expected_message_count is not None
+            and current_message_count != expected_message_count
+        ):
+            if current_message_count > threshold:
+                self.trace_store.append_event(
+                    run_id,
+                    type="memory.compaction.skipped",
+                    status="completed",
+                    title="Conversation memory compaction skipped",
+                    payload={
+                        "reason": "superseded_by_newer_turn",
+                        "conversation_id": request.conversation_id,
+                        "expected_message_count": expected_message_count,
+                        "current_message_count": current_message_count,
+                    },
+                )
+            return
         if not self.memory.needs_compaction(conversation_memory_id, threshold=threshold):
             return
 
@@ -1296,36 +1393,15 @@ class AgentEngine:
                     new_messages=new_messages,
                 )
         except Exception as e:
-            logger.exception("AI memory review failed; falling back to heuristic hook")
+            logger.exception("AI memory review failed")
             self.trace_store.append_event(
                 run_id,
                 type="memory.review.failed",
                 status="error",
-                title="AI memory review failed; heuristic fallback used",
+                title="AI memory review failed; memory write skipped",
                 payload={"error_message": str(e), "role_id": role_context.role.id},
             )
-            try:
-                candidates = await self.memory_hook.review_turn(
-                    role=role_context.role,
-                    agent_id=agent_id,
-                    conversation_id=request.conversation_id,
-                    user_message=request.message,
-                    assistant_message=assistant_message,
-                    new_messages=new_messages,
-                )
-            except Exception as hook_error:
-                logger.exception("Memory hook failed")
-                self.trace_store.append_event(
-                    run_id,
-                    type="memory.failed",
-                    status="error",
-                    title="Memory hook failed",
-                    payload={
-                        "error_message": str(hook_error),
-                        "role_id": role_context.role.id,
-                    },
-                )
-                return []
+            return []
 
         self.trace_store.append_event(
             run_id,
@@ -3301,15 +3377,6 @@ class AgentEngine:
 
         new_messages.append(LLMMessage(role="assistant", content=response_text))
         self._add_conversation_memory(request, new_messages)
-        memory_updates = await self._review_and_store_memories(
-            request=request,
-            agent_id=agent_id,
-            role_context=role_context,
-            assistant_message=response_text,
-            new_messages=new_messages,
-            run_id=run_id,
-        )
-        await self._maybe_compact_conversation_memory(request=request, run_id=run_id)
 
         unique_skills = list(dict.fromkeys(skills_used))
         model_used = ", ".join(dict.fromkeys(model_names))
@@ -3320,7 +3387,15 @@ class AgentEngine:
             tokens_used=total_usage,
             skills_used=unique_skills,
         )
-        latest_run = self.trace_store.get_run(run_id)
+        events = self._snapshot_run_events(run_id)
+        self._schedule_memory_postprocess(
+            request=request,
+            agent_id=agent_id,
+            role_context=role_context,
+            assistant_message=response_text,
+            new_messages=new_messages,
+            run_id=run_id,
+        )
         return ChatResponse(
             conversation_id=request.conversation_id,
             response=response_text,
@@ -3333,9 +3408,9 @@ class AgentEngine:
             role_id=role_id,
             runtime=runtime,
             run_id=run_id,
-            events=latest_run.events if latest_run else [],
+            events=events,
             memory_context=role_context.records,
-            memory_updates=memory_updates,
+            memory_updates=[],
         )
 
     async def _complete_deep_research_response(
@@ -3357,17 +3432,6 @@ class AgentEngine:
         review_memory: bool = True,
     ) -> ChatResponse:
         self._add_conversation_memory(request, new_messages)
-        memory_updates: list[MemoryRecord] = []
-        if review_memory:
-            memory_updates = await self._review_and_store_memories(
-                request=request,
-                agent_id=agent_id,
-                role_context=role_context,
-                assistant_message=response_text,
-                new_messages=new_messages,
-                run_id=run_id,
-            )
-            await self._maybe_compact_conversation_memory(request=request, run_id=run_id)
 
         unique_skills = list(dict.fromkeys(skills_used or []))
         self.trace_store.complete_run(
@@ -3377,7 +3441,16 @@ class AgentEngine:
             tokens_used=tokens_used or {},
             skills_used=unique_skills,
         )
-        latest_run = self.trace_store.get_run(run_id)
+        events = self._snapshot_run_events(run_id)
+        if review_memory:
+            self._schedule_memory_postprocess(
+                request=request,
+                agent_id=agent_id,
+                role_context=role_context,
+                assistant_message=response_text,
+                new_messages=new_messages,
+                run_id=run_id,
+            )
         return ChatResponse(
             conversation_id=request.conversation_id,
             response=response_text,
@@ -3390,9 +3463,9 @@ class AgentEngine:
             role_id=role_id,
             runtime=runtime,
             run_id=run_id,
-            events=latest_run.events if latest_run else [],
+            events=events,
             memory_context=role_context.records,
-            memory_updates=memory_updates,
+            memory_updates=[],
         )
 
     async def _generate_deep_research_plan(
@@ -6629,18 +6702,6 @@ class AgentEngine:
             LLMMessage(role="assistant", content=assistant_message),
         ]
         self._add_conversation_memory(request, new_messages)
-        memory_updates = await self._review_and_store_memories(
-            request=request,
-            agent_id=agent_id,
-            role_context=role_context,
-            assistant_message=assistant_message,
-            new_messages=new_messages,
-            run_id=run_id,
-        )
-        await self._maybe_compact_conversation_memory(
-            request=request,
-            run_id=run_id,
-        )
         unique_skills = list(dict.fromkeys(skills_used))
         self.trace_store.complete_run(
             run_id,
@@ -6649,7 +6710,15 @@ class AgentEngine:
             tokens_used=tokens_used or {},
             skills_used=unique_skills,
         )
-        latest_run = self.trace_store.get_run(run_id)
+        events = self._snapshot_run_events(run_id)
+        self._schedule_memory_postprocess(
+            request=request,
+            agent_id=agent_id,
+            role_context=role_context,
+            assistant_message=assistant_message,
+            new_messages=new_messages,
+            run_id=run_id,
+        )
         return ChatResponse(
             conversation_id=request.conversation_id,
             response=assistant_message,
@@ -6661,9 +6730,9 @@ class AgentEngine:
             role_id=role_id,
             runtime=runtime,
             run_id=run_id,
-            events=latest_run.events if latest_run else [],
+            events=events,
             memory_context=role_context.records,
-            memory_updates=memory_updates,
+            memory_updates=[],
         )
 
     async def _process_weight_loss_command(
@@ -7160,18 +7229,6 @@ class AgentEngine:
             LLMMessage(role="assistant", content=assistant_message),
         ]
         self._add_conversation_memory(request, new_messages)
-        memory_updates = await self._review_and_store_memories(
-            request=request,
-            agent_id=agent_id,
-            role_context=role_context,
-            assistant_message=assistant_message,
-            new_messages=new_messages,
-            run_id=run_id,
-        )
-        await self._maybe_compact_conversation_memory(
-            request=request,
-            run_id=run_id,
-        )
         skills_used = ["food_calorie_estimation"] if logged_meal else []
         if logged_exercise:
             skills_used.append("exercise_logging")
@@ -7200,7 +7257,15 @@ class AgentEngine:
             tokens_used=tokens_used,
             skills_used=skills_used,
         )
-        latest_run = self.trace_store.get_run(run_id)
+        events = self._snapshot_run_events(run_id)
+        self._schedule_memory_postprocess(
+            request=request,
+            agent_id=agent_id,
+            role_context=role_context,
+            assistant_message=assistant_message,
+            new_messages=new_messages,
+            run_id=run_id,
+        )
         return ChatResponse(
             conversation_id=request.conversation_id,
             response=assistant_message,
@@ -7212,9 +7277,9 @@ class AgentEngine:
             role_id=role_id,
             runtime=runtime,
             run_id=run_id,
-            events=latest_run.events if latest_run else [],
+            events=events,
             memory_context=role_context.records,
-            memory_updates=memory_updates,
+            memory_updates=[],
         )
 
     async def _process_image_generation(
@@ -7686,18 +7751,6 @@ class AgentEngine:
                 LLMMessage(role="assistant", content=assistant_message),
             ]
             self._add_conversation_memory(request, new_messages)
-            memory_updates = await self._review_and_store_memories(
-                request=request,
-                agent_id=agent_id,
-                role_context=role_context,
-                assistant_message=assistant_message,
-                new_messages=new_messages,
-                run_id=run_id,
-            )
-            await self._maybe_compact_conversation_memory(
-                request=request,
-                run_id=run_id,
-            )
             skills_used = list(dict.fromkeys(research_skills + ["prompt_refine"]))
             tokens_used = dict(research_usage)
             for key, value in review_usage.items():
@@ -7727,7 +7780,15 @@ class AgentEngine:
                 tokens_used=tokens_used,
                 skills_used=skills_used,
             )
-            latest_run = self.trace_store.get_run(run_id)
+            events = self._snapshot_run_events(run_id)
+            self._schedule_memory_postprocess(
+                request=request,
+                agent_id=agent_id,
+                role_context=role_context,
+                assistant_message=assistant_message,
+                new_messages=new_messages,
+                run_id=run_id,
+            )
             return ChatResponse(
                 conversation_id=request.conversation_id,
                 response=assistant_message,
@@ -7740,9 +7801,9 @@ class AgentEngine:
                 role_id=role_id,
                 runtime=runtime,
                 run_id=run_id,
-                events=latest_run.events if latest_run else [],
+                events=events,
                 memory_context=role_context.records,
-                memory_updates=memory_updates,
+                memory_updates=[],
             )
 
         subject_references = self._aigc_subject_references(request.attachments)
@@ -8020,18 +8081,6 @@ class AgentEngine:
             LLMMessage(role="assistant", content=assistant_message),
         ]
         self._add_conversation_memory(request, new_messages)
-        memory_updates = await self._review_and_store_memories(
-            request=request,
-            agent_id=agent_id,
-            role_context=role_context,
-            assistant_message=assistant_message,
-            new_messages=new_messages,
-            run_id=run_id,
-        )
-        await self._maybe_compact_conversation_memory(
-            request=request,
-            run_id=run_id,
-        )
 
         skills_used = list(dict.fromkeys(research_skills + ["prompt_refine", "image_generation"]))
         model_used = " / ".join(
@@ -8065,7 +8114,15 @@ class AgentEngine:
             tokens_used=tokens_used,
             skills_used=skills_used,
         )
-        latest_run = self.trace_store.get_run(run_id)
+        events = self._snapshot_run_events(run_id)
+        self._schedule_memory_postprocess(
+            request=request,
+            agent_id=agent_id,
+            role_context=role_context,
+            assistant_message=assistant_message,
+            new_messages=new_messages,
+            run_id=run_id,
+        )
         return ChatResponse(
             conversation_id=request.conversation_id,
             response=assistant_message,
@@ -8078,9 +8135,9 @@ class AgentEngine:
             role_id=role_id,
             runtime=runtime,
             run_id=run_id,
-            events=latest_run.events if latest_run else [],
+            events=events,
             memory_context=role_context.records,
-            memory_updates=memory_updates,
+            memory_updates=[],
         )
 
     async def process(
@@ -8980,19 +9037,6 @@ class AgentEngine:
         if not isinstance(final_content, str):
             final_content = str(final_content)
 
-        memory_updates = await self._review_and_store_memories(
-            request=request,
-            agent_id=agent_id,
-            role_context=role_context,
-            assistant_message=final_content,
-            new_messages=all_new_messages,
-            run_id=run.run_id,
-        )
-        await self._maybe_compact_conversation_memory(
-            request=request,
-            run_id=run.run_id,
-        )
-
         unique_skills = list(dict.fromkeys(skills_used))
         self.trace_store.complete_run(
             run.run_id,
@@ -9001,7 +9045,15 @@ class AgentEngine:
             tokens_used=response.usage if response else {},
             skills_used=unique_skills,
         )
-        latest_run = self.trace_store.get_run(run.run_id) or run
+        events = self._snapshot_run_events(run.run_id)
+        self._schedule_memory_postprocess(
+            request=request,
+            agent_id=agent_id,
+            role_context=role_context,
+            assistant_message=final_content,
+            new_messages=all_new_messages,
+            run_id=run.run_id,
+        )
 
         return ChatResponse(
             conversation_id=request.conversation_id,
@@ -9015,7 +9067,7 @@ class AgentEngine:
             role_id=role_id,
             runtime=runtime,
             run_id=run.run_id,
-            events=latest_run.events,
+            events=events,
             memory_context=role_context.records,
-            memory_updates=memory_updates,
+            memory_updates=[],
         )
