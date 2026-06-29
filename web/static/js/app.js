@@ -2,7 +2,6 @@ const API_BASE = '';
 const LANGUAGE_KEY = 'agent_assistant_language';
 const MODE_STORAGE_KEY = 'super_chat_mode_ids';
 const SUPER_CHAT_AGENT_ID = 'super_chat';
-const AGENT_LOOP_MODE_ID = 'agent_loop';
 const DEEP_RESEARCH_MODE_ID = 'deep_research';
 const DEEP_RESEARCH_AGENT_ID = 'deep_research_v1';
 const CURRENT_CONVERSATION_STORAGE_KEY = 'agent_assistant_current_conversation_id';
@@ -317,7 +316,6 @@ const I18N = {
             imageTitle: 'AI 生图功能',
             active: '已启用：{names}',
             items: {
-                agent_loop: ['Agent Loop', '主循环 + function call，动态调用工具或 Agent'],
                 deep_research: ['深度研究', '先确认计划，再多轮检索出报告'],
                 research: ['研究', '需要资料时先整理和检索来源'],
                 plan: ['规划', '先规划执行步骤再处理'],
@@ -766,7 +764,6 @@ const I18N = {
             imageTitle: 'AI Image Modes',
             active: 'Enabled: {names}',
             items: {
-                agent_loop: ['Agent Loop', 'Main loop + function calling with dynamic tools and agents'],
                 deep_research: ['Deep Research', 'Confirm a plan, then search and report'],
                 research: ['Research', 'Organize and retrieve sources when needed'],
                 plan: ['Plan', 'Plan execution steps before handling'],
@@ -934,13 +931,6 @@ const PROVIDERS = [
 ];
 
 const SUPER_CHAT_MODES = [
-    {
-        id: AGENT_LOOP_MODE_ID,
-        prompts: {
-            zh: '【Agent Loop】本轮使用主循环 + function calling。模型每轮根据工具 schema 自主选择普通工具或 terminal Agent tool；不要走固定 DAG。trace 需要保留真实 model/tool/agent 事件。',
-            en: '[Agent Loop] Use the main loop + function calling for this turn. Each model round chooses normal tools or terminal agent tools from schemas; do not use a fixed DAG. Keep raw model/tool/agent events visible in trace.',
-        },
-    },
     {
         id: DEEP_RESEARCH_MODE_ID,
         prompts: {

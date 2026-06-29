@@ -250,6 +250,8 @@ async def test_agent_loop_mode_uses_main_function_call_workflow(engine):
     context_event = next(event for event in result.events if event.type == "context.built")
     assert context_event.payload["mode_ids"] == ["agent_loop"]
     assert context_event.payload["final_model_request"]["workflow"] == "agent_loop"
+    assert context_event.payload["final_model_request"]["workflow_source"] == "selected_mode"
+    assert context_event.payload["final_model_request"]["legacy_workflow"] == "generic_tool_loop"
     assert context_event.payload["final_model_request"]["workflow_nodes"] == ["main_loop"]
     event_types = [event.type for event in result.events]
     assert "thinking.plan.created" not in event_types
@@ -257,6 +259,9 @@ async def test_agent_loop_mode_uses_main_function_call_workflow(engine):
     assert "workflow.node.started" in event_types
     assert "workflow.node.completed" in event_types
     assert "workflow.completed" in event_types
+    workflow_started = next(event for event in result.events if event.type == "workflow.started")
+    assert workflow_started.payload["workflow_source"] == "selected_mode"
+    assert workflow_started.payload["legacy_workflow"] == "generic_tool_loop"
     model_started = next(event for event in result.events if event.type == "model.started")
     assert model_started.payload["workflow"] == "agent_loop"
     assert model_started.payload["workflow_node"] == "main_loop"
@@ -712,6 +717,8 @@ async def test_super_chat_agent_loop_mode_prompts_are_injected(engine):
         "【Agent Loop】本轮使用主循环 + function calling。",
     ]
     assert context_event.payload["final_model_request"]["workflow"] == "agent_loop"
+    assert context_event.payload["final_model_request"]["workflow_source"] == "selected_mode"
+    assert context_event.payload["final_model_request"]["legacy_workflow"] == "generic_tool_loop"
     assert context_event.payload["final_model_request"]["workflow_nodes"] == ["main_loop"]
     assert context_event.payload["prompt_section_order"] == [
         "base_system_prompt",
@@ -725,6 +732,9 @@ async def test_super_chat_agent_loop_mode_prompts_are_injected(engine):
     event_types = [event.type for event in result.events]
     assert "workflow.started" in event_types
     assert "workflow.completed" in event_types
+    workflow_started = next(event for event in result.events if event.type == "workflow.started")
+    assert workflow_started.payload["workflow_source"] == "selected_mode"
+    assert workflow_started.payload["legacy_workflow"] == "generic_tool_loop"
     assert not any(event_type.startswith("thinking.") for event_type in event_types)
 
 
@@ -764,10 +774,16 @@ async def test_removed_thinking_mode_is_ignored_by_super_chat(engine):
     assert "使用思考模式" not in system_prompt
     assert context_event.payload["mode_ids"] == []
     assert context_event.payload["mode_prompts"] == []
-    assert context_event.payload["final_model_request"]["workflow"] == "generic_tool_loop"
-    assert context_event.payload["final_model_request"]["workflow_nodes"] == []
+    assert context_event.payload["final_model_request"]["workflow"] == "agent_loop"
+    assert context_event.payload["final_model_request"]["workflow_source"] == "default_super_chat"
+    assert context_event.payload["final_model_request"]["legacy_workflow"] == "generic_tool_loop"
+    assert context_event.payload["final_model_request"]["workflow_nodes"] == ["main_loop"]
     event_types = [event.type for event in result.events]
-    assert "workflow.started" not in event_types
+    assert "workflow.started" in event_types
+    assert "workflow.completed" in event_types
+    workflow_started = next(event for event in result.events if event.type == "workflow.started")
+    assert workflow_started.payload["workflow_source"] == "default_super_chat"
+    assert workflow_started.payload["legacy_workflow"] == "generic_tool_loop"
     assert not any(event_type.startswith("thinking.") for event_type in event_types)
 
 

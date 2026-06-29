@@ -57,6 +57,7 @@ RESEARCH_AGENT_ID = "deep_research_v1"
 AIGC_AGENT_ID = "image_generation_v1"
 WEIGHT_LOSS_AGENT_ID = "weight_loss_v1"
 AGENT_LOOP_MODE_ID = "agent_loop"
+GENERIC_TOOL_LOOP_WORKFLOW = "generic_tool_loop"
 DEEP_RESEARCH_MODE_ID = "deep_research"
 REMOVED_SUPER_CHAT_MODE_IDS = {"thinking"}
 AIGC_REFINE_MODE_ID = "image_prompt_refine"
@@ -2462,9 +2463,16 @@ class AgentEngine:
             return request
         return request.model_copy(update={"mode_ids": kept_ids, "mode_prompts": kept_prompts})
 
-    def _agent_loop_mode_enabled(self, request: ChatRequest, agent_id: str) -> bool:
+    def _agent_loop_mode_enabled(self, _request: ChatRequest, agent_id: str) -> bool:
+        return agent_id == SUPER_CHAT_AGENT_ID
+
+    def _agent_loop_workflow_source(self, request: ChatRequest, agent_id: str) -> str:
+        if agent_id != SUPER_CHAT_AGENT_ID:
+            return "agent_default"
         mode_ids = set(request.mode_ids or [])
-        return agent_id == SUPER_CHAT_AGENT_ID and AGENT_LOOP_MODE_ID in mode_ids
+        if AGENT_LOOP_MODE_ID in mode_ids:
+            return "selected_mode"
+        return "default_super_chat"
 
     def _append_workflow_event(
         self,
@@ -8502,8 +8510,10 @@ class AgentEngine:
 
         tools = self._tool_definitions_for_agent(agent_id, disabled_tool_names)
         agent_loop_enabled = self._agent_loop_mode_enabled(request, agent_id)
-        workflow_name = AGENT_LOOP_MODE_ID if agent_loop_enabled else "generic_tool_loop"
+        workflow_name = AGENT_LOOP_MODE_ID if agent_loop_enabled else GENERIC_TOOL_LOOP_WORKFLOW
         workflow_node = "main_loop" if agent_loop_enabled else ""
+        workflow_source = self._agent_loop_workflow_source(request, agent_id)
+        legacy_workflow = GENERIC_TOOL_LOOP_WORKFLOW if agent_loop_enabled else ""
         workflow_started: float | None = None
         workflow_node_started: float | None = None
 
@@ -8561,6 +8571,8 @@ class AgentEngine:
                 "model_preference": request.model_preference,
                 "temperature": "provider_default",
                 "workflow": workflow_name,
+                "workflow_source": workflow_source,
+                **({"legacy_workflow": legacy_workflow} if legacy_workflow else {}),
                 "workflow_nodes": [workflow_node] if agent_loop_enabled else [],
                 "trace_policy": (
                     "main loop boundary plus raw model/tool/agent events"
@@ -8582,6 +8594,8 @@ class AgentEngine:
                     "mode_ids": request.mode_ids,
                     "nodes": [workflow_node],
                     "loop": "model_function_call",
+                    "workflow_source": workflow_source,
+                    "legacy_workflow": legacy_workflow,
                     "max_rounds": MAX_TOOL_ROUNDS,
                     "tool_names": tool_names,
                     "node_policy": "main_loop is a boundary; raw model/tool/agent events remain visible",
@@ -8597,6 +8611,8 @@ class AgentEngine:
                 payload={
                     "mode_ids": request.mode_ids,
                     "loop": "model_function_call",
+                    "workflow_source": workflow_source,
+                    "legacy_workflow": legacy_workflow,
                     "max_rounds": MAX_TOOL_ROUNDS,
                     "tool_names": tool_names,
                 },
@@ -8633,6 +8649,8 @@ class AgentEngine:
                     {
                         "workflow": workflow_name,
                         "workflow_node": workflow_node,
+                        "workflow_source": workflow_source,
+                        "legacy_workflow": legacy_workflow,
                     }
                 )
             self.trace_store.append_event(
@@ -8672,6 +8690,8 @@ class AgentEngine:
                             "round": round_index + 1,
                             "error_type": "rate_limit",
                             "error_message": error_msg,
+                            "workflow_source": workflow_source,
+                            "legacy_workflow": legacy_workflow,
                         },
                         duration_ms=(
                             int((perf_counter() - workflow_node_started) * 1000)
@@ -8685,7 +8705,12 @@ class AgentEngine:
                         workflow=workflow_name,
                         status="error",
                         title="Workflow agent_loop failed",
-                        payload={"error_type": "rate_limit", "error_message": error_msg},
+                        payload={
+                            "error_type": "rate_limit",
+                            "error_message": error_msg,
+                            "workflow_source": workflow_source,
+                            "legacy_workflow": legacy_workflow,
+                        },
                         duration_ms=(
                             int((perf_counter() - workflow_started) * 1000)
                             if isinstance(workflow_started, (int, float))
@@ -8746,6 +8771,8 @@ class AgentEngine:
                             "round": round_index + 1,
                             "error_type": "model_error",
                             "error_message": error_msg,
+                            "workflow_source": workflow_source,
+                            "legacy_workflow": legacy_workflow,
                         },
                         duration_ms=(
                             int((perf_counter() - workflow_node_started) * 1000)
@@ -8759,7 +8786,12 @@ class AgentEngine:
                         workflow=workflow_name,
                         status="error",
                         title="Workflow agent_loop failed",
-                        payload={"error_type": "model_error", "error_message": error_msg},
+                        payload={
+                            "error_type": "model_error",
+                            "error_message": error_msg,
+                            "workflow_source": workflow_source,
+                            "legacy_workflow": legacy_workflow,
+                        },
                         duration_ms=(
                             int((perf_counter() - workflow_started) * 1000)
                             if isinstance(workflow_started, (int, float))
@@ -8798,6 +8830,8 @@ class AgentEngine:
                     {
                         "workflow": workflow_name,
                         "workflow_node": workflow_node,
+                        "workflow_source": workflow_source,
+                        "legacy_workflow": legacy_workflow,
                     }
                 )
             self.trace_store.append_event(
@@ -8846,6 +8880,8 @@ class AgentEngine:
                             {
                                 "workflow": workflow_name,
                                 "workflow_node": workflow_node,
+                                "workflow_source": workflow_source,
+                                "legacy_workflow": legacy_workflow,
                             }
                         )
                     self.trace_store.append_event(
@@ -8872,6 +8908,8 @@ class AgentEngine:
                                 "workflow_started": workflow_started,
                                 "round": round_index + 1,
                                 "result": "terminal_agent_handoff",
+                                "workflow_source": workflow_source,
+                                "legacy_workflow": legacy_workflow,
                             }
                             if agent_loop_enabled
                             else None
@@ -8887,6 +8925,8 @@ class AgentEngine:
                         {
                             "workflow": workflow_name,
                             "workflow_node": workflow_node,
+                            "workflow_source": workflow_source,
+                            "legacy_workflow": legacy_workflow,
                         }
                     )
                 self.trace_store.append_event(
@@ -8954,6 +8994,8 @@ class AgentEngine:
                         {
                             "workflow": workflow_name,
                             "workflow_node": workflow_node,
+                            "workflow_source": workflow_source,
+                            "legacy_workflow": legacy_workflow,
                         }
                     )
                 self.trace_store.append_event(
@@ -9002,6 +9044,8 @@ class AgentEngine:
                 title="Workflow node main_loop completed",
                 payload={
                     "result": workflow_result,
+                    "workflow_source": workflow_source,
+                    "legacy_workflow": legacy_workflow,
                     "skills_used": list(dict.fromkeys(skills_used)),
                     "citation_count": len(citations),
                     "rounds": len([message for message in messages if message.role == "assistant"]),
@@ -9020,6 +9064,8 @@ class AgentEngine:
                 title="Workflow agent_loop completed",
                 payload={
                     "result": workflow_result,
+                    "workflow_source": workflow_source,
+                    "legacy_workflow": legacy_workflow,
                     "skills_used": list(dict.fromkeys(skills_used)),
                     "citation_count": len(citations),
                 },
