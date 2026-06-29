@@ -9,37 +9,53 @@ class SearchSkill(Skill):
         return SkillMetadata(
             name="search",
             description=(
-                "按关键词搜索已配置的数据源。当用户需要来自索引文档、外部 API 或后端搜索服务的信息时使用。"
-                "搜索结果只是需要归因的片段；回答时引用结果 URL，不要把薄弱来源包装成已验证事实。"
-                "如果仅有标题和摘要不足以回答，可设置 open_results=true 打开前几条网页读取正文。"
+                "默认事实检索工具；当回答需要外部知识、当前事实或可核验来源时，必须先调用 search 再回答，"
+                "不要凭模型记忆裸答。覆盖场景包括品牌、型号、产品编号/SKU、设备、药剂、清洁剂、"
+                "使用方法、维修保养、兼容性、错误码、规格、版本、价格、库存、新闻、政策、医疗、"
+                "法律、金融、投资和安全风险。优先找官方、一手或高可信来源；回答时引用结果 URL，"
+                "区分搜索片段和已验证正文，不要把薄弱来源包装成已验证事实。"
+                "如果仅有标题和摘要不足以回答，或涉及产品说明、安全使用、维修、医疗、法律、金融等高风险细节，"
+                "设置 open_results=true 打开前几条网页读取正文；也可先 search 找到官方页后再调用 open_url 核验。"
+                "普通联网检索通常不要指定具体 provider；如果结果偏题，保留完整问题并加入关键实体、"
+                "官方机构/站点、地区、年份、榜单或评分来源等限定词后重试，而不是只搜年份或泛词。"
+                "写作、翻译、整理用户已提供内容、情绪陪伴、纯创意和一般代码解释通常不需要搜索。"
             ),
             parameters=[
                 SkillParameter(
                     name="query",
                     type="string",
-                    description="搜索关键词或自然语言查询。",
+                    description=(
+                        "搜索关键词或自然语言查询；保留完整意图，并包含品牌、型号、产品编号、错误码、"
+                        "版本、地点、时间、官方机构、站点、榜单/评分来源等可核验细节。避免只用年份、"
+                        "最近、最新、推荐等泛词。"
+                    ),
                     required=True,
                 ),
                 SkillParameter(
                     name="sources",
                     type="string",
                     description=(
-                        "可选的来源名称，用英文逗号分隔。留空使用默认搜索；web 表示通用网络搜索。"
-                        "也可以指定 local、http、bing-rss 或 minimax-mcp。"
+                        "可选来源名称，用英文逗号分隔。普通联网检索留空或用 web；"
+                        "web 表示通用网络搜索别名，会自动选择可用网页 provider。"
+                        "仅调试或强制来源时指定 local、http、bing-rss 或 minimax-mcp；"
+                        "不要为普通事实检索单独指定 bing-rss。"
                     ),
                     required=False,
                 ),
                 SkillParameter(
                     name="limit",
                     type="integer",
-                    description="返回结果数量上限。默认 5；研究流程最多可请求 20。",
+                    description="返回结果数量上限。默认 5；普通检索建议 5-8，研究流程最多可请求 20。",
                     required=False,
                     default=5,
                 ),
                 SkillParameter(
                     name="open_results",
                     type="boolean",
-                    description="是否打开前几条搜索结果读取网页正文。默认 false；需要核验网页详情时设为 true。",
+                    description=(
+                        "是否打开前几条搜索结果读取网页正文。默认 false；需要核验官方页、产品/设备/药剂使用说明、"
+                        "安全风险、维修保养、医疗、法律、金融或其他高风险细节时设为 true。"
+                    ),
                     required=False,
                     default=False,
                 ),

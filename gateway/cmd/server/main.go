@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/aan/agent-assistant-gateway/internal/bridge"
 	"github.com/aan/agent-assistant-gateway/internal/config"
@@ -72,7 +73,7 @@ func main() {
 	healthHandler := handlers.NewHealthHandler(agentClient)
 	adminHandler := handlers.NewAdminHandler(agentClient, configSyncer)
 	mediaHandler := handlers.NewMediaHandler()
-	pulseHandler := handlers.NewPulseHandler(agentClient)
+	pulseHandler := handlers.NewPulseHandlerWithSyncer(agentClient, configSyncer)
 
 	// Setup router
 	r := gin.Default()
@@ -125,12 +126,23 @@ func main() {
 		}
 	}
 
-	// Sync settings to agent on startup (non-blocking)
+	// Sync settings to agent on startup (non-blocking). Gateway and Agent can
+	// start at the same time under launchd, so retry briefly if Agent is not up yet.
 	go func() {
-		if err := adminHandler.SyncToAgent(); err != nil {
-			slog.Warn("Failed to sync settings to agent on startup (agent may not be ready yet)", "error", err)
-		} else {
-			slog.Info("Settings synced to agent")
+		synced := false
+		for attempt := 1; attempt <= 6; attempt++ {
+			if err := adminHandler.SyncToAgent(); err != nil {
+				slog.Warn("Failed to sync settings to agent on startup", "attempt", attempt, "error", err)
+			} else {
+				synced = true
+				slog.Info("Settings synced to agent", "attempt", attempt)
+			}
+			if attempt < 6 {
+				time.Sleep(time.Duration(attempt*2) * time.Second)
+			}
+		}
+		if !synced {
+			slog.Warn("Failed to sync settings to agent after startup retries")
 		}
 	}()
 	pulseHandler.StartScheduler()

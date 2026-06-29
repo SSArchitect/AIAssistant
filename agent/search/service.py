@@ -6,6 +6,7 @@ import ipaddress
 import json
 import logging
 import os
+import re
 import shutil
 import shlex
 import xml.etree.ElementTree as ET
@@ -750,9 +751,9 @@ class SearchService:
     WEB_PROVIDER_PRIORITY = {
         "local": 0,
         "http": 1,
-        "bing-rss": 2,
-        "web": 3,
-        "minimax-mcp": 4,
+        "web": 2,
+        "minimax-mcp": 3,
+        "bing-rss": 4,
     }
 
     def __init__(
@@ -871,48 +872,35 @@ class SearchService:
         open_limit: int = WEB_PAGE_OPEN_RESULT_LIMIT,
         page_chars: int = WEB_PAGE_DEFAULT_CHARS,
     ) -> list[SearchResult]:
-        selected = self._normalize_sources(sources)
+        selected, generic_web_requested = self._normalize_sources(sources)
         providers = [
             provider
             for provider in self._providers
             if not selected or provider.name in selected
         ]
         providers.sort(key=self._provider_sort_key)
-        results: list[SearchResult] = []
-        seen: set[str] = set()
-        provider_errors: list[str] = []
         provider_limit = limit
-        if not selected and len(providers) > 1:
-            provider_limit = max(1, (limit + len(providers) - 1) // len(providers))
-        for provider in providers:
-            try:
-                provider_results = await self._search_provider_with_retries(
-                    provider,
-                    query,
-                    limit=provider_limit,
-                )
-            except Exception as e:
-                error_text = f"{provider.name}: {e}"
-                provider_errors.append(error_text)
-                logger.warning(
-                    "Search provider failed; trying next provider",
-                    extra={"provider": provider.name, "error": str(e)},
-                )
-                continue
-
-            for result in provider_results:
-                key = result.url or f"{result.source}:{result.title}"
-                if key in seen:
-                    continue
-                seen.add(key)
-                results.append(result)
-                if len(results) >= limit and selected:
-                    break
-            if len(results) >= limit and selected:
-                break
+        stop_when_relevant = generic_web_requested or not selected
+        if len(providers) > 1:
+            results, provider_errors = await self._search_providers_concurrently(
+                providers,
+                query,
+                limit=limit,
+                provider_limit=provider_limit,
+                stop_when_relevant=stop_when_relevant,
+            )
+        else:
+            results, provider_errors = await self._search_providers_sequentially(
+                providers,
+                query,
+                limit=limit,
+                provider_limit=provider_limit,
+            )
         self._last_provider_errors = provider_errors
         if not results and provider_errors and len(provider_errors) == len(providers):
             raise RuntimeError("; ".join(provider_errors))
+        if len(providers) > 1:
+            results = _rank_results_by_query_relevance(query, results)
         limited_results = results[:limit]
         if open_results:
             await self.attach_page_content(
@@ -921,6 +909,98 @@ class SearchService:
                 max_chars=page_chars,
             )
         return limited_results
+
+    async def _search_providers_sequentially(
+        self,
+        providers: list[SearchProvider],
+        query: str,
+        *,
+        limit: int,
+        provider_limit: int,
+    ) -> tuple[list[SearchResult], list[str]]:
+        provider_outputs: list[tuple[int, list[SearchResult]]] = []
+        provider_errors: list[tuple[int, str]] = []
+        for index, provider in enumerate(providers):
+            try:
+                provider_results = await self._search_provider_with_retries(
+                    provider,
+                    query,
+                    limit=provider_limit,
+                )
+            except Exception as e:
+                provider_errors.append((index, self._provider_error_text(provider, e)))
+                continue
+            provider_outputs.append((index, provider_results))
+            if len(_merge_provider_outputs(provider_outputs)) >= limit:
+                break
+        return (
+            _merge_provider_outputs(provider_outputs),
+            [error for _, error in sorted(provider_errors)],
+        )
+
+    async def _search_providers_concurrently(
+        self,
+        providers: list[SearchProvider],
+        query: str,
+        *,
+        limit: int,
+        provider_limit: int,
+        stop_when_relevant: bool,
+    ) -> tuple[list[SearchResult], list[str]]:
+        tasks = {
+            asyncio.create_task(
+                self._search_provider_with_retries(
+                    provider,
+                    query,
+                    limit=provider_limit,
+                )
+            ): (index, provider)
+            for index, provider in enumerate(providers)
+        }
+        pending = set(tasks)
+        provider_outputs: list[tuple[int, list[SearchResult]]] = []
+        provider_errors: list[tuple[int, str]] = []
+
+        try:
+            while pending:
+                done, pending = await asyncio.wait(
+                    pending,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                for task in done:
+                    index, provider = tasks[task]
+                    try:
+                        provider_results = task.result()
+                    except Exception as e:
+                        provider_errors.append((index, self._provider_error_text(provider, e)))
+                        continue
+                    provider_outputs.append((index, provider_results))
+
+                merged_results = _merge_provider_outputs(provider_outputs)
+                if (
+                    stop_when_relevant
+                    and len(merged_results) >= limit
+                    and _results_have_query_relevance(query, merged_results)
+                ):
+                    break
+        finally:
+            if pending:
+                for task in pending:
+                    task.cancel()
+                await asyncio.gather(*pending, return_exceptions=True)
+
+        return (
+            _merge_provider_outputs(provider_outputs),
+            [error for _, error in sorted(provider_errors)],
+        )
+
+    def _provider_error_text(self, provider: SearchProvider, error: Exception) -> str:
+        error_text = f"{provider.name}: {error}"
+        logger.warning(
+            "Search provider failed; trying next provider",
+            extra={"provider": provider.name, "error": str(error)},
+        )
+        return error_text
 
     async def open_url(
         self,
@@ -980,14 +1060,16 @@ class SearchService:
             result.metadata = metadata
         return results
 
-    def _normalize_sources(self, sources: list[str] | None) -> set[str]:
+    def _normalize_sources(self, sources: list[str] | None) -> tuple[set[str], bool]:
         selected: set[str] = set()
         available = set(self.provider_names)
+        generic_web_requested = False
         for source in sources or []:
             value = str(source or "").strip().lower()
             if not value:
                 continue
             if value in self.WEB_SOURCE_ALIASES:
+                generic_web_requested = True
                 selected.update(
                     name
                     for name in self.WEB_PROVIDER_PRIORITY
@@ -995,7 +1077,7 @@ class SearchService:
                 )
             else:
                 selected.add(value)
-        return selected
+        return selected, generic_web_requested
 
     def _provider_sort_key(self, provider: SearchProvider) -> tuple[int, str]:
         return (
@@ -1021,6 +1103,136 @@ class SearchService:
                 await asyncio.sleep(self._retry_delay * attempt)
         assert last_error is not None
         raise last_error
+
+
+def _merge_provider_outputs(
+    provider_outputs: list[tuple[int, list[SearchResult]]],
+) -> list[SearchResult]:
+    results: list[SearchResult] = []
+    seen: set[str] = set()
+    for _, provider_results in sorted(provider_outputs, key=lambda item: item[0]):
+        for result in provider_results:
+            key = result.url or f"{result.source}:{result.title}"
+            if key in seen:
+                continue
+            seen.add(key)
+            results.append(result)
+    return results
+
+
+def _rank_results_by_query_relevance(
+    query: str,
+    results: list[SearchResult],
+) -> list[SearchResult]:
+    if len(results) < 2:
+        return results
+    scored = [
+        (_search_result_relevance_score(query, result), index, result)
+        for index, result in enumerate(results)
+    ]
+    if not any(score > 0 for score, _, _ in scored):
+        return results
+    scored.sort(key=lambda item: (-item[0], item[1]))
+    return [result for _, _, result in scored]
+
+
+def _results_have_query_relevance(
+    query: str,
+    results: list[SearchResult],
+) -> bool:
+    return any(_search_result_relevance_score(query, result) > 0 for result in results)
+
+
+def _search_result_relevance_score(query: str, result: SearchResult) -> int:
+    terms = _search_query_terms(query)
+    if not terms:
+        return 0
+    title = result.title or ""
+    snippet = result.snippet or ""
+    url = result.url or ""
+    score = 0
+    for term in terms:
+        if _search_text_contains_term(title, term):
+            score += 5
+        if _search_text_contains_term(snippet, term):
+            score += 2
+        if _search_text_contains_term(url, term):
+            score += 1
+    return score
+
+
+def _search_query_terms(query: str) -> list[str]:
+    terms: list[str] = []
+    seen: set[str] = set()
+    stopwords = {
+        "a",
+        "an",
+        "and",
+        "case",
+        "for",
+        "in",
+        "latest",
+        "news",
+        "of",
+        "recent",
+        "study",
+        "the",
+        "trend",
+        "trends",
+        "update",
+        "updates",
+        "with",
+    }
+
+    def add_term(term: str) -> None:
+        term = term.strip().lower()
+        if not term or term in stopwords or term.isdigit():
+            return
+        if len(term) <= 1:
+            return
+        if len(term) <= 2 and not _has_cjk(term):
+            return
+        if term in seen:
+            return
+        seen.add(term)
+        terms.append(term)
+
+    for raw in re.split(r"[\s,，;；/、|｜:：()（）\[\]【】\"'“”]+", query):
+        term = raw.strip().lower()
+        if not term:
+            continue
+        add_term(term)
+        if _has_cjk(term):
+            for cjk_term in _cjk_query_terms(term):
+                add_term(cjk_term)
+    return terms
+
+
+def _cjk_query_terms(term: str) -> list[str]:
+    cjk_runs = re.findall(r"[\u4e00-\u9fff]+", term)
+    terms: list[str] = []
+    for run in cjk_runs:
+        if len(run) <= 2:
+            terms.append(run)
+            continue
+        max_n = min(4, len(run))
+        for size in range(2, max_n + 1):
+            for index in range(0, len(run) - size + 1):
+                terms.append(run[index:index + size])
+    return terms
+
+
+def _has_cjk(text: str) -> bool:
+    return any("\u4e00" <= ch <= "\u9fff" for ch in text)
+
+
+def _search_text_contains_term(text: str, term: str) -> bool:
+    haystack = (text or "").lower()
+    if not haystack:
+        return False
+    if _has_cjk(term):
+        return term in haystack
+    return re.search(rf"(?<![a-z0-9]){re.escape(term)}(?![a-z0-9])", haystack) is not None
 
 
 def _parse_command_args(raw: str) -> list[str]:

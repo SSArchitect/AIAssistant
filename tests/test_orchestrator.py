@@ -16,6 +16,8 @@ from agent.skills.registry import SkillRegistry
 from agent.skills.builtin.echo import EchoSkill
 from agent.skills.builtin.calculator import CalculatorSkill
 from agent.skills.builtin.datetime_skill import DateTimeSkill
+from agent.skills.builtin.open_url import OpenURLSkill
+from agent.skills.builtin.search import SearchSkill
 from agent.skills.base import Skill, SkillMetadata, SkillParameter, SkillResult
 from agent.weight_loss import WeightLossStore
 
@@ -26,6 +28,8 @@ def registry():
     reg.register(EchoSkill())
     reg.register(CalculatorSkill())
     reg.register(DateTimeSkill())
+    reg.register(SearchSkill())
+    reg.register(OpenURLSkill())
     return reg
 
 
@@ -90,8 +94,13 @@ async def test_simple_response_no_tools(engine):
     assert result.runtime == "self"
     assert result.run_id
     tools = provider.chat.await_args.kwargs["tools"]
+    tools_by_name = {tool.name: tool for tool in tools}
+    assert "search" in tools_by_name
+    assert "open_url" in tools_by_name
+    assert "必须先调用 search 再回答" in tools_by_name["search"].description
+    assert "先调用 search" in tools_by_name["open_url"].description
     assert {"image_generation_v1", "deep_research_v1", "weight_loss_v1"}.isdisjoint(
-        {tool.name for tool in tools}
+        set(tools_by_name)
     )
     event_types = [event.type for event in result.events]
     assert event_types[0] == "run.started"

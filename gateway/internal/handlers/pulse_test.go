@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -47,9 +48,10 @@ func TestPulseCreatesTopicAndPrecomputesDailyItems(t *testing.T) {
 	}
 
 	var payload struct {
-		Date   string               `json:"date"`
-		Topics []pulseTopicResponse `json:"topics"`
-		Items  []pulseItemResponse  `json:"items"`
+		Date    string                `json:"date"`
+		Topics  []pulseTopicResponse  `json:"topics"`
+		Items   []pulseItemResponse   `json:"items"`
+		Modules []pulseModuleResponse `json:"modules"`
 	}
 	if err := json.Unmarshal(refreshRecorder.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("decode pulse response: %v", err)
@@ -60,38 +62,14 @@ func TestPulseCreatesTopicAndPrecomputesDailyItems(t *testing.T) {
 	if len(payload.Topics) != 1 || payload.Topics[0].Name != "机器人" {
 		t.Fatalf("expected created topic in response, got %#v", payload.Topics)
 	}
-	if len(payload.Items) < 4 {
-		t.Fatalf("expected topic plus hot items, got %d", len(payload.Items))
+	if len(payload.Items) != 0 {
+		t.Fatalf("expected no failed fallback recommendation items, got %#v", payload.Items)
 	}
-
-	foundTopicItem := false
-	foundMemoryItem := false
-	foundInterestHotItem := false
-	for _, item := range payload.Items {
-		if item.Source == pulseSourceMemory {
-			foundMemoryItem = true
-		}
-		if item.Source == pulseSourceInterestHot {
-			foundInterestHotItem = true
-		}
-		if item.TopicName == "机器人" {
-			foundTopicItem = true
-			if item.Source != pulseSourceTopicHot {
-				t.Fatalf("expected topic item source %q, got %#v", pulseSourceTopicHot, item)
-			}
-			if item.Detail.RecommendationReason == "" || len(item.Detail.Signals) == 0 || item.Detail.QuickContext == "" || len(item.Detail.KeyPoints) == 0 || item.ExplorePrompt == "" {
-				t.Fatalf("topic item was not precomputed: %#v", item)
-			}
-		}
+	if len(payload.Modules) != 3 {
+		t.Fatalf("expected module background explanations, got %#v", payload.Modules)
 	}
-	if !foundTopicItem {
-		t.Fatalf("expected a pulse item for created topic, got %#v", payload.Items)
-	}
-	if !foundMemoryItem {
-		t.Fatalf("expected a memory module item, got %#v", payload.Items)
-	}
-	if !foundInterestHotItem {
-		t.Fatalf("expected an interest-hot module item, got %#v", payload.Items)
+	if !strings.Contains(payload.Modules[0].Summary, "不展示推荐卡") {
+		t.Fatalf("expected failure explanation in module summary, got %#v", payload.Modules[0])
 	}
 }
 
@@ -170,6 +148,103 @@ func TestPulseUsesAgentGeneratedModules(t *testing.T) {
 	}
 	if got := payload.Modules[0].Items[0].Detail.SuggestedQuestions; len(got) < 3 || got[0] == "" || !strings.Contains(strings.Join(got, "\n"), "具身智能") {
 		t.Fatalf("expected suggested questions, got %#v", got)
+	}
+}
+
+func TestPulseSyncsSettingsBeforeGeneration(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	if err := database.Init(filepath.Join(t.TempDir(), "assistant.db")); err != nil {
+		t.Fatalf("init database: %v", err)
+	}
+	if err := database.DB.Create(&[]models.Setting{
+		{
+			Key:       "llm.minimax.api_key",
+			Value:     "sk-test",
+			UpdatedAt: time.Now(),
+		},
+		{
+			Key:       "llm.minimax.model",
+			Value:     "abab6.5s-chat",
+			UpdatedAt: time.Now(),
+		},
+	}).Error; err != nil {
+		t.Fatalf("seed setting: %v", err)
+	}
+
+	var mu sync.Mutex
+	agentCalls := []string{}
+	recordCall := func(path string) {
+		mu.Lock()
+		defer mu.Unlock()
+		agentCalls = append(agentCalls, path)
+	}
+
+	agentServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		recordCall(r.URL.Path)
+		switch r.URL.Path {
+		case "/agent/config":
+			var req struct {
+				Settings map[string]string `json:"settings"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				t.Fatalf("decode config request: %v", err)
+			}
+			if req.Settings["llm.minimax.api_key"] != "sk-test" {
+				t.Fatalf("expected synced MiniMax key, got %#v", req.Settings)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"status":"ok"}`))
+		case "/agent/search":
+			writePulseTestSearchResponse(w, r)
+		case "/agent/chat":
+			var req bridge.ChatRequest
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				t.Fatalf("decode chat request: %v", err)
+			}
+			if req.ModelPreference == nil || *req.ModelPreference != "minimax:abab6.5s-chat" {
+				t.Fatalf("expected pulse generation to use minimax only, got %#v", req.ModelPreference)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(bridge.ChatResponse{
+				ConversationID: "pulse-2026-06-20",
+				Response:       `{"modules":[{"key":"topic_hot","title":"同步后的 Topic","summary":"已同步配置后生成。","items":[{"topic_name":"机器人","category":"关注 Topic","title":"同步后生成 topic 推荐","summary":"配置同步后，Agent 可以正常生成。","heat_score":88,"recommendation_reason":"因为你订阅了机器人。","signals":["搜索来源：机器人与具身智能出现新进展 - https://example.com/robotics-latest"],"quick_context":"先看配置同步是否生效。","key_points":["配置","检索","生成"],"suggested_questions":["机器人这条来源说了什么？","怎么核验具身智能进展？","后续跟踪哪些公司？"],"explore_prompt":"展开同步测试"}]},{"key":"memory","title":"同步后的 Memory","summary":"保持模块完整。","items":[{"category":"近日 Memory","title":"同步后生成 memory 推荐","summary":"配置同步后继续生成。","heat_score":76,"recommendation_reason":"最近在看 Pulse。","signals":["搜索来源：机器人与具身智能出现新进展 - https://example.com/robotics-latest"],"quick_context":"确认模块完整。","key_points":["配置","候选","过滤"],"suggested_questions":["Pulse 配置同步怎么验证？","候选池怎么补满？","过滤逻辑怎么评估？"],"explore_prompt":"展开 memory"}]},{"key":"interest_hot","title":"同步后的兴趣延伸","summary":"保持模块完整。","items":[{"category":"可能兴趣","title":"同步后生成兴趣推荐","summary":"配置同步后兴趣延伸可生成。","heat_score":72,"recommendation_reason":"机器人与 AI 相关。","signals":["搜索来源：机器人与具身智能出现新进展 - https://example.com/robotics-latest"],"quick_context":"确认兴趣模块完整。","key_points":["兴趣","外扩","来源"],"suggested_questions":["这条兴趣推荐依据是什么？","有哪些外部来源？","下一步追什么？"],"explore_prompt":"展开兴趣"}]}]}`,
+				ModelUsed:      "test",
+				TokensUsed:     map[string]int{},
+				AgentID:        "super_chat",
+				Runtime:        "self",
+			})
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer agentServer.Close()
+
+	agentClient := bridge.NewAgentClient(agentServer.URL, time.Second)
+	handler := NewPulseHandlerWithSyncer(agentClient, NewConfigSyncer(agentClient))
+	router := gin.New()
+	router.POST("/api/pulse/topics", handler.CreateTopic)
+	router.POST("/api/pulse/refresh", handler.Refresh)
+
+	createReq := httptest.NewRequest(http.MethodPost, "/api/pulse/topics", bytes.NewBufferString(`{"name":"机器人","keywords":["具身智能"]}`))
+	createReq.Header.Set("Content-Type", "application/json")
+	createRecorder := httptest.NewRecorder()
+	router.ServeHTTP(createRecorder, createReq)
+	if createRecorder.Code != http.StatusCreated {
+		t.Fatalf("unexpected create status %d: %s", createRecorder.Code, createRecorder.Body.String())
+	}
+
+	refreshReq := httptest.NewRequest(http.MethodPost, "/api/pulse/refresh?wait=true", bytes.NewBufferString(`{"date":"2026-06-20"}`))
+	refreshReq.Header.Set("Content-Type", "application/json")
+	refreshRecorder := httptest.NewRecorder()
+	router.ServeHTTP(refreshRecorder, refreshReq)
+	if refreshRecorder.Code != http.StatusOK {
+		t.Fatalf("unexpected refresh status %d: %s", refreshRecorder.Code, refreshRecorder.Body.String())
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(agentCalls) < 3 || agentCalls[0] != "/agent/config" {
+		t.Fatalf("expected config sync before generation calls, got %#v", agentCalls)
 	}
 }
 
@@ -451,6 +526,134 @@ func TestPulseEventsBoostFutureItemsByTopic(t *testing.T) {
 	}
 }
 
+func TestPulseRecommendedItemsFiltersConsumedClusters(t *testing.T) {
+	sameCluster := models.PulseItem{
+		ID:         "same-cluster",
+		Title:      "同一资讯簇",
+		Source:     pulseSourceTopicHot,
+		TopicName:  "AI",
+		HeatScore:  96,
+		DetailJSON: mustJSON(pulseItemDetail{NewsSources: []pulseNewsSource{{Title: "来源", URL: "https://example.com/a"}}}),
+	}
+	clusterKey := pulseClusterKey(sameCluster)
+	if clusterKey == "" {
+		t.Fatal("expected cluster key")
+	}
+	items := []models.PulseItem{
+		{ID: "fresh", Title: "新候选", HeatScore: 80},
+		{ID: "opened", Title: "已打开", HeatScore: 99},
+		{ID: "seen", Title: "多次曝光", HeatScore: 98},
+		{ID: "down", Title: "点踩", HeatScore: 97},
+		sameCluster,
+	}
+	state := pulseFeatureState{
+		feedbackByItem: map[string]pulseItemFeedbackResponse{
+			"opened": {OpenCount: pulseOpenFilterThreshold},
+			"seen":   {ExposureCount: pulseExposureFilterThreshold},
+			"down":   {Vote: "down", DownvoteCount: 1},
+		},
+		feedbackByKey: map[string]pulseItemFeedbackResponse{
+			clusterKey: {OpenCount: pulseOpenFilterThreshold},
+		},
+		directScores:  map[string]int{},
+		clusterScores: map[string]int{},
+		topicScores:   map[string]int{},
+		sourceScores:  map[string]int{},
+	}
+
+	recommended := recommendedPulseItems(items, state)
+	if len(recommended) != 1 || recommended[0].ID != "fresh" {
+		t.Fatalf("expected only fresh item after feature filtering, got %#v", recommended)
+	}
+}
+
+func TestPulseRecommendedItemsDedupesVisibleClusters(t *testing.T) {
+	detail := mustJSON(pulseItemDetail{NewsSources: []pulseNewsSource{{Title: "来源", URL: "https://example.com/a"}}})
+	items := []models.PulseItem{
+		{ID: "lower", Title: "同一资讯簇", Source: pulseSourceTopicHot, TopicName: "AI", HeatScore: 80, DetailJSON: detail},
+		{ID: "higher", Title: "同一资讯簇", Source: pulseSourceTopicHot, TopicName: "AI", HeatScore: 96, DetailJSON: detail},
+		{ID: "other", Title: "另一个资讯簇", Source: pulseSourceTopicHot, TopicName: "AI", HeatScore: 70},
+	}
+
+	recommended := recommendedPulseItems(items, pulseFeatureState{
+		feedbackByItem: map[string]pulseItemFeedbackResponse{},
+		feedbackByKey:  map[string]pulseItemFeedbackResponse{},
+		directScores:   map[string]int{},
+		clusterScores:  map[string]int{},
+		topicScores:    map[string]int{},
+		sourceScores:   map[string]int{},
+	})
+
+	if len(recommended) != 2 {
+		t.Fatalf("expected duplicate cluster to be hidden, got %#v", recommended)
+	}
+	if recommended[0].ID != "higher" || recommended[1].ID != "other" {
+		t.Fatalf("expected highest ranked duplicate plus other item, got %#v", recommended)
+	}
+}
+
+func TestPulseRecommendedItemsHideLowInformationSingleSource(t *testing.T) {
+	lowInfoDetail := mustJSON(pulseItemDetail{
+		RecommendationReason: "这组来源和「AI 模型进展」相关，适合作为今日快速判断入口。",
+		QuickContext:         "综合判断：单一来源提到AI 模型进展，但不足以判断为热点或趋势。",
+		KeyPoints:            []string{"证据提示：这是搜索结果聚合摘要，具体事实应以原文为准。"},
+		NewsSources: []pulseNewsSource{
+			{
+				Title: "AI Open Source Trends 2026-05-26 · Issue #1280 · duanyytop/agents-radar · GitHub",
+				URL:   "https://github.com/duanyytop/agents-radar/issues/1280",
+			},
+		},
+	})
+	strongDetail := mustJSON(pulseItemDetail{
+		RecommendationReason: "多来源共同指向同一更新。",
+		QuickContext:         "两条来源互相印证。",
+		NewsSources: []pulseNewsSource{
+			{Title: "官方发布", URL: "https://example.com/official"},
+			{Title: "开发者文档", URL: "https://example.com/docs"},
+		},
+	})
+	items := []models.PulseItem{
+		{ID: "low-info", Title: "AI 模型进展：GPT-RAG、Claude Code、Gemini CLI 待核验线索", Summary: "单一来源提到AI 模型进展，但不足以判断为热点或趋势。", Source: pulseSourceTopicHot, TopicName: "AI", HeatScore: 99, DetailJSON: lowInfoDetail},
+		{ID: "strong", Title: "AI 模型进展：官方发布多来源确认", Summary: "官方发布和文档同步更新。", Source: pulseSourceTopicHot, TopicName: "AI", HeatScore: 70, DetailJSON: strongDetail},
+	}
+
+	recommended := recommendedPulseItems(items, pulseFeatureState{
+		feedbackByItem: map[string]pulseItemFeedbackResponse{},
+		feedbackByKey:  map[string]pulseItemFeedbackResponse{},
+		directScores:   map[string]int{},
+		clusterScores:  map[string]int{},
+		topicScores:    map[string]int{},
+		sourceScores:   map[string]int{},
+	})
+
+	if len(recommended) != 1 || recommended[0].ID != "strong" {
+		t.Fatalf("expected low-information single source to be hidden, got %#v", recommended)
+	}
+}
+
+func TestPulseRecommendedItemsReturnsEmptyForOnlyLowInformationItems(t *testing.T) {
+	detail := mustJSON(pulseItemDetail{
+		QuickContext: "单一来源提到AI 模型进展，但不足以判断为热点或趋势。",
+		NewsSources:  []pulseNewsSource{{Title: "GitHub issue", URL: "https://github.com/example/repo/issues/1"}},
+	})
+	items := []models.PulseItem{
+		{ID: "low-info", Title: "AI 模型进展：待核验线索", Summary: "单一来源提到AI 模型进展，但不足以判断为热点或趋势。", Source: pulseSourceTopicHot, TopicName: "AI", HeatScore: 99, DetailJSON: detail},
+	}
+
+	recommended := recommendedPulseItems(items, pulseFeatureState{
+		feedbackByItem: map[string]pulseItemFeedbackResponse{},
+		feedbackByKey:  map[string]pulseItemFeedbackResponse{},
+		directScores:   map[string]int{},
+		clusterScores:  map[string]int{},
+		topicScores:    map[string]int{},
+		sourceScores:   map[string]int{},
+	})
+
+	if len(recommended) != 0 {
+		t.Fatalf("expected only low-information items to produce empty recommendations, got %#v", recommended)
+	}
+}
+
 func TestPulseRepairsMalformedAgentJSON(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	if err := database.Init(filepath.Join(t.TempDir(), "assistant.db")); err != nil {
@@ -629,7 +832,7 @@ func TestPulseFallsBackToPerModuleGeneration(t *testing.T) {
 	}
 }
 
-func TestPulseUsesSearchFallbackWhenGenerationFails(t *testing.T) {
+func TestPulseHidesLowInformationSearchFallbackWhenGenerationFails(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	if err := database.Init(filepath.Join(t.TempDir(), "assistant.db")); err != nil {
 		t.Fatalf("init database: %v", err)
@@ -671,7 +874,10 @@ func TestPulseUsesSearchFallbackWhenGenerationFails(t *testing.T) {
 	}
 
 	var payload struct {
-		Modules []pulseModuleResponse `json:"modules"`
+		CandidateCount   int                   `json:"candidate_count"`
+		RecommendedCount int                   `json:"recommended_count"`
+		Items            []pulseItemResponse   `json:"items"`
+		Modules          []pulseModuleResponse `json:"modules"`
 	}
 	if err := json.Unmarshal(refreshRecorder.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("decode pulse response: %v", err)
@@ -682,17 +888,29 @@ func TestPulseUsesSearchFallbackWhenGenerationFails(t *testing.T) {
 	if payload.Modules[0].Title != "订阅 Topic 的外网新动向" {
 		t.Fatalf("expected search fallback title, got %#v", payload.Modules[0])
 	}
-	if len(payload.Modules[0].Items) == 0 {
-		t.Fatalf("expected search fallback items, got %#v", payload.Modules[0])
+	if payload.CandidateCount == 0 {
+		t.Fatalf("expected search fallback candidates to be retained in the pool, got %#v", payload)
 	}
-	signals := payload.Modules[0].Items[0].Detail.Signals
-	if len(signals) == 0 || !strings.Contains(strings.Join(signals, "\n"), "https://example.com/robotics-latest") {
-		t.Fatalf("expected search source signal, got %#v", signals)
+	if payload.RecommendedCount != 0 || len(payload.Items) != 0 || len(payload.Modules[0].Items) != 0 {
+		t.Fatalf("expected low-information single-source fallback to stay out of visible recommendations, got %#v", payload)
 	}
-	questions := payload.Modules[0].Items[0].Detail.SuggestedQuestions
-	joinedQuestions := strings.Join(questions, "\n")
-	if len(questions) < 3 || strings.Contains(joinedQuestions, "这些来源共同说明了什么趋势") || !strings.Contains(joinedQuestions, "机器人") {
-		t.Fatalf("expected personalized search fallback questions, got %#v", questions)
+}
+
+func TestFallbackPulseDoesNotCreateFailedRecommendationItems(t *testing.T) {
+	modules, items := buildFallbackPulse("2026-06-20", []models.PulseTopic{
+		{ID: "topic-ai", Name: "AI", Keywords: encodeKeywords([]string{"Agent", "RAG"}), Enabled: true},
+	}, []memoryPulseSignal{
+		{Theme: "最近对话延展", Focus: "Go 语言工程实现", Keywords: []string{"Go", "接口", "测试"}},
+	}, []string{"Go 语言工程实现 recent update 2026: agent returned status 502"})
+
+	if len(modules) != 3 {
+		t.Fatalf("expected module background explanations, got %#v", modules)
+	}
+	if len(items) != 0 {
+		t.Fatalf("expected failed fallback to produce no recommendation items, got %#v", items)
+	}
+	if !strings.Contains(modules[0].Summary, "不展示推荐卡") {
+		t.Fatalf("expected module summary to explain empty recommendation state, got %q", modules[0].Summary)
 	}
 }
 
@@ -819,6 +1037,253 @@ func TestSearchFallbackClusterSummarizesNewsCluster(t *testing.T) {
 	}
 	if !strings.HasPrefix(detail.QuickContext, "综合判断：") {
 		t.Fatalf("expected synthesized quick context, got %q", detail.QuickContext)
+	}
+}
+
+func TestPulseSearchRelevanceRejectsNoise(t *testing.T) {
+	query := pulseSearchQuery{
+		Module:    pulseSourceInterestHot,
+		Query:     "Agent 工程实践 Dify RAG trend analysis 2026",
+		TopicName: "Agent 工程实践",
+	}
+	relevant := pulseSearchResult{
+		Title:   "Dify Agent RAG 工程实践复盘",
+		Snippet: "围绕 Dify 知识库、Agent 工作流和 RAG 评测展开。",
+		URL:     "https://example.com/dify-agent-rag",
+	}
+	noise := pulseSearchResult{
+		Title:   "Homemade crispy french fries",
+		Snippet: "A recipe with potatoes, oil, and salt.",
+		URL:     "https://example.com/fries",
+	}
+
+	if score := pulseSearchResultRelevanceScore(query, relevant); score <= 0 {
+		t.Fatalf("expected relevant result to score above zero, got %d", score)
+	}
+	if score := pulseSearchResultRelevanceScore(query, noise); score != 0 {
+		t.Fatalf("expected unrelated result to be rejected, got score %d", score)
+	}
+}
+
+func TestSearchFallbackMarksWeakSourceClusters(t *testing.T) {
+	item := searchFallbackClusterItem("2026-06-20", pulseSearchEvidence{
+		Module:    pulseSourceInterestHot,
+		Query:     "Agent 工程实践 Dify RAG trend analysis 2026",
+		TopicName: "Agent 工程实践",
+		Results: []pulseSearchResult{
+			{
+				Title:   "Dify 三层知识库与工业级 RAG 实践",
+				Snippet: "一篇围绕 Dify、Agent 和 RAG 的工程实践文章。",
+				URL:     "https://blog.csdn.net/example/article/details/123",
+				Source:  "minimax-mcp",
+			},
+			{
+				Title:   "Dify Agent RAG 随笔",
+				Snippet: "个人博客记录 Dify Agent 搭建过程。",
+				URL:     "https://www.cnblogs.com/example/p/dify-agent-rag.html",
+				Source:  "minimax-mcp",
+			},
+		},
+	}, 0)
+
+	if !strings.Contains(item.Title, "待核验线索") {
+		t.Fatalf("expected weak-source title to be cautious, got %q", item.Title)
+	}
+	if !strings.Contains(item.Summary, "弱证据") || !strings.Contains(item.Summary, "不足以判断") {
+		t.Fatalf("expected weak-source summary to avoid trend framing, got %q", item.Summary)
+	}
+}
+
+func TestPulseSearchFallbackClustersExposeIndividualResults(t *testing.T) {
+	evidence := pulseSearchEvidence{
+		Module:    pulseSourceTopicHot,
+		Query:     "Agent RAG recent update 2026",
+		TopicName: "Agent RAG",
+		Results: []pulseSearchResult{
+			{Title: "Agent RAG 工程实践一", URL: "https://example.com/agent-rag-1"},
+			{Title: "Agent RAG 工程实践二", URL: "https://example.com/agent-rag-2"},
+			{Title: "Agent RAG 工程实践三", URL: "https://example.com/agent-rag-3"},
+			{Title: "Agent RAG 工程实践四", URL: "https://example.com/agent-rag-4"},
+		},
+	}
+
+	clusters := pulseSearchFallbackClusters(evidence)
+	if len(clusters) != len(evidence.Results) {
+		t.Fatalf("expected one fallback candidate per search result, got %#v", clusters)
+	}
+	for index, cluster := range clusters {
+		if len(cluster) != 1 || cluster[0].URL != evidence.Results[index].URL {
+			t.Fatalf("expected singleton cluster at %d, got %#v", index, cluster)
+		}
+	}
+}
+
+func TestPulseSearchFallbackClustersGroupsCorroboratedResultsFirst(t *testing.T) {
+	evidence := pulseSearchEvidence{
+		Module:    pulseSourceTopicHot,
+		Query:     "Claude Code Gemini CLI agent harness recent update 2026",
+		TopicName: "AI",
+		Results: []pulseSearchResult{
+			{
+				Title:   "Claude Code and Gemini CLI agent harness trends",
+				Snippet: "Agent harness patterns for Claude Code, Codex and Gemini CLI are gaining traction.",
+				URL:     "https://github.com/duanyytop/agents-radar/issues/1280",
+				Source:  "github",
+			},
+			{
+				Title:   "Agent harness adoption for Claude Code and Gemini CLI",
+				Snippet: "A separate analysis tracks Claude Code and Gemini CLI performance optimization layers.",
+				URL:     "https://research.example.org/agent-harness-claude-gemini",
+				Source:  "web",
+			},
+			{
+				Title:   "机器人供应链跟踪",
+				Snippet: "与 Claude Code 无关的制造业信息。",
+				URL:     "https://factory.example.org/robotics",
+				Source:  "web",
+			},
+		},
+	}
+
+	clusters := pulseSearchFallbackClusters(evidence)
+	if len(clusters) == 0 || len(clusters[0]) < 2 {
+		t.Fatalf("expected corroborated cluster first, got %#v", clusters)
+	}
+	if got := pulseSearchIndependentSourceCount(clusters[0]); got < 2 {
+		t.Fatalf("expected independent sources, got %d in %#v", got, clusters[0])
+	}
+	item := searchFallbackClusterItem("2026-06-20", pulseSearchEvidence{
+		Module:    evidence.Module,
+		Query:     evidence.Query,
+		TopicName: evidence.TopicName,
+		Results:   clusters[0],
+	}, 0)
+	if pulseItemLooksLowInformation(item) {
+		t.Fatalf("expected corroborated fallback item to be visible, got %q / %q", item.Title, item.Summary)
+	}
+}
+
+func TestSearchFallbackClusterEntitiesPreferSharedTerms(t *testing.T) {
+	entities := searchFallbackClusterEntities(pulseSearchEvidence{
+		Module:    pulseSourceTopicHot,
+		Query:     "AI Agent RAG 多模态 模型 recent update 2026",
+		TopicName: "AI",
+	}, []pulseSearchResult{
+		{
+			Title:   "Agentic RAG 系统具备多模态推理",
+			Snippet: "这篇文章顺带提到 xAI，但主体是 Agentic RAG 和多模态推理架构。",
+			URL:     "https://news.example.com/agentic-rag",
+		},
+		{
+			Title:   "多模态 RAG 笔记",
+			Snippet: "课程记录多模态检索增强生成 RAG 系统实现。",
+			URL:     "https://docs.example.org/multimodal-rag",
+		},
+		{
+			Title:   "OpenClaw 多模态推理",
+			Snippet: "多模态推理和知识图谱融合实践。",
+			URL:     "https://blog.example.net/openclaw",
+		},
+		{
+			Title:   "xAI",
+			Snippet: "Company homepage.",
+			URL:     "https://x.ai/",
+		},
+	})
+
+	joined := strings.Join(entities, " ")
+	if strings.Contains(joined, "xAI") {
+		t.Fatalf("expected one-off xAI mention to stay out of shared entities, got %#v", entities)
+	}
+	if !strings.Contains(joined, "RAG") && !strings.Contains(joined, "多模态") {
+		t.Fatalf("expected shared RAG or multimodal terms, got %#v", entities)
+	}
+}
+
+func TestPulseSearchEvidenceFollowupAddsCorroboratingResults(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	if err := database.Init(filepath.Join(t.TempDir(), "assistant.db")); err != nil {
+		t.Fatalf("init database: %v", err)
+	}
+
+	agentServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/agent/search" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		var req bridge.SearchRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		results := []bridge.SearchResult{
+			{
+				Title:   "Claude Code and Gemini CLI agent harness trends",
+				Snippet: "Agent harness patterns for Claude Code, Codex and Gemini CLI are gaining traction.",
+				URL:     "https://github.com/duanyytop/agents-radar/issues/1280",
+				Source:  "github",
+			},
+		}
+		if req.Limit == pulseSearchFollowupResultLimit {
+			results = []bridge.SearchResult{
+				{
+					Title:   "Agent harness adoption for Claude Code and Gemini CLI",
+					Snippet: "A separate analysis tracks Claude Code and Gemini CLI performance optimization layers.",
+					URL:     "https://research.example.org/agent-harness-claude-gemini",
+					Source:  "web",
+				},
+			}
+		}
+		_ = json.NewEncoder(w).Encode(bridge.SearchResponse{
+			Query:   req.Query,
+			Sources: []string{"web"},
+			Results: results,
+		})
+	}))
+	defer agentServer.Close()
+
+	handler := NewPulseHandler(bridge.NewAgentClient(agentServer.URL, time.Second))
+	evidence, searchErrors := handler.collectPulseSearchEvidence("2026-06-20", []models.PulseTopic{
+		{ID: "topic-ai", Name: "AI 工程", Keywords: encodeKeywords([]string{"Claude Code", "Gemini CLI"}), Enabled: true},
+	}, nil)
+	if len(searchErrors) != 0 {
+		t.Fatalf("expected no search errors, got %#v", searchErrors)
+	}
+	for _, item := range evidence {
+		if pulseSearchIndependentSourceCount(item.Results) >= 2 {
+			return
+		}
+	}
+	t.Fatalf("expected follow-up search to add an independent corroborating source, got %#v", evidence)
+}
+
+func TestSearchFallbackMarksSingleSourceAsUnverified(t *testing.T) {
+	item := searchFallbackClusterItem("2026-06-20", pulseSearchEvidence{
+		Module:    pulseSourceTopicHot,
+		Query:     "Agent RAG recent update",
+		TopicName: "Agent 工程实践",
+		Results: []pulseSearchResult{
+			{
+				Title:   "Agent RAG 工程实践发布新案例",
+				Snippet: "A single source mentions a recent Agent RAG implementation update.",
+				URL:     "https://example.com/agent-rag-update",
+				Source:  "web",
+			},
+		},
+	}, 0)
+
+	if !strings.Contains(item.Title, "待核验线索") {
+		t.Fatalf("expected single-source title to be cautious, got %q", item.Title)
+	}
+	if !strings.Contains(item.Summary, "单一来源") || !strings.Contains(item.Summary, "不足以判断") {
+		t.Fatalf("expected single-source summary to avoid trend framing, got %q", item.Summary)
+	}
+	var detail pulseItemDetail
+	if err := json.Unmarshal([]byte(item.DetailJSON), &detail); err != nil {
+		t.Fatalf("decode detail: %v", err)
+	}
+	if !strings.Contains(detail.RecommendationReason, "一条外网线索") {
+		t.Fatalf("expected cautious recommendation reason, got %q", detail.RecommendationReason)
 	}
 }
 

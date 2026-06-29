@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -25,6 +26,7 @@ import (
 
 type PulseHandler struct {
 	agent  *bridge.AgentClient
+	syncer *ConfigSyncer
 	mu     sync.Mutex
 	jobsMu sync.Mutex
 	jobs   map[string]struct{}
@@ -109,6 +111,7 @@ type pulseItemDetail struct {
 
 type pulseItemResponse struct {
 	ID                 string                        `json:"id"`
+	ClusterKey         string                        `json:"cluster_key,omitempty"`
 	Date               string                        `json:"date"`
 	TopicID            string                        `json:"topic_id,omitempty"`
 	TopicName          string                        `json:"topic_name,omitempty"`
@@ -212,6 +215,19 @@ type pulseSearchResult struct {
 	PublishedAt string `json:"published_at,omitempty"`
 }
 
+type scoredPulseSearchResult struct {
+	Result pulseSearchResult
+	Score  int
+	Index  int
+}
+
+type pulseSearchFollowupSeed struct {
+	EvidenceIndex int
+	Result        pulseSearchResult
+	Score         int
+	Index         int
+}
+
 const (
 	pulseSourceTopicHot    = "topic_hot"
 	pulseSourceMemory      = "memory"
@@ -223,11 +239,22 @@ const (
 	pulseEventUpvote   = "upvote"
 	pulseEventDownvote = "downvote"
 
-	pulseSchedulerTickInterval    = 30 * time.Minute
-	pulseScheduledRefreshInterval = 6 * time.Hour
-	pulseSearchQueryLimit         = 5
-	pulseSearchResultLimit        = 5
-	pulseFeatureEventLimit        = 1000
+	pulseSchedulerTickInterval     = 30 * time.Minute
+	pulseScheduledRefreshInterval  = 24 * time.Hour
+	pulseSearchQueryLimit          = 16
+	pulseSearchResultLimit         = 8
+	pulseSearchRawResultLimit      = 10
+	pulseSearchFollowupSeedLimit   = 12
+	pulseSearchFollowupResultLimit = 6
+	pulseSearchExpandedResultLimit = 16
+	pulseSearchClusterMaxSources   = 5
+	pulseCandidateMinCount         = 20
+	pulseCandidateTargetCount      = 24
+	pulseCandidateMaxCount         = 30
+	pulseVisibleItemLimit          = 24
+	pulseOpenFilterThreshold       = 1
+	pulseExposureFilterThreshold   = 3
+	pulseFeatureEventLimit         = 1000
 )
 
 var pulseModuleOrder = []string{
@@ -251,6 +278,10 @@ func NewPulseHandler(agents ...*bridge.AgentClient) *PulseHandler {
 		agent = agents[0]
 	}
 	return &PulseHandler{agent: agent, jobs: map[string]struct{}{}}
+}
+
+func NewPulseHandlerWithSyncer(agent *bridge.AgentClient, syncer *ConfigSyncer) *PulseHandler {
+	return &PulseHandler{agent: agent, syncer: syncer, jobs: map[string]struct{}{}}
 }
 
 func (h *PulseHandler) StartScheduler() {
@@ -486,9 +517,16 @@ func (h *PulseHandler) RecordEvent(c *gin.Context) {
 	if req.Value != nil {
 		value = normalizePulseEventValue(eventType, *req.Value)
 	}
+	metadata := map[string]interface{}{}
+	for key, value := range req.Metadata {
+		metadata[key] = value
+	}
+	if key := pulseClusterKey(item); key != "" {
+		metadata["cluster_key"] = key
+	}
 	metadataJSON := ""
-	if len(req.Metadata) > 0 {
-		metadataJSON = limitText(mustJSON(req.Metadata), 2000)
+	if len(metadata) > 0 {
+		metadataJSON = limitText(mustJSON(metadata), 2000)
 	}
 	event := models.PulseEvent{
 		ID:           uuid.NewString(),
@@ -545,7 +583,8 @@ func (h *PulseHandler) writePulseWithStatus(c *gin.Context, date string, userID 
 	if err != nil {
 		slog.Warn("Pulse feature state load failed", "user_id", userID, "date", date, "error", err)
 	}
-	items = rankPulseItems(items, featureState)
+	allItems := items
+	items = recommendedPulseItems(allItems, featureState)
 
 	memorySignals, err := h.loadMemorySignals(userID)
 	if err != nil {
@@ -560,14 +599,17 @@ func (h *PulseHandler) writePulseWithStatus(c *gin.Context, date string, userID 
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"date":             date,
-		"user_id":          userID,
-		"generated_at":     generatedAt,
-		"topics":           topicResponses(topics),
-		"suggested_topics": buildPulseSuggestedTopics(topics, memorySignals),
-		"items":            itemResponsesWithFeatures(items, items, featureState),
-		"modules":          moduleResponsesWithFeatures(modules, items, featureState),
-		"refreshing":       refreshing,
+		"date":              date,
+		"user_id":           userID,
+		"generated_at":      generatedAt,
+		"topics":            topicResponses(topics),
+		"suggested_topics":  buildPulseSuggestedTopics(topics, memorySignals),
+		"candidate_count":   len(allItems),
+		"recommended_count": len(items),
+		"filtered_count":    maxInt(0, len(allItems)-len(items)),
+		"items":             itemResponsesWithFeatures(items, allItems, featureState),
+		"modules":           moduleResponsesWithFeatures(modules, items, allItems, featureState),
+		"refreshing":        refreshing,
 	})
 }
 
@@ -635,6 +677,10 @@ func (h *PulseHandler) ensureDailyPulse(date string, userID string, force bool) 
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
+	if err := h.syncConfigToAgent(); err != nil {
+		return fmt.Errorf("sync pulse config to agent: %w", err)
+	}
+
 	replaceExisting := force
 	if !force {
 		ok, err := h.hasCurrentPulseShape(date, userID)
@@ -695,6 +741,13 @@ func (h *PulseHandler) ensureDailyPulse(date string, userID string, force bool) 
 	})
 }
 
+func (h *PulseHandler) syncConfigToAgent() error {
+	if h.syncer == nil {
+		return nil
+	}
+	return h.syncer.SyncToAgent()
+}
+
 func (h *PulseHandler) hasCurrentPulseShape(date string, userID string) (bool, error) {
 	userID = normalizedUserID(userID)
 	var items []models.PulseItem
@@ -702,6 +755,9 @@ func (h *PulseHandler) hasCurrentPulseShape(date string, userID string) (bool, e
 		return false, err
 	}
 	if len(items) == 0 {
+		return false, nil
+	}
+	if len(items) < pulseCandidateMinCount {
 		return false, nil
 	}
 	var modules []models.PulseModule
@@ -750,7 +806,7 @@ func (h *PulseHandler) collectPulseSearchEvidence(date string, topics []models.P
 	evidence := make([]pulseSearchEvidence, len(queries))
 	searchErrors := []string{}
 	var wg sync.WaitGroup
-	sem := make(chan struct{}, 2)
+	sem := make(chan struct{}, 4)
 	var errMu sync.Mutex
 	for index, query := range queries {
 		wg.Add(1)
@@ -769,7 +825,7 @@ func (h *PulseHandler) collectPulseSearchEvidence(date string, topics []models.P
 			}
 			resp, err := h.agent.Search(bridge.SearchRequest{
 				Query: query.Query,
-				Limit: pulseSearchResultLimit,
+				Limit: pulseSearchRawResultLimit,
 			})
 			if err != nil {
 				item.Error = err.Error()
@@ -781,31 +837,11 @@ func (h *PulseHandler) collectPulseSearchEvidence(date string, topics []models.P
 			}
 
 			item.ProviderErrors = limitStringSlice(resp.ProviderErrors, 3, 220)
-			for _, result := range resp.Results {
-				title := limitText(cleanSearchText(result.Title), 180)
-				snippet := cleanSearchText(result.Snippet)
-				resultURL := strings.TrimSpace(result.URL)
-				if title == "" || resultURL == "" {
-					continue
-				}
-				if !pulseSearchResultLooksUseful(title, snippet, resultURL) {
-					continue
-				}
-				item.Results = append(item.Results, pulseSearchResult{
-					Title:       title,
-					Snippet:     limitText(snippet, 520),
-					URL:         resultURL,
-					Source:      limitText(cleanSearchText(result.Source), 80),
-					PublishedAt: limitText(metadataString(result.Metadata, "published_at", "publishedAt", "pub_date", "date"), 80),
-				})
-				if len(item.Results) >= pulseSearchResultLimit {
-					break
-				}
-			}
+			item.Results = normalizePulseSearchResults(query, resp.Results, pulseSearchResultLimit)
 			if len(item.Results) == 0 {
-				item.Error = "搜索完成但没有可用结果。"
+				item.Error = "搜索完成但没有足够相关的可用结果。"
 				if len(item.ProviderErrors) > 0 {
-					item.Error = "搜索完成但没有可用结果；部分来源失败：" + strings.Join(item.ProviderErrors, "；")
+					item.Error = "搜索完成但没有足够相关的可用结果；部分来源失败：" + strings.Join(item.ProviderErrors, "；")
 				}
 			}
 			evidence[index] = item
@@ -820,7 +856,243 @@ func (h *PulseHandler) collectPulseSearchEvidence(date string, topics []models.P
 		}
 		nonEmpty = append(nonEmpty, item)
 	}
+	nonEmpty = h.enrichPulseSearchEvidence(date, nonEmpty, &searchErrors)
 	return nonEmpty, searchErrors
+}
+
+func normalizePulseSearchResults(query pulseSearchQuery, results []bridge.SearchResult, maxResults int) []pulseSearchResult {
+	candidates := []scoredPulseSearchResult{}
+	for resultIndex, result := range results {
+		title := limitText(cleanSearchText(result.Title), 180)
+		snippet := cleanSearchText(result.Snippet)
+		resultURL := strings.TrimSpace(result.URL)
+		if title == "" || resultURL == "" {
+			continue
+		}
+		if !pulseSearchResultLooksUseful(title, snippet, resultURL) {
+			continue
+		}
+		searchResult := pulseSearchResult{
+			Title:       title,
+			Snippet:     limitText(snippet, 520),
+			URL:         resultURL,
+			Source:      limitText(cleanSearchText(result.Source), 80),
+			PublishedAt: limitText(metadataString(result.Metadata, "published_at", "publishedAt", "pub_date", "date"), 80),
+		}
+		score := pulseSearchResultRelevanceScore(query, searchResult)
+		if score <= 0 {
+			continue
+		}
+		candidates = append(candidates, scoredPulseSearchResult{
+			Result: searchResult,
+			Score:  score,
+			Index:  resultIndex,
+		})
+	}
+	return pulseSearchResultsFromScored(candidates, maxResults)
+}
+
+func (h *PulseHandler) enrichPulseSearchEvidence(date string, evidence []pulseSearchEvidence, searchErrors *[]string) []pulseSearchEvidence {
+	if h.agent == nil || len(evidence) == 0 {
+		return evidence
+	}
+	seeds := pulseSearchFollowupSeeds(evidence)
+	if len(seeds) == 0 {
+		return evidence
+	}
+
+	resultsByEvidence := make([][]pulseSearchResult, len(evidence))
+	followupErrors := []string{}
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	sem := make(chan struct{}, 4)
+	for _, seed := range seeds {
+		if seed.EvidenceIndex < 0 || seed.EvidenceIndex >= len(evidence) {
+			continue
+		}
+		followupQuery, ok := pulseSearchFollowupQuery(date, evidence[seed.EvidenceIndex], seed.Result)
+		if !ok {
+			continue
+		}
+		wg.Add(1)
+		go func(seed pulseSearchFollowupSeed, followupQuery pulseSearchQuery) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			resp, err := h.agent.Search(bridge.SearchRequest{
+				Query: followupQuery.Query,
+				Limit: pulseSearchFollowupResultLimit,
+			})
+			if err != nil {
+				mu.Lock()
+				followupErrors = append(followupErrors, fmt.Sprintf("二次检索 %s: %v", followupQuery.Query, err))
+				mu.Unlock()
+				return
+			}
+
+			normalized := normalizePulseSearchResults(followupQuery, resp.Results, pulseSearchFollowupResultLimit)
+			supporting := pulseSupportingFollowupResults(evidence[seed.EvidenceIndex], seed.Result, normalized)
+			if len(supporting) == 0 {
+				return
+			}
+			mu.Lock()
+			resultsByEvidence[seed.EvidenceIndex] = append(resultsByEvidence[seed.EvidenceIndex], supporting...)
+			mu.Unlock()
+		}(seed, followupQuery)
+	}
+	wg.Wait()
+
+	if len(followupErrors) > 0 && searchErrors != nil {
+		*searchErrors = append(*searchErrors, limitStringSlice(followupErrors, 4, 220)...)
+	}
+	for index := range evidence {
+		if len(resultsByEvidence[index]) == 0 {
+			continue
+		}
+		query := pulseSearchQueryFromEvidence(evidence[index])
+		merged := append([]pulseSearchResult{}, evidence[index].Results...)
+		merged = append(merged, resultsByEvidence[index]...)
+		evidence[index].Results = pulseRankSearchResults(query, merged, pulseSearchExpandedResultLimit)
+	}
+	return evidence
+}
+
+func pulseSearchQueryFromEvidence(item pulseSearchEvidence) pulseSearchQuery {
+	return pulseSearchQuery{
+		ID:        item.QueryID,
+		Module:    item.Module,
+		Query:     item.Query,
+		Intent:    item.Intent,
+		TopicID:   item.TopicID,
+		TopicName: item.TopicName,
+	}
+}
+
+func pulseSearchResultsFromScored(candidates []scoredPulseSearchResult, maxResults int) []pulseSearchResult {
+	sort.SliceStable(candidates, func(i, j int) bool {
+		if candidates[i].Score == candidates[j].Score {
+			return candidates[i].Index < candidates[j].Index
+		}
+		return candidates[i].Score > candidates[j].Score
+	})
+	results := make([]pulseSearchResult, 0, minInt(len(candidates), maxResults))
+	for _, candidate := range candidates[:minInt(len(candidates), maxResults)] {
+		results = append(results, candidate.Result)
+	}
+	return results
+}
+
+func pulseRankSearchResults(query pulseSearchQuery, results []pulseSearchResult, maxResults int) []pulseSearchResult {
+	candidates := make([]scoredPulseSearchResult, 0, len(results))
+	seen := map[string]bool{}
+	for index, result := range results {
+		key := pulseSearchResultDedupeKey(result)
+		if key != "" {
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+		}
+		score := pulseSearchResultRelevanceScore(query, result)
+		if !pulseWeakSearchSource(result) {
+			score += 3
+		}
+		if strings.TrimSpace(result.PublishedAt) != "" {
+			score += 2
+		}
+		candidates = append(candidates, scoredPulseSearchResult{
+			Result: result,
+			Score:  score,
+			Index:  index,
+		})
+	}
+	return pulseSearchResultsFromScored(candidates, maxResults)
+}
+
+func pulseSearchFollowupSeeds(evidence []pulseSearchEvidence) []pulseSearchFollowupSeed {
+	seeds := []pulseSearchFollowupSeed{}
+	seen := map[string]bool{}
+	seedIndex := 0
+	for evidenceIndex, item := range evidence {
+		query := pulseSearchQueryFromEvidence(item)
+		for _, result := range item.Results {
+			key := pulseSearchResultDedupeKey(result)
+			if key != "" {
+				if seen[key] {
+					continue
+				}
+				seen[key] = true
+			}
+			score := pulseSearchResultRelevanceScore(query, result)
+			if score <= 0 {
+				continue
+			}
+			if !pulseWeakSearchSource(result) {
+				score += 8
+			}
+			if strings.TrimSpace(result.PublishedAt) != "" {
+				score += 3
+			}
+			seeds = append(seeds, pulseSearchFollowupSeed{
+				EvidenceIndex: evidenceIndex,
+				Result:        result,
+				Score:         score,
+				Index:         seedIndex,
+			})
+			seedIndex++
+		}
+	}
+	sort.SliceStable(seeds, func(i, j int) bool {
+		if seeds[i].Score == seeds[j].Score {
+			return seeds[i].Index < seeds[j].Index
+		}
+		return seeds[i].Score > seeds[j].Score
+	})
+	if len(seeds) > pulseSearchFollowupSeedLimit {
+		return seeds[:pulseSearchFollowupSeedLimit]
+	}
+	return seeds
+}
+
+func pulseSearchFollowupQuery(date string, queryEvidence pulseSearchEvidence, seed pulseSearchResult) (pulseSearchQuery, bool) {
+	terms := []string{}
+	terms = appendUniqueStrings(terms, pulseCorroborationTerms(seed)...)
+	for _, term := range pulseSearchRelevanceTerms(pulseSearchQueryFromEvidence(queryEvidence)) {
+		terms = appendUniqueStrings(terms, term)
+	}
+	terms = limitStringSlice(terms, 5, 40)
+	if len(terms) == 0 {
+		return pulseSearchQuery{}, false
+	}
+	year := date
+	if len(year) > 4 {
+		year = year[:4]
+	}
+	queryText := strings.Join(terms, " ") + " latest update " + year
+	return pulseSearchQuery{
+		ID:        queryEvidence.QueryID + ":followup",
+		Module:    queryEvidence.Module,
+		Query:     queryText,
+		Intent:    "围绕初始候选补充独立来源互证",
+		TopicID:   queryEvidence.TopicID,
+		TopicName: queryEvidence.TopicName,
+	}, true
+}
+
+func pulseSupportingFollowupResults(queryEvidence pulseSearchEvidence, seed pulseSearchResult, results []pulseSearchResult) []pulseSearchResult {
+	supporting := []pulseSearchResult{}
+	seedKey := pulseSearchResultDedupeKey(seed)
+	for _, result := range results {
+		if key := pulseSearchResultDedupeKey(result); key != "" && key == seedKey {
+			continue
+		}
+		if !pulseSearchResultsCorroborate(queryEvidence, seed, result) {
+			continue
+		}
+		supporting = append(supporting, result)
+	}
+	return supporting
 }
 
 func buildPulseSearchQueries(date string, topics []models.PulseTopic, signals []memoryPulseSignal) []pulseSearchQuery {
@@ -830,7 +1102,7 @@ func buildPulseSearchQueries(date string, topics []models.PulseTopic, signals []
 	}
 	queries := make([]pulseSearchQuery, 0, pulseSearchQueryLimit)
 	seen := map[string]bool{}
-	add := func(module string, intent string, topicID string, topicName string, terms []string) {
+	addWithSuffix := func(module string, intent string, topicID string, topicName string, terms []string, suffix string) {
 		if len(queries) >= pulseSearchQueryLimit {
 			return
 		}
@@ -838,7 +1110,7 @@ func buildPulseSearchQueries(date string, topics []models.PulseTopic, signals []
 		if len(cleanTerms) == 0 {
 			return
 		}
-		query := strings.Join(cleanTerms[:minInt(len(cleanTerms), 5)], " ") + " " + pulseSearchQuerySuffix(module, year)
+		query := strings.Join(cleanTerms[:minInt(len(cleanTerms), 5)], " ") + " " + strings.TrimSpace(suffix)
 		key := strings.ToLower(module + ":" + query)
 		if seen[key] {
 			return
@@ -853,6 +1125,11 @@ func buildPulseSearchQueries(date string, topics []models.PulseTopic, signals []
 			TopicName: topicName,
 		})
 	}
+	add := func(module string, intent string, topicID string, topicName string, terms []string) {
+		for _, suffix := range pulseSearchQuerySuffixes(module, year) {
+			addWithSuffix(module, intent, topicID, topicName, terms, suffix)
+		}
+	}
 
 	for _, topic := range topics {
 		if !topic.Enabled {
@@ -860,13 +1137,16 @@ func buildPulseSearchQueries(date string, topics []models.PulseTopic, signals []
 		}
 		terms := append([]string{topic.Name}, expandPulseTopicKeywords(topic.Name, decodeKeywords(topic.Keywords))...)
 		add(pulseSourceTopicHot, "查找订阅 topic 的近期外网热门进展", topic.ID, topic.Name, terms)
+		if len(queries) >= pulseSearchQueryLimit {
+			break
+		}
 	}
 
 	for _, signal := range signals {
 		terms := []string{signal.Focus}
 		terms = append(terms, signal.Keywords...)
 		add(pulseSourceMemory, "查找近期 memory 相关的新信息", "", "", terms)
-		if len(queries) >= pulseSearchQueryLimit-1 {
+		if len(queries) >= pulseSearchQueryLimit-2 {
 			break
 		}
 	}
@@ -880,11 +1160,21 @@ func buildPulseSearchQueries(date string, topics []models.PulseTopic, signals []
 }
 
 func pulseSearchQuerySuffix(module string, year string) string {
+	suffixes := pulseSearchQuerySuffixes(module, year)
+	if len(suffixes) == 0 {
+		return "recent update " + year
+	}
+	return suffixes[0]
+}
+
+func pulseSearchQuerySuffixes(module string, year string) []string {
 	switch module {
 	case pulseSourceInterestHot:
-		return "emerging trends latest news " + year
+		return []string{"trend analysis " + year, "case study " + year, "market map " + year}
+	case pulseSourceMemory:
+		return []string{"recent update " + year, "case study " + year}
 	default:
-		return "latest news " + year
+		return []string{"recent update " + year, "trend analysis " + year, "case study " + year}
 	}
 }
 
@@ -977,31 +1267,25 @@ func (h *PulseHandler) generatePulse(date string, userID string, topics []models
 }
 
 func (h *PulseHandler) requestPulseGeneration(date string, userID string, inputJSON string) (string, error) {
-	memoryEnabled := false
-	resp, err := h.agent.Chat(bridge.ChatRequest{
-		ConversationID: fmt.Sprintf("pulse-%s-%s", normalizedUserID(userID), date),
-		UserID:         normalizedUserID(userID),
-		Message:        pulseGenerationPrompt(),
-		Stream:         false,
-		AgentID:        "super_chat",
-		ModePrompts: []string{
+	return h.requestPulseChat(
+		fmt.Sprintf("pulse-%s-%s", normalizedUserID(userID), date),
+		userID,
+		pulseGenerationPrompt(),
+		[]string{
 			"你是 Pulse 推荐预计算器。必须只输出一个合法 JSON 对象，不要 Markdown，不要解释。",
 			"你必须基于 search_evidence 中的外网检索结果做新闻/资讯聚合总结，不能只改写 topic/keyword。",
+			"search_evidence 可能包含围绕候选补充检索到的互证来源；生成 item 时只聚合多个独立来源共同支撑的信息簇，孤立单来源候选不要硬生成推荐。",
+			"生成前必须先剔除和 query/topic 无关的搜索结果；如果剩余相关来源不足，不要硬生成推荐。",
 			"每个 item 是一个资讯簇，必须包含 news_sources 数组，并且 signals 至少包含一个真实来源，格式为：搜索来源：标题 - URL。",
+			"不得把单篇 CSDN/博客园/知乎/掘金/资源下载/转载聚合页包装成行业趋势；这类来源只能作为弱证据或辅助来源。",
 			"title 必须写成中文资讯标题，可以保留 GPT-5、Claude、OpenAI 等产品/公司名；禁止直接复制英文搜索标题或写成“近期资讯聚合：...”。",
 			"summary 必须整合新闻簇并解释发生了什么、为什么推荐、哪些点需要核验；禁止拼接来源标题/snippet，禁止写“聚合 N 条来源，关键线索是...”。",
 			"如果某模块没有搜索结果，items 可以为空，或明确说明搜索不足；禁止编造最新事实。",
 		},
-		ContextBlocks: []string{
+		[]string{
 			"Pulse generation input JSON:\n" + string(inputJSON),
 		},
-		MemoryEnabled: &memoryEnabled,
-	})
-	if err != nil {
-		return "", err
-	}
-
-	return resp.Response, nil
+	)
 }
 
 func (h *PulseHandler) generatePulseModulesIndividually(date string, userID string, inputJSON string) (generatedPulsePayload, error) {
@@ -1037,79 +1321,111 @@ func (h *PulseHandler) generatePulseModulesIndividually(date string, userID stri
 }
 
 func (h *PulseHandler) requestPulseModuleGeneration(date string, userID string, key string, inputJSON string) (string, error) {
-	memoryEnabled := false
-	resp, err := h.agent.Chat(bridge.ChatRequest{
-		ConversationID: fmt.Sprintf("pulse-%s-%s-%s", normalizedUserID(userID), date, key),
-		UserID:         normalizedUserID(userID),
-		Message:        pulseModuleGenerationPrompt(key),
-		Stream:         false,
-		AgentID:        "super_chat",
-		ModePrompts: []string{
+	return h.requestPulseChat(
+		fmt.Sprintf("pulse-%s-%s-%s", normalizedUserID(userID), date, key),
+		userID,
+		pulseModuleGenerationPrompt(key),
+		[]string{
 			"你是 Pulse 单模块预计算器。只输出一个合法 JSON 对象，不要 Markdown，不要解释。",
 			"你必须基于 search_evidence 中对应模块的外网检索结果做新闻/资讯聚合总结，不能只改写 topic/keyword。",
+			"search_evidence 可能包含围绕候选补充检索到的互证来源；生成 item 时只聚合多个独立来源共同支撑的信息簇，孤立单来源候选不要硬生成推荐。",
+			"生成前必须先剔除和 query/topic 无关的搜索结果；如果剩余相关来源不足，不要硬生成推荐。",
 			"每个 item 是一个资讯簇，必须包含 news_sources 数组，并且 signals 至少包含一个真实来源，格式为：搜索来源：标题 - URL。",
+			"不得把单篇 CSDN/博客园/知乎/掘金/资源下载/转载聚合页包装成行业趋势；这类来源只能作为弱证据或辅助来源。",
 			"title 必须写成中文资讯标题，可以保留 GPT-5、Claude、OpenAI 等产品/公司名；禁止直接复制英文搜索标题或写成“近期资讯聚合：...”。",
 			"summary 必须整合新闻簇并解释发生了什么、为什么推荐、哪些点需要核验；禁止拼接来源标题/snippet，禁止写“聚合 N 条来源，关键线索是...”。",
 			"如果对应模块没有搜索结果，items 可以为空，或明确说明搜索不足；禁止编造最新事实。",
 		},
-		ContextBlocks: []string{
+		[]string{
 			"Pulse generation input JSON:\n" + inputJSON,
 		},
-		MemoryEnabled: &memoryEnabled,
-	})
-	if err != nil {
-		return "", err
-	}
-	return resp.Response, nil
+	)
 }
 
 func (h *PulseHandler) repairPulseModuleGeneration(date string, userID string, key string, inputJSON string, brokenJSON string, parseErr error) (string, error) {
-	memoryEnabled := false
-	resp, err := h.agent.Chat(bridge.ChatRequest{
-		ConversationID: fmt.Sprintf("pulse-%s-%s-%s-json-repair", normalizedUserID(userID), date, key),
-		UserID:         normalizedUserID(userID),
-		Message:        pulseModuleJSONRepairPrompt(key, parseErr),
-		Stream:         false,
-		AgentID:        "super_chat",
-		ModePrompts: []string{
+	return h.requestPulseChat(
+		fmt.Sprintf("pulse-%s-%s-%s-json-repair", normalizedUserID(userID), date, key),
+		userID,
+		pulseModuleJSONRepairPrompt(key, parseErr),
+		[]string{
 			"你是 JSON 修复器。只输出一个合法 JSON 对象，不要 Markdown，不要解释。",
 			"不得新增事实；只能修复语法并补齐必要字段。",
 		},
-		ContextBlocks: []string{
+		[]string{
 			"Original Pulse input JSON:\n" + inputJSON,
 			"Broken Pulse module JSON:\n" + limitText(brokenJSON, 6000),
 		},
-		MemoryEnabled: &memoryEnabled,
-	})
-	if err != nil {
-		return "", err
-	}
-	return resp.Response, nil
+	)
 }
 
 func (h *PulseHandler) repairPulseGeneration(date string, userID string, inputJSON string, brokenJSON string, parseErr error) (string, error) {
-	memoryEnabled := false
-	resp, err := h.agent.Chat(bridge.ChatRequest{
-		ConversationID: fmt.Sprintf("pulse-%s-%s-json-repair", normalizedUserID(userID), date),
-		UserID:         normalizedUserID(userID),
-		Message:        pulseJSONRepairPrompt(parseErr),
-		Stream:         false,
-		AgentID:        "super_chat",
-		ModePrompts: []string{
+	return h.requestPulseChat(
+		fmt.Sprintf("pulse-%s-%s-json-repair", normalizedUserID(userID), date),
+		userID,
+		pulseJSONRepairPrompt(parseErr),
+		[]string{
 			"你是 JSON 修复器。只输出一个合法 JSON 对象，不要 Markdown，不要解释。",
 			"不得新增事实；只能修复语法、补齐缺失逗号/引号/括号，并按输入信号补齐缺失的必要字段。",
 		},
-		ContextBlocks: []string{
+		[]string{
 			"Original Pulse input JSON:\n" + inputJSON,
 			"Broken Pulse JSON:\n" + limitText(brokenJSON, 8000),
 		},
-		MemoryEnabled: &memoryEnabled,
-	})
-	if err != nil {
-		return "", err
-	}
+	)
+}
 
-	return resp.Response, nil
+func (h *PulseHandler) requestPulseChat(conversationID string, userID string, message string, modePrompts []string, contextBlocks []string) (string, error) {
+	memoryEnabled := false
+	errors := []string{}
+	if h.agent == nil {
+		return "", fmt.Errorf("agent client is not configured")
+	}
+	for _, modelPreference := range h.pulseModelPreferences() {
+		resp, err := h.agent.Chat(bridge.ChatRequest{
+			ConversationID:  conversationID,
+			UserID:          normalizedUserID(userID),
+			Message:         message,
+			Stream:          false,
+			ModelPreference: modelPreference,
+			AgentID:         "super_chat",
+			ModePrompts:     modePrompts,
+			ContextBlocks:   contextBlocks,
+			MemoryEnabled:   &memoryEnabled,
+		})
+		if err == nil {
+			return resp.Response, nil
+		}
+		errors = append(errors, fmt.Sprintf("%s: %v", pulseModelPreferenceLabel(modelPreference), err))
+		slog.Warn("Pulse minimax model request failed", "conversation_id", conversationID, "model_preference", pulseModelPreferenceLabel(modelPreference), "error", err)
+	}
+	return "", fmt.Errorf("%s", strings.Join(errors, "; "))
+}
+
+func (h *PulseHandler) pulseModelPreferences() []*string {
+	preference := "minimax"
+	if h.syncer == nil {
+		return []*string{stringPointer(preference)}
+	}
+	settings, err := h.syncer.SettingsMap()
+	if err != nil {
+		slog.Warn("Pulse model preference load failed", "error", err)
+		return []*string{stringPointer(preference)}
+	}
+	if model := strings.TrimSpace(settings["llm.minimax.model"]); model != "" {
+		preference = "minimax:" + model
+	}
+	return []*string{stringPointer(preference)}
+}
+
+func pulseModelPreferenceLabel(value *string) string {
+	if value == nil || strings.TrimSpace(*value) == "" {
+		return "default"
+	}
+	return *value
+}
+
+func stringPointer(value string) *string {
+	return &value
 }
 
 func pulseGenerationPrompt() string {
@@ -1121,6 +1437,8 @@ func pulseGenerationPrompt() string {
 硬性要求：
 - modules 必须且只能包含 topic_hot、memory、interest_hot 三个 key。
 - 必须先阅读 search_evidence；推荐内容必须来自搜索结果的 title/snippet/url，而不是改写 topic/keyword。
+- 必须先过滤 search_evidence.results：只保留 title/snippet/url 明确命中 query/topic 关键词、公司、产品、技术或事件的来源；和主题无关的地图、菜谱、游戏论坛、帮助页、站点首页等必须丢弃。
+- CSDN、博客园、知乎、掘金、资源下载页、转载聚合页只能作为弱证据；不能把单篇此类来源包装成“趋势/范式/外网热门”。如果只有弱证据，降低 heat_score 并说明“仅作待核验线索”，或不生成该 item。
 - topic_hot 必须优先使用 module=topic_hot 的搜索结果；interest_hot 必须使用 module=interest_hot 的搜索结果；memory 可结合 memory_signals 和搜索结果。
 - 每个 item 是一个“资讯簇”：聚合 2-5 条相关搜索结果；不要把每条搜索结果拆成独立 item。
 - title 写成中文编辑标题，保留 GPT-5、Claude、OpenAI 等必要专名即可；禁止直接复制英文搜索标题，禁止写“近期资讯聚合：来源标题...”。
@@ -1128,7 +1446,7 @@ func pulseGenerationPrompt() string {
 - news_sources 必须包含 2-5 个来自 search_evidence.results 的来源对象，url 必须原样复制。
 - 每个 item 的 signals 必须至少包含一个真实来源，格式为“搜索来源：标题 - URL”。
 - quick_context 要综合多条来源，说明共同结论、差异和证据强弱；不要写空泛背景。
-- items 总数 5-8 条；每个 item 至少 3 个 suggested_questions，必须基于该 item 的 title/summary/key_points/news_sources 个性化生成。
+- items 总数目标 20-30 条，优先接近 24 条；这是后台候选池，不是最终首屏数量。每个 item 至少 3 个 suggested_questions，必须基于该 item 的 title/summary/key_points/news_sources 个性化生成。
 - suggested_questions 必须像真实用户会点击的任务型追问，例如：快速读懂、核验关键判断、提取时间线/关键数据、区分事实与观点、给后续跟踪清单。
 - suggested_questions 里要点名具体技术、公司、地点、来源标题、数据或争议点；禁止使用“为什么值得关注/有哪些风险/这些来源说明什么趋势/对我意味着什么”这类泛化模板，也不要写成考试题或评审题。
 - 所有面向用户的文本使用中文。
@@ -1144,6 +1462,8 @@ func pulseModuleGenerationPrompt(key string) string {
 
 要求：
 - title、summary 和 items 必须基于 search_evidence 中 module=%s 的外网检索结果生成。
+- 必须先过滤 search_evidence.results：只保留 title/snippet/url 明确命中 query/topic 关键词、公司、产品、技术或事件的来源；和主题无关的地图、菜谱、游戏论坛、帮助页、站点首页等必须丢弃。
+- CSDN、博客园、知乎、掘金、资源下载页、转载聚合页只能作为弱证据；不能把单篇此类来源包装成“趋势/范式/外网热门”。如果只有弱证据，降低 heat_score 并说明“仅作待核验线索”，或不生成该 item。
 - 每个 item 是一个“资讯簇”：聚合 2-5 条相关搜索结果；不要把每条搜索结果拆成独立 item。
 - item.title 写成中文编辑标题，保留 GPT-5、Claude、OpenAI 等必要专名即可；禁止直接复制英文搜索标题，禁止写“近期资讯聚合：来源标题...”。
 - item.summary 用 1-2 句整合新闻簇：说明发生了什么、主体/版本/时间/动作是什么、为什么推荐给用户、哪些点仍需核验。禁止拼接来源标题/snippet，禁止写“聚合 N 条来源，关键线索是...”。
@@ -1191,13 +1511,13 @@ func pulseModulePurpose(key string) string {
 func pulseModuleItemGuidance(key string) string {
 	switch key {
 	case pulseSourceTopicHot:
-		return "为每个启用 topic 生成 1 条 item；如果没有启用 topic，items 可以为空但 title/summary 仍需个性化说明。"
+		return "为每个启用 topic 生成 2-4 条 item，topic_hot 总量尽量达到 8-12 条；如果没有启用 topic，items 可以为空但 title/summary 仍需个性化说明。"
 	case pulseSourceMemory:
-		return "根据 memory_signals 生成 1-2 条 item，优先选择最近最强信号。"
+		return "根据 memory_signals 生成 6-8 条 item，优先选择最近最强信号。"
 	case pulseSourceInterestHot:
-		return "结合 interest_terms 生成 2-3 条 item，强调可能热门但必须说明是否缺少实时来源。"
+		return "结合 interest_terms 生成 6-10 条 item，强调可能热门但必须说明是否缺少实时来源。"
 	default:
-		return "生成 1-2 条 item。"
+		return "生成 6-8 条 item。"
 	}
 }
 
@@ -1335,6 +1655,9 @@ func generatedPayloadToModels(date string, payload generatedPulsePayload, topics
 			UpdatedAt: now,
 		})
 		for index, generatedItem := range generated.Items {
+			if len(items) >= pulseCandidateMaxCount {
+				break
+			}
 			if strings.TrimSpace(generatedItem.Title) == "" {
 				continue
 			}
@@ -1412,6 +1735,9 @@ func generatedPayloadToModels(date string, payload generatedPulsePayload, topics
 				UpdatedAt:     now,
 			})
 		}
+		if len(items) >= pulseCandidateMaxCount {
+			break
+		}
 	}
 
 	sortPulseModules(modules)
@@ -1442,16 +1768,28 @@ func buildSearchFallbackPulse(date string, topics []models.PulseTopic, signals [
 
 	items := []models.PulseItem{}
 	perModuleCount := map[string]int{}
+	seenResultKeys := map[string]bool{}
 	for _, queryEvidence := range evidence {
 		module := normalizePulseModuleKey(queryEvidence.Module)
 		if module == "" || len(queryEvidence.Results) == 0 {
 			continue
 		}
-		if perModuleCount[module] >= searchFallbackItemLimit(module) {
-			continue
+		for _, clusterResults := range pulseSearchFallbackClusters(queryEvidence) {
+			clusterResults = pulseFilterNewSearchFallbackResults(clusterResults, seenResultKeys)
+			if len(clusterResults) == 0 {
+				continue
+			}
+			if len(items) >= pulseCandidateMaxCount || perModuleCount[module] >= searchFallbackItemLimit(module) {
+				break
+			}
+			clusterEvidence := queryEvidence
+			clusterEvidence.Results = clusterResults
+			items = append(items, searchFallbackClusterItem(date, clusterEvidence, perModuleCount[module]))
+			perModuleCount[module]++
 		}
-		items = append(items, searchFallbackClusterItem(date, queryEvidence, perModuleCount[module]))
-		perModuleCount[module]++
+		if len(items) >= pulseCandidateTargetCount {
+			break
+		}
 	}
 	if len(items) == 0 {
 		return buildFallbackPulse(date, topics, signals, searchErrors)
@@ -1469,27 +1807,191 @@ func searchFallbackModuleCopy(key string, resultCount int, searchErrors []string
 	}
 	switch key {
 	case pulseSourceTopicHot:
-		return "订阅 Topic 的外网新动向", fmt.Sprintf("已基于外网检索结果筛选 %d 条与订阅 topic 相关的新线索。", resultCount)
+		return "订阅 Topic 的外网新动向", fmt.Sprintf("已基于外网检索和二次取证处理 %d 条与订阅 topic 相关的新线索。", resultCount)
 	case pulseSourceMemory:
-		return "近日 Memory 的外网延伸", fmt.Sprintf("结合近期 memory 与外网检索结果，提炼 %d 条可以继续追踪的线索。", resultCount)
+		return "近日 Memory 的外网延伸", fmt.Sprintf("结合近期 memory 与外网检索结果，补充取证并提炼 %d 条可以继续追踪的线索。", resultCount)
 	case pulseSourceInterestHot:
-		return "可能感兴趣的外网热门", fmt.Sprintf("从 topic 与 memory 外扩检索，筛出 %d 条可能值得关注的新话题。", resultCount)
+		return "可能感兴趣的外网热门", fmt.Sprintf("从 topic 与 memory 外扩检索，围绕候选补充取证并筛出 %d 条可能值得关注的新话题。", resultCount)
 	default:
-		return "外网检索推荐", fmt.Sprintf("基于 %d 条外网检索结果生成。", resultCount)
+		return "外网检索推荐", fmt.Sprintf("基于 %d 条外网检索和二次取证结果生成。", resultCount)
 	}
 }
 
 func searchFallbackItemLimit(module string) int {
 	switch module {
 	case pulseSourceTopicHot:
-		return 3
+		return 12
 	case pulseSourceMemory:
-		return 2
+		return 8
 	case pulseSourceInterestHot:
-		return 3
+		return 10
 	default:
-		return 2
+		return 8
 	}
+}
+
+func pulseSearchFallbackClusters(queryEvidence pulseSearchEvidence) [][]pulseSearchResult {
+	results := queryEvidence.Results
+	usable := results[:minInt(len(results), pulseSearchExpandedResultLimit)]
+	if len(usable) == 0 {
+		return nil
+	}
+	clusters := pulseCorroboratedSearchClusters(queryEvidence, usable)
+	for _, result := range usable {
+		clusters = append(clusters, []pulseSearchResult{result})
+	}
+	return clusters
+}
+
+func pulseCorroboratedSearchClusters(queryEvidence pulseSearchEvidence, results []pulseSearchResult) [][]pulseSearchResult {
+	results = pulseRankSearchResults(pulseSearchQueryFromEvidence(queryEvidence), results, pulseSearchExpandedResultLimit)
+	type candidateCluster struct {
+		Results []pulseSearchResult
+		Score   int
+		Index   int
+	}
+	candidates := []candidateCluster{}
+	for index, seed := range results {
+		cluster := []pulseSearchResult{seed}
+		for otherIndex, candidate := range results {
+			if otherIndex == index {
+				continue
+			}
+			if len(cluster) >= pulseSearchClusterMaxSources {
+				break
+			}
+			if !pulseSearchResultsCorroborate(queryEvidence, seed, candidate) {
+				continue
+			}
+			if !pulseClusterAddsIndependentSource(cluster, candidate) {
+				continue
+			}
+			cluster = append(cluster, candidate)
+		}
+		if !pulseSearchClusterHasTrustSignal(cluster) {
+			continue
+		}
+		candidates = append(candidates, candidateCluster{
+			Results: cluster,
+			Score:   pulseSearchClusterScore(queryEvidence, cluster),
+			Index:   index,
+		})
+	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		if candidates[i].Score == candidates[j].Score {
+			return candidates[i].Index < candidates[j].Index
+		}
+		return candidates[i].Score > candidates[j].Score
+	})
+
+	clusters := [][]pulseSearchResult{}
+	used := map[string]bool{}
+	for _, candidate := range candidates {
+		cluster := []pulseSearchResult{}
+		for _, result := range candidate.Results {
+			key := pulseSearchResultDedupeKey(result)
+			if key != "" && used[key] {
+				continue
+			}
+			cluster = append(cluster, result)
+		}
+		if !pulseSearchClusterHasTrustSignal(cluster) {
+			continue
+		}
+		for _, result := range cluster {
+			if key := pulseSearchResultDedupeKey(result); key != "" {
+				used[key] = true
+			}
+		}
+		clusters = append(clusters, cluster)
+	}
+	return clusters
+}
+
+func pulseSearchClusterScore(queryEvidence pulseSearchEvidence, results []pulseSearchResult) int {
+	score := pulseSearchIndependentSourceCount(results) * 30
+	score += len(results) * 8
+	if !pulseAllWeakSearchSources(results) {
+		score += 20
+	}
+	query := pulseSearchQueryFromEvidence(queryEvidence)
+	for _, result := range results {
+		score += pulseSearchResultRelevanceScore(query, result)
+	}
+	return score
+}
+
+func pulseSearchClusterHasTrustSignal(results []pulseSearchResult) bool {
+	if pulseSearchIndependentSourceCount(results) < 2 {
+		return false
+	}
+	return !pulseAllWeakSearchSources(results)
+}
+
+func pulseClusterAddsIndependentSource(cluster []pulseSearchResult, candidate pulseSearchResult) bool {
+	candidateDomain := pulseSourceDomainKey(candidate.URL)
+	if candidateDomain == "" {
+		return false
+	}
+	for _, result := range cluster {
+		if pulseSourceDomainKey(result.URL) == candidateDomain {
+			return false
+		}
+	}
+	return true
+}
+
+func pulseSearchIndependentSourceCount(results []pulseSearchResult) int {
+	domains := []string{}
+	for _, result := range results {
+		domain := pulseSourceDomainKey(result.URL)
+		if domain == "" {
+			continue
+		}
+		domains = appendUniqueStrings(domains, domain)
+	}
+	return len(domains)
+}
+
+func pulseFilterNewSearchFallbackResults(results []pulseSearchResult, seen map[string]bool) []pulseSearchResult {
+	filtered := make([]pulseSearchResult, 0, len(results))
+	for _, result := range results {
+		key := pulseSearchResultDedupeKey(result)
+		if key != "" {
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+		}
+		filtered = append(filtered, result)
+	}
+	return filtered
+}
+
+func pulseSearchResultDedupeKey(result pulseSearchResult) string {
+	rawURL := strings.TrimSpace(result.URL)
+	if rawURL != "" {
+		if parsed, err := url.Parse(rawURL); err == nil && parsed.Hostname() != "" {
+			host := strings.TrimPrefix(strings.ToLower(parsed.Hostname()), "www.")
+			path := strings.TrimRight(parsed.EscapedPath(), "/")
+			if path != "" {
+				return host + path
+			}
+			return host
+		}
+		return strings.ToLower(rawURL)
+	}
+	title := strings.ToLower(strings.Join(strings.Fields(result.Title), " "))
+	snippet := strings.ToLower(strings.Join(strings.Fields(result.Snippet), " "))
+	return strings.TrimSpace(title + " " + snippet)
+}
+
+func searchFallbackClusterRecommendationReason(queryEvidence pulseSearchEvidence, results []pulseSearchResult, module string) string {
+	focus := firstNonEmptyPulse(queryEvidence.TopicName, queryEvidence.Intent, moduleCategory(module))
+	if len(results) == 1 {
+		return fmt.Sprintf("这张卡保留了查询「%s」下的一条外网线索，和「%s」相关，但需要打开来源核验后再判断价值。", queryEvidence.Query, focus)
+	}
+	return fmt.Sprintf("这张卡聚合了查询「%s」下的 %d 条外网资讯，和「%s」相关，适合作为今日快速了解入口。", queryEvidence.Query, len(results), focus)
 }
 
 func searchFallbackClusterItem(date string, queryEvidence pulseSearchEvidence, moduleIndex int) models.PulseItem {
@@ -1506,7 +2008,7 @@ func searchFallbackClusterItem(date string, queryEvidence pulseSearchEvidence, m
 	for _, source := range sources[:minInt(len(sources), 3)] {
 		sourceSignals = append(sourceSignals, fmt.Sprintf("搜索来源：%s - %s", firstNonEmptyPulse(source.Title, source.Source, "外网结果"), source.URL))
 	}
-	reason := fmt.Sprintf("这张卡聚合了查询「%s」下的 %d 条外网资讯，和「%s」相关，适合作为今日快速了解入口。", queryEvidence.Query, len(results), firstNonEmptyPulse(queryEvidence.TopicName, queryEvidence.Intent, moduleCategory(module)))
+	reason := searchFallbackClusterRecommendationReason(queryEvidence, results, module)
 	questionContext := pulseQuestionContext{
 		Title:     title,
 		Summary:   summary,
@@ -1567,9 +2069,19 @@ func searchFallbackClusterSummary(queryEvidence pulseSearchEvidence, results []p
 	}
 	change := searchFallbackClusterSummaryChange(results)
 	aspects := strings.Join(searchFallbackClusterAspects(results), "、")
+	if len(results) == 1 {
+		sourcePhrase := "单一来源"
+		if pulseAllWeakSearchSources(results) {
+			sourcePhrase = "单一弱证据来源"
+		}
+		return limitText(fmt.Sprintf("%s提到%s：%s。它和%s相关，但不足以判断为热点或趋势；建议把它当作待核验阅读入口，优先核对原文日期、作者、一手证据和是否转载。", sourcePhrase, subject, change, focus), 420)
+	}
 	sourcePhrase := "搜索结果"
 	if len(results) > 1 {
 		sourcePhrase = fmt.Sprintf("%d 条来源", len(results))
+	}
+	if pulseAllWeakSearchSources(results) {
+		return limitText(fmt.Sprintf("%s只找到%s的弱证据来源，和%s相关但不足以判断为热点或趋势。建议把它当作待核验阅读入口，重点核对原文日期、作者、是否转载，以及是否存在官方或一手来源。", sourcePhrase, subject, focus), 420)
 	}
 	return limitText(fmt.Sprintf("%s集中指向%s：%s。推荐重点看%s；%s", sourcePhrase, subject, change, aspects, searchFallbackClusterUncertainty(results)), 420)
 }
@@ -1624,6 +2136,10 @@ func searchFallbackClusterFocus(module string, queryEvidence pulseSearchEvidence
 }
 
 func searchFallbackClusterEntities(queryEvidence pulseSearchEvidence, results []pulseSearchResult) []string {
+	shared := searchFallbackSharedClusterEntities(results)
+	if len(shared) > 0 {
+		return shared
+	}
 	text := searchFallbackClusterText(queryEvidence, results)
 	entities := []string{}
 	for _, match := range pulseModelEntityPattern.FindAllString(text, -1) {
@@ -1635,6 +2151,174 @@ func searchFallbackClusterEntities(queryEvidence pulseSearchEvidence, results []
 		}
 	}
 	return limitStringSlice(entities, 5, 40)
+}
+
+func searchFallbackSharedClusterEntities(results []pulseSearchResult) []string {
+	type termStat struct {
+		Term    string
+		Domains []string
+	}
+	stats := map[string]termStat{}
+	for _, result := range results {
+		domain := pulseSourceDomainKey(result.URL)
+		if domain == "" {
+			continue
+		}
+		if pulseSearchResultLooksThinHomepage(result) {
+			continue
+		}
+		for _, term := range pulseCorroborationTerms(result) {
+			normalized := strings.ToLower(strings.TrimSpace(term))
+			if normalized == "" || pulseCorroborationTermLooksGeneric(normalized) {
+				continue
+			}
+			stat := stats[normalized]
+			if stat.Term == "" {
+				stat.Term = normalizePulseEntity(term)
+			}
+			stat.Domains = appendUniqueStrings(stat.Domains, domain)
+			stats[normalized] = stat
+		}
+	}
+	shared := make([]termStat, 0, len(stats))
+	for _, stat := range stats {
+		if len(stat.Domains) >= 2 {
+			shared = append(shared, stat)
+		}
+	}
+	sort.SliceStable(shared, func(i, j int) bool {
+		leftStrong := pulseCorroborationTermLooksStrong(shared[i].Term)
+		rightStrong := pulseCorroborationTermLooksStrong(shared[j].Term)
+		if leftStrong != rightStrong {
+			return leftStrong
+		}
+		if len(shared[i].Domains) == len(shared[j].Domains) {
+			return len([]rune(shared[i].Term)) > len([]rune(shared[j].Term))
+		}
+		return len(shared[i].Domains) > len(shared[j].Domains)
+	})
+	entities := []string{}
+	for _, stat := range shared {
+		entities = appendPulseEntity(entities, stat.Term)
+		if len(entities) >= 5 {
+			break
+		}
+	}
+	return entities
+}
+
+func pulseSearchResultLooksThinHomepage(result pulseSearchResult) bool {
+	parsed, err := url.Parse(strings.TrimSpace(result.URL))
+	if err != nil || parsed.Hostname() == "" {
+		return false
+	}
+	path := strings.Trim(strings.TrimSpace(parsed.EscapedPath()), "/")
+	if path != "" {
+		return false
+	}
+	snippet := cleanSearchText(result.Snippet)
+	return len([]rune(snippet)) < 80
+}
+
+func pulseSearchResultsCorroborate(queryEvidence pulseSearchEvidence, left pulseSearchResult, right pulseSearchResult) bool {
+	if !pulseResultsHaveIndependentDomains(left, right) {
+		return false
+	}
+	leftTerms := pulseCorroborationTerms(left)
+	rightTerms := pulseCorroborationTerms(right)
+	overlap := intersectPulseTerms(leftTerms, rightTerms)
+	if len(overlap) == 0 {
+		return false
+	}
+	for _, term := range overlap {
+		if pulseCorroborationTermLooksStrong(term) {
+			return true
+		}
+	}
+	if len(overlap) >= 2 {
+		return true
+	}
+	queryTerms := pulseSearchRelevanceTerms(pulseSearchQueryFromEvidence(queryEvidence))
+	return len(intersectPulseTerms(overlap, queryTerms)) > 0
+}
+
+func pulseResultsHaveIndependentDomains(left pulseSearchResult, right pulseSearchResult) bool {
+	leftDomain := pulseSourceDomainKey(left.URL)
+	rightDomain := pulseSourceDomainKey(right.URL)
+	return leftDomain != "" && rightDomain != "" && leftDomain != rightDomain
+}
+
+func pulseCorroborationTerms(result pulseSearchResult) []string {
+	text := cleanSearchText(strings.Join([]string{result.Title, result.Snippet}, " "))
+	terms := []string{}
+	for _, match := range pulseModelEntityPattern.FindAllString(text, -1) {
+		terms = appendUniqueStrings(terms, normalizePulseEntity(match))
+	}
+	for _, entity := range pulseKnownEntities {
+		if pulseTextContainsFold(text, entity) {
+			terms = appendUniqueStrings(terms, entity)
+		}
+	}
+	for _, term := range pulseClusterHintTerms(text) {
+		if !pulseCorroborationTermLooksGeneric(term) {
+			terms = appendUniqueStrings(terms, term)
+		}
+	}
+	for _, term := range pulseKeywordsFromText(text) {
+		if !pulseCorroborationTermLooksGeneric(term) {
+			terms = appendUniqueStrings(terms, term)
+		}
+	}
+	return limitStringSlice(terms, 16, 40)
+}
+
+func pulseCorroborationTermLooksStrong(term string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(term))
+	if normalized == "" || pulseCorroborationTermLooksGeneric(normalized) {
+		return false
+	}
+	if pulseModelEntityPattern.MatchString(term) {
+		return true
+	}
+	for _, entity := range pulseKnownEntities {
+		if strings.EqualFold(term, entity) {
+			return true
+		}
+	}
+	strongTerms := []string{
+		"rag", "dify", "claude", "gemini", "openai", "anthropic", "deepseek", "qwen", "kimi",
+		"具身智能", "人形机器人", "向量检索", "知识图谱", "知识库", "工具调用", "多智能体",
+	}
+	for _, value := range strongTerms {
+		if normalized == strings.ToLower(value) {
+			return true
+		}
+	}
+	if pulseTermHasHan(term) && len([]rune(term)) >= 4 {
+		return true
+	}
+	return strings.ContainsAny(normalized, "-_0123456789")
+}
+
+func pulseCorroborationTermLooksGeneric(term string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(term))
+	if pulseSearchTermLooksGeneric(normalized) {
+		return true
+	}
+	if len([]rune(normalized)) > 32 {
+		return true
+	}
+	generic := []string{
+		"code", "open", "source", "github", "issue", "guide", "tutorial", "overview", "example", "examples",
+		"release", "released", "launch", "launched", "using", "use", "how", "what", "why", "market", "map",
+		"工程", "实践", "文章", "教程", "指南", "案例", "资料", "经验", "总结", "方案", "系统", "平台",
+	}
+	for _, value := range generic {
+		if normalized == strings.ToLower(value) {
+			return true
+		}
+	}
+	return false
 }
 
 func appendPulseEntity(entities []string, entity string) []string {
@@ -1712,6 +2396,9 @@ func pulseEntityLooksGeneric(entity string) bool {
 }
 
 func searchFallbackClusterTitleChange(results []pulseSearchResult) string {
+	if len(results) == 1 || pulseAllWeakSearchSources(results) {
+		return "待核验线索"
+	}
 	text := strings.ToLower(searchFallbackResultsText(results))
 	switch {
 	case pulseTextHasAny(text, "expected", "reportedly", "rumor", "rumour", "预计", "传闻", "据称", "据报道"):
@@ -1723,6 +2410,43 @@ func searchFallbackClusterTitleChange(results []pulseSearchResult) string {
 	default:
 		return "新线索值得跟踪"
 	}
+}
+
+func pulseAllWeakSearchSources(results []pulseSearchResult) bool {
+	if len(results) == 0 {
+		return false
+	}
+	for _, result := range results {
+		if !pulseWeakSearchSource(result) {
+			return false
+		}
+	}
+	return true
+}
+
+func pulseWeakSearchSource(result pulseSearchResult) bool {
+	parsed, err := url.Parse(strings.TrimSpace(result.URL))
+	if err != nil {
+		return false
+	}
+	host := strings.TrimPrefix(strings.ToLower(parsed.Hostname()), "www.")
+	weakHosts := []string{
+		"blog.csdn.net",
+		"download.csdn.net",
+		"csdn.net",
+		"cnblogs.com",
+		"juejin.cn",
+		"zhihu.com",
+		"zhuanlan.zhihu.com",
+		"so.html5.qq.com",
+		"baike.sogou.com",
+	}
+	for _, weakHost := range weakHosts {
+		if host == weakHost || strings.HasSuffix(host, "."+weakHost) {
+			return true
+		}
+	}
+	return false
 }
 
 func searchFallbackClusterSummaryChange(results []pulseSearchResult) string {
@@ -2167,33 +2891,7 @@ func buildFallbackPulse(date string, topics []models.PulseTopic, signals []memor
 			UpdatedAt: now,
 		})
 	}
-
-	items := []models.PulseItem{}
-	for index, topic := range topics {
-		if !topic.Enabled {
-			continue
-		}
-		focus := topic.Name
-		keywords := decodeKeywords(topic.Keywords)
-		if len(keywords) > 0 {
-			focus = strings.Join(keywords[:minInt(len(keywords), 3)], " / ")
-		}
-		title := fmt.Sprintf("围绕「%s」生成今日跟进问题", topic.Name)
-		items = append(items, fallbackItem(date, pulseSourceTopicHot, index, title, fmt.Sprintf("外网搜索暂不可用；先基于订阅 topic「%s」和关键词「%s」生成待检索问题。", topic.Name, focus), topic.ID, topic.Name, "关注 Topic", searchErrors))
-	}
-	for index, signal := range signals[:minInt(len(signals), 2)] {
-		title := fmt.Sprintf("延续最近对话：%s", signal.Focus)
-		items = append(items, fallbackItem(date, pulseSourceMemory, index, title, fmt.Sprintf("外网搜索暂不可用；先基于最近对话中「%s」相关信号生成待检索问题。", signal.Theme), "", "", "近日 Memory", searchErrors))
-	}
-	interestTerms := collectInterestTerms(topics, signals)
-	if len(interestTerms) == 0 {
-		interestTerms = []string{"你的近期对话"}
-	}
-	for index, term := range interestTerms[:minInt(len(interestTerms), 3)] {
-		title := fmt.Sprintf("从「%s」延伸一个近日可追踪话题", term)
-		items = append(items, fallbackItem(date, pulseSourceInterestHot, index, title, "外网搜索暂不可用；暂以 topic/memory 信号生成待检索方向。", "", "", "可能兴趣", searchErrors))
-	}
-	return modules, items
+	return modules, []models.PulseItem{}
 }
 
 func fallbackItem(date, source string, index int, title, reason, topicID, topicName, category string, searchErrors []string) models.PulseItem {
@@ -2534,18 +3232,18 @@ func fallbackModuleCopy(key string, topics []models.PulseTopic, signals []memory
 		if len(topics) == 0 {
 			return "还没有订阅 Topic", "添加 Topic 后，这里会定时生成你关注主题下的个性化推荐。"
 		}
-		return fmt.Sprintf("等待检索的 %d 个订阅 Topic", len(topics)), searchIssue + "，这里只保留待检索问题入口，不作为最新热点总结。"
+		return fmt.Sprintf("等待检索的 %d 个订阅 Topic", len(topics)), searchIssue + "，本次没有可核验来源，因此不展示推荐卡；搜索恢复后会重新生成。"
 	case pulseSourceMemory:
 		if len(signals) > 0 {
-			return "等待检索的近日 Memory", fmt.Sprintf("%s；最近最强信号是「%s」，先生成可继续检索的问题入口。", searchIssue, signals[0].Theme)
+			return "等待检索的近日 Memory", fmt.Sprintf("%s；最近最强信号是「%s」，但本次没有可核验来源，因此不展示推荐卡。", searchIssue, signals[0].Theme)
 		}
 		return "等待更多 Memory 信号", searchIssue + "；继续使用工作台后，这里会基于近期对话和外网检索生成推荐。"
 	case pulseSourceInterestHot:
 		terms := collectInterestTerms(topics, signals)
 		if len(terms) > 0 {
-			return "等待检索的兴趣外扩", fmt.Sprintf("%s；基于「%s」等信号保留待检索方向。", searchIssue, strings.Join(terms[:minInt(len(terms), 3)], " / "))
+			return "等待检索的兴趣外扩", fmt.Sprintf("%s；「%s」等方向暂未拿到可核验来源，因此不展示推荐卡。", searchIssue, strings.Join(terms[:minInt(len(terms), 3)], " / "))
 		}
-		return "冷启动兴趣探索", searchIssue + "；先生成少量探索问题，等 topic 和 memory 更丰富后再增强个性化。"
+		return "冷启动兴趣探索", searchIssue + "；等 topic、memory 和外网来源更充分后再生成推荐。"
 	default:
 		return defaultPulseModuleCopy(key)
 	}
@@ -2677,6 +3375,13 @@ func minInt(a int, b int) int {
 	return b
 }
 
+func maxInt(a int, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
 func hasSearchResults(evidence []pulseSearchEvidence) bool {
 	for _, item := range evidence {
 		if len(item.Results) > 0 {
@@ -2766,6 +3471,90 @@ func pulseSearchResultLooksUseful(title string, snippet string, rawURL string) b
 		}
 	}
 	return true
+}
+
+func pulseSearchResultRelevanceScore(query pulseSearchQuery, result pulseSearchResult) int {
+	terms := pulseSearchRelevanceTerms(query)
+	if len(terms) == 0 {
+		return 0
+	}
+	score := 0
+	for _, term := range terms {
+		if pulseSearchTextContainsTerm(result.Title, term) {
+			score += 5
+		}
+		if pulseSearchTextContainsTerm(result.Snippet, term) {
+			score += 2
+		}
+		if pulseSearchTextContainsTerm(result.URL, term) {
+			score++
+		}
+	}
+	return score
+}
+
+func pulseSearchRelevanceTerms(query pulseSearchQuery) []string {
+	values := []string{query.TopicName, query.Query}
+	terms := []string{}
+	seen := map[string]bool{}
+	for _, value := range values {
+		for _, part := range strings.FieldsFunc(value, func(r rune) bool {
+			return unicode.IsSpace(r) || strings.ContainsRune(",，;；/、|｜:：()（）[]【】\"'“”", r)
+		}) {
+			term := strings.ToLower(strings.TrimSpace(part))
+			term = strings.Trim(term, ".!?！？。")
+			if pulseSearchTermLooksGeneric(term) || seen[term] {
+				continue
+			}
+			seen[term] = true
+			terms = append(terms, term)
+		}
+	}
+	return terms
+}
+
+func pulseSearchTermLooksGeneric(term string) bool {
+	if term == "" {
+		return true
+	}
+	if _, err := strconv.Atoi(term); err == nil {
+		return true
+	}
+	if !pulseTermHasHan(term) && len([]rune(term)) <= 2 {
+		return true
+	}
+	generic := []string{
+		"latest", "news", "recent", "update", "updates", "trend", "trends", "analysis", "emerging",
+		"case", "study", "with", "from", "for", "and", "the",
+		"最新", "近期", "新闻", "资讯", "热门", "趋势", "分析", "外网", "相关",
+	}
+	for _, value := range generic {
+		if term == value {
+			return true
+		}
+	}
+	return false
+}
+
+func pulseSearchTextContainsTerm(text string, term string) bool {
+	haystack := strings.ToLower(text)
+	if haystack == "" || term == "" {
+		return false
+	}
+	if pulseTermHasHan(term) || len([]rune(term)) > 3 {
+		return strings.Contains(haystack, term)
+	}
+	pattern := `(?i)(^|[^a-z0-9])` + regexp.QuoteMeta(term) + `($|[^a-z0-9])`
+	return regexp.MustCompile(pattern).FindStringIndex(haystack) != nil
+}
+
+func pulseTermHasHan(term string) bool {
+	for _, r := range term {
+		if unicode.Is(unicode.Han, r) {
+			return true
+		}
+	}
+	return false
 }
 
 func newsSourcesFromSignals(signals []string, maxItems int) []pulseNewsSource {
@@ -2920,9 +3709,95 @@ func topicResponse(topic models.PulseTopic) pulseTopicResponse {
 	}
 }
 
+func pulseClusterKey(item models.PulseItem) string {
+	titleKey := pulseClusterTitleKey(item.Title)
+	if titleKey == "" {
+		return ""
+	}
+	parts := []string{
+		normalizePulseModuleKey(item.Source),
+		strings.ToLower(firstNonEmptyPulse(item.TopicID, item.TopicName, item.Category)),
+		titleKey,
+	}
+	if domains := pulseItemSourceDomains(item, 3); len(domains) > 0 {
+		parts = append(parts, strings.Join(domains, ","))
+	}
+	return fmt.Sprintf("cluster_%x", stableHash(strings.Join(parts, "|")))
+}
+
+func pulseEventClusterKey(event models.PulseEvent) string {
+	if strings.TrimSpace(event.MetadataJSON) == "" {
+		return ""
+	}
+	var metadata map[string]interface{}
+	if err := json.Unmarshal([]byte(event.MetadataJSON), &metadata); err != nil {
+		return ""
+	}
+	for _, key := range []string{"cluster_key", "clusterKey"} {
+		if value, ok := metadata[key]; ok {
+			cleaned := strings.TrimSpace(fmt.Sprint(value))
+			if cleaned != "" {
+				return cleaned
+			}
+		}
+	}
+	return ""
+}
+
+func pulseClusterTitleKey(value string) string {
+	cleaned := strings.ToLower(cleanSearchText(value))
+	if cleaned == "" {
+		return ""
+	}
+	var builder strings.Builder
+	lastSpace := false
+	for _, r := range cleaned {
+		switch {
+		case unicode.IsLetter(r) || unicode.IsDigit(r) || unicode.Is(unicode.Han, r):
+			builder.WriteRune(r)
+			lastSpace = false
+		case unicode.IsSpace(r):
+			if !lastSpace && builder.Len() > 0 {
+				builder.WriteRune(' ')
+				lastSpace = true
+			}
+		}
+	}
+	return limitText(strings.TrimSpace(builder.String()), 80)
+}
+
+func pulseItemSourceDomains(item models.PulseItem, maxItems int) []string {
+	var detail pulseItemDetail
+	if item.DetailJSON != "" {
+		_ = json.Unmarshal([]byte(item.DetailJSON), &detail)
+	}
+	domains := []string{}
+	for _, source := range detail.NewsSources {
+		if domain := pulseSourceDomainKey(source.URL); domain != "" {
+			domains = appendUniqueStrings(domains, domain)
+		}
+		if len(domains) >= maxItems {
+			break
+		}
+	}
+	return domains
+}
+
+func pulseSourceDomainKey(rawURL string) string {
+	parsed, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || parsed.Host == "" {
+		return ""
+	}
+	host := strings.ToLower(parsed.Hostname())
+	host = strings.TrimPrefix(host, "www.")
+	return host
+}
+
 type pulseFeatureState struct {
 	feedbackByItem map[string]pulseItemFeedbackResponse
+	feedbackByKey  map[string]pulseItemFeedbackResponse
 	directScores   map[string]int
+	clusterScores  map[string]int
 	topicScores    map[string]int
 	sourceScores   map[string]int
 }
@@ -2930,7 +3805,9 @@ type pulseFeatureState struct {
 func loadPulseFeatureState(userID string, date string, items []models.PulseItem) (pulseFeatureState, error) {
 	state := pulseFeatureState{
 		feedbackByItem: map[string]pulseItemFeedbackResponse{},
+		feedbackByKey:  map[string]pulseItemFeedbackResponse{},
 		directScores:   map[string]int{},
+		clusterScores:  map[string]int{},
 		topicScores:    map[string]int{},
 		sourceScores:   map[string]int{},
 	}
@@ -2965,6 +3842,10 @@ func loadPulseFeatureState(userID string, date string, items []models.PulseItem)
 
 	for _, event := range events {
 		item, ok := itemByID[event.ItemID]
+		clusterKey := pulseEventClusterKey(event)
+		if clusterKey == "" && ok {
+			clusterKey = pulseClusterKey(item)
+		}
 		if ok {
 			feedback := state.feedbackByItem[event.ItemID]
 			switch normalizePulseEventType(event.EventType) {
@@ -2998,10 +3879,46 @@ func loadPulseFeatureState(userID string, date string, items []models.PulseItem)
 			}
 			state.feedbackByItem[event.ItemID] = feedback
 		}
+		if clusterKey != "" {
+			feedback := state.feedbackByKey[clusterKey]
+			switch normalizePulseEventType(event.EventType) {
+			case pulseEventExposure:
+				if event.Value != 0 {
+					feedback.ExposureCount++
+				}
+			case pulseEventOpen:
+				if event.Value != 0 {
+					feedback.OpenCount++
+				}
+			case pulseEventLike:
+				feedback.Liked = event.Value > 0
+				if event.Value > 0 {
+					feedback.LikeCount++
+				}
+			case pulseEventUpvote:
+				if event.Value > 0 {
+					feedback.Vote = "up"
+					feedback.UpvoteCount++
+				} else if feedback.Vote == "up" {
+					feedback.Vote = ""
+				}
+			case pulseEventDownvote:
+				if event.Value > 0 {
+					feedback.Vote = "down"
+					feedback.DownvoteCount++
+				} else if feedback.Vote == "down" {
+					feedback.Vote = ""
+				}
+			}
+			state.feedbackByKey[clusterKey] = feedback
+		}
 
 		weight := pulseEventFeatureWeight(event)
 		if ok {
 			state.directScores[event.ItemID] += weight
+		}
+		if clusterKey != "" {
+			state.clusterScores[clusterKey] += weight
 		}
 		topicID := firstNonEmptyPulse(event.TopicID, item.TopicID)
 		if topicID != "" {
@@ -3029,6 +3946,9 @@ func (state pulseFeatureState) scoreFor(item models.PulseItem) int {
 	score := item.HeatScore
 	if state.directScores != nil {
 		score += state.directScores[item.ID]
+	}
+	if state.clusterScores != nil {
+		score += state.clusterScores[pulseClusterKey(item)]
 	}
 	if state.topicScores != nil {
 		if item.TopicID != "" {
@@ -3064,6 +3984,88 @@ func rankPulseItems(items []models.PulseItem, featureState pulseFeatureState) []
 		return leftScore > rightScore
 	})
 	return ranked
+}
+
+func recommendedPulseItems(items []models.PulseItem, featureState pulseFeatureState) []models.PulseItem {
+	ranked := rankPulseItems(items, featureState)
+	visiblePool := make([]models.PulseItem, 0, minInt(len(ranked), pulseVisibleItemLimit))
+	seenClusters := map[string]bool{}
+	for _, item := range ranked {
+		if pulseItemLooksLowInformation(item) {
+			continue
+		}
+		if key := pulseClusterKey(item); key != "" {
+			if seenClusters[key] {
+				continue
+			}
+			seenClusters[key] = true
+		}
+		visiblePool = append(visiblePool, item)
+		if len(visiblePool) >= pulseVisibleItemLimit {
+			break
+		}
+	}
+	recommended := make([]models.PulseItem, 0, len(visiblePool))
+	for _, item := range visiblePool {
+		if featureState.shouldFilter(item) {
+			continue
+		}
+		recommended = append(recommended, item)
+	}
+	if len(recommended) > 0 {
+		return recommended
+	}
+	return visiblePool
+}
+
+func pulseItemLooksLowInformation(item models.PulseItem) bool {
+	var detail pulseItemDetail
+	if item.DetailJSON != "" {
+		_ = json.Unmarshal([]byte(item.DetailJSON), &detail)
+	}
+	if len(detail.NewsSources) > 1 {
+		return false
+	}
+	text := strings.ToLower(strings.Join([]string{
+		item.Title,
+		item.Summary,
+		detail.RecommendationReason,
+		detail.QuickContext,
+		strings.Join(detail.Signals, " "),
+		strings.Join(detail.KeyPoints, " "),
+	}, " "))
+	return pulseTextHasAny(
+		text,
+		"待核验线索",
+		"单一来源",
+		"单一弱证据来源",
+		"不足以判断",
+		"搜索结果聚合摘要",
+		"无有效结果",
+		"搜索失败",
+		"没有可核验来源",
+	)
+}
+
+func (state pulseFeatureState) shouldFilter(item models.PulseItem) bool {
+	feedback := state.feedbackFor(item.ID)
+	if feedback.Vote == "down" || feedback.DownvoteCount > 0 {
+		return true
+	}
+	if feedback.OpenCount >= pulseOpenFilterThreshold {
+		return true
+	}
+	if feedback.ExposureCount >= pulseExposureFilterThreshold {
+		return true
+	}
+	clusterFeedback := state.feedbackByKey[pulseClusterKey(item)]
+	if clusterFeedback.Vote == "down" || clusterFeedback.DownvoteCount > 0 {
+		return true
+	}
+	if clusterFeedback.OpenCount >= pulseOpenFilterThreshold {
+		return true
+	}
+	return clusterFeedback.ExposureCount >= pulseExposureFilterThreshold
 }
 
 func pulseEventFeatureWeight(event models.PulseEvent) int {
@@ -3303,10 +4305,10 @@ func intersectPulseTerms(left []string, right []string) []string {
 }
 
 func moduleResponses(modules []models.PulseModule, items []models.PulseItem) []pulseModuleResponse {
-	return moduleResponsesWithFeatures(modules, items, pulseFeatureState{})
+	return moduleResponsesWithFeatures(modules, items, items, pulseFeatureState{})
 }
 
-func moduleResponsesWithFeatures(modules []models.PulseModule, items []models.PulseItem, featureState pulseFeatureState) []pulseModuleResponse {
+func moduleResponsesWithFeatures(modules []models.PulseModule, items []models.PulseItem, allItems []models.PulseItem, featureState pulseFeatureState) []pulseModuleResponse {
 	if len(modules) == 0 {
 		for _, key := range pulseModuleOrder {
 			title, summary := defaultPulseModuleCopy(key)
@@ -3343,7 +4345,7 @@ func moduleResponsesWithFeatures(modules []models.PulseModule, items []models.Pu
 			Key:     key,
 			Title:   module.Title,
 			Summary: module.Summary,
-			Items:   itemResponsesWithFeatures(moduleItems, items, featureState),
+			Items:   itemResponsesWithFeatures(moduleItems, allItems, featureState),
 		})
 	}
 	return responses
@@ -3366,6 +4368,7 @@ func itemResponse(item models.PulseItem, allItems []models.PulseItem, featureSta
 	_ = json.Unmarshal([]byte(item.DetailJSON), &detail)
 	return pulseItemResponse{
 		ID:                 item.ID,
+		ClusterKey:         pulseClusterKey(item),
 		Date:               item.Date,
 		TopicID:            item.TopicID,
 		TopicName:          item.TopicName,

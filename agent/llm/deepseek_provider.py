@@ -12,4 +12,4 @@ class DeepSeekProvider(OpenAIProvider):
         model: str = "deepseek-chat",
         base_url: str = "https://api.deepseek.com/v1",
     ):
-        super().__init__(api_key=api_key, model=model, base_url=base_url)
+        super().__init__(api_key=api_key, model=model, base_url=base_url, provider_label="DeepSeek")

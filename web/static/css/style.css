@@ -3832,6 +3832,42 @@ video {
     overflow: hidden;
 }
 
+.pulse-card-sources {
+    display: grid;
+    gap: 5px;
+}
+
+.pulse-card-source {
+    min-width: 0;
+    padding: 6px 7px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    background: var(--surface-muted);
+    color: inherit;
+    display: grid;
+    gap: 2px;
+    text-decoration: none;
+}
+
+.pulse-card-source:hover {
+    border-color: var(--primary);
+    background: var(--surface);
+}
+
+.pulse-card-source span {
+    color: var(--text-subtle);
+    font-size: 10px;
+    line-height: 1.2;
+}
+
+.pulse-card-source strong {
+    color: var(--text-muted);
+    font-size: 11px;
+    font-weight: 750;
+    line-height: 1.25;
+    overflow-wrap: anywhere;
+}
+
 .pulse-card-actions,
 .pulse-card-footer {
     display: flex;
@@ -3966,6 +4002,18 @@ video {
     font-size: 12px;
     line-height: 1.45;
     overflow-wrap: anywhere;
+}
+
+.pulse-post-source-section {
+    margin-top: 10px;
+    display: grid;
+    gap: 8px;
+}
+
+.pulse-post-source-section h4 {
+    color: var(--text);
+    font-size: 12px;
+    line-height: 1.25;
 }
 
 .pulse-question-list {
@@ -5448,6 +5496,10 @@ body.pulse-post-open {
 .empty-inline {
     font-size: 12px;
     line-height: 1.5;
+}
+
+.empty-state span {
+    white-space: pre-line;
 }
 
 .empty-inline {

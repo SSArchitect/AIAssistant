@@ -15,14 +15,22 @@ class OpenAIProvider(LLMProvider):
         model: str = "gpt-4o",
         base_url: str | None = None,
         timeout_seconds: float | None = None,
+        provider_label: str = "OpenAI",
     ):
-        kwargs = {"api_key": api_key}
+        api_key = (api_key or "").strip()
+        if not api_key:
+            raise ValueError(f"{provider_label} API key not configured")
+
+        kwargs = {"api_key": api_key, "max_retries": 0}
         if base_url:
             kwargs["base_url"] = base_url
         if timeout_seconds and timeout_seconds > 0:
             kwargs["timeout"] = openai.Timeout(
                 timeout_seconds,
                 connect=timeout_seconds,
+                read=timeout_seconds,
+                write=timeout_seconds,
+                pool=timeout_seconds,
             )
         self.client = openai.AsyncOpenAI(**kwargs)
         self.model = model

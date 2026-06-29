@@ -250,6 +250,10 @@ const I18N = {
             loading: '正在加载 Pulse...',
             emptyTitle: '还没有信息簇',
             emptyDetail: '添加一个 Topic 或刷新 Pulse。',
+            emptyComputingTitle: 'Pulse 还在计算中',
+            emptyComputingDetail: '先不展示失败兜底卡；拿到可核验来源后会自动更新。',
+            emptyUnavailableTitle: '暂无有效信息簇',
+            emptyUnavailableDetail: '本次搜索或总结没有拿到可核验来源，先隐藏推荐卡。',
             emptyTopics: '还没有订阅 Topic',
             emptyModule: '这个模块暂时没有推荐',
             emptyFiltered: '这个 Topic 暂时没有信息簇',
@@ -434,13 +438,7 @@ const I18N = {
             failed: '失败',
         },
         welcome: {
-            currentAgent: '当前 Agent：{name}',
-            enterAgent: '进入当前 Agent',
-            routePrompt: '帮我判断这个任务应该由哪个 Agent 处理，并给出回答：',
-            planPrompt: '总结一下这个任务：先识别意图，再说明应该调用哪个 Agent，最后给出答复。',
-            superPlan: 'Super Chat 规划',
-            calculator: '工具计算',
-            time: '时间工具',
+            prompt: '把问题或任务发给我就好。',
             imageCreate: '直接生图',
             imagePolish: '专业修饰生图',
             imageReference: '参考素材生图',
@@ -701,6 +699,10 @@ const I18N = {
             loading: 'Loading Pulse...',
             emptyTitle: 'No clusters yet',
             emptyDetail: 'Add a topic or refresh Pulse.',
+            emptyComputingTitle: 'Pulse is still computing',
+            emptyComputingDetail: 'Failed fallback cards are hidden; clusters will appear after verifiable sources are available.',
+            emptyUnavailableTitle: 'No valid clusters',
+            emptyUnavailableDetail: 'This run did not find verifiable sources, so recommendation cards are hidden for now.',
             emptyTopics: 'No topic subscriptions yet',
             emptyModule: 'No recommendations in this module yet',
             emptyFiltered: 'No clusters for this topic yet',
@@ -885,13 +887,7 @@ const I18N = {
             failed: 'Failed',
         },
         welcome: {
-            currentAgent: 'Current Agent: {name}',
-            enterAgent: 'Enter Current Agent',
-            routePrompt: 'Help me decide which Agent should handle this task, then answer it: ',
-            planPrompt: 'Summarize this task: identify intent, choose the right Agent, then provide an answer.',
-            superPlan: 'Super Chat Plan',
-            calculator: 'Tool Calculation',
-            time: 'Time Tool',
+            prompt: 'Send me a question or task to get started.',
             imageCreate: 'Generate Image',
             imagePolish: 'Polished Prompt',
             imageReference: 'Use References',
@@ -3994,7 +3990,8 @@ function renderPulse() {
     const items = Array.isArray(pulse.items) ? pulse.items : [];
     renderPulseTopicFilter(items);
     if (!items.length) {
-        pulseItems.innerHTML = emptyState(t('pulse.emptyTitle'), t('pulse.emptyDetail'));
+        const empty = pulseEmptyStateContent();
+        pulseItems.innerHTML = emptyState(empty.title, empty.detail);
         return;
     }
 
@@ -4007,6 +4004,36 @@ function renderPulse() {
     pulseItems.innerHTML = renderPulseFeed(filteredItems);
     renderPulsePostWindow();
     observePulseExposures();
+}
+
+function pulseEmptyStateContent() {
+    if (pulse.refreshing) {
+        return {
+            title: t('pulse.emptyComputingTitle'),
+            detail: t('pulse.emptyComputingDetail'),
+        };
+    }
+    const moduleDetail = pulseFallbackModuleDetail();
+    if (moduleDetail) {
+        return {
+            title: t('pulse.emptyUnavailableTitle'),
+            detail: moduleDetail,
+        };
+    }
+    return {
+        title: t('pulse.emptyTitle'),
+        detail: t('pulse.emptyDetail'),
+    };
+}
+
+function pulseFallbackModuleDetail() {
+    const modules = Array.isArray(pulse.modules) ? pulse.modules : [];
+    const summaries = modules
+        .map((module) => module?.summary || '')
+        .filter((summary) => /搜索|检索|可核验|失败|暂不可用|search|verifiable|failed|unavailable/i.test(summary))
+        .slice(0, 2);
+    if (!summaries.length) return '';
+    return [t('pulse.emptyUnavailableDetail'), ...summaries].join('\n');
 }
 
 function formatPulseError() {
@@ -4199,6 +4226,7 @@ function renderPulseCard(item) {
                 <h3>${escapeHtml(item.title || '')}</h3>
                 <p>${escapeHtml(compactPulsePostSummary(item))}</p>
             </button>
+            ${renderPulseCardSources(item)}
             <div class="pulse-card-footer">
                 <span class="pulse-recommend-note">${escapeHtml(note)}</span>
                 <div class="pulse-feedback-actions">
@@ -4250,6 +4278,22 @@ function formatPulseFeedbackCount(value = 0) {
 
 function compactPulsePostSummary(item = {}) {
     return truncateText(item.summary || item.detail?.quick_context || '', 180);
+}
+
+function renderPulseCardSources(item = {}) {
+    const detail = item.detail || {};
+    const sources = normalizePulseNewsSources(detail.news_sources, detail.sources, detail.related_news).slice(0, 2);
+    if (!sources.length) return '';
+    return `
+        <div class="pulse-card-sources">
+            ${sources.map((source) => `
+                <a class="pulse-card-source" href="${escapeAttr(source.url)}" target="_blank" rel="noopener noreferrer">
+                    <span>${escapeHtml(hostFromUrl(source.url) || source.source || t('pulse.newsSources'))}</span>
+                    <strong>${escapeHtml(truncateText(source.title || source.url, 46))}</strong>
+                </a>
+            `).join('')}
+        </div>
+    `;
 }
 
 function pulseRecommendationNote(item = {}) {
@@ -4403,6 +4447,7 @@ function renderPulsePostWindow() {
 function renderPulsePostBody(item = {}) {
     const detail = item.detail || {};
     const paragraphs = [];
+    const newsSources = normalizePulseNewsSources(detail.news_sources, detail.sources, detail.related_news);
     paragraphs.push(item.summary || detail.quick_context || '');
     if (detail.quick_context && detail.quick_context !== item.summary) {
         paragraphs.push(detail.quick_context);
@@ -4411,11 +4456,19 @@ function renderPulsePostBody(item = {}) {
     if (keyPoints.length) {
         paragraphs.push(keyPoints.slice(0, 4).join('\n'));
     }
-    return paragraphs
+    const body = paragraphs
         .map((paragraph) => String(paragraph || '').trim())
         .filter(Boolean)
         .map((paragraph) => `<p>${escapeHtml(paragraph)}</p>`)
         .join('') || `<p>${escapeHtml(item.summary || '')}</p>`;
+    if (!newsSources.length) return body;
+    return `
+        ${body}
+        <section class="pulse-post-source-section">
+            <h4>${escapeHtml(t('pulse.newsSources'))}</h4>
+            ${renderPulseNewsSources(newsSources)}
+        </section>
+    `;
 }
 
 function renderPulsePostFooter(item = {}) {
@@ -4442,13 +4495,22 @@ function renderPulsePostFooter(item = {}) {
 
 async function recordPulseEvent(itemId, eventType, value = 1, metadata = {}) {
     if (!itemId || !eventType) return null;
+    const item = findPulseItem(itemId);
+    const eventMetadata = { ...(metadata || {}) };
+    if (item) {
+        if (item.cluster_key) eventMetadata.cluster_key = item.cluster_key;
+        if (item.title) eventMetadata.title = item.title;
+        if (item.source) eventMetadata.source = item.source;
+        if (item.topic_id) eventMetadata.topic_id = item.topic_id;
+        if (item.topic_name) eventMetadata.topic_name = item.topic_name;
+    }
     try {
         const data = await apiCall('POST', '/api/pulse/events', {
             date: pulse.date || undefined,
             item_id: itemId,
             event_type: eventType,
             value,
-            metadata,
+            metadata: eventMetadata,
         });
         if (data?.feedback) {
             updatePulseItemFeedback(itemId, data.feedback);
@@ -6541,7 +6603,6 @@ function readModels(providerKey) {
 
 function showWelcome() {
     const currentAgent = getCurrentAgent();
-    const starter = currentAgent?.metadata?.starter_prompt || '';
     const isImageAgent = currentAgentId === 'image_generation_v1';
     const title = currentAgent?.name || 'Super Chat';
     const agentActions = currentAgentQuickActions(currentAgent);
@@ -6562,35 +6623,9 @@ function showWelcome() {
                 query: '/reference 我会上传参考素材，请根据素材生成一张新的图片。',
             },
         ]
-        : [
-            {
-                label: t('welcome.enterAgent'),
-                query: starter || t('welcome.routePrompt'),
-            },
-            {
-                label: t('welcome.superPlan'),
-                query: t('welcome.planPrompt'),
-            },
-            {
-                label: t('welcome.calculator'),
-                query: 'Calculate 1024 * 768 / 3.14',
-            },
-            {
-                label: t('welcome.time'),
-                query: 'What time is it now?',
-            },
-        ];
-    messagesContainer.innerHTML = `
-        <div class="welcome-screen">
-            <div class="welcome-icon">
-                <svg viewBox="0 0 24 24" width="48" height="48" fill="none" stroke="currentColor" stroke-width="1.5">
-                    <path d="M12 3 3 8l9 5 9-5-9-5Z"/>
-                    <path d="m3 14 9 5 9-5"/>
-                    <path d="m3 11 9 5 9-5"/>
-                </svg>
-            </div>
-            <h2>${escapeHtml(title)}</h2>
-            <p class="welcome-sub">${escapeHtml(t('welcome.currentAgent', { name: getCurrentAgentName() }))}</p>
+        : [];
+    const quickActionsHtml = quickActions.length
+        ? `
             <div class="quick-actions">
                 ${quickActions.map((item) => `
                     <button class="quick-action" type="button"
@@ -6601,6 +6636,23 @@ function showWelcome() {
                     </button>
                 `).join('')}
             </div>
+        `
+        : '';
+    const promptHtml = currentAgentId === SUPER_CHAT_AGENT_ID
+        ? `<p class="welcome-sub">${escapeHtml(t('welcome.prompt'))}</p>`
+        : '';
+    messagesContainer.innerHTML = `
+        <div class="welcome-screen">
+            <div class="welcome-icon">
+                <svg viewBox="0 0 24 24" width="48" height="48" fill="none" stroke="currentColor" stroke-width="1.5">
+                    <path d="M12 3 3 8l9 5 9-5-9-5Z"/>
+                    <path d="m3 14 9 5 9-5"/>
+                    <path d="m3 11 9 5 9-5"/>
+                </svg>
+            </div>
+            <h2>${escapeHtml(title)}</h2>
+            ${promptHtml}
+            ${quickActionsHtml}
         </div>
     `;
 }

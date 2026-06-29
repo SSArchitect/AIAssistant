@@ -12,4 +12,4 @@ class DoubaoProvider(OpenAIProvider):
         model: str = "doubao-1-5-pro-256k-250115",
         base_url: str = "https://ark.cn-beijing.volces.com/api/v3",
     ):
-        super().__init__(api_key=api_key, model=model, base_url=base_url)
+        super().__init__(api_key=api_key, model=model, base_url=base_url, provider_label="Doubao")

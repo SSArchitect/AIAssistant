@@ -70,7 +70,7 @@ class Settings(BaseSettings):
     minimax_base_url: str = _providers.get("minimax", {}).get("base_url", "https://api.minimaxi.com/v1")
     minimax_model: str = _providers.get("minimax", {}).get("model", "MiniMax-M3")
     minimax_thinking: str = _providers.get("minimax", {}).get("thinking", "disabled")
-    minimax_timeout: str = str(_providers.get("minimax", {}).get("timeout", 60))
+    minimax_timeout: str = str(_providers.get("minimax", {}).get("timeout", 1800))
 
     # MiniMax AIGC defaults
     minimax_image_model: str = _aigc_minimax_cfg.get("image_model", "image-01")
@@ -208,12 +208,12 @@ class RuntimeConfig:
 
     @property
     def minimax_timeout(self) -> float:
-        value = self.get("llm.minimax.timeout", "60")
+        value = self.get("llm.minimax.timeout", "1800")
         try:
             parsed = float(value)
         except (TypeError, ValueError):
-            return 60.0
-        return parsed if parsed > 0 else 60.0
+            return 1800.0
+        return parsed if parsed > 0 else 1800.0
 
     @property
     def minimax_aigc_base_url(self) -> str:

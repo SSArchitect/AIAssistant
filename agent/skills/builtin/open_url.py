@@ -9,14 +9,16 @@ class OpenURLSkill(Skill):
         return SkillMetadata(
             name="open_url",
             description=(
-                "打开一个公开 HTTP/HTTPS 网页并提取可读正文。适合在 search 返回 URL 后，"
-                "继续读取网页详情、核验标题摘要、获取页面正文中的具体信息。"
+                "打开一个公开 HTTP/HTTPS 网页并提取可读正文。配合 search 使用："
+                "除非用户已经提供明确 URL，否则需要外部事实、产品型号、使用说明或高风险建议时先调用 search，"
+                "找到官方、一手或高可信 URL 后再用 open_url 核验正文。适合读取官方产品页、说明书、"
+                "支持文档、政策原文、新闻原文、医疗/法律/金融公开资料，以及核验 search 标题摘要中的具体信息。"
             ),
             parameters=[
                 SkillParameter(
                     name="url",
                     type="string",
-                    description="要打开的公开网页 URL，仅支持 http 或 https。",
+                    description="要打开的公开网页 URL，仅支持 http 或 https；优先使用 search 返回的官方、一手或高可信来源。",
                     required=True,
                 ),
                 SkillParameter(

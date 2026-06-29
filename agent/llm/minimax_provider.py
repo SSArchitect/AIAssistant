@@ -19,13 +19,14 @@ class MiniMaxProvider(OpenAIProvider):
         model: str = "MiniMax-M3",
         base_url: str = "https://api.minimaxi.com/v1",
         thinking: str = "disabled",
-        timeout_seconds: float | None = 60,
+        timeout_seconds: float | None = 1800,
     ):
         super().__init__(
             api_key=api_key,
             model=model,
             base_url=base_url,
             timeout_seconds=timeout_seconds,
+            provider_label="MiniMax",
         )
         self.thinking = thinking
         self.provider_name = "minimax"

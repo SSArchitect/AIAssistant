@@ -1,4 +1,6 @@
 """Unit tests for builtin skills."""
+import asyncio
+
 import httpx
 import pytest
 from agent.skills.builtin.echo import EchoSkill
@@ -250,6 +252,14 @@ class TestSearchSkill:
         meta = self.skill.metadata()
         assert meta.name == "search"
         assert meta.source == "builtin"
+        assert "必须先调用 search 再回答" in meta.description
+        assert "品牌、型号、产品编号" in meta.description
+        assert "药剂、清洁剂" in meta.description
+        assert "医疗" in meta.description
+        assert "法律" in meta.description
+        assert "金融" in meta.description
+        assert "安全风险" in meta.description
+        assert "open_url" in meta.description
         assert {p.name for p in meta.parameters} == {
             "query",
             "sources",
@@ -353,34 +363,142 @@ class TestSearchSkill:
         assert "minimax-mcp: mcp returned invalid json" in service.last_provider_errors
 
     @pytest.mark.asyncio
-    async def test_search_service_treats_web_source_as_generic_web_alias(self):
-        class SlowMCPProvider:
+    async def test_search_service_reranks_default_provider_noise(self):
+        class NoisyProvider:
+            name = "bing-rss"
+
+            async def search(self, query, *, limit=5):
+                return [
+                    SearchResult(
+                        title="Homemade crispy french fries",
+                        snippet="A recipe with potatoes, oil, and salt.",
+                        url="https://example.com/fries",
+                        source=self.name,
+                    )
+                ]
+
+        class RelevantProvider:
             name = "minimax-mcp"
+
+            async def search(self, query, *, limit=5):
+                return [
+                    SearchResult(
+                        title="Dify Agent RAG engineering practice",
+                        snippet="Agent workflow, Dify knowledge base, and RAG evaluation.",
+                        url="https://example.com/dify-agent-rag",
+                        source=self.name,
+                    )
+                ]
+
+        service = SearchService(
+            providers=[NoisyProvider(), RelevantProvider()],
+            retry_attempts=1,
+            retry_delay=0,
+        )
+
+        results = await service.search("Agent 工程实践 Dify RAG latest news 2026", limit=2)
+
+        assert [result.title for result in results] == [
+            "Dify Agent RAG engineering practice",
+            "Homemade crispy french fries",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_search_service_reranks_compact_cjk_query(self):
+        class NoisyProvider:
+            name = "http"
+
+            async def search(self, query, *, limit=5):
+                return [
+                    SearchResult(
+                        title="2026 - Wikipedia",
+                        snippet="2026 is a common year.",
+                        url="https://example.com/year-2026",
+                        source=self.name,
+                    )
+                ]
+
+        class RelevantProvider:
+            name = "web"
+
+            async def search(self, query, *, limit=5):
+                return [
+                    SearchResult(
+                        title="2026最新高分上映电影汇总",
+                        snippet="口碑电影推荐和上映片单。",
+                        url="https://example.com/movies-2026",
+                        source=self.name,
+                    )
+                ]
+
+        service = SearchService(
+            providers=[NoisyProvider(), RelevantProvider()],
+            retry_attempts=1,
+            retry_delay=0,
+        )
+
+        results = await service.search("2026年最新上映的高口碑电影推荐", limit=2)
+
+        assert [result.source for result in results] == ["web", "http"]
+
+    @pytest.mark.asyncio
+    async def test_search_service_web_alias_prefers_html_web_provider(self):
+        class WebProvider:
+            name = "web"
 
             def __init__(self):
                 self.calls = 0
 
             async def search(self, query, *, limit=5):
                 self.calls += 1
-                raise RuntimeError("should not be needed when bing has enough results")
-
-        class BingProvider:
-            name = "bing-rss"
-
-            async def search(self, query, *, limit=5):
+                await asyncio.sleep(0.01)
                 return [
                     SearchResult(
-                        title=f"Bing Result {index}",
+                        title=f"炝锅面教程 {index}",
                         snippet=query,
-                        url=f"https://example.com/{index}",
+                        url=f"https://example.com/web/{index}",
                         source=self.name,
                     )
                     for index in range(limit)
                 ]
 
+        class SlowMCPProvider:
+            name = "minimax-mcp"
+
+            def __init__(self):
+                self.calls = 0
+                self.cancelled = False
+
+            async def search(self, query, *, limit=5):
+                self.calls += 1
+                try:
+                    await asyncio.sleep(10)
+                except asyncio.CancelledError:
+                    self.cancelled = True
+                    raise
+                return []
+
+        class BingProvider:
+            name = "bing-rss"
+
+            def __init__(self):
+                self.calls = 0
+                self.cancelled = False
+
+            async def search(self, query, *, limit=5):
+                self.calls += 1
+                try:
+                    await asyncio.sleep(10)
+                except asyncio.CancelledError:
+                    self.cancelled = True
+                    raise
+                return []
+
+        web = WebProvider()
         mcp = SlowMCPProvider()
+        bing = BingProvider()
         service = SearchService(
-            providers=[mcp, BingProvider()],
+            providers=[mcp, bing, web],
             retry_attempts=1,
             retry_delay=0,
         )
@@ -388,8 +506,88 @@ class TestSearchSkill:
         results = await service.search("炝锅面教程", sources=["web"], limit=3)
 
         assert len(results) == 3
-        assert {result.source for result in results} == {"bing-rss"}
-        assert mcp.calls == 0
+        assert {result.source for result in results} == {"web"}
+        assert web.calls == 1
+        assert mcp.calls == 1
+        assert mcp.cancelled
+        assert bing.calls == 1
+        assert bing.cancelled
+
+    @pytest.mark.asyncio
+    async def test_search_service_web_alias_continues_after_low_relevance_results(self):
+        class NoisyWebProvider:
+            name = "web"
+
+            def __init__(self):
+                self.calls = 0
+
+            async def search(self, query, *, limit=5):
+                self.calls += 1
+                return [
+                    SearchResult(
+                        title=f"2026 Calendar {index}",
+                        snippet="Public holidays and yearly calendar.",
+                        url=f"https://example.com/calendar/{index}",
+                        source=self.name,
+                    )
+                    for index in range(limit)
+                ]
+
+        class RelevantMCPProvider:
+            name = "minimax-mcp"
+
+            def __init__(self):
+                self.calls = 0
+
+            async def search(self, query, *, limit=5):
+                self.calls += 1
+                await asyncio.sleep(0.01)
+                return [
+                    SearchResult(
+                        title=f"2026最新上映高口碑电影推荐 {index}",
+                        snippet="电影片单、口碑和上映信息。",
+                        url=f"https://example.com/movie/{index}",
+                        source=self.name,
+                    )
+                    for index in range(limit)
+                ]
+
+        class BingProvider:
+            name = "bing-rss"
+
+            def __init__(self):
+                self.calls = 0
+                self.cancelled = False
+
+            async def search(self, query, *, limit=5):
+                self.calls += 1
+                try:
+                    await asyncio.sleep(10)
+                except asyncio.CancelledError:
+                    self.cancelled = True
+                    raise
+                return []
+
+        mcp = RelevantMCPProvider()
+        bing = BingProvider()
+        web = NoisyWebProvider()
+        service = SearchService(
+            providers=[bing, mcp, web],
+            retry_attempts=1,
+            retry_delay=0,
+        )
+
+        results = await service.search(
+            "2026年最新上映的高口碑电影推荐",
+            sources=["web"],
+            limit=3,
+        )
+
+        assert [result.source for result in results] == ["minimax-mcp"] * 3
+        assert web.calls == 1
+        assert mcp.calls == 1
+        assert bing.calls == 1
+        assert bing.cancelled
 
     @pytest.mark.asyncio
     async def test_search_skill_uses_service(self, monkeypatch):
@@ -564,6 +762,9 @@ class TestOpenURLSkill:
     def test_metadata(self):
         meta = self.skill.metadata()
         assert meta.name == "open_url"
+        assert "先调用 search" in meta.description
+        assert "官方" in meta.description
+        assert "高可信 URL" in meta.description
         assert {p.name for p in meta.parameters} == {"url", "max_chars"}
 
     @pytest.mark.asyncio

@@ -58,11 +58,16 @@ def test_openai_compatible_provider_accepts_explicit_timeout():
     assert provider.client.timeout.read == 60
 
 
-def test_minimax_provider_defaults_to_sixty_second_timeout():
+def test_openai_compatible_provider_rejects_empty_api_key():
+    with pytest.raises(ValueError, match="MiniMax API key not configured"):
+        MiniMaxProvider(api_key="")
+
+
+def test_minimax_provider_defaults_to_long_timeout():
     provider = MiniMaxProvider(api_key="test-key")
 
-    assert provider.client.timeout.connect == 60
-    assert provider.client.timeout.read == 60
+    assert provider.client.timeout.connect == 1800
+    assert provider.client.timeout.read == 1800
 
 
 def test_minimax_provider_uses_runtime_timeout():
