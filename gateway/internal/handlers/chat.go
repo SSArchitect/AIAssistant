@@ -378,6 +378,230 @@ func truncateRunes(value string, maxRunes int) string {
 	return string(runes[:maxRunes]) + "..."
 }
 
+func compactTraceEvents(events []bridge.RunEvent) []bridge.RunEvent {
+	if len(events) == 0 {
+		return []bridge.RunEvent{}
+	}
+	compact := make([]bridge.RunEvent, 0, len(events))
+	for _, event := range events {
+		compact = append(compact, bridge.RunEvent{
+			ID:         event.ID,
+			RunID:      event.RunID,
+			Type:       event.Type,
+			Status:     event.Status,
+			Title:      event.Title,
+			StepID:     event.StepID,
+			Payload:    compactTracePayload(event.Payload),
+			DurationMS: event.DurationMS,
+			CreatedAt:  event.CreatedAt,
+		})
+	}
+	return compact
+}
+
+func compactTracePayload(payload map[string]interface{}) map[string]interface{} {
+	if len(payload) == 0 {
+		return map[string]interface{}{}
+	}
+	allowed := map[string]bool{
+		"agent_id": true, "arguments": true, "aspect_ratio": true, "brief_preview": true,
+		"citation_count": true, "command_text": true, "count": true, "error_message": true,
+		"error_type": true, "final_prompt_char_count": true, "image_count": true,
+		"information_strategy": true, "message_count": true, "model": true, "node": true,
+		"provider": true, "reason": true, "result": true, "result_preview": true,
+		"round": true, "skills_used": true, "source_agent_id": true, "status": true,
+		"step": true, "steps": true, "streaming": true, "summary": true,
+		"target_agent_id": true, "tool_calls": true, "tools_count": true, "total": true,
+		"usage": true, "urls": true, "workflow_node": true,
+	}
+	compact := make(map[string]interface{})
+	for key, value := range payload {
+		if !allowed[key] {
+			continue
+		}
+		compact[key] = compactTraceValue(key, value)
+	}
+	return compact
+}
+
+func compactTraceValue(key string, value interface{}) interface{} {
+	switch key {
+	case "arguments":
+		return compactTraceObject(value, map[string]int{
+			"query": 240, "task": 240, "url": 500, "sources": 120,
+		})
+	case "step":
+		return compactTraceObject(value, map[string]int{
+			"id": 80, "type": 80, "title": 160, "description": 260, "query": 240, "task": 240,
+		})
+	case "steps":
+		return compactTraceObjects(value, 12, map[string]int{
+			"id": 80, "type": 80, "title": 160, "description": 180, "query": 180, "task": 180,
+		})
+	case "tool_calls":
+		return compactTraceObjects(value, 8, map[string]int{"id": 120, "name": 120})
+	case "usage":
+		return compactTraceObject(value, map[string]int{
+			"input": 40, "output": 40, "total": 40, "input_tokens": 40, "output_tokens": 40, "total_tokens": 40,
+		})
+	case "urls":
+		return compactTraceStringSlice(value, 4, 500)
+	case "skills_used":
+		return compactTraceStringSlice(value, 12, 80)
+	case "result_preview":
+		return compactToolResultPreview(value)
+	case "brief_preview", "result", "summary", "error_message", "reason", "command_text":
+		return truncateRunes(interfaceToString(value), 500)
+	default:
+		switch typed := value.(type) {
+		case string:
+			return truncateRunes(typed, 500)
+		default:
+			return typed
+		}
+	}
+}
+
+func compactTraceObject(value interface{}, allowed map[string]int) map[string]interface{} {
+	source, ok := value.(map[string]interface{})
+	if !ok {
+		return map[string]interface{}{}
+	}
+	compact := make(map[string]interface{})
+	for key, maxRunes := range allowed {
+		raw, ok := source[key]
+		if !ok {
+			continue
+		}
+		if text, ok := raw.(string); ok {
+			compact[key] = truncateRunes(text, maxRunes)
+		} else {
+			compact[key] = raw
+		}
+	}
+	return compact
+}
+
+func compactTraceObjects(value interface{}, limit int, allowed map[string]int) []map[string]interface{} {
+	items, ok := value.([]interface{})
+	if !ok {
+		return []map[string]interface{}{}
+	}
+	compact := make([]map[string]interface{}, 0, minTraceInt(len(items), limit))
+	for _, item := range items {
+		if len(compact) >= limit {
+			break
+		}
+		compact = append(compact, compactTraceObject(item, allowed))
+	}
+	return compact
+}
+
+func compactTraceStringSlice(value interface{}, limit int, maxRunes int) []string {
+	items, ok := value.([]interface{})
+	if !ok {
+		return []string{}
+	}
+	compact := make([]string, 0, minTraceInt(len(items), limit))
+	for _, item := range items {
+		if len(compact) >= limit {
+			break
+		}
+		text := strings.TrimSpace(interfaceToString(item))
+		if text == "" {
+			continue
+		}
+		compact = append(compact, truncateRunes(text, maxRunes))
+	}
+	return compact
+}
+
+func compactToolResultPreview(value interface{}) interface{} {
+	switch typed := value.(type) {
+	case string:
+		var decoded map[string]interface{}
+		if err := json.Unmarshal([]byte(typed), &decoded); err != nil {
+			return truncateRunes(typed, 800)
+		}
+		compact, _ := json.Marshal(compactToolPreviewPayload(decoded))
+		return string(compact)
+	case map[string]interface{}:
+		return compactToolPreviewPayload(typed)
+	default:
+		return value
+	}
+}
+
+func compactToolPreviewPayload(payload map[string]interface{}) map[string]interface{} {
+	compact := make(map[string]interface{})
+	for _, key := range []string{"success", "error"} {
+		if value, ok := payload[key]; ok {
+			if text, ok := value.(string); ok {
+				compact[key] = truncateRunes(text, 300)
+			} else {
+				compact[key] = value
+			}
+		}
+	}
+	if displayText := strings.TrimSpace(interfaceToString(payload["display_text"])); displayText != "" {
+		compact["display_text"] = truncateRunes(displayText, 500)
+	}
+	data, ok := payload["data"].(map[string]interface{})
+	if !ok {
+		return compact
+	}
+	compactData := make(map[string]interface{})
+	if query := strings.TrimSpace(interfaceToString(data["query"])); query != "" {
+		compactData["query"] = truncateRunes(query, 240)
+	}
+	if rawResults, ok := data["results"].([]interface{}); ok {
+		results := make([]map[string]interface{}, 0, minTraceInt(len(rawResults), 5))
+		for _, rawResult := range rawResults {
+			if len(results) >= 5 {
+				break
+			}
+			result, ok := rawResult.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			results = append(results, compactTraceObject(result, map[string]int{
+				"title": 180, "url": 500, "source": 80, "snippet": 220,
+			}))
+		}
+		compactData["results"] = results
+	}
+	if len(compactData) > 0 {
+		compact["data"] = compactData
+	}
+	return compact
+}
+
+func interfaceToString(value interface{}) string {
+	switch typed := value.(type) {
+	case string:
+		return typed
+	case nil:
+		return ""
+	default:
+		return strings.TrimSpace(toJSONForSummary(typed))
+	}
+}
+
+func toJSONForSummary(value interface{}) string {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return ""
+	}
+	return string(data)
+}
+
+func minTraceInt(a int, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
 func (h *ChatHandler) syncConfigToAgent(c *gin.Context) bool {
 	if h.syncer == nil {
 		return true
@@ -394,6 +618,7 @@ func (h *ChatHandler) saveAssistantMessage(conversationID string, userID string,
 	skillsJSON, _ := json.Marshal(agentResp.SkillsUsed)
 	citationsJSON, _ := json.Marshal(agentResp.Citations)
 	traceEventsJSON, _ := json.Marshal(agentResp.Events)
+	traceSummaryJSON, _ := json.Marshal(compactTraceEvents(agentResp.Events))
 	assistantMsg := models.Message{
 		ConversationID: conversationID,
 		UserID:         normalizedUserID(userID),
@@ -405,6 +630,7 @@ func (h *ChatHandler) saveAssistantMessage(conversationID string, userID string,
 		Runtime:        agentResp.Runtime,
 		RunID:          agentResp.RunID,
 		TraceEvents:    string(traceEventsJSON),
+		TraceSummary:   string(traceSummaryJSON),
 		ErrorType:      agentResp.ErrorType,
 		CreatedAt:      time.Now(),
 	}

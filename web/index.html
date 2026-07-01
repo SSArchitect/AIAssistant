@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>阿安的工作台</title>
-    <link rel="stylesheet" href="/static/css/style.css?v=54">
+    <link rel="stylesheet" href="/static/css/style.css?v=58">
 </head>
 <body>
     <div class="app">
@@ -199,6 +199,37 @@
 
             <section class="view active" id="view-chat" data-view-panel="chat">
                 <div class="messages" id="messages"></div>
+                <div class="chat-history-tools" id="chat-history-tools" hidden>
+                    <div class="chat-history-panel" id="chat-history-panel" hidden>
+                        <div class="chat-history-head">
+                            <strong data-i18n="chatNav.historyTitle">对话历史</strong>
+                            <span id="chat-history-count"></span>
+                        </div>
+                        <div class="chat-history-list" id="chat-history-list"></div>
+                    </div>
+                    <div class="chat-history-actions">
+                        <button class="chat-float-button" id="btn-chat-history" type="button"
+                                title="展开对话历史" aria-label="展开对话历史" aria-expanded="false"
+                                aria-controls="chat-history-panel"
+                                data-i18n-title="chatNav.historyOpen" data-i18n-aria-label="chatNav.historyOpen">
+                            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2">
+                                <path d="M8 6h13"/>
+                                <path d="M8 12h13"/>
+                                <path d="M8 18h13"/>
+                                <path d="M3 6h.01"/>
+                                <path d="M3 12h.01"/>
+                                <path d="M3 18h.01"/>
+                            </svg>
+                        </button>
+                        <button class="chat-float-button" id="btn-chat-prev-user" type="button"
+                                title="上一条用户消息" aria-label="上一条用户消息"
+                                data-i18n-title="chatNav.previousUser" data-i18n-aria-label="chatNav.previousUser">
+                            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.4">
+                                <path d="m18 15-6-6-6 6"/>
+                            </svg>
+                        </button>
+                    </div>
+                </div>
                 <div class="input-area" id="input-area">
                     <div class="agent-command-bar" id="agent-command-bar"></div>
                     <div class="mode-chips" id="mode-chips"></div>
@@ -409,6 +440,6 @@
         </div>
     </div>
 
-    <script src="/static/js/app.js?v=79"></script>
+    <script src="/static/js/app.js?v=83"></script>
 </body>
 </html>

@@ -121,6 +121,7 @@ class SearchSkill(Skill):
                 ),
             )
 
+        provider_errors = getattr(service, "last_provider_errors", [])
         try:
             if open_results:
                 results = await service.search(
@@ -139,10 +140,13 @@ class SearchSkill(Skill):
                 error=f"Search failed: {e}",
                 data={
                     "query": query,
+                    "query_variants": getattr(service, "last_query_variants", None) or [query],
                     "sources": service.provider_names,
-                    "provider_errors": service.last_provider_errors,
+                    "provider_errors": getattr(service, "last_provider_errors", provider_errors),
                 },
             )
+        provider_errors = getattr(service, "last_provider_errors", provider_errors)
+        query_variants = getattr(service, "last_query_variants", None) or [query]
 
         data = [result.model_dump(mode="json") for result in results]
         opened_count = sum(
@@ -157,8 +161,10 @@ class SearchSkill(Skill):
                 success=True,
                 data={
                     "query": query,
+                    "query_variants": query_variants,
                     "results": [],
                     "sources": service.provider_names,
+                    "provider_errors": provider_errors,
                     "opened_results": 0,
                 },
                 display_text=f"No search results for: {query}",
@@ -173,8 +179,10 @@ class SearchSkill(Skill):
             success=True,
             data={
                 "query": query,
+                "query_variants": query_variants,
                 "results": data,
                 "sources": service.provider_names,
+                "provider_errors": provider_errors,
                 "opened_results": opened_count,
             },
             display_text="\n".join(display_lines),

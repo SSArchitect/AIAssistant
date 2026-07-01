@@ -22,8 +22,9 @@ type Message struct {
 	ModelUsed      string    `json:"model_used,omitempty"`
 	Runtime        string    `json:"runtime,omitempty"`
 	RunID          string    `json:"run_id,omitempty" gorm:"index"`
-	TraceEvents    string    `json:"trace_events,omitempty"` // JSON array
-	FollowUps      string    `json:"follow_ups,omitempty"`   // JSON array
+	TraceEvents    string    `json:"trace_events,omitempty"`  // JSON array
+	TraceSummary   string    `json:"trace_summary,omitempty"` // JSON array, compact timeline for chat history
+	FollowUps      string    `json:"follow_ups,omitempty"`    // JSON array
 	ErrorType      string    `json:"error_type,omitempty"`
 	CreatedAt      time.Time `json:"created_at"`
 }

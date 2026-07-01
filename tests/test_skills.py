@@ -12,6 +12,9 @@ from agent.skills.builtin.search import SearchSkill
 from agent.skills.base import Skill
 from agent.runtime.registry import get_agent
 from agent.search import (
+    BingRSSSearchProvider,
+    DuckDuckGoSearchProvider,
+    HTTPSearchProvider,
     MiniMaxMCPSearchProvider,
     SearchResult,
     SearchService,
@@ -296,6 +299,122 @@ class TestSearchSkill:
         assert results[0].url == "local://memory"
 
     @pytest.mark.asyncio
+    async def test_http_search_provider_coerces_payload_and_request(self):
+        seen = {}
+
+        def handler(request):
+            seen["url"] = str(request.url)
+            seen["authorization"] = request.headers.get("authorization")
+            return httpx.Response(
+                200,
+                json={
+                    "items": [
+                        {
+                            "name": "Agent Search Quality",
+                            "summary": "BM25 ranking and recall variants.",
+                            "link": "https://example.com/search-quality",
+                            "source": "external-index",
+                            "published": "2026-07-01",
+                            "metadata": {"rank": 1},
+                        },
+                        {
+                            "title": "Ignored by limit",
+                            "url": "https://example.com/ignored",
+                        },
+                    ]
+                },
+            )
+
+        provider = HTTPSearchProvider(
+            name="http",
+            base_url="https://search.example/api",
+            api_key="secret-token",
+            query_param="query",
+            transport=httpx.MockTransport(handler),
+        )
+
+        results = await provider.search("agent search", limit=1)
+
+        assert seen["url"] == "https://search.example/api?query=agent+search&limit=1"
+        assert seen["authorization"] == "Bearer secret-token"
+        assert len(results) == 1
+        assert results[0].title == "Agent Search Quality"
+        assert results[0].snippet == "BM25 ranking and recall variants."
+        assert results[0].url == "https://example.com/search-quality"
+        assert results[0].source == "external-index"
+        assert results[0].metadata == {"rank": 1, "published": "2026-07-01"}
+
+    @pytest.mark.asyncio
+    async def test_duckduckgo_provider_parses_results_and_skips_ads(self):
+        seen = {}
+
+        def handler(request):
+            seen["url"] = str(request.url)
+            return httpx.Response(
+                200,
+                text="""
+                <html><body>
+                  <a class="result__a" href="/l/?uddg=https%3A%2F%2Fexample.com%2Farticle">Useful Result</a>
+                  <a class="result__snippet">A focused search snippet.</a>
+                  <a class="result__a" href="https://duckduckgo.com/y.js?ad_domain=ad.example">Sponsored Result</a>
+                  <a class="result__snippet">Ad snippet.</a>
+                </body></html>
+                """,
+            )
+
+        provider = DuckDuckGoSearchProvider(
+            base_url="https://duck.example/html/",
+            transport=httpx.MockTransport(handler),
+        )
+
+        results = await provider.search("agent search", limit=5)
+
+        assert seen["url"] == "https://duck.example/html/?q=agent+search"
+        assert len(results) == 1
+        assert results[0].title == "Useful Result"
+        assert results[0].snippet == "A focused search snippet."
+        assert results[0].url == "https://example.com/article"
+        assert results[0].source == "web"
+
+    @pytest.mark.asyncio
+    async def test_bing_rss_provider_parses_items_and_pub_date(self):
+        seen = {}
+
+        def handler(request):
+            seen["url"] = str(request.url)
+            return httpx.Response(
+                200,
+                text="""
+                <rss><channel>
+                  <item>
+                    <title>Agent Search Ranking</title>
+                    <link>https://example.com/ranking</link>
+                    <description>Ranking and recall quality.</description>
+                    <pubDate>Wed, 01 Jul 2026 10:00:00 GMT</pubDate>
+                  </item>
+                  <item>
+                    <title></title>
+                    <link>https://example.com/missing-title</link>
+                  </item>
+                </channel></rss>
+                """,
+            )
+
+        provider = BingRSSSearchProvider(
+            base_url="https://bing.example/search",
+            transport=httpx.MockTransport(handler),
+        )
+
+        results = await provider.search("agent search", limit=5)
+
+        assert seen["url"] == "https://bing.example/search?q=agent+search&format=rss"
+        assert len(results) == 1
+        assert results[0].title == "Agent Search Ranking"
+        assert results[0].snippet == "Ranking and recall quality."
+        assert results[0].url == "https://example.com/ranking"
+        assert results[0].metadata["pub_date"] == "Wed, 01 Jul 2026 10:00:00 GMT"
+
+    @pytest.mark.asyncio
     async def test_search_service_retries_flaky_provider(self):
         class FlakyProvider:
             name = "flaky"
@@ -400,8 +519,95 @@ class TestSearchSkill:
 
         assert [result.title for result in results] == [
             "Dify Agent RAG engineering practice",
-            "Homemade crispy french fries",
         ]
+
+    @pytest.mark.asyncio
+    async def test_search_service_bm25_filters_low_relevance_noise(self):
+        class NoisyProvider:
+            name = "bing-rss"
+
+            async def search(self, query, *, limit=5):
+                return [
+                    SearchResult(
+                        title="2026 - Wikipedia",
+                        snippet="2026 is the current year.",
+                        url="https://en.wikipedia.org/wiki/2026",
+                        source=self.name,
+                    ),
+                    SearchResult(
+                        title="FIFA World Cup 2026 schedule",
+                        snippet="Match schedule, fixtures, teams, and stadiums.",
+                        url="https://www.fifa.com/worldcup2026/schedule",
+                        source=self.name,
+                    ),
+                    SearchResult(
+                        title="2026 Calendar",
+                        snippet="Yearly calendar.",
+                        url="https://example.com/calendar-2026",
+                        source=self.name,
+                    ),
+                ]
+
+        class MovieProvider:
+            name = "web"
+
+            async def search(self, query, *, limit=5):
+                return [
+                    SearchResult(
+                        title=f"2026最新高分上映电影汇总 {index}",
+                        snippet="口碑电影推荐和上映片单。",
+                        url=f"https://example.com/movie/{index}",
+                        source=self.name,
+                    )
+                    for index in range(3)
+                ]
+
+        service = SearchService(
+            providers=[NoisyProvider(), MovieProvider()],
+            retry_attempts=1,
+            retry_delay=0,
+            min_provider_coverage=2,
+        )
+
+        results = await service.search("2026年最新上映的高口碑电影推荐", limit=6)
+
+        assert results
+        assert {result.source for result in results} == {"web"}
+        assert all("电影" in result.title for result in results)
+
+    @pytest.mark.asyncio
+    async def test_search_service_boosts_official_brand_domain(self):
+        class Provider:
+            name = "web"
+
+            async def search(self, query, *, limit=5):
+                return [
+                    SearchResult(
+                        title="Dunlop 01 Fingerboard Cleaner And Prep - Equipboard",
+                        snippet="User-submitted gear notes.",
+                        url="https://equipboard.com/items/jim-dunlop-01-fingerboard-cleaner-and-prep",
+                        source=self.name,
+                    ),
+                    SearchResult(
+                        title="FORMULA 65 FINGERBOARD 01 CLEANER & PREP - Dunlop",
+                        snippet="Cleaner and prep for unfinished fingerboards.",
+                        url="https://www.jimdunlop.com/formula-65-fingerboard-01-cleaner-prep/",
+                        source=self.name,
+                    ),
+                ]
+
+        service = SearchService(
+            providers=[Provider()],
+            retry_attempts=1,
+            retry_delay=0,
+        )
+
+        results = await service.search(
+            "Dunlop 6531 Fingerboard 01 Cleaner 指板清洁剂 用途",
+            limit=2,
+        )
+
+        assert results[0].url == "https://www.jimdunlop.com/formula-65-fingerboard-01-cleaner-prep/"
 
     @pytest.mark.asyncio
     async def test_search_service_reranks_compact_cjk_query(self):
@@ -439,7 +645,7 @@ class TestSearchSkill:
 
         results = await service.search("2026年最新上映的高口碑电影推荐", limit=2)
 
-        assert [result.source for result in results] == ["web", "http"]
+        assert [result.source for result in results] == ["web"]
 
     @pytest.mark.asyncio
     async def test_search_service_web_alias_prefers_html_web_provider(self):
@@ -501,6 +707,7 @@ class TestSearchSkill:
             providers=[mcp, bing, web],
             retry_attempts=1,
             retry_delay=0,
+            min_provider_coverage=1,
         )
 
         results = await service.search("炝锅面教程", sources=["web"], limit=3)
@@ -512,6 +719,278 @@ class TestSearchSkill:
         assert mcp.cancelled
         assert bing.calls == 1
         assert bing.cancelled
+
+    @pytest.mark.asyncio
+    async def test_search_service_web_alias_fans_out_and_interleaves_sources(self):
+        class Provider:
+            def __init__(self, name):
+                self.name = name
+                self.calls = []
+
+            async def search(self, query, *, limit=5):
+                self.calls.append(limit)
+                return [
+                    SearchResult(
+                        title=f"{query} {self.name} result {index}",
+                        snippet=query,
+                        url=f"https://example.com/{self.name}/{index}",
+                        source=self.name,
+                    )
+                    for index in range(limit)
+                ]
+
+        web = Provider("web")
+        mcp = Provider("minimax-mcp")
+        bing = Provider("bing-rss")
+        service = SearchService(
+            providers=[bing, mcp, web],
+            retry_attempts=1,
+            retry_delay=0,
+            min_provider_coverage=3,
+        )
+
+        results = await service.search(
+            "agent search coverage",
+            sources=["web"],
+            limit=6,
+        )
+
+        assert web.calls == [12]
+        assert mcp.calls == [12]
+        assert bing.calls == [12]
+        assert {result.source for result in results} == {
+            "web",
+            "minimax-mcp",
+            "bing-rss",
+        }
+
+    @pytest.mark.asyncio
+    async def test_search_service_web_alias_selects_web_sources_case_insensitively(self):
+        class Provider:
+            def __init__(self, name):
+                self.name = name
+                self.calls = 0
+
+            async def search(self, query, *, limit=5):
+                self.calls += 1
+                return [
+                    SearchResult(
+                        title=f"{self.name} agent search result",
+                        snippet=query,
+                        url=f"https://example.com/{self.name}",
+                        source=self.name,
+                    )
+                ]
+
+        local = Provider("local")
+        http_provider = Provider("http")
+        web = Provider("web")
+        bing = Provider("bing-rss")
+        service = SearchService(
+            providers=[local, http_provider, web, bing],
+            retry_attempts=1,
+            retry_delay=0,
+            min_provider_coverage=2,
+        )
+
+        results = await service.search(
+            "agent search",
+            sources=[" WEB ", "BING-RSS"],
+            limit=5,
+        )
+
+        assert local.calls == 0
+        assert http_provider.calls == 0
+        assert web.calls == 1
+        assert bing.calls == 1
+        assert {result.source for result in results} == {"web", "bing-rss"}
+
+    @pytest.mark.asyncio
+    async def test_search_service_deduplicates_same_url_across_sources(self):
+        class Provider:
+            def __init__(self, name):
+                self.name = name
+
+            async def search(self, query, *, limit=5):
+                return [
+                    SearchResult(
+                        title=f"{self.name} Agent Search Ranking",
+                        snippet="Agent search ranking and recall.",
+                        url="https://example.com/shared-result",
+                        source=self.name,
+                    )
+                ]
+
+        service = SearchService(
+            providers=[Provider("web"), Provider("bing-rss")],
+            retry_attempts=1,
+            retry_delay=0,
+            min_provider_coverage=2,
+        )
+
+        results = await service.search("agent search ranking", limit=5)
+
+        assert len(results) == 1
+        assert results[0].url == "https://example.com/shared-result"
+
+    @pytest.mark.asyncio
+    async def test_search_service_caps_provider_limit_after_multiplier(self):
+        class Provider:
+            name = "web"
+
+            def __init__(self):
+                self.seen_limits = []
+
+            async def search(self, query, *, limit=5):
+                self.seen_limits.append(limit)
+                return [
+                    SearchResult(
+                        title=f"Agent search result {index}",
+                        snippet="Agent search ranking and recall.",
+                        url=f"https://example.com/result/{index}",
+                        source=self.name,
+                    )
+                    for index in range(limit)
+                ]
+
+        provider = Provider()
+        service = SearchService(
+            providers=[provider],
+            retry_attempts=1,
+            retry_delay=0,
+            provider_limit_multiplier=3,
+        )
+
+        results = await service.search("agent search", limit=15)
+
+        assert provider.seen_limits == [20]
+        assert len(results) == 15
+
+    @pytest.mark.asyncio
+    async def test_search_service_expands_fallback_queries_for_recall(self):
+        original_query = "2026年最新上映的高口碑电影推荐"
+
+        class VariantProvider:
+            name = "web"
+            recall_query_limit = 2
+
+            def __init__(self):
+                self.calls = []
+
+            async def search(self, query, *, limit=5):
+                self.calls.append(query)
+                if query == original_query:
+                    return [
+                        SearchResult(
+                            title="Annual sports calendar",
+                            snippet="Fixtures, dates, and venues.",
+                            url="https://example.com/sports-calendar",
+                            source=self.name,
+                        )
+                    ]
+                return [
+                    SearchResult(
+                        title="2026最新上映高口碑电影推荐",
+                        snippet="电影片单、口碑和上映信息。",
+                        url="https://example.com/movies-2026",
+                        source=self.name,
+                    )
+                ]
+
+        provider = VariantProvider()
+        service = SearchService(
+            providers=[provider],
+            retry_attempts=1,
+            retry_delay=0,
+            recall_max_queries=2,
+        )
+
+        results = await service.search(original_query, limit=3)
+
+        assert len(provider.calls) == 2
+        assert provider.calls[0] == original_query
+        assert provider.calls[1] != original_query
+        assert "电影" in provider.calls[1]
+        assert [result.title for result in results] == ["2026最新上映高口碑电影推荐"]
+        assert results[0].metadata["retrieval_query"] == provider.calls[1]
+        assert results[0].metadata["retrieval_query_index"] == 1
+        assert service.last_query_variants == provider.calls
+
+    def test_search_query_variants_use_cjk_phrase_chunks(self):
+        from agent.search.recall import build_query_variants
+
+        variants = build_query_variants("2026年最新上映的高口碑电影推荐", max_queries=2)
+        brand_variants = build_query_variants(
+            "Dunlop 6531 Fingerboard 01 Cleaner 指板清洁剂 用途",
+            max_queries=2,
+        )
+
+        assert variants == [
+            "2026年最新上映的高口碑电影推荐",
+            "2026 最新上映 高口碑电影推荐",
+        ]
+        assert brand_variants == [
+            "Dunlop 6531 Fingerboard 01 Cleaner 指板清洁剂 用途",
+            "6531 01 dunlop fingerboard cleaner 指板清洁剂 用途",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_search_service_respects_provider_recall_query_limit(self):
+        class Provider:
+            def __init__(self, name, recall_query_limit):
+                self.name = name
+                self.recall_query_limit = recall_query_limit
+                self.calls = []
+
+            async def search(self, query, *, limit=5):
+                self.calls.append(query)
+                return [
+                    SearchResult(
+                        title=f"{self.name} 2026高口碑电影推荐 {len(self.calls)}",
+                        snippet=f"{query} 电影片单。",
+                        url=f"https://example.com/{self.name}/{len(self.calls)}",
+                        source=self.name,
+                    )
+                ]
+
+        http_provider = Provider("http", 1)
+        web_provider = Provider("web", 2)
+        service = SearchService(
+            providers=[web_provider, http_provider],
+            retry_attempts=1,
+            retry_delay=0,
+            min_provider_coverage=2,
+            recall_max_queries=3,
+        )
+
+        await service.search("2026年最新上映的高口碑电影推荐", limit=5)
+
+        assert len(http_provider.calls) == 1
+        assert len(web_provider.calls) == 2
+        assert http_provider.calls[0] == web_provider.calls[0]
+        assert web_provider.calls[1] != web_provider.calls[0]
+
+    @pytest.mark.asyncio
+    async def test_search_service_raises_when_multi_query_provider_fails(self):
+        class FailingProvider:
+            name = "web"
+            recall_query_limit = 2
+
+            async def search(self, query, *, limit=5):
+                raise RuntimeError(f"blocked: {query}")
+
+        service = SearchService(
+            providers=[FailingProvider()],
+            retry_attempts=1,
+            retry_delay=0,
+            recall_max_queries=2,
+        )
+
+        with pytest.raises(RuntimeError) as exc:
+            await service.search("2026年最新上映的高口碑电影推荐", limit=3)
+
+        assert "web: blocked" in str(exc.value)
+        assert len(service.last_provider_errors) == 2
 
     @pytest.mark.asyncio
     async def test_search_service_web_alias_continues_after_low_relevance_results(self):
@@ -621,6 +1100,123 @@ class TestSearchSkill:
         assert seen["limit"] == 20
 
     @pytest.mark.asyncio
+    async def test_search_skill_normalizes_sources_and_open_options(self, monkeypatch):
+        seen = {}
+
+        class FakeService:
+            provider_names = ["web"]
+            last_provider_errors = []
+            last_query_variants = ["agent search"]
+
+            async def search(
+                self,
+                query,
+                *,
+                sources=None,
+                limit=5,
+                open_results=False,
+                open_limit=3,
+                page_chars=6000,
+            ):
+                seen.update(
+                    {
+                        "query": query,
+                        "sources": sources,
+                        "limit": limit,
+                        "open_results": open_results,
+                        "open_limit": open_limit,
+                        "page_chars": page_chars,
+                    }
+                )
+                return [
+                    SearchResult(
+                        title="Opened Result",
+                        snippet=query,
+                        url="https://example.com/opened",
+                        source="web",
+                        metadata={"page": {"title": "Opened"}},
+                    )
+                ]
+
+        monkeypatch.setattr(
+            SearchService,
+            "from_runtime_config",
+            classmethod(lambda cls: FakeService()),
+        )
+
+        result = await self.skill.execute(
+            query="agent search",
+            sources=[" WEB ", "bing-rss"],
+            limit=999,
+            open_results="yes",
+            open_limit=99,
+            page_chars=20,
+        )
+
+        assert result.success is True
+        assert seen == {
+            "query": "agent search",
+            "sources": ["WEB", "bing-rss"],
+            "limit": 20,
+            "open_results": True,
+            "open_limit": 3,
+            "page_chars": 500,
+        }
+        assert result.data["query_variants"] == ["agent search"]
+        assert result.data["opened_results"] == 1
+
+    @pytest.mark.asyncio
+    async def test_search_skill_failure_includes_query_variants_and_provider_errors(self, monkeypatch):
+        class FakeService:
+            provider_names = ["web"]
+            last_provider_errors = ["web: blocked"]
+            last_query_variants = ["original query", "variant query"]
+
+            async def search(self, query, *, sources=None, limit=5):
+                raise RuntimeError("network blocked")
+
+        monkeypatch.setattr(
+            SearchService,
+            "from_runtime_config",
+            classmethod(lambda cls: FakeService()),
+        )
+
+        result = await self.skill.execute(query="original query")
+
+        assert result.success is False
+        assert "network blocked" in result.error
+        assert result.data["query"] == "original query"
+        assert result.data["query_variants"] == ["original query", "variant query"]
+        assert result.data["provider_errors"] == ["web: blocked"]
+
+    @pytest.mark.asyncio
+    async def test_search_skill_includes_provider_errors_on_success(self, monkeypatch):
+        class FakeService:
+            provider_names = ["web", "bing-rss"]
+            last_provider_errors = ["web: blocked"]
+
+            async def search(self, query, *, sources=None, limit=5):
+                return [
+                    SearchResult(
+                        title="Fallback Result",
+                        snippet=query,
+                        url="https://example.com/fallback",
+                        source="bing-rss",
+                    )
+                ]
+
+        monkeypatch.setattr(
+            SearchService,
+            "from_runtime_config",
+            classmethod(lambda cls: FakeService()),
+        )
+
+        result = await self.skill.execute(query="agent memory")
+
+        assert result.success is True
+        assert result.data["provider_errors"] == ["web: blocked"]
+
+    @pytest.mark.asyncio
     async def test_web_page_reader_extracts_html(self):
         def handler(request):
             return httpx.Response(
@@ -684,6 +1280,48 @@ class TestSearchSkill:
 
         assert results[0].metadata["page"]["title"] == "Opened"
         assert "Opened page body." in results[0].metadata["page"]["content"]
+
+    @pytest.mark.asyncio
+    async def test_search_service_records_open_errors_and_skips_private_urls(self):
+        class Provider:
+            name = "web"
+
+            async def search(self, query, *, limit=5):
+                return [
+                    SearchResult(
+                        title="Agent details public",
+                        snippet="Agent details.",
+                        url="https://example.com/broken",
+                        source=self.name,
+                    ),
+                    SearchResult(
+                        title="Agent details local",
+                        snippet="Agent details.",
+                        url="http://localhost/private",
+                        source=self.name,
+                    ),
+                ]
+
+        def handler(request):
+            return httpx.Response(500, text="server error")
+
+        service = SearchService(
+            providers=[Provider()],
+            page_reader=WebPageReader(transport=httpx.MockTransport(handler)),
+            retry_attempts=1,
+            retry_delay=0,
+        )
+
+        results = await service.search(
+            "agent details",
+            limit=2,
+            open_results=True,
+            open_limit=3,
+        )
+
+        by_url = {result.url: result for result in results}
+        assert "500 Internal Server Error" in by_url["https://example.com/broken"].metadata["page"]["error"]
+        assert "page" not in by_url["http://localhost/private"].metadata
 
     @pytest.mark.asyncio
     async def test_search_skill_reports_missing_provider(self, monkeypatch):
@@ -751,6 +1389,41 @@ class TestSearchSkill:
             service = SearchService.from_runtime_config()
 
             assert "minimax-mcp" in service.provider_names
+        finally:
+            runtime_config.update(previous)
+
+    def test_search_service_from_runtime_config_reads_broad_retrieval_settings(self):
+        keys = [
+            "llm.minimax.api_key",
+            "search.bing.enabled",
+            "search.local.documents",
+            "search.minimax.enabled",
+            "search.min_provider_coverage",
+            "search.provider_limit_multiplier",
+            "search.recall.max_queries",
+            "search.web.enabled",
+        ]
+        previous = {key: runtime_config.get(key) for key in keys}
+        try:
+            runtime_config.update(
+                {
+                    "llm.minimax.api_key": "",
+                    "search.bing.enabled": "false",
+                    "search.local.documents": '[{"title":"Runtime Search","content":"runtime config search quality"}]',
+                    "search.minimax.enabled": "false",
+                    "search.min_provider_coverage": "4",
+                    "search.provider_limit_multiplier": "3",
+                    "search.recall.max_queries": "5",
+                    "search.web.enabled": "false",
+                }
+            )
+
+            service = SearchService.from_runtime_config()
+
+            assert service.provider_names == ["local"]
+            assert service._min_provider_coverage == 4
+            assert service._provider_limit_multiplier == 3
+            assert service._recall_max_queries == 5
         finally:
             runtime_config.update(previous)
 

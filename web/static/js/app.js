@@ -77,6 +77,7 @@ const I18N = {
             regenerateAnswer: '重新回答',
             copyAnswer: '复制回答',
             copyMessage: '复制消息',
+            copyCode: '复制代码',
             copied: '已复制',
             copyFailed: '复制失败',
             confirmDeleteConversation: '确定删除这个会话及其全部消息吗？',
@@ -133,6 +134,17 @@ const I18N = {
             resumePending: 'AI 仍在生成，完成后会自动恢复到当前会话',
             citations: '引用来源',
             followUpAria: '推荐追问',
+        },
+        chatNav: {
+            previousUser: '上一条用户消息',
+            historyOpen: '展开对话历史',
+            historyClose: '收起对话历史',
+            historyTitle: '对话历史',
+            count: '{count} 条用户消息',
+            empty: '暂无用户消息',
+            emptyQuery: '空消息',
+            jumpToQuery: '跳转到第 {index} 条用户消息',
+            current: '当前位置',
         },
         roleMemory: {
             title: '角色记忆',
@@ -525,6 +537,7 @@ const I18N = {
             regenerateAnswer: 'Regenerate Answer',
             copyAnswer: 'Copy Answer',
             copyMessage: 'Copy Message',
+            copyCode: 'Copy Code',
             copied: 'Copied',
             copyFailed: 'Copy Failed',
             confirmDeleteConversation: 'Delete this conversation and all of its messages?',
@@ -581,6 +594,17 @@ const I18N = {
             resumePending: 'AI is still generating. The answer will reappear here when it finishes.',
             citations: 'Sources',
             followUpAria: 'Suggested follow-up questions',
+        },
+        chatNav: {
+            previousUser: 'Previous user message',
+            historyOpen: 'Open conversation history',
+            historyClose: 'Close conversation history',
+            historyTitle: 'Conversation History',
+            count: '{count} user messages',
+            empty: 'No user messages yet',
+            emptyQuery: 'Empty message',
+            jumpToQuery: 'Jump to user message {index}',
+            current: 'Current position',
         },
         roleMemory: {
             title: 'Role Memory',
@@ -1065,6 +1089,8 @@ let questionHistoryDraft = '';
 let applyingQuestionHistory = false;
 let guestLoginBusy = false;
 let followUpRenderToken = 0;
+let chatHistoryPanelOpen = false;
+let chatNavigationUpdateScheduled = false;
 
 const sidebar = document.getElementById('sidebar');
 const sidebarBackdrop = document.getElementById('sidebar-backdrop');
@@ -1083,6 +1109,13 @@ const accountPasswordInput = document.getElementById('account-password-input');
 const accountLoginError = document.getElementById('account-login-error');
 const conversationList = document.getElementById('conversation-list');
 const messagesContainer = document.getElementById('messages');
+const inputArea = document.getElementById('input-area');
+const chatHistoryTools = document.getElementById('chat-history-tools');
+const btnChatPrevUser = document.getElementById('btn-chat-prev-user');
+const btnChatHistory = document.getElementById('btn-chat-history');
+const chatHistoryPanel = document.getElementById('chat-history-panel');
+const chatHistoryList = document.getElementById('chat-history-list');
+const chatHistoryCount = document.getElementById('chat-history-count');
 const messageInput = document.getElementById('message-input');
 const btnSend = document.getElementById('btn-send');
 const btnNewChat = document.getElementById('btn-new-chat');
@@ -1223,7 +1256,7 @@ function applyI18n() {
     document.querySelectorAll('[data-i18n-aria-label]').forEach((el) => {
         el.setAttribute('aria-label', t(el.dataset.i18nAriaLabel));
     });
-    document.querySelectorAll('[data-copy-answer]').forEach(resetCopyButtonFeedback);
+    document.querySelectorAll('[data-copy-answer], [data-copy-code]').forEach(resetCopyButtonFeedback);
     if (languageToggle) languageToggle.textContent = currentLanguage === 'zh' ? 'EN' : '中';
     setGuestLoginBusy(guestLoginBusy);
 }
@@ -1250,6 +1283,7 @@ function setLanguage(language) {
     renderDeveloperView();
     renderModelSelect();
     updateTopbar();
+    updateChatHistoryControls();
     refreshWelcomeIfEmpty();
     refreshMediaPreviewLabels();
 }
@@ -1704,6 +1738,7 @@ function renderModes() {
         btnModeToggle.classList.toggle('active', activeModes.length > 0);
         btnModeToggle.title = activeModes.length ? t('modes.active', { names }) : t('modes.toggle');
     }
+    updateChatNavigationOffset();
 }
 
 function renderInputContextChips(activeModes = getSelectedModes()) {
@@ -2180,12 +2215,14 @@ function removeAttachment(id) {
     attachedContexts = attachedContexts.filter((item) => item.id !== id);
     renderModes();
     updateSendState();
+    updateChatNavigationOffset();
 }
 
 function clearAttachments() {
     attachedContexts = [];
     renderModes();
     updateSendState();
+    updateChatNavigationOffset();
 }
 
 function buildAttachmentContext(items = attachedContexts) {
@@ -2286,7 +2323,7 @@ async function createConversation() {
 }
 
 async function loadConversation(id) {
-    return apiCall('GET', `/api/conversations/${encodeURIComponent(id)}?include_trace=true`);
+    return apiCall('GET', `/api/conversations/${encodeURIComponent(id)}`);
 }
 
 async function deleteConversation(id) {
@@ -3689,6 +3726,7 @@ function setView(view, options = {}) {
     }
     if (view === 'chat' && options.restore !== false) ensureCurrentConversationVisible();
     if (options.closeSidebar !== false) closeMobileSidebar();
+    updateChatHistoryControls();
 }
 
 function updateTopbar() {
@@ -6645,6 +6683,7 @@ function showWelcome() {
             ${quickActionsHtml}
         </div>
     `;
+    updateChatHistoryControls();
 }
 
 function refreshWelcomeIfEmpty() {
@@ -6710,6 +6749,7 @@ async function renderConversationMessages(id, options = {}) {
         }
     }
 
+    updateChatHistoryControls();
     updateTopbar();
     focusMessageInput();
 }
@@ -6729,6 +6769,7 @@ function restoreConversationRenderCache(id) {
     }
     syncQuestionHistoryFromMessages(cached.messages || []);
     scrollToBottom();
+    updateChatHistoryControls();
     return true;
 }
 
@@ -6790,7 +6831,7 @@ function renderConversationMessageListHtml(messages = []) {
         }
         const skillsUsed = parseSkills(msg.skills_used);
         const citations = parseCitations(msg.citations);
-        const savedTraceEvents = parseTraceEvents(msg.trace_events);
+        const savedTraceEvents = parseTraceEvents(msg.trace_summary || msg.trace_events);
         const savedRun = runRecordFromMessage(msg, skillsUsed, savedTraceEvents);
         if (savedRun) savedRuns.push(savedRun);
         const traceRun = savedRun;
@@ -7148,7 +7189,7 @@ function conversationMessagesSignature(messages = []) {
         msg.created_at || '',
         msg.skills_used || '',
         msg.citations || '',
-        msg.trace_events || '',
+        msg.trace_summary || msg.trace_events || '',
         msg.follow_ups || '',
         msg.content || '',
     ].join('\u001f')).join('\u001e');
@@ -7994,6 +8035,7 @@ function appendMessage(
         inputMeta,
         regenerateQuery
     ));
+    updateChatHistoryControls();
 }
 
 function renderMessageHtml(
@@ -8055,13 +8097,11 @@ function renderMessageHtml(
         ].join('');
     }
 
-    const isCopyableMessage = role === 'assistant' || role === 'user';
-    const dataAttrs = isCopyableMessage
-        ? [
-            `data-copy-text="${escapeAttr(content || '')}"`,
-            role === 'assistant' && regenerateQuery ? `data-regenerate-query="${escapeAttr(regenerateQuery)}"` : '',
-        ].filter(Boolean).join(' ')
-        : '';
+    const dataAttrs = [
+        `data-message-role="${escapeAttr(role)}"`,
+        role === 'assistant' || role === 'user' ? `data-copy-text="${escapeAttr(content || '')}"` : '',
+        role === 'assistant' && regenerateQuery ? `data-regenerate-query="${escapeAttr(regenerateQuery)}"` : '',
+    ].filter(Boolean).join(' ');
 
     return `
         <div class="message ${escapeAttr(role)}" ${dataAttrs}>
@@ -8115,6 +8155,21 @@ function renderCopyActionButton(copyEnabled = true, label = t('actions.copyAnswe
     return `
         <button class="assistant-action-button assistant-copy" type="button" data-copy-answer
                 data-copy-label-key="${escapeAttr(labelKey)}" ${disabled}
+                title="${escapeAttr(label)}" aria-label="${escapeAttr(label)}">
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2">
+                <rect x="9" y="9" width="10" height="10" rx="2"/>
+                <path d="M5 15H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v1"/>
+            </svg>
+            <span class="visually-hidden">${escapeHtml(label)}</span>
+        </button>
+    `;
+}
+
+function renderCodeCopyButton() {
+    const label = t('actions.copyCode');
+    return `
+        <button class="code-copy-button assistant-copy" type="button" data-copy-code
+                data-copy-label-key="actions.copyCode"
                 title="${escapeAttr(label)}" aria-label="${escapeAttr(label)}">
             <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2">
                 <rect x="9" y="9" width="10" height="10" rx="2"/>
@@ -8484,7 +8539,12 @@ function formatContent(text) {
     processed = processed.replace(/```(\w*)\n?([\s\S]*?)```/g, (_, lang, code) => {
         const idx = codeBlocks.length;
         const language = lang ? ` data-language="${escapeAttr(lang)}"` : '';
-        codeBlocks.push(`<pre${language}><code>${escapeHtml(code.trim())}</code></pre>`);
+        codeBlocks.push(`
+            <div class="code-block"${language}>
+                ${renderCodeCopyButton()}
+                <pre${language}><code>${escapeHtml(code.trim())}</code></pre>
+            </div>
+        `);
         return `%%CODEBLOCK_${idx}%%`;
     });
 
@@ -9154,6 +9214,7 @@ function emptyState(title, detail) {
 function autoResizeInput() {
     messageInput.style.height = 'auto';
     messageInput.style.height = `${Math.min(messageInput.scrollHeight, 150)}px`;
+    updateChatNavigationOffset();
 }
 
 function insertMessageInputNewline() {
@@ -9186,6 +9247,159 @@ function scrollToBottom() {
     requestAnimationFrame(() => {
         messagesContainer.scrollTop = messagesContainer.scrollHeight;
     });
+}
+
+function chatUserMessageElements() {
+    if (!messagesContainer) return [];
+    return [...messagesContainer.querySelectorAll('.message.user[data-message-role="user"]')];
+}
+
+function chatUserMessageText(messageEl) {
+    return String(messageEl?.dataset?.copyText || '')
+        .replace(/\s+/g, ' ')
+        .trim();
+}
+
+function updateChatNavigationOffset() {
+    if (!chatHistoryTools || !inputArea) return;
+    requestAnimationFrame(() => {
+        chatHistoryTools.style.setProperty('--chat-input-offset', `${inputArea.offsetHeight || 0}px`);
+    });
+}
+
+function chatMessageScrollTop(messageEl) {
+    if (!messagesContainer || !messageEl) return 0;
+    const containerRect = messagesContainer.getBoundingClientRect();
+    const messageRect = messageEl.getBoundingClientRect();
+    return messagesContainer.scrollTop + messageRect.top - containerRect.top;
+}
+
+function currentChatUserMessageIndex(userMessages = chatUserMessageElements()) {
+    if (!messagesContainer || !userMessages.length) return -1;
+    const anchorTop = messagesContainer.scrollTop + 32;
+    let activeIndex = -1;
+
+    userMessages.forEach((messageEl, index) => {
+        if (chatMessageScrollTop(messageEl) <= anchorTop) activeIndex = index;
+    });
+
+    return activeIndex >= 0 ? activeIndex : 0;
+}
+
+function renderChatHistoryList() {
+    if (!chatHistoryList) return;
+    const userMessages = chatUserMessageElements();
+    const activeIndex = currentChatUserMessageIndex(userMessages);
+
+    if (chatHistoryCount) {
+        chatHistoryCount.textContent = userMessages.length
+            ? t('chatNav.count', { count: userMessages.length })
+            : '';
+    }
+
+    if (!userMessages.length) {
+        chatHistoryList.innerHTML = `<div class="chat-history-empty">${escapeHtml(t('chatNav.empty'))}</div>`;
+        return;
+    }
+
+    chatHistoryList.innerHTML = userMessages.map((messageEl, index) => {
+        const query = chatUserMessageText(messageEl) || t('chatNav.emptyQuery');
+        const active = index === activeIndex;
+        return `
+            <button class="chat-history-item ${active ? 'active' : ''}" type="button"
+                    data-chat-history-index="${index}"
+                    title="${escapeAttr(query)}"
+                    aria-label="${escapeAttr(t('chatNav.jumpToQuery', { index: index + 1 }))}">
+                <span class="chat-history-index">${index + 1}</span>
+                <span class="chat-history-query">${escapeHtml(truncateText(query, 150))}</span>
+                ${active ? `<span class="chat-history-current">${escapeHtml(t('chatNav.current'))}</span>` : ''}
+            </button>
+        `;
+    }).join('');
+}
+
+function setChatHistoryPanelOpen(open) {
+    const userMessages = chatUserMessageElements();
+    chatHistoryPanelOpen = Boolean(open && userMessages.length);
+    if (chatHistoryPanel) chatHistoryPanel.hidden = !chatHistoryPanelOpen;
+    if (btnChatHistory) {
+        const label = t(chatHistoryPanelOpen ? 'chatNav.historyClose' : 'chatNav.historyOpen');
+        btnChatHistory.setAttribute('aria-expanded', String(chatHistoryPanelOpen));
+        btnChatHistory.title = label;
+        btnChatHistory.setAttribute('aria-label', label);
+    }
+    if (chatHistoryPanelOpen) renderChatHistoryList();
+}
+
+function updateChatHistoryControls() {
+    if (!chatHistoryTools) return;
+
+    updateChatNavigationOffset();
+    const userMessages = chatUserMessageElements();
+    const showTools = activeView === 'chat' && Boolean(currentConversationId) && userMessages.length > 0;
+    chatHistoryTools.hidden = !showTools;
+
+    if (!showTools) {
+        setChatHistoryPanelOpen(false);
+        return;
+    }
+
+    if (btnChatPrevUser) {
+        btnChatPrevUser.disabled = !userMessages.length;
+        btnChatPrevUser.toggleAttribute('aria-disabled', !userMessages.length);
+    }
+    if (btnChatHistory) {
+        btnChatHistory.disabled = !userMessages.length;
+        btnChatHistory.toggleAttribute('aria-disabled', !userMessages.length);
+    }
+    if (chatHistoryPanelOpen) renderChatHistoryList();
+}
+
+function scheduleChatHistoryControlsUpdate() {
+    if (chatNavigationUpdateScheduled) return;
+    chatNavigationUpdateScheduled = true;
+    requestAnimationFrame(() => {
+        chatNavigationUpdateScheduled = false;
+        updateChatHistoryControls();
+    });
+}
+
+function highlightChatMessage(messageEl) {
+    if (!messageEl) return;
+    messageEl.classList.remove('jump-highlight');
+    void messageEl.offsetWidth;
+    messageEl.classList.add('jump-highlight');
+    clearTimeout(messageEl._jumpHighlightTimer);
+    messageEl._jumpHighlightTimer = setTimeout(() => {
+        messageEl.classList.remove('jump-highlight');
+    }, 1500);
+}
+
+function scrollToChatUserMessage(index) {
+    const userMessages = chatUserMessageElements();
+    const target = userMessages[index];
+    if (!target || !messagesContainer) return false;
+    const top = Math.max(0, chatMessageScrollTop(target) - 14);
+    messagesContainer.scrollTo({ top, behavior: 'smooth' });
+    highlightChatMessage(target);
+    scheduleChatHistoryControlsUpdate();
+    return true;
+}
+
+function jumpToPreviousUserMessage() {
+    const userMessages = chatUserMessageElements();
+    if (!userMessages.length || !messagesContainer) return;
+
+    const threshold = messagesContainer.scrollTop + 12;
+    let targetIndex = -1;
+
+    userMessages.forEach((messageEl, index) => {
+        if (chatMessageScrollTop(messageEl) < threshold) targetIndex = index;
+    });
+
+    if (targetIndex < 0) targetIndex = 0;
+    scrollToChatUserMessage(targetIndex);
+    setChatHistoryPanelOpen(false);
 }
 
 function escapeHtml(text) {
@@ -9245,6 +9459,34 @@ document.addEventListener('click', async (event) => {
         event.preventDefault();
         openMediaPreviewFromTrigger(mediaPreviewTrigger);
         return;
+    }
+
+    const chatPrevUserButton = event.target.closest('#btn-chat-prev-user');
+    if (chatPrevUserButton) {
+        event.preventDefault();
+        if (!chatPrevUserButton.disabled) jumpToPreviousUserMessage();
+        return;
+    }
+
+    const chatHistoryButton = event.target.closest('#btn-chat-history');
+    if (chatHistoryButton) {
+        event.preventDefault();
+        if (!chatHistoryButton.disabled) setChatHistoryPanelOpen(!chatHistoryPanelOpen);
+        return;
+    }
+
+    const chatHistoryItem = event.target.closest('[data-chat-history-index]');
+    if (chatHistoryItem) {
+        event.preventDefault();
+        const index = Number(chatHistoryItem.dataset.chatHistoryIndex);
+        if (Number.isInteger(index) && scrollToChatUserMessage(index)) {
+            setChatHistoryPanelOpen(false);
+        }
+        return;
+    }
+
+    if (chatHistoryPanelOpen && !event.target.closest('#chat-history-tools')) {
+        setChatHistoryPanelOpen(false);
     }
 
     const sidebarSectionToggle = event.target.closest('[data-toggle-sidebar-section]');
@@ -9614,6 +9856,24 @@ document.addEventListener('click', async (event) => {
         return;
     }
 
+    const copyCodeButton = event.target.closest('[data-copy-code]');
+    if (copyCodeButton) {
+        event.stopPropagation();
+        if (copyCodeButton.disabled) return;
+
+        const code = copyCodeButton.closest('.code-block')?.querySelector('code');
+        const text = code?.textContent || '';
+        if (!text) return;
+
+        try {
+            await copyTextToClipboard(text);
+            setCopyButtonFeedback(copyCodeButton, true);
+        } catch {
+            setCopyButtonFeedback(copyCodeButton, false);
+        }
+        return;
+    }
+
     const traceJumpButton = event.target.closest('[data-open-trace-run]');
     if (traceJumpButton && !traceJumpButton.disabled) {
         await openTraceRun(traceJumpButton.dataset.openTraceRun);
@@ -9722,6 +9982,13 @@ document.addEventListener('keydown', (event) => {
     if (event.key === 'Escape' && roleMemoryPopover && !roleMemoryPopover.classList.contains('hidden')) {
         event.preventDefault();
         closeRoleMemoryPopover();
+        return;
+    }
+
+    if (event.key === 'Escape' && chatHistoryPanelOpen) {
+        event.preventDefault();
+        setChatHistoryPanelOpen(false);
+        btnChatHistory?.focus({ preventScroll: true });
         return;
     }
 
@@ -9934,6 +10201,14 @@ btnRefresh.addEventListener('click', async () => {
     await refreshAll();
     btnRefresh.classList.remove('spinning');
 });
+
+messagesContainer?.addEventListener('scroll', scheduleChatHistoryControlsUpdate, { passive: true });
+window.addEventListener('resize', scheduleChatHistoryControlsUpdate);
+
+if (window.ResizeObserver && inputArea) {
+    const chatNavigationResizeObserver = new ResizeObserver(scheduleChatHistoryControlsUpdate);
+    chatNavigationResizeObserver.observe(inputArea);
+}
 
 if (accountSelect) {
     accountSelect.addEventListener('change', () => {

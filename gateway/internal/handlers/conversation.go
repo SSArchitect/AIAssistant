@@ -43,6 +43,7 @@ type conversationMessageResponse struct {
 	Runtime        string    `json:"runtime,omitempty"`
 	RunID          string    `json:"run_id,omitempty"`
 	TraceEvents    string    `json:"trace_events,omitempty"`
+	TraceSummary   string    `json:"trace_summary,omitempty"`
 	FollowUps      string    `json:"follow_ups,omitempty"`
 	ErrorType      string    `json:"error_type,omitempty"`
 	CreatedAt      time.Time `json:"created_at"`
@@ -92,9 +93,13 @@ func (h *ConversationHandler) Get(c *gin.Context) {
 	}
 
 	var messages []models.Message
-	database.DB.Where("conversation_id = ? AND user_id = ?", id, userID).Order(messageChronologicalOrder).Find(&messages)
-	messageResponses := make([]conversationMessageResponse, 0, len(messages))
 	includeTrace := shouldIncludeConversationTrace(c)
+	query := database.DB.Where("conversation_id = ? AND user_id = ?", id, userID).Order(messageChronologicalOrder)
+	if !includeTrace {
+		query = query.Omit("trace_events")
+	}
+	query.Find(&messages)
+	messageResponses := make([]conversationMessageResponse, 0, len(messages))
 	for _, message := range messages {
 		messageResponses = append(messageResponses, conversationMessageFromModel(message, includeTrace))
 	}
@@ -123,6 +128,7 @@ func conversationMessageFromModel(message models.Message, includeTrace bool) con
 		ModelUsed:      message.ModelUsed,
 		Runtime:        message.Runtime,
 		RunID:          message.RunID,
+		TraceSummary:   message.TraceSummary,
 		FollowUps:      message.FollowUps,
 		ErrorType:      message.ErrorType,
 		CreatedAt:      message.CreatedAt,

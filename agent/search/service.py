@@ -17,6 +17,14 @@ import httpx
 from pydantic import BaseModel, Field
 
 from agent.config import runtime_config
+from agent.search.recall import DEFAULT_RECALL_MAX_QUERIES, build_query_variants
+from agent.search.ranking import (
+    DEFAULT_MIN_RANK_SCORE,
+    diversify_ranked_results,
+    rank_search_results,
+    search_query_terms,
+    search_result_relevance_score,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +33,11 @@ WEB_PAGE_DEFAULT_CHARS = 6000
 WEB_PAGE_HARD_MAX_CHARS = 12000
 WEB_PAGE_OPEN_RESULT_LIMIT = 3
 WEB_PAGE_PARSE_MAX_CHARS = 1_000_000
+SEARCH_PROVIDER_LIMIT_MULTIPLIER = 2
+SEARCH_PROVIDER_LIMIT_MAX = 20
+SEARCH_MIN_PROVIDER_COVERAGE = 2
+SEARCH_RANK_MIN_SCORE = DEFAULT_MIN_RANK_SCORE
+SEARCH_RECALL_MAX_QUERIES = DEFAULT_RECALL_MAX_QUERIES
 WEB_USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -114,6 +127,8 @@ class WebPageReader:
 
 
 class StaticSearchProvider:
+    recall_query_limit = 1
+
     def __init__(self, *, name: str = "local", documents: list[dict[str, Any]]):
         self.name = name
         self._documents = documents
@@ -150,6 +165,8 @@ class StaticSearchProvider:
 
 
 class HTTPSearchProvider:
+    recall_query_limit = 1
+
     def __init__(
         self,
         *,
@@ -157,18 +174,20 @@ class HTTPSearchProvider:
         base_url: str,
         api_key: str = "",
         query_param: str = "q",
+        transport: Any | None = None,
     ):
         self.name = name
         self._base_url = base_url
         self._api_key = api_key
         self._query_param = query_param
+        self._transport = transport
 
     async def search(self, query: str, *, limit: int = 5) -> list[SearchResult]:
         headers = {}
         if self._api_key:
             headers["Authorization"] = f"Bearer {self._api_key}"
 
-        async with httpx.AsyncClient(timeout=15) as client:
+        async with httpx.AsyncClient(timeout=15, transport=self._transport) as client:
             response = await client.get(
                 self._base_url,
                 params={self._query_param: query, "limit": limit},
@@ -220,6 +239,7 @@ class MiniMaxMCPSearchProvider:
     """
 
     name = "minimax-mcp"
+    recall_query_limit = 1
 
     def __init__(
         self,
@@ -453,14 +473,22 @@ class DuckDuckGoSearchProvider:
     """
 
     name = "web"
+    recall_query_limit = 2
 
-    def __init__(self, *, base_url: str = "https://duckduckgo.com/html/"):
+    def __init__(
+        self,
+        *,
+        base_url: str = "https://duckduckgo.com/html/",
+        transport: Any | None = None,
+    ):
         self._base_url = base_url
+        self._transport = transport
 
     async def search(self, query: str, *, limit: int = 5) -> list[SearchResult]:
         async with httpx.AsyncClient(
             timeout=15,
             follow_redirects=True,
+            transport=self._transport,
             headers={
                 "User-Agent": (
                     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -569,14 +597,22 @@ class BingRSSSearchProvider:
     """
 
     name = "bing-rss"
+    recall_query_limit = 2
 
-    def __init__(self, *, base_url: str = "https://www.bing.com/search"):
+    def __init__(
+        self,
+        *,
+        base_url: str = "https://www.bing.com/search",
+        transport: Any | None = None,
+    ):
         self._base_url = base_url
+        self._transport = transport
 
     async def search(self, query: str, *, limit: int = 5) -> list[SearchResult]:
         async with httpx.AsyncClient(
             timeout=15,
             follow_redirects=True,
+            transport=self._transport,
             headers={
                 "User-Agent": (
                     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -763,12 +799,19 @@ class SearchService:
         page_reader: WebPageReader | None = None,
         retry_attempts: int = 3,
         retry_delay: float = 0.5,
+        min_provider_coverage: int = SEARCH_MIN_PROVIDER_COVERAGE,
+        provider_limit_multiplier: int = SEARCH_PROVIDER_LIMIT_MULTIPLIER,
+        recall_max_queries: int = SEARCH_RECALL_MAX_QUERIES,
     ):
         self._providers = providers or []
         self._page_reader = page_reader or WebPageReader()
         self._retry_attempts = max(1, retry_attempts)
         self._retry_delay = max(0.0, retry_delay)
+        self._min_provider_coverage = max(1, min_provider_coverage)
+        self._provider_limit_multiplier = max(1, provider_limit_multiplier)
+        self._recall_max_queries = max(1, recall_max_queries)
         self._last_provider_errors: list[str] = []
+        self._last_query_variants: list[str] = []
 
     @classmethod
     def from_runtime_config(cls) -> "SearchService":
@@ -852,6 +895,27 @@ class SearchService:
                 runtime_config.get("search.retry.delay_seconds", "0.5"),
                 default=0.5,
             ),
+            min_provider_coverage=_parse_int(
+                runtime_config.get(
+                    "search.min_provider_coverage",
+                    str(SEARCH_MIN_PROVIDER_COVERAGE),
+                ),
+                default=SEARCH_MIN_PROVIDER_COVERAGE,
+            ),
+            provider_limit_multiplier=_parse_int(
+                runtime_config.get(
+                    "search.provider_limit_multiplier",
+                    str(SEARCH_PROVIDER_LIMIT_MULTIPLIER),
+                ),
+                default=SEARCH_PROVIDER_LIMIT_MULTIPLIER,
+            ),
+            recall_max_queries=_parse_int(
+                runtime_config.get(
+                    "search.recall.max_queries",
+                    str(SEARCH_RECALL_MAX_QUERIES),
+                ),
+                default=SEARCH_RECALL_MAX_QUERIES,
+            ),
         )
 
     @property
@@ -861,6 +925,10 @@ class SearchService:
     @property
     def last_provider_errors(self) -> list[str]:
         return list(self._last_provider_errors)
+
+    @property
+    def last_query_variants(self) -> list[str]:
+        return list(self._last_query_variants)
 
     async def search(
         self,
@@ -879,28 +947,40 @@ class SearchService:
             if not selected or provider.name in selected
         ]
         providers.sort(key=self._provider_sort_key)
-        provider_limit = limit
+        provider_limit = min(
+            SEARCH_PROVIDER_LIMIT_MAX,
+            max(limit, limit * self._provider_limit_multiplier),
+        )
+        query_variants = build_query_variants(query, max_queries=self._recall_max_queries)
+        self._last_query_variants = query_variants
         stop_when_relevant = generic_web_requested or not selected
+        min_provider_coverage = min(len(providers), self._min_provider_coverage)
         if len(providers) > 1:
             results, provider_errors = await self._search_providers_concurrently(
                 providers,
-                query,
+                query_variants,
                 limit=limit,
                 provider_limit=provider_limit,
                 stop_when_relevant=stop_when_relevant,
+                min_provider_coverage=min_provider_coverage,
             )
         else:
             results, provider_errors = await self._search_providers_sequentially(
                 providers,
-                query,
+                query_variants,
                 limit=limit,
                 provider_limit=provider_limit,
             )
         self._last_provider_errors = provider_errors
-        if not results and provider_errors and len(provider_errors) == len(providers):
+        if (
+            not results
+            and provider_errors
+            and {provider.name for provider in providers}.issubset(
+                _provider_error_sources(provider_errors)
+            )
+        ):
             raise RuntimeError("; ".join(provider_errors))
-        if len(providers) > 1:
-            results = _rank_results_by_query_relevance(query, results)
+        results = _rank_results_by_query_relevance(query, results)
         limited_results = results[:limit]
         if open_results:
             await self.attach_page_content(
@@ -913,25 +993,39 @@ class SearchService:
     async def _search_providers_sequentially(
         self,
         providers: list[SearchProvider],
-        query: str,
+        queries: list[str],
         *,
         limit: int,
         provider_limit: int,
     ) -> tuple[list[SearchResult], list[str]]:
-        provider_outputs: list[tuple[int, list[SearchResult]]] = []
+        provider_outputs: list[tuple[int, int, list[SearchResult]]] = []
         provider_errors: list[tuple[int, str]] = []
         for index, provider in enumerate(providers):
-            try:
-                provider_results = await self._search_provider_with_retries(
-                    provider,
-                    query,
-                    limit=provider_limit,
+            provider_queries = self._queries_for_provider(provider, queries)
+            for query_index, query in enumerate(provider_queries):
+                try:
+                    provider_results = await self._search_provider_with_retries(
+                        provider,
+                        query,
+                        limit=provider_limit,
+                    )
+                except Exception as e:
+                    provider_errors.append((index, self._provider_error_text(provider, e)))
+                    continue
+                provider_outputs.append(
+                    (
+                        index,
+                        query_index,
+                        _tag_retrieval_query(
+                            provider_results,
+                            query=query,
+                            query_index=query_index,
+                        ),
+                    )
                 )
-            except Exception as e:
-                provider_errors.append((index, self._provider_error_text(provider, e)))
-                continue
-            provider_outputs.append((index, provider_results))
-            if len(_merge_provider_outputs(provider_outputs)) >= limit:
+                if len(provider_queries) == 1 and len(_merge_provider_outputs(provider_outputs)) >= limit:
+                    break
+            if len(_rank_results_by_query_relevance(queries[0] if queries else "", _merge_provider_outputs(provider_outputs))) >= limit:
                 break
         return (
             _merge_provider_outputs(provider_outputs),
@@ -941,11 +1035,12 @@ class SearchService:
     async def _search_providers_concurrently(
         self,
         providers: list[SearchProvider],
-        query: str,
+        queries: list[str],
         *,
         limit: int,
         provider_limit: int,
         stop_when_relevant: bool,
+        min_provider_coverage: int,
     ) -> tuple[list[SearchResult], list[str]]:
         tasks = {
             asyncio.create_task(
@@ -954,11 +1049,12 @@ class SearchService:
                     query,
                     limit=provider_limit,
                 )
-            ): (index, provider)
+            ): (index, query_index, provider, query)
             for index, provider in enumerate(providers)
+            for query_index, query in enumerate(self._queries_for_provider(provider, queries))
         }
         pending = set(tasks)
-        provider_outputs: list[tuple[int, list[SearchResult]]] = []
+        provider_outputs: list[tuple[int, int, list[SearchResult]]] = []
         provider_errors: list[tuple[int, str]] = []
 
         try:
@@ -968,19 +1064,36 @@ class SearchService:
                     return_when=asyncio.FIRST_COMPLETED,
                 )
                 for task in done:
-                    index, provider = tasks[task]
+                    index, query_index, provider, query = tasks[task]
                     try:
                         provider_results = task.result()
                     except Exception as e:
                         provider_errors.append((index, self._provider_error_text(provider, e)))
                         continue
-                    provider_outputs.append((index, provider_results))
+                    provider_outputs.append(
+                        (
+                            index,
+                            query_index,
+                            _tag_retrieval_query(
+                                provider_results,
+                                query=query,
+                                query_index=query_index,
+                            ),
+                        )
+                    )
 
                 merged_results = _merge_provider_outputs(provider_outputs)
+                settled_provider_count = len(provider_outputs) + len(provider_errors)
+                all_provider_queries_single = all(
+                    len(self._queries_for_provider(provider, queries)) == 1
+                    for provider in providers
+                )
                 if (
-                    stop_when_relevant
+                    all_provider_queries_single
+                    and stop_when_relevant
+                    and settled_provider_count >= min_provider_coverage
                     and len(merged_results) >= limit
-                    and _results_have_query_relevance(query, merged_results)
+                    and _results_have_query_relevance(queries[0] if queries else "", merged_results)
                 ):
                     break
         finally:
@@ -993,6 +1106,19 @@ class SearchService:
             _merge_provider_outputs(provider_outputs),
             [error for _, error in sorted(provider_errors)],
         )
+
+    def _queries_for_provider(
+        self,
+        provider: SearchProvider,
+        queries: list[str],
+    ) -> list[str]:
+        query_limit = getattr(provider, "recall_query_limit", 1)
+        try:
+            query_limit = int(query_limit)
+        except (TypeError, ValueError):
+            query_limit = 1
+        query_limit = max(1, min(query_limit, self._recall_max_queries))
+        return (queries or [""])[:query_limit]
 
     def _provider_error_text(self, provider: SearchProvider, error: Exception) -> str:
         error_text = f"{provider.name}: {error}"
@@ -1106,12 +1232,20 @@ class SearchService:
 
 
 def _merge_provider_outputs(
-    provider_outputs: list[tuple[int, list[SearchResult]]],
+    provider_outputs: list[tuple[int, int, list[SearchResult]]],
 ) -> list[SearchResult]:
     results: list[SearchResult] = []
     seen: set[str] = set()
-    for _, provider_results in sorted(provider_outputs, key=lambda item: item[0]):
-        for result in provider_results:
+    ordered_outputs = sorted(provider_outputs, key=lambda item: (item[1], item[0]))
+    max_result_count = max(
+        (len(provider_results) for _, _, provider_results in ordered_outputs),
+        default=0,
+    )
+    for result_index in range(max_result_count):
+        for _, _, provider_results in ordered_outputs:
+            if result_index >= len(provider_results):
+                continue
+            result = provider_results[result_index]
             key = result.url or f"{result.source}:{result.title}"
             if key in seen:
                 continue
@@ -1120,20 +1254,48 @@ def _merge_provider_outputs(
     return results
 
 
+def _tag_retrieval_query(
+    results: list[SearchResult],
+    *,
+    query: str,
+    query_index: int,
+) -> list[SearchResult]:
+    tagged: list[SearchResult] = []
+    for result in results:
+        metadata = dict(result.metadata)
+        metadata["retrieval_query"] = query
+        metadata["retrieval_query_index"] = query_index
+        result.metadata = metadata
+        tagged.append(result)
+    return tagged
+
+
+def _provider_error_sources(provider_errors: list[str]) -> set[str]:
+    return {
+        error.split(":", 1)[0].strip()
+        for error in provider_errors
+        if error.split(":", 1)[0].strip()
+    }
+
+
 def _rank_results_by_query_relevance(
     query: str,
     results: list[SearchResult],
 ) -> list[SearchResult]:
     if len(results) < 2:
-        return results
-    scored = [
-        (_search_result_relevance_score(query, result), index, result)
-        for index, result in enumerate(results)
-    ]
-    if not any(score > 0 for score, _, _ in scored):
-        return results
-    scored.sort(key=lambda item: (-item[0], item[1]))
-    return [result for _, _, result in scored]
+        ranked = rank_search_results(
+            query,
+            results,
+            min_score=SEARCH_RANK_MIN_SCORE,
+        )
+        return [item.result for item in ranked]
+    ranked = rank_search_results(
+        query,
+        results,
+        min_score=SEARCH_RANK_MIN_SCORE,
+    )
+    ranked = diversify_ranked_results(ranked)
+    return [item.result for item in ranked]
 
 
 def _results_have_query_relevance(
@@ -1143,96 +1305,12 @@ def _results_have_query_relevance(
     return any(_search_result_relevance_score(query, result) > 0 for result in results)
 
 
-def _search_result_relevance_score(query: str, result: SearchResult) -> int:
-    terms = _search_query_terms(query)
-    if not terms:
-        return 0
-    title = result.title or ""
-    snippet = result.snippet or ""
-    url = result.url or ""
-    score = 0
-    for term in terms:
-        if _search_text_contains_term(title, term):
-            score += 5
-        if _search_text_contains_term(snippet, term):
-            score += 2
-        if _search_text_contains_term(url, term):
-            score += 1
-    return score
+def _search_result_relevance_score(query: str, result: SearchResult) -> float:
+    return search_result_relevance_score(query, result)
 
 
 def _search_query_terms(query: str) -> list[str]:
-    terms: list[str] = []
-    seen: set[str] = set()
-    stopwords = {
-        "a",
-        "an",
-        "and",
-        "case",
-        "for",
-        "in",
-        "latest",
-        "news",
-        "of",
-        "recent",
-        "study",
-        "the",
-        "trend",
-        "trends",
-        "update",
-        "updates",
-        "with",
-    }
-
-    def add_term(term: str) -> None:
-        term = term.strip().lower()
-        if not term or term in stopwords or term.isdigit():
-            return
-        if len(term) <= 1:
-            return
-        if len(term) <= 2 and not _has_cjk(term):
-            return
-        if term in seen:
-            return
-        seen.add(term)
-        terms.append(term)
-
-    for raw in re.split(r"[\s,，;；/、|｜:：()（）\[\]【】\"'“”]+", query):
-        term = raw.strip().lower()
-        if not term:
-            continue
-        add_term(term)
-        if _has_cjk(term):
-            for cjk_term in _cjk_query_terms(term):
-                add_term(cjk_term)
-    return terms
-
-
-def _cjk_query_terms(term: str) -> list[str]:
-    cjk_runs = re.findall(r"[\u4e00-\u9fff]+", term)
-    terms: list[str] = []
-    for run in cjk_runs:
-        if len(run) <= 2:
-            terms.append(run)
-            continue
-        max_n = min(4, len(run))
-        for size in range(2, max_n + 1):
-            for index in range(0, len(run) - size + 1):
-                terms.append(run[index:index + size])
-    return terms
-
-
-def _has_cjk(text: str) -> bool:
-    return any("\u4e00" <= ch <= "\u9fff" for ch in text)
-
-
-def _search_text_contains_term(text: str, term: str) -> bool:
-    haystack = (text or "").lower()
-    if not haystack:
-        return False
-    if _has_cjk(term):
-        return term in haystack
-    return re.search(rf"(?<![a-z0-9]){re.escape(term)}(?![a-z0-9])", haystack) is not None
+    return search_query_terms(query)
 
 
 def _parse_command_args(raw: str) -> list[str]:

@@ -19,6 +19,57 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+func TestCompactTraceEventsKeepsTimelineDetailsWithoutLargePayloads(t *testing.T) {
+	largeContent := strings.Repeat("large-context ", 1000)
+	resultPreview := `{"success":true,"data":{"query":"2026 movies","results":[{"title":"A useful result","url":"https://example.com/a","snippet":"` + largeContent + `"},{"title":"Second result","url":"https://example.com/b"}]},"display_text":"` + largeContent + `"}`
+	events := []bridge.RunEvent{
+		{
+			ID:     "evt_tool",
+			RunID:  "run_summary",
+			Type:   "tool.completed",
+			Status: "completed",
+			Title:  "Tool search completed",
+			Payload: map[string]interface{}{
+				"arguments":      map[string]interface{}{"query": "2026 movies", "irrelevant": largeContent},
+				"result_preview": resultPreview,
+				"messages":       []interface{}{largeContent},
+			},
+		},
+		{
+			ID:     "evt_done",
+			RunID:  "run_summary",
+			Type:   "run.completed",
+			Status: "completed",
+			Title:  "Run completed",
+			Payload: map[string]interface{}{
+				"model_used":  "test-model",
+				"skills_used": []interface{}{"search"},
+			},
+		},
+	}
+
+	summary := compactTraceEvents(events)
+	summaryJSON, err := json.Marshal(summary)
+	if err != nil {
+		t.Fatalf("marshal summary: %v", err)
+	}
+	text := string(summaryJSON)
+	if len(text) >= len(resultPreview) {
+		t.Fatalf("expected compact summary to be smaller than raw preview")
+	}
+	for _, want := range []string{"tool.completed", "run.completed", "2026 movies", "A useful result", "https://example.com/a"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("expected summary to contain %q, got %s", want, text)
+		}
+	}
+	if strings.Contains(text, `"messages"`) {
+		t.Fatalf("expected large messages payload to be removed, got %s", text)
+	}
+	if len(text) > 2200 {
+		t.Fatalf("expected compact summary to stay small, got %d bytes: %s", len(text), text)
+	}
+}
+
 func TestChatSyncsSettingsBeforeAgentRequest(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

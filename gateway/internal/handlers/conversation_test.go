@@ -74,6 +74,7 @@ func TestConversationGetOmitsTraceEventsByDefault(t *testing.T) {
 		Content:        "done",
 		RunID:          "run-heavy",
 		TraceEvents:    `[{"type":"run.completed","payload":{"prompt":"very large"}}]`,
+		TraceSummary:   `[{"type":"run.completed","payload":{}}]`,
 		CreatedAt:      time.Now(),
 	}
 	if err := database.DB.Create(&message).Error; err != nil {
@@ -94,6 +95,9 @@ func TestConversationGetOmitsTraceEventsByDefault(t *testing.T) {
 	}
 	if strings.Contains(recorder.Body.String(), "trace_events") {
 		t.Fatalf("expected trace events to be omitted by default, got %s", recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "trace_summary") {
+		t.Fatalf("expected trace summary to be returned by default, got %s", recorder.Body.String())
 	}
 	if !strings.Contains(recorder.Body.String(), `"run_id":"run-heavy"`) {
 		t.Fatalf("expected run id to remain available, got %s", recorder.Body.String())
