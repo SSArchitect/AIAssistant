@@ -4,10 +4,30 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Settings - Agent Assistant</title>
-    <link rel="stylesheet" href="/static/css/admin.css?v=8">
+    <link rel="stylesheet" href="/static/css/admin.css?v=9">
 </head>
 <body>
-    <div class="admin-app">
+    <section class="admin-login" id="admin-login-panel">
+        <form class="admin-login-card" id="admin-login-form">
+            <div class="login-header">
+                <svg class="header-icon" viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
+                </svg>
+                <div>
+                    <h1 data-i18n="auth.title">管理员验证</h1>
+                    <p data-i18n="auth.desc">输入管理员密码后继续。</p>
+                </div>
+            </div>
+            <div class="form-group">
+                <label for="admin-login-password" data-i18n="auth.password">管理员密码</label>
+                <input type="password" id="admin-login-password" class="form-input" autocomplete="current-password">
+            </div>
+            <button class="btn-save login-submit" type="submit" data-i18n="auth.login">进入后台</button>
+            <div class="save-result" id="admin-login-result"></div>
+        </form>
+    </section>
+
+    <div class="admin-app" id="admin-app" hidden>
         <header class="admin-header">
             <div class="header-left">
                 <svg class="header-icon" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2">
@@ -17,6 +37,7 @@
             </div>
             <div class="header-actions">
                 <button class="btn-language" id="language-toggle" type="button" title="Language">EN</button>
+                <button class="btn-language" id="admin-logout" type="button" data-i18n="auth.logout" data-i18n-title="auth.logoutTitle">退出</button>
                 <a href="/" class="btn-back">
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
                     <span data-i18n="admin.back">返回聊天</span>
@@ -53,7 +74,10 @@
                     </div>
                     <div class="card-body">
                         <div class="cost-toolbar">
-                            <div class="cost-metrics" id="cost-metrics"></div>
+                            <div>
+                                <div class="cost-metrics" id="cost-metrics"></div>
+                                <div class="cost-note" id="cost-accuracy-note"></div>
+                            </div>
                             <button class="btn-test" type="button" data-refresh-costs title="Refresh">
                                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
                                 <span data-i18n="cost.refresh">刷新</span>
@@ -72,6 +96,8 @@
                                                 <th data-i18n="cost.totalTokens">总 Token</th>
                                                 <th data-i18n="cost.inputTokens">输入</th>
                                                 <th data-i18n="cost.outputTokens">输出</th>
+                                                <th data-i18n="cost.cacheRead">缓存命中</th>
+                                                <th data-i18n="cost.cacheWrite">缓存写入</th>
                                                 <th data-i18n="cost.images">图片</th>
                                                 <th data-i18n="cost.lastUsed">最近使用</th>
                                             </tr>
@@ -93,6 +119,8 @@
                                                 <th data-i18n="cost.totalTokens">总 Token</th>
                                                 <th data-i18n="cost.inputTokens">输入</th>
                                                 <th data-i18n="cost.outputTokens">输出</th>
+                                                <th data-i18n="cost.cacheRead">缓存命中</th>
+                                                <th data-i18n="cost.cacheWrite">缓存写入</th>
                                                 <th data-i18n="cost.images">图片</th>
                                             </tr>
                                         </thead>
@@ -229,6 +257,10 @@
                             <label for="mcp-servers" data-i18n="advanced.mcp">MCP Servers JSON</label>
                             <textarea id="mcp-servers" class="form-input form-textarea" rows="5" placeholder='[{"name":"filesystem","command":"npx","args":["..."]}]'></textarea>
                         </div>
+                        <div class="form-group">
+                            <label for="admin-password" data-i18n="advanced.adminPassword">Admin Password</label>
+                            <input type="password" id="admin-password" class="form-input" autocomplete="new-password" placeholder="admin123">
+                        </div>
                     </div>
                 </details>
 
@@ -240,6 +272,6 @@
         </main>
     </div>
 
-    <script src="/static/js/admin.js?v=10"></script>
+    <script src="/static/js/admin.js?v=11"></script>
 </body>
 </html>

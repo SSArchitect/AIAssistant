@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -115,7 +116,7 @@ func TestAdminCostsReturnsAccountsAndModuleUsage(t *testing.T) {
 	}
 
 	alice := findCostAccount(payload.Accounts, "acct-a")
-	if alice == nil || !alice.PasswordAvailable || alice.Password != "plain-a" || alice.TotalTokens != 42 {
+	if alice == nil || !alice.PasswordAvailable || alice.Password != "" || alice.TotalTokens != 42 {
 		t.Fatalf("unexpected Alice account summary: %#v", alice)
 	}
 	bob := findCostAccount(payload.Accounts, "acct-b")
@@ -126,6 +127,122 @@ func TestAdminCostsReturnsAccountsAndModuleUsage(t *testing.T) {
 	aliceResearch := findCostModule(payload.Modules, "acct-a", "deep_research_v1")
 	if aliceResearch == nil || aliceResearch.TotalTokens != 27 || aliceResearch.ModuleName != "Deep Research" {
 		t.Fatalf("unexpected Alice research module summary: %#v", aliceResearch)
+	}
+}
+
+func TestAdminLoginAndAccountPasswordEndpoint(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	if err := database.Init(filepath.Join(t.TempDir(), "assistant.db")); err != nil {
+		t.Fatalf("init database: %v", err)
+	}
+	if err := database.DB.Create(&models.Account{
+		ID:           "acct-a",
+		Name:         "Alice",
+		NameKey:      accountNameKey("Alice"),
+		PasswordHash: "hash-a",
+		PasswordView: "plain-a",
+		CreatedAt:    time.Now(),
+		UpdatedAt:    time.Now(),
+	}).Error; err != nil {
+		t.Fatalf("create account: %v", err)
+	}
+
+	router := gin.New()
+	handler := NewAdminHandler(nil)
+	router.POST("/api/admin/login", handler.Login)
+	protected := router.Group("/api/admin")
+	protected.Use(handler.RequireAuth())
+	protected.GET("/accounts/:id/password", handler.GetAccountPassword)
+
+	badReq := httptest.NewRequest(http.MethodGet, "/api/admin/accounts/acct-a/password", nil)
+	badRecorder := httptest.NewRecorder()
+	router.ServeHTTP(badRecorder, badReq)
+	if badRecorder.Code != http.StatusUnauthorized {
+		t.Fatalf("expected protected endpoint to require login, got %d", badRecorder.Code)
+	}
+
+	loginReq := httptest.NewRequest(http.MethodPost, "/api/admin/login", strings.NewReader(`{"password":"admin123"}`))
+	loginReq.Header.Set("Content-Type", "application/json")
+	loginRecorder := httptest.NewRecorder()
+	router.ServeHTTP(loginRecorder, loginReq)
+	if loginRecorder.Code != http.StatusOK {
+		t.Fatalf("unexpected login status %d: %s", loginRecorder.Code, loginRecorder.Body.String())
+	}
+	var loginPayload map[string]interface{}
+	if err := json.Unmarshal(loginRecorder.Body.Bytes(), &loginPayload); err != nil {
+		t.Fatalf("decode login: %v", err)
+	}
+	token, _ := loginPayload["token"].(string)
+	if token == "" {
+		t.Fatalf("expected admin token in login response: %#v", loginPayload)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/accounts/acct-a/password", nil)
+	req.Header.Set(adminSessionHeader, token)
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("unexpected password status %d: %s", recorder.Code, recorder.Body.String())
+	}
+	var payload map[string]interface{}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode password response: %v", err)
+	}
+	if payload["password"] != "plain-a" || payload["password_available"] != true {
+		t.Fatalf("unexpected password payload: %#v", payload)
+	}
+}
+
+func TestAdminCostsUsesTraceFallbackWithoutDoubleCounting(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	if err := database.Init(filepath.Join(t.TempDir(), "assistant.db")); err != nil {
+		t.Fatalf("init database: %v", err)
+	}
+	now := time.Now().UTC()
+	if err := database.DB.Create(&models.Account{
+		ID:        "acct-a",
+		Name:      "Alice",
+		NameKey:   accountNameKey("Alice"),
+		CreatedAt: now,
+		UpdatedAt: now,
+	}).Error; err != nil {
+		t.Fatalf("create account: %v", err)
+	}
+	trace := `[
+		{"type":"model.completed","payload":{"usage":{"input":100,"output":50}}},
+		{"type":"run.completed","payload":{"tokens_used":{"input":7,"output":3,"input_cached":2}}}
+	]`
+	if err := database.DB.Create(&models.Message{
+		ConversationID: "conv-a",
+		UserID:         "acct-a",
+		Role:           "assistant",
+		Content:        "done",
+		ModelUsed:      "model-a",
+		RunID:          "run-a",
+		TraceEvents:    trace,
+		CreatedAt:      now,
+	}).Error; err != nil {
+		t.Fatalf("create message: %v", err)
+	}
+
+	router := gin.New()
+	handler := &AdminHandler{}
+	router.GET("/api/admin/costs", handler.GetCosts)
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/costs", nil)
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("unexpected status %d: %s", recorder.Code, recorder.Body.String())
+	}
+	var payload CostReportResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if payload.Summary.TotalTokens != 10 || payload.Summary.InputTokens != 7 || payload.Summary.OutputTokens != 3 || payload.Summary.CachedInputTokens != 2 {
+		t.Fatalf("trace fallback should use run.completed aggregate, got %#v", payload.Summary)
+	}
+	if payload.Summary.TraceFallbackRecords != 1 || payload.Summary.TokenUsageRecords != 0 {
+		t.Fatalf("unexpected source counts: %#v", payload.Summary)
 	}
 }
 

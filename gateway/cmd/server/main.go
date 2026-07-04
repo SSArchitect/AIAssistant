@@ -116,11 +116,16 @@ func main() {
 		api.DELETE("/conversations/:id", convHandler.Delete)
 
 		// Admin routes
+		api.POST("/admin/login", adminHandler.Login)
+
 		admin := api.Group("/admin")
+		admin.Use(adminHandler.RequireAuth())
 		{
+			admin.GET("/session", adminHandler.Session)
 			admin.GET("/settings", adminHandler.GetSettings)
 			admin.PUT("/settings", adminHandler.UpdateSettings)
 			admin.GET("/costs", adminHandler.GetCosts)
+			admin.GET("/accounts/:id/password", adminHandler.GetAccountPassword)
 			admin.POST("/test-provider", adminHandler.TestProvider)
 			admin.POST("/validate-provider", adminHandler.ValidateProvider)
 			admin.POST("/list-models", adminHandler.ListModels)

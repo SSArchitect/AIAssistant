@@ -44,6 +44,50 @@ body {
     flex-direction: column;
 }
 
+.admin-login {
+    min-height: 100vh;
+    padding: 24px;
+    display: grid;
+    place-items: center;
+}
+
+.admin-login[hidden],
+.admin-app[hidden] {
+    display: none;
+}
+
+.admin-login-card {
+    width: min(420px, 100%);
+    padding: 22px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    background: var(--bg-card);
+    box-shadow: var(--shadow-md);
+    display: grid;
+    gap: 16px;
+}
+
+.login-header {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+}
+
+.login-header h1 {
+    font-size: 18px;
+    line-height: 1.2;
+}
+
+.login-header p {
+    margin-top: 4px;
+    color: var(--text-secondary);
+    font-size: 12px;
+}
+
+.login-submit {
+    width: 100%;
+}
+
 /* ==================== Header ==================== */
 
 .admin-header {
@@ -236,7 +280,7 @@ body {
 
 .cost-metrics {
     display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-columns: repeat(5, minmax(0, 1fr));
     gap: 8px;
 }
 
@@ -287,7 +331,7 @@ body {
 
 .cost-table {
     width: 100%;
-    min-width: 760px;
+    min-width: 980px;
     border-collapse: collapse;
     background: var(--bg-card);
 }
@@ -344,6 +388,41 @@ body {
     overflow: hidden;
     text-overflow: ellipsis;
     vertical-align: top;
+}
+
+.cost-password-wrap {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.cost-password-action {
+    min-height: 26px;
+    padding: 4px 8px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg-input);
+    color: var(--text-secondary);
+    font-size: 11px;
+    font-weight: 700;
+    cursor: pointer;
+}
+
+.cost-password-action:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+    background: var(--accent-light);
+}
+
+.cost-note {
+    margin-top: 8px;
+    color: var(--text-secondary);
+    font-size: 11px;
+    line-height: 1.45;
+}
+
+.cost-note[hidden] {
+    display: none;
 }
 
 .cost-muted,

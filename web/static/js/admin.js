@@ -2,6 +2,7 @@ const API_BASE = '';
 const LANGUAGE_KEY = 'agent_assistant_language';
 const CURRENT_USER_ID_STORAGE_KEY = 'agent_assistant_current_user_id';
 const ACCOUNT_SESSION_STORAGE_KEY = 'agent_assistant_account_session';
+const ADMIN_SESSION_STORAGE_KEY = 'agent_assistant_admin_session';
 
 const PROVIDER_CONFIG = [
     {
@@ -72,6 +73,7 @@ const PROVIDERS = PROVIDER_CONFIG.map((provider) => provider.key);
 const PROVIDER_BY_KEY = Object.fromEntries(PROVIDER_CONFIG.map((provider) => [provider.key, provider]));
 
 const FIELD_MAP = {
+    'admin.password': 'admin-password',
     'llm.default_provider': 'default-provider',
     'search.http.base_url': 'search-http-base-url',
     'search.http.api_key': 'search-http-api-key',
@@ -94,6 +96,16 @@ for (const provider of PROVIDER_CONFIG) {
 const I18N = {
     zh: {
         admin: { title: '配置', back: '返回聊天' },
+        auth: {
+            title: '管理员验证',
+            desc: '输入管理员密码后继续。',
+            password: '管理员密码',
+            login: '进入后台',
+            loggingIn: '验证中...',
+            failed: '验证失败：{message}',
+            logout: '退出',
+            logoutTitle: '退出管理员',
+        },
         basic: {
             title: '基础配置',
             desc: '选择默认模型服务，并在下方完成密钥和模型配置。',
@@ -164,6 +176,8 @@ const I18N = {
             totalTokens: '总 Token',
             inputTokens: '输入',
             outputTokens: '输出',
+            cacheRead: '缓存命中',
+            cacheWrite: '缓存写入',
             requests: '请求',
             images: '图片',
             accounts: '账号',
@@ -177,6 +191,9 @@ const I18N = {
             lastUsed: '最近使用',
             encrypted: '已加密',
             notSet: '未设置',
+            viewPassword: '查看',
+            hidePassword: '隐藏',
+            unavailable: '不可查看',
             noUsage: '暂无 token 用量',
             never: '-',
         },
@@ -227,11 +244,22 @@ const I18N = {
             minimaxSearchTimeout: 'MiniMax MCP 超时秒数',
             localDocs: 'Local Search Documents JSON',
             mcp: 'MCP Servers JSON',
+            adminPassword: '管理员密码',
         },
         common: { optional: '可选', showHide: '显示/隐藏' },
     },
     en: {
         admin: { title: 'Settings', back: 'Back to Chat' },
+        auth: {
+            title: 'Admin Check',
+            desc: 'Enter the admin password to continue.',
+            password: 'Admin password',
+            login: 'Enter Admin',
+            loggingIn: 'Checking...',
+            failed: 'Login failed: {message}',
+            logout: 'Log out',
+            logoutTitle: 'Log out admin',
+        },
         basic: {
             title: 'Basic Settings',
             desc: 'Choose the default model provider, then configure credentials and models below.',
@@ -302,6 +330,8 @@ const I18N = {
             totalTokens: 'Total Tokens',
             inputTokens: 'Input',
             outputTokens: 'Output',
+            cacheRead: 'Cache Read',
+            cacheWrite: 'Cache Write',
             requests: 'Requests',
             images: 'Images',
             accounts: 'Accounts',
@@ -315,6 +345,9 @@ const I18N = {
             lastUsed: 'Last Used',
             encrypted: 'Encrypted',
             notSet: 'Not Set',
+            viewPassword: 'View',
+            hidePassword: 'Hide',
+            unavailable: 'Unavailable',
             noUsage: 'No token usage',
             never: '-',
         },
@@ -365,6 +398,7 @@ const I18N = {
             minimaxSearchTimeout: 'MiniMax MCP Timeout Seconds',
             localDocs: 'Local Search Documents JSON',
             mcp: 'MCP Servers JSON',
+            adminPassword: 'Admin Password',
         },
         common: { optional: 'optional', showHide: 'Show/Hide' },
     },
@@ -439,6 +473,9 @@ let selectedRoleId = 'default';
 let activeProvider = localStorage.getItem('admin_active_provider') || 'claude';
 let settingsCache = {};
 let costReport = null;
+let adminToken = localStorage.getItem(ADMIN_SESSION_STORAGE_KEY) || '';
+let adminAuthenticated = false;
+const visibleAccountPasswords = {};
 const providerModels = {};
 
 async function apiCall(method, path, body = null) {
@@ -450,12 +487,17 @@ async function apiCall(method, path, body = null) {
     };
     if (accountToken) opts.headers['X-Account-Session'] = accountToken;
     if (currentUserId) opts.headers['X-User-ID'] = currentUserId;
+    if (adminToken && path.startsWith('/api/admin') && path !== '/api/admin/login') {
+        opts.headers['X-Admin-Session'] = adminToken;
+    }
     if (body) opts.body = JSON.stringify(body);
 
     const resp = await fetch(API_BASE + path, opts);
     if (!resp.ok) {
         const err = await resp.json().catch(() => ({ error: resp.statusText }));
-        throw new Error(err.error || err.detail || 'Request failed');
+        const error = new Error(err.error || err.detail || 'Request failed');
+        error.status = resp.status;
+        throw error;
     }
     return resp.json();
 }
@@ -663,6 +705,111 @@ function setActiveProvider(provider, persist = true) {
     }
 }
 
+function showAdminLogin(message = '') {
+    adminAuthenticated = false;
+    const loginPanel = document.getElementById('admin-login-panel');
+    const app = document.getElementById('admin-app');
+    if (loginPanel) loginPanel.hidden = false;
+    if (app) app.hidden = true;
+    showAdminLoginResult(message, false, Boolean(message));
+    const input = document.getElementById('admin-login-password');
+    if (input) input.focus();
+}
+
+function showAdminApp() {
+    adminAuthenticated = true;
+    const loginPanel = document.getElementById('admin-login-panel');
+    const app = document.getElementById('admin-app');
+    if (loginPanel) loginPanel.hidden = true;
+    if (app) app.hidden = false;
+}
+
+function showAdminLoginResult(message, ok, visible = true) {
+    const resultEl = document.getElementById('admin-login-result');
+    if (!resultEl) return;
+    resultEl.textContent = message;
+    resultEl.className = ok ? 'save-result success' : 'save-result error';
+    resultEl.style.display = visible && message ? 'block' : 'none';
+}
+
+async function loginAdmin() {
+    const input = document.getElementById('admin-login-password');
+    const button = document.querySelector('#admin-login-form .login-submit');
+    const password = input ? input.value.trim() : '';
+    if (!password) {
+        showAdminLoginResult(t('auth.failed', { message: t('auth.password') }), false);
+        return;
+    }
+    if (button) {
+        button.disabled = true;
+        button.textContent = t('auth.loggingIn');
+    }
+    try {
+        const data = await apiCall('POST', '/api/admin/login', { password });
+        adminToken = data.token || '';
+        if (!adminToken) throw new Error('missing admin token');
+        localStorage.setItem(ADMIN_SESSION_STORAGE_KEY, adminToken);
+        if (input) input.value = '';
+        showAdminApp();
+        await loadAdminData();
+    } catch (e) {
+        adminToken = '';
+        localStorage.removeItem(ADMIN_SESSION_STORAGE_KEY);
+        showAdminLoginResult(t('auth.failed', { message: e.message }), false);
+    } finally {
+        if (button) {
+            button.disabled = false;
+            button.textContent = t('auth.login');
+        }
+    }
+}
+
+function logoutAdmin() {
+    adminToken = '';
+    localStorage.removeItem(ADMIN_SESSION_STORAGE_KEY);
+    showAdminLogin();
+}
+
+function handleAdminAuthError(error) {
+    if (error && error.status === 401) {
+        logoutAdmin();
+        showAdminLoginResult(t('auth.failed', { message: error.message }), false);
+        return true;
+    }
+    return false;
+}
+
+async function verifyAdminSession() {
+    if (!adminToken) return false;
+    try {
+        await apiCall('GET', '/api/admin/session');
+        return true;
+    } catch {
+        adminToken = '';
+        localStorage.removeItem(ADMIN_SESSION_STORAGE_KEY);
+        return false;
+    }
+}
+
+async function loadAdminData() {
+    renderProviderConfigurator();
+    renderRoleExamples();
+    renderCostReport();
+    await loadSettings();
+    await loadCosts();
+    await loadRoles();
+}
+
+async function bootstrapAdmin() {
+    applyI18n();
+    if (await verifyAdminSession()) {
+        showAdminApp();
+        await loadAdminData();
+    } else {
+        showAdminLogin();
+    }
+}
+
 async function loadSettings() {
     try {
         const data = await apiCall('GET', '/api/admin/settings');
@@ -673,6 +820,7 @@ async function loadSettings() {
         loadProviderModels(settingsCache);
         updateProviderStatuses(settingsCache);
     } catch (e) {
+        if (handleAdminAuthError(e)) return;
         showSaveResult(t('messages.loadSettingsFailed', { message: e.message }), false);
     }
 }
@@ -683,6 +831,7 @@ async function loadCosts(button = null) {
         costReport = await apiCall('GET', '/api/admin/costs');
         renderCostReport();
     } catch (e) {
+        if (handleAdminAuthError(e)) return;
         renderCostError(e.message);
     } finally {
         if (button) button.disabled = false;
@@ -691,6 +840,7 @@ async function loadCosts(button = null) {
 
 function renderCostReport() {
     renderCostMetrics(costReport?.summary || {});
+    renderCostAccuracy(costReport?.summary || {});
     renderCostAccounts(costReport?.accounts || []);
     renderCostModules(costReport?.modules || []);
     updateCostBadge(costReport ? t('cost.updated') : '-');
@@ -703,6 +853,8 @@ function renderCostMetrics(summary) {
         { label: t('cost.totalTokens'), value: formatNumber(summary.total_tokens) },
         { label: t('cost.inputTokens'), value: formatNumber(summary.input_tokens) },
         { label: t('cost.outputTokens'), value: formatNumber(summary.output_tokens) },
+        { label: t('cost.cacheRead'), value: formatNumber(summary.cached_input_tokens) },
+        { label: t('cost.cacheWrite'), value: formatNumber(summary.cache_creation_input_tokens) },
         { label: t('cost.requests'), value: formatNumber(summary.request_count) },
         { label: t('cost.images'), value: formatNumber(summary.image_count) },
         { label: t('cost.accountCount'), value: formatNumber(summary.total_accounts) },
@@ -716,11 +868,25 @@ function renderCostMetrics(summary) {
     `).join('');
 }
 
+function renderCostAccuracy(summary) {
+    const note = document.getElementById('cost-accuracy-note');
+    if (!note) return;
+    const parts = [];
+    if (summary.accuracy_note) parts.push(summary.accuracy_note);
+    const tokenUsageRecords = Number(summary.token_usage_records || 0);
+    const traceFallbackRecords = Number(summary.trace_fallback_records || 0);
+    if (tokenUsageRecords || traceFallbackRecords) {
+        parts.push(`token_usages: ${formatNumber(tokenUsageRecords)} / trace fallback: ${formatNumber(traceFallbackRecords)}`);
+    }
+    note.textContent = parts.join(' ');
+    note.hidden = parts.length === 0;
+}
+
 function renderCostAccounts(accounts) {
     const tbody = document.getElementById('cost-account-rows');
     if (!tbody) return;
     if (!accounts.length) {
-        tbody.innerHTML = emptyCostRow(8);
+        tbody.innerHTML = emptyCostRow(10);
         return;
     }
     tbody.innerHTML = accounts.map((account) => `
@@ -731,6 +897,8 @@ function renderCostAccounts(accounts) {
             <td>${formatNumber(account.total_tokens)}</td>
             <td>${formatNumber(account.input_tokens)}</td>
             <td>${formatNumber(account.output_tokens)}</td>
+            <td>${formatNumber(account.cached_input_tokens)}</td>
+            <td>${formatNumber(account.cache_creation_input_tokens)}</td>
             <td>${formatNumber(account.image_count)}</td>
             <td>${escapeHtml(formatDateTime(account.last_used_at))}</td>
         </tr>
@@ -741,7 +909,7 @@ function renderCostModules(modules) {
     const tbody = document.getElementById('cost-module-rows');
     if (!tbody) return;
     if (!modules.length) {
-        tbody.innerHTML = emptyCostRow(8);
+        tbody.innerHTML = emptyCostRow(10);
         return;
     }
     tbody.innerHTML = modules.map((module) => `
@@ -758,6 +926,8 @@ function renderCostModules(modules) {
             <td>${formatNumber(module.total_tokens)}</td>
             <td>${formatNumber(module.input_tokens)}</td>
             <td>${formatNumber(module.output_tokens)}</td>
+            <td>${formatNumber(module.cached_input_tokens)}</td>
+            <td>${formatNumber(module.cache_creation_input_tokens)}</td>
             <td>${formatNumber(module.image_count)}</td>
         </tr>
     `).join('');
@@ -773,11 +943,44 @@ function renderAccountCell(name, id) {
 }
 
 function renderPasswordCell(account) {
+    if (visibleAccountPasswords[account.id]) {
+        return `
+            <div class="cost-password-wrap">
+                <code class="cost-password">${escapeHtml(visibleAccountPasswords[account.id])}</code>
+                <button class="cost-password-action" type="button" data-hide-account-password="${escapeAttr(account.id)}">${escapeHtml(t('cost.hidePassword'))}</button>
+            </div>
+        `;
+    }
     if (account.password_available) {
-        return `<code class="cost-password">${escapeHtml(account.password || '')}</code>`;
+        return `<button class="cost-password-action" type="button" data-view-account-password="${escapeAttr(account.id)}">${escapeHtml(t('cost.viewPassword'))}</button>`;
     }
     const label = account.password_set ? t('cost.encrypted') : t('cost.notSet');
     return `<span class="cost-muted">${escapeHtml(label)}</span>`;
+}
+
+async function viewAccountPassword(accountId, button = null) {
+    if (!accountId) return;
+    if (button) button.disabled = true;
+    try {
+        const data = await apiCall('GET', `/api/admin/accounts/${encodeURIComponent(accountId)}/password`);
+        if (!data.password_available || !data.password) {
+            visibleAccountPasswords[accountId] = data.password_note || t('cost.unavailable');
+        } else {
+            visibleAccountPasswords[accountId] = data.password;
+        }
+        renderCostAccounts(costReport?.accounts || []);
+    } catch (e) {
+        if (handleAdminAuthError(e)) return;
+        visibleAccountPasswords[accountId] = e.message || t('cost.unavailable');
+        renderCostAccounts(costReport?.accounts || []);
+    } finally {
+        if (button) button.disabled = false;
+    }
+}
+
+function hideAccountPassword(accountId) {
+    delete visibleAccountPasswords[accountId];
+    renderCostAccounts(costReport?.accounts || []);
 }
 
 function emptyCostRow(colspan) {
@@ -786,7 +989,7 @@ function emptyCostRow(colspan) {
 
 function renderCostError(message) {
     updateCostBadge(t('cost.loadFailed'), 'error');
-    const rows = `<tr><td class="cost-empty error" colspan="8">${escapeHtml(message || t('cost.loadFailed'))}</td></tr>`;
+    const rows = `<tr><td class="cost-empty error" colspan="10">${escapeHtml(message || t('cost.loadFailed'))}</td></tr>`;
     const accountRows = document.getElementById('cost-account-rows');
     const moduleRows = document.getElementById('cost-module-rows');
     if (accountRows) accountRows.innerHTML = rows;
@@ -1194,6 +1397,7 @@ async function fetchModels(provider, button) {
             statusEl.className = 'fetch-status';
         }, 5000);
     } catch (e) {
+        if (handleAdminAuthError(e)) return;
         statusEl.textContent = t('messages.fetchFailed', { message: e.message });
         statusEl.className = 'fetch-status visible error';
     } finally {
@@ -1233,6 +1437,7 @@ async function saveSettings() {
         showSaveResult(t('messages.saved'), true);
         await loadSettings();
     } catch (e) {
+        if (handleAdminAuthError(e)) return;
         showSaveResult(t('messages.saveFailed', { message: e.message }), false);
     } finally {
         btn.disabled = false;
@@ -1261,6 +1466,7 @@ async function validateProvider(provider, button) {
         const item = validation[provider];
         showValidationResult(provider, item);
     } catch (e) {
+        if (handleAdminAuthError(e)) return;
         const item = {
             success: false,
             status: 'error',
@@ -1312,6 +1518,13 @@ function showSaveResult(message, ok, visible = true) {
     resultEl.style.display = visible && message ? 'block' : 'none';
 }
 
+document.addEventListener('submit', async (event) => {
+    if (event.target && event.target.id === 'admin-login-form') {
+        event.preventDefault();
+        await loginAdmin();
+    }
+});
+
 document.addEventListener('click', async (event) => {
     const languageButton = event.target.closest('#language-toggle');
     if (languageButton) {
@@ -1319,9 +1532,27 @@ document.addEventListener('click', async (event) => {
         return;
     }
 
+    const logoutButton = event.target.closest('#admin-logout');
+    if (logoutButton) {
+        logoutAdmin();
+        return;
+    }
+
     const refreshCostsButton = event.target.closest('[data-refresh-costs]');
     if (refreshCostsButton) {
         await loadCosts(refreshCostsButton);
+        return;
+    }
+
+    const viewPasswordButton = event.target.closest('[data-view-account-password]');
+    if (viewPasswordButton) {
+        await viewAccountPassword(viewPasswordButton.dataset.viewAccountPassword, viewPasswordButton);
+        return;
+    }
+
+    const hidePasswordButton = event.target.closest('[data-hide-account-password]');
+    if (hidePasswordButton) {
+        hideAccountPassword(hidePasswordButton.dataset.hideAccountPassword);
         return;
     }
 
@@ -1399,10 +1630,4 @@ document.addEventListener('keydown', (event) => {
     }
 });
 
-applyI18n();
-renderProviderConfigurator();
-renderRoleExamples();
-renderCostReport();
-loadSettings();
-loadCosts();
-loadRoles();
+bootstrapAdmin();
