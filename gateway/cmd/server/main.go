@@ -146,7 +146,9 @@ func main() {
 			slog.Warn("Failed to sync settings to agent after startup retries")
 		}
 	}()
-	pulseHandler.StartScheduler()
+	// Pulse generation is intentionally user-triggered only. The previous
+	// scheduler fanned out across every account every 30 minutes and could
+	// repeatedly regenerate incomplete/fallback feeds.
 
 	// Serve static files (Web UI)
 	webDir := filepath.Join(projectRoot, "web")
