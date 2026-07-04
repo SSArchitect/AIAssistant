@@ -120,6 +120,47 @@ class TraceStore:
         )
         return run
 
+    def partial_run(
+        self,
+        run_id: str,
+        *,
+        output: str,
+        error_type: str = "partial_summary",
+        error_message: str = "",
+        model_used: str = "",
+        tokens_used: Optional[dict[str, int]] = None,
+        skills_used: Optional[list[str]] = None,
+    ) -> RunRecord | None:
+        with self._lock:
+            run = self._runs.get(run_id)
+            if run is None:
+                return None
+            run.status = "partial"
+            run.output = output
+            run.model_used = model_used
+            run.tokens_used = tokens_used or {}
+            run.skills_used = skills_used or []
+            run.error_type = error_type
+            run.error_message = error_message
+            run.completed_at = _now()
+            run.duration_ms = self._duration_ms(run_id)
+        self.append_event(
+            run_id,
+            type="run.partial",
+            status="partial",
+            title="Run partial summary",
+            payload={
+                "error_type": error_type,
+                "error_message": error_message,
+                "model_used": model_used,
+                "skills_used": skills_used or [],
+                "tokens_used": tokens_used or {},
+                "response_status": "partial_summary",
+            },
+            duration_ms=run.duration_ms,
+        )
+        return run
+
     def fail_run(
         self,
         run_id: str,

@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -128,17 +129,18 @@ func (h *AdminHandler) GetCosts(c *gin.Context) {
 		return
 	}
 
-	var since *time.Time
+	filter, err := costReportFilterFromRequest(c)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
 	usageQuery := database.DB.Order("created_at desc")
-	if rawDays := strings.TrimSpace(c.Query("days")); rawDays != "" {
-		days, err := strconv.Atoi(rawDays)
-		if err != nil || days <= 0 {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid days"})
-			return
-		}
-		sinceValue := time.Now().AddDate(0, 0, -days)
-		since = &sinceValue
-		usageQuery = usageQuery.Where("created_at >= ?", sinceValue)
+	if filter.FromTime != nil {
+		usageQuery = usageQuery.Where("created_at >= ?", *filter.FromTime)
+	}
+	if filter.ToExclusiveTime != nil {
+		usageQuery = usageQuery.Where("created_at < ?", *filter.ToExclusiveTime)
 	}
 
 	var usages []models.TokenUsage
@@ -153,7 +155,7 @@ func (h *AdminHandler) GetCosts(c *gin.Context) {
 			messageIDsWithUsage[usage.MessageID] = true
 		}
 	}
-	traceUsages, traceParseErrors := traceFallbackTokenUsages(messageIDsWithUsage, since)
+	traceUsages, traceParseErrors := traceFallbackTokenUsages(messageIDsWithUsage, filter.FromTime, filter.ToExclusiveTime)
 	usages = append(usages, traceUsages...)
 
 	accountByID := make(map[string]*CostAccountSummary, len(accounts))
@@ -172,6 +174,15 @@ func (h *AdminHandler) GetCosts(c *gin.Context) {
 	}
 
 	moduleByKey := map[string]*CostModuleSummary{}
+	accountModuleByKey := map[string]*CostModuleSummary{}
+	allActiveDays := map[string]bool{}
+	activeAccounts := map[string]bool{}
+	accountActiveDays := map[string]map[string]bool{}
+	moduleActiveDays := map[string]map[string]bool{}
+	moduleActiveAccounts := map[string]map[string]bool{}
+	accountModuleActiveDays := map[string]map[string]bool{}
+	dailyByDate := map[string]*CostDailySummary{}
+	dailyActiveAccounts := map[string]map[string]bool{}
 	summary := CostReportSummary{
 		TotalAccounts:        len(accountByID),
 		TokenUsageRecords:    tokenUsageRecordCount,
@@ -187,6 +198,11 @@ func (h *AdminHandler) GetCosts(c *gin.Context) {
 
 	for _, usage := range usages {
 		userID := normalizedUserID(usage.UserID)
+		usageDay := costUsageDay(usage.CreatedAt)
+		allActiveDays[usageDay] = true
+		activeAccounts[userID] = true
+		ensureDaySet(accountActiveDays, userID)[usageDay] = true
+
 		accountSummary := accountByID[userID]
 		if accountSummary == nil {
 			accountSummary = &CostAccountSummary{
@@ -200,58 +216,137 @@ func (h *AdminHandler) GetCosts(c *gin.Context) {
 
 		addUsageTotals(&summary.CostTotals, usage)
 		addUsageTotals(&accountSummary.CostTotals, usage)
+		dailySummary := dailyByDate[usageDay]
+		if dailySummary == nil {
+			dailySummary = &CostDailySummary{Date: usageDay}
+			dailyByDate[usageDay] = dailySummary
+		}
+		addUsageTotals(&dailySummary.CostTotals, usage)
+		if dailyActiveAccounts[usageDay] == nil {
+			dailyActiveAccounts[usageDay] = map[string]bool{}
+		}
+		dailyActiveAccounts[usageDay][userID] = true
 
 		agentID := strings.TrimSpace(usage.AgentID)
 		if agentID == "" {
 			agentID = superChatAgentID
 		}
-		moduleKey := userID + "\x00" + agentID + "\x00" + strings.TrimSpace(usage.Runtime)
+		runtime := strings.TrimSpace(usage.Runtime)
+		moduleKey := agentID + "\x00" + runtime
 		moduleSummary := moduleByKey[moduleKey]
 		if moduleSummary == nil {
 			moduleSummary = &CostModuleSummary{
-				AccountID:   userID,
-				AccountName: accountSummary.Name,
-				AgentID:     agentID,
-				ModuleName:  moduleDisplayName(agentID),
-				Runtime:     usage.Runtime,
+				AgentID:    agentID,
+				ModuleName: moduleDisplayName(agentID),
+				Runtime:    runtime,
 			}
 			moduleByKey[moduleKey] = moduleSummary
 		}
 		addUsageTotals(&moduleSummary.CostTotals, usage)
+		ensureDaySet(moduleActiveDays, moduleKey)[usageDay] = true
+		if moduleActiveAccounts[moduleKey] == nil {
+			moduleActiveAccounts[moduleKey] = map[string]bool{}
+		}
+		moduleActiveAccounts[moduleKey][userID] = true
+
+		accountModuleKey := userID + "\x00" + agentID + "\x00" + runtime
+		accountModuleSummary := accountModuleByKey[accountModuleKey]
+		if accountModuleSummary == nil {
+			accountModuleSummary = &CostModuleSummary{
+				AccountID:    userID,
+				AccountName:  accountSummary.Name,
+				AgentID:      agentID,
+				ModuleName:   moduleDisplayName(agentID),
+				Runtime:      runtime,
+				AccountCount: 1,
+			}
+			accountModuleByKey[accountModuleKey] = accountModuleSummary
+		}
+		addUsageTotals(&accountModuleSummary.CostTotals, usage)
+		ensureDaySet(accountModuleActiveDays, accountModuleKey)[usageDay] = true
 	}
 
 	accountSummaries := make([]CostAccountSummary, 0, len(accountByID))
 	for _, account := range accountByID {
+		account.ActiveDays = len(accountActiveDays[account.ID])
+		account.DailyAverage = averageCostTotals(account.CostTotals, account.ActiveDays)
 		accountSummaries = append(accountSummaries, *account)
 	}
 	sort.Slice(accountSummaries, func(i, j int) bool {
-		if accountSummaries[i].TotalTokens != accountSummaries[j].TotalTokens {
-			return accountSummaries[i].TotalTokens > accountSummaries[j].TotalTokens
-		}
 		if accountSummaries[i].CreatedAt.Equal(accountSummaries[j].CreatedAt) {
 			return accountSummaries[i].ID < accountSummaries[j].ID
 		}
 		return accountSummaries[i].CreatedAt.Before(accountSummaries[j].CreatedAt)
 	})
 
+	historicalUserSummaries := costAccountsWithUsage(accountSummaries)
+	sort.Slice(historicalUserSummaries, func(i, j int) bool {
+		if historicalUserSummaries[i].TotalTokens != historicalUserSummaries[j].TotalTokens {
+			return historicalUserSummaries[i].TotalTokens > historicalUserSummaries[j].TotalTokens
+		}
+		return historicalUserSummaries[i].ID < historicalUserSummaries[j].ID
+	})
+	dailyUserSummaries := append([]CostAccountSummary(nil), historicalUserSummaries...)
+	sort.Slice(dailyUserSummaries, func(i, j int) bool {
+		left := dailyUserSummaries[i].DailyAverage.TotalTokens
+		right := dailyUserSummaries[j].DailyAverage.TotalTokens
+		if left != right {
+			return left > right
+		}
+		if dailyUserSummaries[i].TotalTokens != dailyUserSummaries[j].TotalTokens {
+			return dailyUserSummaries[i].TotalTokens > dailyUserSummaries[j].TotalTokens
+		}
+		return dailyUserSummaries[i].ID < dailyUserSummaries[j].ID
+	})
+
 	moduleSummaries := make([]CostModuleSummary, 0, len(moduleByKey))
-	for _, module := range moduleByKey {
+	for key, module := range moduleByKey {
+		module.AccountCount = len(moduleActiveAccounts[key])
+		module.ActiveDays = len(moduleActiveDays[key])
+		module.DailyAverage = averageCostTotals(module.CostTotals, module.ActiveDays)
 		moduleSummaries = append(moduleSummaries, *module)
 	}
 	sort.Slice(moduleSummaries, func(i, j int) bool {
-		if moduleSummaries[i].AccountName != moduleSummaries[j].AccountName {
-			return moduleSummaries[i].AccountName < moduleSummaries[j].AccountName
-		}
 		if moduleSummaries[i].TotalTokens != moduleSummaries[j].TotalTokens {
 			return moduleSummaries[i].TotalTokens > moduleSummaries[j].TotalTokens
 		}
 		return moduleSummaries[i].AgentID < moduleSummaries[j].AgentID
 	})
 
+	accountModuleSummaries := make([]CostModuleSummary, 0, len(accountModuleByKey))
+	for key, module := range accountModuleByKey {
+		module.ActiveDays = len(accountModuleActiveDays[key])
+		module.DailyAverage = averageCostTotals(module.CostTotals, module.ActiveDays)
+		accountModuleSummaries = append(accountModuleSummaries, *module)
+	}
+	sort.Slice(accountModuleSummaries, func(i, j int) bool {
+		if accountModuleSummaries[i].AccountName != accountModuleSummaries[j].AccountName {
+			return accountModuleSummaries[i].AccountName < accountModuleSummaries[j].AccountName
+		}
+		if accountModuleSummaries[i].TotalTokens != accountModuleSummaries[j].TotalTokens {
+			return accountModuleSummaries[i].TotalTokens > accountModuleSummaries[j].TotalTokens
+		}
+		return accountModuleSummaries[i].AgentID < accountModuleSummaries[j].AgentID
+	})
+
+	summary.ActiveDays = len(allActiveDays)
+	summary.ActiveAccounts = len(activeAccounts)
+	for _, days := range accountActiveDays {
+		summary.AccountActiveDays += len(days)
+	}
+	summary.DailyAverage = averageCostTotals(summary.CostTotals, summary.ActiveDays)
+	summary.DailyAveragePerActiveAccount = averageCostTotals(summary.CostTotals, summary.AccountActiveDays)
+	dailySeries := costDailySeries(dailyByDate, dailyActiveAccounts, filter)
+
 	c.JSON(http.StatusOK, CostReportResponse{
-		Summary:  summary,
-		Accounts: accountSummaries,
-		Modules:  moduleSummaries,
+		Summary:         summary,
+		Filter:          filter.Response(),
+		DailySeries:     dailySeries,
+		Accounts:        accountSummaries,
+		HistoricalUsers: historicalUserSummaries,
+		DailyUsers:      dailyUserSummaries,
+		Modules:         moduleSummaries,
+		AccountModules:  accountModuleSummaries,
 	})
 }
 
@@ -294,41 +389,86 @@ type CostTotals struct {
 	LastUsedAt               *time.Time `json:"last_used_at,omitempty"`
 }
 
+type CostAverageTotals struct {
+	RequestCount             float64 `json:"request_count"`
+	InputTokens              float64 `json:"input_tokens"`
+	OutputTokens             float64 `json:"output_tokens"`
+	TotalTokens              float64 `json:"total_tokens"`
+	CachedInputTokens        float64 `json:"cached_input_tokens"`
+	CacheCreationInputTokens float64 `json:"cache_creation_input_tokens"`
+	ImageCount               float64 `json:"image_count"`
+}
+
+type CostReportFilter struct {
+	From string `json:"from,omitempty"`
+	To   string `json:"to,omitempty"`
+	Days int    `json:"days,omitempty"`
+}
+
+type costReportFilter struct {
+	FromTime        *time.Time
+	ToExclusiveTime *time.Time
+	FromDate        string
+	ToDate          string
+	Days            int
+}
+
 type CostReportSummary struct {
-	TotalAccounts         int    `json:"total_accounts"`
-	AccountsWithPasswords int    `json:"accounts_with_passwords"`
-	TokenUsageRecords     int    `json:"token_usage_records"`
-	TraceFallbackRecords  int    `json:"trace_fallback_records"`
-	TraceParseErrors      int    `json:"trace_parse_errors"`
-	AccuracyNote          string `json:"accuracy_note"`
+	TotalAccounts                int               `json:"total_accounts"`
+	AccountsWithPasswords        int               `json:"accounts_with_passwords"`
+	ActiveAccounts               int               `json:"active_accounts"`
+	ActiveDays                   int               `json:"active_days"`
+	AccountActiveDays            int               `json:"account_active_days"`
+	DailyAverage                 CostAverageTotals `json:"daily_average"`
+	DailyAveragePerActiveAccount CostAverageTotals `json:"daily_average_per_active_account"`
+	TokenUsageRecords            int               `json:"token_usage_records"`
+	TraceFallbackRecords         int               `json:"trace_fallback_records"`
+	TraceParseErrors             int               `json:"trace_parse_errors"`
+	AccuracyNote                 string            `json:"accuracy_note"`
+	CostTotals
+}
+
+type CostDailySummary struct {
+	Date           string `json:"date"`
+	ActiveAccounts int    `json:"active_accounts"`
 	CostTotals
 }
 
 type CostAccountSummary struct {
-	ID                string    `json:"id"`
-	Name              string    `json:"name"`
-	Password          string    `json:"password,omitempty"`
-	PasswordSet       bool      `json:"password_set"`
-	PasswordAvailable bool      `json:"password_available"`
-	PasswordNote      string    `json:"password_note"`
-	CreatedAt         time.Time `json:"created_at"`
-	UpdatedAt         time.Time `json:"updated_at"`
+	ID                string            `json:"id"`
+	Name              string            `json:"name"`
+	Password          string            `json:"password,omitempty"`
+	PasswordSet       bool              `json:"password_set"`
+	PasswordAvailable bool              `json:"password_available"`
+	PasswordNote      string            `json:"password_note"`
+	CreatedAt         time.Time         `json:"created_at"`
+	UpdatedAt         time.Time         `json:"updated_at"`
+	ActiveDays        int               `json:"active_days"`
+	DailyAverage      CostAverageTotals `json:"daily_average"`
 	CostTotals
 }
 
 type CostModuleSummary struct {
-	AccountID   string `json:"account_id"`
-	AccountName string `json:"account_name"`
-	AgentID     string `json:"agent_id"`
-	ModuleName  string `json:"module_name"`
-	Runtime     string `json:"runtime"`
+	AccountID    string            `json:"account_id"`
+	AccountName  string            `json:"account_name"`
+	AgentID      string            `json:"agent_id"`
+	ModuleName   string            `json:"module_name"`
+	Runtime      string            `json:"runtime"`
+	AccountCount int               `json:"account_count"`
+	ActiveDays   int               `json:"active_days"`
+	DailyAverage CostAverageTotals `json:"daily_average"`
 	CostTotals
 }
 
 type CostReportResponse struct {
-	Summary  CostReportSummary    `json:"summary"`
-	Accounts []CostAccountSummary `json:"accounts"`
-	Modules  []CostModuleSummary  `json:"modules"`
+	Summary         CostReportSummary    `json:"summary"`
+	Filter          CostReportFilter     `json:"filter"`
+	DailySeries     []CostDailySummary   `json:"daily_series"`
+	Accounts        []CostAccountSummary `json:"accounts"`
+	HistoricalUsers []CostAccountSummary `json:"historical_users"`
+	DailyUsers      []CostAccountSummary `json:"daily_users"`
+	Modules         []CostModuleSummary  `json:"modules"`
+	AccountModules  []CostModuleSummary  `json:"account_modules,omitempty"`
 }
 
 // UpdateSettings saves settings and syncs to Python agent
@@ -736,6 +876,7 @@ func costAccuracyNote(traceFallbackRecords int, traceParseErrors int) string {
 	if traceFallbackRecords > 0 {
 		parts = append(parts, "并从历史消息 trace_events 兜底补入未迁移用量")
 	}
+	parts = append(parts, "用户日均按有请求的用户活跃日计算")
 	parts = append(parts, "不包含此前未落库的 Pulse 后台预计算和失败限流请求")
 	if traceParseErrors > 0 {
 		parts = append(parts, "有少量历史 trace 解析失败")
@@ -743,12 +884,98 @@ func costAccuracyNote(traceFallbackRecords int, traceParseErrors int) string {
 	return strings.Join(parts, "；") + "。"
 }
 
-func traceFallbackTokenUsages(existingMessageIDs map[uint]bool, since *time.Time) ([]models.TokenUsage, int) {
+func costReportFilterFromRequest(c *gin.Context) (costReportFilter, error) {
+	filter := costReportFilter{}
+	if rawDays := strings.TrimSpace(c.Query("days")); rawDays != "" {
+		days, err := strconv.Atoi(rawDays)
+		if err != nil || days <= 0 {
+			return filter, fmt.Errorf("invalid days")
+		}
+		from := time.Now().AddDate(0, 0, -days)
+		filter.FromTime = &from
+		filter.FromDate = costUsageDay(from)
+		filter.Days = days
+	}
+
+	if rawFrom := strings.TrimSpace(c.Query("from")); rawFrom != "" {
+		from, err := parseCostDate(rawFrom)
+		if err != nil {
+			return filter, fmt.Errorf("invalid from date")
+		}
+		filter.FromTime = &from
+		filter.FromDate = rawFrom
+		filter.Days = 0
+	}
+	if rawTo := strings.TrimSpace(c.Query("to")); rawTo != "" {
+		to, err := parseCostDate(rawTo)
+		if err != nil {
+			return filter, fmt.Errorf("invalid to date")
+		}
+		toExclusive := to.AddDate(0, 0, 1)
+		filter.ToExclusiveTime = &toExclusive
+		filter.ToDate = rawTo
+	}
+	if filter.FromTime != nil && filter.ToExclusiveTime != nil && !filter.FromTime.Before(*filter.ToExclusiveTime) {
+		return filter, fmt.Errorf("from date must be before or equal to to date")
+	}
+	return filter, nil
+}
+
+func parseCostDate(value string) (time.Time, error) {
+	return time.ParseInLocation("2006-01-02", strings.TrimSpace(value), time.Local)
+}
+
+func (filter costReportFilter) Response() CostReportFilter {
+	return CostReportFilter{
+		From: filter.FromDate,
+		To:   filter.ToDate,
+		Days: filter.Days,
+	}
+}
+
+func costDailySeries(dailyByDate map[string]*CostDailySummary, activeAccounts map[string]map[string]bool, filter costReportFilter) []CostDailySummary {
+	for date, accounts := range activeAccounts {
+		summary := dailyByDate[date]
+		if summary == nil {
+			summary = &CostDailySummary{Date: date}
+			dailyByDate[date] = summary
+		}
+		summary.ActiveAccounts = len(accounts)
+	}
+
+	if filter.FromTime != nil && filter.ToExclusiveTime != nil {
+		for day := dayStart(*filter.FromTime); day.Before(*filter.ToExclusiveTime); day = day.AddDate(0, 0, 1) {
+			date := costUsageDay(day)
+			if dailyByDate[date] == nil {
+				dailyByDate[date] = &CostDailySummary{Date: date}
+			}
+		}
+	}
+
+	series := make([]CostDailySummary, 0, len(dailyByDate))
+	for _, summary := range dailyByDate {
+		series = append(series, *summary)
+	}
+	sort.Slice(series, func(i, j int) bool {
+		return series[i].Date < series[j].Date
+	})
+	return series
+}
+
+func dayStart(value time.Time) time.Time {
+	local := value.In(time.Local)
+	return time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, time.Local)
+}
+
+func traceFallbackTokenUsages(existingMessageIDs map[uint]bool, since *time.Time, before *time.Time) ([]models.TokenUsage, int) {
 	query := database.DB.
 		Where("role = ? AND trace_events <> ''", "assistant").
 		Order("created_at desc")
 	if since != nil {
 		query = query.Where("created_at >= ?", *since)
+	}
+	if before != nil {
+		query = query.Where("created_at < ?", *before)
 	}
 	var messages []models.Message
 	if err := query.Find(&messages).Error; err != nil {
@@ -917,6 +1144,46 @@ func addUsageTotals(totals *CostTotals, usage models.TokenUsage) {
 		lastUsedAt := usage.CreatedAt
 		totals.LastUsedAt = &lastUsedAt
 	}
+}
+
+func costUsageDay(value time.Time) string {
+	if value.IsZero() {
+		return "unknown"
+	}
+	return value.Local().Format("2006-01-02")
+}
+
+func ensureDaySet(collection map[string]map[string]bool, key string) map[string]bool {
+	if collection[key] == nil {
+		collection[key] = map[string]bool{}
+	}
+	return collection[key]
+}
+
+func averageCostTotals(totals CostTotals, denominator int) CostAverageTotals {
+	if denominator <= 0 {
+		return CostAverageTotals{}
+	}
+	return CostAverageTotals{
+		RequestCount:             float64(totals.RequestCount) / float64(denominator),
+		InputTokens:              float64(totals.InputTokens) / float64(denominator),
+		OutputTokens:             float64(totals.OutputTokens) / float64(denominator),
+		TotalTokens:              float64(totals.TotalTokens) / float64(denominator),
+		CachedInputTokens:        float64(totals.CachedInputTokens) / float64(denominator),
+		CacheCreationInputTokens: float64(totals.CacheCreationInputTokens) / float64(denominator),
+		ImageCount:               float64(totals.ImageCount) / float64(denominator),
+	}
+}
+
+func costAccountsWithUsage(accounts []CostAccountSummary) []CostAccountSummary {
+	result := make([]CostAccountSummary, 0, len(accounts))
+	for _, account := range accounts {
+		if account.RequestCount == 0 && account.TotalTokens == 0 && account.ImageCount == 0 {
+			continue
+		}
+		result = append(result, account)
+	}
+	return result
 }
 
 func moduleDisplayName(agentID string) string {

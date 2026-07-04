@@ -9,6 +9,9 @@ from agent.search.service import (
     StaticSearchProvider,
     WebPageContent,
     WebPageReader,
+    extract_public_http_urls,
+    search_result_from_page,
+    single_public_http_url,
 )
 
 __all__ = [
@@ -22,4 +25,7 @@ __all__ = [
     "StaticSearchProvider",
     "WebPageContent",
     "WebPageReader",
+    "extract_public_http_urls",
+    "search_result_from_page",
+    "single_public_http_url",
 ]

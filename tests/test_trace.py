@@ -112,3 +112,31 @@ def test_trace_store_marks_failed_run():
     assert failed.error_message == "provider unavailable"
     assert failed.output == "provider unavailable"
     assert [event.type for event in failed.events] == ["run.started", "run.failed"]
+
+
+def test_trace_store_marks_partial_run():
+    store = TraceStore()
+    run = store.start_run(
+        conversation_id="conv-partial",
+        input_text="hello",
+        agent_id="general_assistant",
+        runtime="self",
+    )
+    partial = store.partial_run(
+        run.run_id,
+        output="partial answer",
+        error_type="max_tool_rounds_reached",
+        error_message="max_model_rounds_reached",
+        model_used="test-model",
+        tokens_used={"input": 3, "output": 4},
+        skills_used=["search"],
+    )
+
+    assert partial is not None
+    assert partial.status == "partial"
+    assert partial.output == "partial answer"
+    assert partial.error_type == "max_tool_rounds_reached"
+    assert partial.error_message == "max_model_rounds_reached"
+    assert partial.tokens_used == {"input": 3, "output": 4}
+    assert [event.type for event in partial.events] == ["run.started", "run.partial"]
+    assert partial.events[-1].payload["response_status"] == "partial_summary"

@@ -167,12 +167,34 @@ const I18N = {
             validationMissing: '{provider} 尚未配置。',
             loadSettingsFailed: '加载配置失败：{message}',
         },
+        members: {
+            title: '用户管理',
+            desc: '查看成员账号和可恢复密码。',
+            created: '创建时间',
+            updated: '更新时间',
+            count: '{count} 个成员',
+            noAccounts: '暂无成员',
+        },
         cost: {
             title: '成本管理',
-            desc: '账号密码和 token 开销总览。',
+            desc: '日均用户、历史用户和模块 token 开销。',
             refresh: '刷新',
             updated: '已更新',
             loadFailed: '加载失败',
+            historicalTotal: '历史总 Token',
+            dailyUserAverage: '用户日均 Token',
+            dailyTotalAverage: '全站日均 Token',
+            activeUsers: '活跃用户',
+            activeDays: '活跃天',
+            accountActiveDays: '用户活跃天',
+            dailyAverage: '日均 Token',
+            fromDate: '开始日期',
+            toDate: '结束日期',
+            last7Days: '近 7 天',
+            last30Days: '近 30 天',
+            allTime: '全部',
+            trend: 'Token 趋势',
+            noTrend: '暂无趋势数据',
             totalTokens: '总 Token',
             inputTokens: '输入',
             outputTokens: '输出',
@@ -183,7 +205,10 @@ const I18N = {
             accounts: '账号',
             account: '账号',
             password: '密码',
-            modules: '账号 x 模块',
+            dailyUsers: '日均用户开销',
+            historicalUsers: '历史用户开销',
+            modules: '模块',
+            moduleCosts: '模块级别开销',
             module: '模块',
             runtime: '运行时',
             accountCount: '账号数',
@@ -321,12 +346,34 @@ const I18N = {
             validationMissing: '{provider} is not configured.',
             loadSettingsFailed: 'Failed to load settings: {message}',
         },
+        members: {
+            title: 'User Management',
+            desc: 'View member accounts and recoverable passwords.',
+            created: 'Created',
+            updated: 'Updated',
+            count: '{count} members',
+            noAccounts: 'No members',
+        },
         cost: {
             title: 'Cost',
-            desc: 'Account passwords and token usage.',
+            desc: 'Daily user, historical user, and module token usage.',
             refresh: 'Refresh',
             updated: 'Updated',
             loadFailed: 'Load failed',
+            historicalTotal: 'Historical Tokens',
+            dailyUserAverage: 'User Daily Avg',
+            dailyTotalAverage: 'Site Daily Avg',
+            activeUsers: 'Active Users',
+            activeDays: 'Active Days',
+            accountActiveDays: 'User Active Days',
+            dailyAverage: 'Daily Avg',
+            fromDate: 'From',
+            toDate: 'To',
+            last7Days: 'Last 7 days',
+            last30Days: 'Last 30 days',
+            allTime: 'All time',
+            trend: 'Token Trend',
+            noTrend: 'No trend data',
             totalTokens: 'Total Tokens',
             inputTokens: 'Input',
             outputTokens: 'Output',
@@ -337,7 +384,10 @@ const I18N = {
             accounts: 'Accounts',
             account: 'Account',
             password: 'Password',
-            modules: 'Account x Module',
+            dailyUsers: 'Daily User Cost',
+            historicalUsers: 'Historical User Cost',
+            modules: 'Modules',
+            moduleCosts: 'Module Cost',
             module: 'Module',
             runtime: 'Runtime',
             accountCount: 'Accounts',
@@ -473,6 +523,7 @@ let selectedRoleId = 'default';
 let activeProvider = localStorage.getItem('admin_active_provider') || 'claude';
 let settingsCache = {};
 let costReport = null;
+let costFilter = { from: '', to: '' };
 let adminToken = localStorage.getItem(ADMIN_SESSION_STORAGE_KEY) || '';
 let adminAuthenticated = false;
 const visibleAccountPasswords = {};
@@ -828,7 +879,7 @@ async function loadSettings() {
 async function loadCosts(button = null) {
     if (button) button.disabled = true;
     try {
-        costReport = await apiCall('GET', '/api/admin/costs');
+        costReport = await apiCall('GET', `/api/admin/costs${costFilterQuery()}`);
         renderCostReport();
     } catch (e) {
         if (handleAdminAuthError(e)) return;
@@ -838,10 +889,62 @@ async function loadCosts(button = null) {
     }
 }
 
+function costFilterQuery() {
+    const params = new URLSearchParams();
+    if (costFilter.from) params.set('from', costFilter.from);
+    if (costFilter.to) params.set('to', costFilter.to);
+    const query = params.toString();
+    return query ? `?${query}` : '';
+}
+
+function syncCostFilterInputs() {
+    const fromInput = document.getElementById('cost-filter-from');
+    const toInput = document.getElementById('cost-filter-to');
+    if (fromInput) fromInput.value = costFilter.from || '';
+    if (toInput) toInput.value = costFilter.to || '';
+    document.querySelectorAll('[data-cost-range]').forEach((button) => {
+        button.classList.toggle('active', button.dataset.costRange === activeCostRange());
+    });
+}
+
+function activeCostRange() {
+    if (!costFilter.from && !costFilter.to) return 'all';
+    const today = formatDateInput(new Date());
+    for (const days of [7, 30]) {
+        const from = new Date();
+        from.setDate(from.getDate() - (days - 1));
+        if (costFilter.from === formatDateInput(from) && costFilter.to === today) {
+            return String(days);
+        }
+    }
+    return '';
+}
+
+function applyCostRange(range) {
+    if (range === 'all') {
+        costFilter = { from: '', to: '' };
+    } else {
+        const days = Number(range || 0);
+        if (!days) return;
+        const today = new Date();
+        const from = new Date();
+        from.setDate(today.getDate() - (days - 1));
+        costFilter = {
+            from: formatDateInput(from),
+            to: formatDateInput(today),
+        };
+    }
+    syncCostFilterInputs();
+}
+
 function renderCostReport() {
+    syncCostFilterInputs();
     renderCostMetrics(costReport?.summary || {});
+    renderCostTrend(costReport?.daily_series || [], costReport?.filter || {});
     renderCostAccuracy(costReport?.summary || {});
-    renderCostAccounts(costReport?.accounts || []);
+    renderMemberAccounts(costReport?.accounts || []);
+    renderDailyUserCosts(costReport?.daily_users || costReport?.historical_users || []);
+    renderHistoricalUserCosts(costReport?.historical_users || []);
     renderCostModules(costReport?.modules || []);
     updateCostBadge(costReport ? t('cost.updated') : '-');
 }
@@ -849,16 +952,19 @@ function renderCostReport() {
 function renderCostMetrics(summary) {
     const container = document.getElementById('cost-metrics');
     if (!container) return;
+    const dailyUserAverage = summary.daily_average_per_active_account || {};
+    const dailyAverage = summary.daily_average || {};
     const metrics = [
-        { label: t('cost.totalTokens'), value: formatNumber(summary.total_tokens) },
+        { label: t('cost.historicalTotal'), value: formatNumber(summary.total_tokens) },
+        { label: t('cost.dailyUserAverage'), value: formatAverage(dailyUserAverage.total_tokens) },
+        { label: t('cost.dailyTotalAverage'), value: formatAverage(dailyAverage.total_tokens) },
+        { label: t('cost.activeUsers'), value: formatNumber(summary.active_accounts) },
+        { label: t('cost.activeDays'), value: formatNumber(summary.active_days) },
         { label: t('cost.inputTokens'), value: formatNumber(summary.input_tokens) },
         { label: t('cost.outputTokens'), value: formatNumber(summary.output_tokens) },
         { label: t('cost.cacheRead'), value: formatNumber(summary.cached_input_tokens) },
         { label: t('cost.cacheWrite'), value: formatNumber(summary.cache_creation_input_tokens) },
         { label: t('cost.requests'), value: formatNumber(summary.request_count) },
-        { label: t('cost.images'), value: formatNumber(summary.image_count) },
-        { label: t('cost.accountCount'), value: formatNumber(summary.total_accounts) },
-        { label: t('cost.passwordCount'), value: formatNumber(summary.accounts_with_passwords) },
     ];
     container.innerHTML = metrics.map((metric) => `
         <div class="cost-metric">
@@ -882,8 +988,121 @@ function renderCostAccuracy(summary) {
     note.hidden = parts.length === 0;
 }
 
-function renderCostAccounts(accounts) {
-    const tbody = document.getElementById('cost-account-rows');
+function renderCostTrend(series, filter = {}) {
+    const container = document.getElementById('cost-trend-chart');
+    const rangeLabel = document.getElementById('cost-chart-range');
+    if (!container) return;
+    const rows = (series || []).filter((item) => item && item.date);
+    if (rangeLabel) rangeLabel.textContent = costChartRangeLabel(rows, filter);
+    if (!rows.length) {
+        container.innerHTML = `<div class="cost-chart-empty">${escapeHtml(t('cost.noTrend'))}</div>`;
+        return;
+    }
+
+    const width = 820;
+    const height = 240;
+    const pad = { top: 18, right: 18, bottom: 34, left: 58 };
+    const plotWidth = width - pad.left - pad.right;
+    const plotHeight = height - pad.top - pad.bottom;
+    const maxValue = Math.max(1, ...rows.flatMap((item) => [
+        Number(item.total_tokens || 0),
+        Number(item.input_tokens || 0),
+        Number(item.output_tokens || 0),
+    ]));
+    const xAt = (index) => {
+        if (rows.length === 1) return pad.left + plotWidth / 2;
+        return pad.left + (index / (rows.length - 1)) * plotWidth;
+    };
+    const yAt = (value) => pad.top + plotHeight - (Number(value || 0) / maxValue) * plotHeight;
+    const linePoints = (key) => rows.map((item, index) => `${xAt(index).toFixed(1)},${yAt(item[key]).toFixed(1)}`).join(' ');
+    const grid = [0, 0.25, 0.5, 0.75, 1].map((ratio) => {
+        const y = pad.top + plotHeight - ratio * plotHeight;
+        const value = maxValue * ratio;
+        return `
+            <line class="cost-chart-grid" x1="${pad.left}" y1="${y.toFixed(1)}" x2="${width - pad.right}" y2="${y.toFixed(1)}"></line>
+            <text class="cost-chart-y" x="${pad.left - 10}" y="${(y + 4).toFixed(1)}">${escapeHtml(formatCompactNumber(value))}</text>
+        `;
+    }).join('');
+    const totalDots = rows.length <= 45 ? rows.map((item, index) => `
+        <circle class="cost-chart-dot" cx="${xAt(index).toFixed(1)}" cy="${yAt(item.total_tokens).toFixed(1)}" r="3">
+            <title>${escapeHtml(item.date)}: ${escapeHtml(formatNumber(item.total_tokens))}</title>
+        </circle>
+    `).join('') : '';
+    const firstDate = rows[0]?.date || '';
+    const lastDate = rows[rows.length - 1]?.date || '';
+    container.innerHTML = `
+        <svg class="cost-chart-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="${escapeAttr(t('cost.trend'))}">
+            ${grid}
+            <polyline class="cost-chart-line total" points="${linePoints('total_tokens')}"></polyline>
+            <polyline class="cost-chart-line input" points="${linePoints('input_tokens')}"></polyline>
+            <polyline class="cost-chart-line output" points="${linePoints('output_tokens')}"></polyline>
+            ${totalDots}
+            <text class="cost-chart-x" x="${pad.left}" y="${height - 10}">${escapeHtml(firstDate)}</text>
+            <text class="cost-chart-x end" x="${width - pad.right}" y="${height - 10}">${escapeHtml(lastDate)}</text>
+        </svg>
+        <div class="cost-chart-legend">
+            <span><i class="total"></i>${escapeHtml(t('cost.totalTokens'))}</span>
+            <span><i class="input"></i>${escapeHtml(t('cost.inputTokens'))}</span>
+            <span><i class="output"></i>${escapeHtml(t('cost.outputTokens'))}</span>
+        </div>
+    `;
+}
+
+function costChartRangeLabel(rows, filter = {}) {
+    if (filter.from || filter.to) {
+        return `${filter.from || '-'} - ${filter.to || '-'}`;
+    }
+    if (rows.length) {
+        return `${rows[0].date} - ${rows[rows.length - 1].date}`;
+    }
+    return '-';
+}
+
+function renderMemberAccounts(accounts) {
+    const badge = document.getElementById('member-count-badge');
+    if (badge) badge.textContent = t('members.count', { count: accounts.length });
+    const tbody = document.getElementById('member-account-rows');
+    if (!tbody) return;
+    if (!accounts.length) {
+        tbody.innerHTML = emptyCostRow(4, t('members.noAccounts'));
+        return;
+    }
+    tbody.innerHTML = accounts.map((account) => `
+        <tr>
+            <td>${renderAccountCell(account.name, account.id)}</td>
+            <td>${renderPasswordCell(account)}</td>
+            <td>${escapeHtml(formatDateTime(account.created_at))}</td>
+            <td>${escapeHtml(formatDateTime(account.updated_at))}</td>
+        </tr>
+    `).join('');
+}
+
+function renderDailyUserCosts(accounts) {
+    const tbody = document.getElementById('cost-daily-user-rows');
+    if (!tbody) return;
+    if (!accounts.length) {
+        tbody.innerHTML = emptyCostRow(8);
+        return;
+    }
+    tbody.innerHTML = accounts.map((account) => {
+        const average = account.daily_average || {};
+        return `
+        <tr>
+            <td>${renderAccountCell(account.name, account.id)}</td>
+            <td>${formatNumber(account.active_days)}</td>
+            <td>${formatAverage(average.total_tokens)}</td>
+            <td>${formatAverage(average.input_tokens)}</td>
+            <td>${formatAverage(average.output_tokens)}</td>
+            <td>${formatAverage(average.cached_input_tokens)}</td>
+            <td>${formatAverage(average.cache_creation_input_tokens)}</td>
+            <td>${formatAverage(average.request_count)}</td>
+        </tr>
+        `;
+    }).join('');
+}
+
+function renderHistoricalUserCosts(accounts) {
+    const tbody = document.getElementById('cost-historical-user-rows');
     if (!tbody) return;
     if (!accounts.length) {
         tbody.innerHTML = emptyCostRow(10);
@@ -892,7 +1111,6 @@ function renderCostAccounts(accounts) {
     tbody.innerHTML = accounts.map((account) => `
         <tr>
             <td>${renderAccountCell(account.name, account.id)}</td>
-            <td>${renderPasswordCell(account)}</td>
             <td>${formatNumber(account.request_count)}</td>
             <td>${formatNumber(account.total_tokens)}</td>
             <td>${formatNumber(account.input_tokens)}</td>
@@ -900,6 +1118,7 @@ function renderCostAccounts(accounts) {
             <td>${formatNumber(account.cached_input_tokens)}</td>
             <td>${formatNumber(account.cache_creation_input_tokens)}</td>
             <td>${formatNumber(account.image_count)}</td>
+            <td>${formatNumber(account.active_days)}</td>
             <td>${escapeHtml(formatDateTime(account.last_used_at))}</td>
         </tr>
     `).join('');
@@ -909,12 +1128,13 @@ function renderCostModules(modules) {
     const tbody = document.getElementById('cost-module-rows');
     if (!tbody) return;
     if (!modules.length) {
-        tbody.innerHTML = emptyCostRow(10);
+        tbody.innerHTML = emptyCostRow(12);
         return;
     }
-    tbody.innerHTML = modules.map((module) => `
+    tbody.innerHTML = modules.map((module) => {
+        const average = module.daily_average || {};
+        return `
         <tr>
-            <td>${renderAccountCell(module.account_name, module.account_id)}</td>
             <td>
                 <div class="cost-account-cell">
                     <span>${escapeHtml(module.module_name || module.agent_id || '-')}</span>
@@ -922,6 +1142,9 @@ function renderCostModules(modules) {
                 </div>
             </td>
             <td>${escapeHtml(module.runtime || '-')}</td>
+            <td>${formatNumber(module.account_count)}</td>
+            <td>${formatNumber(module.active_days)}</td>
+            <td>${formatAverage(average.total_tokens)}</td>
             <td>${formatNumber(module.request_count)}</td>
             <td>${formatNumber(module.total_tokens)}</td>
             <td>${formatNumber(module.input_tokens)}</td>
@@ -930,7 +1153,8 @@ function renderCostModules(modules) {
             <td>${formatNumber(module.cache_creation_input_tokens)}</td>
             <td>${formatNumber(module.image_count)}</td>
         </tr>
-    `).join('');
+        `;
+    }).join('');
 }
 
 function renderAccountCell(name, id) {
@@ -968,11 +1192,11 @@ async function viewAccountPassword(accountId, button = null) {
         } else {
             visibleAccountPasswords[accountId] = data.password;
         }
-        renderCostAccounts(costReport?.accounts || []);
+        renderMemberAccounts(costReport?.accounts || []);
     } catch (e) {
         if (handleAdminAuthError(e)) return;
         visibleAccountPasswords[accountId] = e.message || t('cost.unavailable');
-        renderCostAccounts(costReport?.accounts || []);
+        renderMemberAccounts(costReport?.accounts || []);
     } finally {
         if (button) button.disabled = false;
     }
@@ -980,20 +1204,25 @@ async function viewAccountPassword(accountId, button = null) {
 
 function hideAccountPassword(accountId) {
     delete visibleAccountPasswords[accountId];
-    renderCostAccounts(costReport?.accounts || []);
+    renderMemberAccounts(costReport?.accounts || []);
 }
 
-function emptyCostRow(colspan) {
-    return `<tr><td class="cost-empty" colspan="${colspan}">${escapeHtml(t('cost.noUsage'))}</td></tr>`;
+function emptyCostRow(colspan, message = t('cost.noUsage')) {
+    return `<tr><td class="cost-empty" colspan="${colspan}">${escapeHtml(message)}</td></tr>`;
 }
 
 function renderCostError(message) {
     updateCostBadge(t('cost.loadFailed'), 'error');
-    const rows = `<tr><td class="cost-empty error" colspan="10">${escapeHtml(message || t('cost.loadFailed'))}</td></tr>`;
-    const accountRows = document.getElementById('cost-account-rows');
+    const accountRows = document.getElementById('member-account-rows');
+    const dailyRows = document.getElementById('cost-daily-user-rows');
+    const historicalRows = document.getElementById('cost-historical-user-rows');
     const moduleRows = document.getElementById('cost-module-rows');
-    if (accountRows) accountRows.innerHTML = rows;
-    if (moduleRows) moduleRows.innerHTML = rows;
+    const chart = document.getElementById('cost-trend-chart');
+    if (accountRows) accountRows.innerHTML = `<tr><td class="cost-empty error" colspan="4">${escapeHtml(message || t('cost.loadFailed'))}</td></tr>`;
+    if (dailyRows) dailyRows.innerHTML = `<tr><td class="cost-empty error" colspan="8">${escapeHtml(message || t('cost.loadFailed'))}</td></tr>`;
+    if (historicalRows) historicalRows.innerHTML = `<tr><td class="cost-empty error" colspan="10">${escapeHtml(message || t('cost.loadFailed'))}</td></tr>`;
+    if (moduleRows) moduleRows.innerHTML = `<tr><td class="cost-empty error" colspan="12">${escapeHtml(message || t('cost.loadFailed'))}</td></tr>`;
+    if (chart) chart.innerHTML = `<div class="cost-chart-empty error">${escapeHtml(message || t('cost.loadFailed'))}</div>`;
 }
 
 function updateCostBadge(text, className = 'configured') {
@@ -1006,6 +1235,29 @@ function updateCostBadge(text, className = 'configured') {
 function formatNumber(value) {
     const number = Number(value || 0);
     return new Intl.NumberFormat(currentLanguage === 'zh' ? 'zh-CN' : 'en-US').format(number);
+}
+
+function formatCompactNumber(value) {
+    const number = Number(value || 0);
+    return new Intl.NumberFormat(currentLanguage === 'zh' ? 'zh-CN' : 'en-US', {
+        notation: 'compact',
+        maximumFractionDigits: 1,
+    }).format(number);
+}
+
+function formatAverage(value) {
+    const number = Number(value || 0);
+    const options = Math.abs(number) >= 10
+        ? { maximumFractionDigits: 1 }
+        : { maximumFractionDigits: 2 };
+    return new Intl.NumberFormat(currentLanguage === 'zh' ? 'zh-CN' : 'en-US', options).format(number);
+}
+
+function formatDateInput(value) {
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return '';
+    const local = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
+    return local.toISOString().slice(0, 10);
 }
 
 function formatDateTime(value) {
@@ -1544,6 +1796,13 @@ document.addEventListener('click', async (event) => {
         return;
     }
 
+    const costRangeButton = event.target.closest('[data-cost-range]');
+    if (costRangeButton) {
+        applyCostRange(costRangeButton.dataset.costRange);
+        await loadCosts(costRangeButton);
+        return;
+    }
+
     const viewPasswordButton = event.target.closest('[data-view-account-password]');
     if (viewPasswordButton) {
         await viewAccountPassword(viewPasswordButton.dataset.viewAccountPassword, viewPasswordButton);
@@ -1618,6 +1877,20 @@ document.addEventListener('click', async (event) => {
 document.addEventListener('change', (event) => {
     if (event.target.id === 'default-provider') {
         setActiveProvider(event.target.value);
+    }
+});
+
+document.addEventListener('change', async (event) => {
+    if (event.target && event.target.id === 'cost-filter-from') {
+        costFilter.from = event.target.value || '';
+        syncCostFilterInputs();
+        await loadCosts();
+        return;
+    }
+    if (event.target && event.target.id === 'cost-filter-to') {
+        costFilter.to = event.target.value || '';
+        syncCostFilterInputs();
+        await loadCosts();
     }
 });
 

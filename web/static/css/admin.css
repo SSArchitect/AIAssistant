@@ -169,7 +169,7 @@ body {
 }
 
 .settings-container {
-    max-width: 900px;
+    max-width: 1120px;
     width: 100%;
     margin: 0 auto;
     display: flex;
@@ -278,6 +278,66 @@ body {
     align-items: start;
 }
 
+.cost-filter {
+    margin-top: 14px;
+    padding: 12px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg-input);
+    display: flex;
+    align-items: end;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.cost-date-fields {
+    display: flex;
+    align-items: end;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.cost-date-fields label {
+    display: grid;
+    gap: 5px;
+    color: var(--text-secondary);
+    font-size: 11px;
+    font-weight: 800;
+}
+
+.cost-date-input {
+    width: 150px;
+    min-height: 36px;
+    padding: 7px 9px;
+    font-size: 12px;
+}
+
+.cost-range-buttons {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+}
+
+.cost-range-button {
+    min-height: 36px;
+    padding: 7px 10px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg-card);
+    color: var(--text-secondary);
+    font-size: 12px;
+    font-weight: 800;
+    cursor: pointer;
+}
+
+.cost-range-button:hover,
+.cost-range-button.active {
+    border-color: var(--accent);
+    background: var(--accent-light);
+    color: var(--accent);
+}
+
 .cost-metrics {
     display: grid;
     grid-template-columns: repeat(5, minmax(0, 1fr));
@@ -310,6 +370,132 @@ body {
     font-weight: 700;
 }
 
+.cost-chart-block {
+    margin-top: 14px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg-card);
+    overflow: hidden;
+}
+
+.cost-chart-head {
+    padding: 12px 14px 0;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.cost-chart-head h3 {
+    font-size: 13px;
+    font-weight: 800;
+}
+
+.cost-chart-head span {
+    color: var(--text-secondary);
+    font-family: "SF Mono", Menlo, Consolas, monospace;
+    font-size: 11px;
+}
+
+.cost-chart {
+    min-height: 260px;
+    padding: 8px 12px 12px;
+}
+
+.cost-chart-svg {
+    display: block;
+    width: 100%;
+    height: 240px;
+}
+
+.cost-chart-grid {
+    stroke: var(--border);
+    stroke-width: 1;
+}
+
+.cost-chart-y,
+.cost-chart-x {
+    fill: var(--text-secondary);
+    font-size: 10px;
+    font-family: "SF Mono", Menlo, Consolas, monospace;
+}
+
+.cost-chart-x.end {
+    text-anchor: end;
+}
+
+.cost-chart-line {
+    fill: none;
+    stroke-width: 2.4;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+
+.cost-chart-line.total,
+.cost-chart-dot,
+.cost-chart-legend i.total {
+    stroke: var(--accent);
+    background: var(--accent);
+}
+
+.cost-chart-line.input,
+.cost-chart-legend i.input {
+    stroke: var(--success);
+    background: var(--success);
+}
+
+.cost-chart-line.output,
+.cost-chart-legend i.output {
+    stroke: var(--warning-text);
+    background: var(--warning-text);
+}
+
+.cost-chart-line.input,
+.cost-chart-line.output {
+    opacity: 0.72;
+}
+
+.cost-chart-dot {
+    fill: var(--bg-card);
+    stroke-width: 2;
+}
+
+.cost-chart-legend {
+    display: flex;
+    gap: 14px;
+    flex-wrap: wrap;
+    padding: 0 46px 4px;
+    color: var(--text-secondary);
+    font-size: 11px;
+    font-weight: 700;
+}
+
+.cost-chart-legend span {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.cost-chart-legend i {
+    width: 18px;
+    height: 3px;
+    border-radius: 2px;
+    display: inline-block;
+}
+
+.cost-chart-empty {
+    min-height: 220px;
+    display: grid;
+    place-items: center;
+    color: var(--text-secondary);
+    font-size: 12px;
+}
+
+.cost-chart-empty.error {
+    color: var(--error);
+    background: var(--error-bg);
+}
+
 .cost-table-group {
     display: grid;
     gap: 18px;
@@ -334,6 +520,18 @@ body {
     min-width: 980px;
     border-collapse: collapse;
     background: var(--bg-card);
+}
+
+.member-table {
+    min-width: 640px;
+}
+
+.cost-management-card .cost-table {
+    min-width: 1080px;
+}
+
+.cost-management-card .cost-table-block:last-child .cost-table {
+    min-width: 1180px;
 }
 
 .cost-table th,
@@ -1148,8 +1346,36 @@ body {
         grid-template-columns: 1fr;
     }
 
+    .cost-filter {
+        align-items: stretch;
+        flex-direction: column;
+    }
+
+    .cost-date-fields,
+    .cost-range-buttons {
+        width: 100%;
+    }
+
+    .cost-date-fields label {
+        flex: 1 1 140px;
+    }
+
+    .cost-date-input {
+        width: 100%;
+    }
+
     .cost-metrics {
         grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .cost-chart-head {
+        align-items: flex-start;
+        flex-direction: column;
+        gap: 5px;
+    }
+
+    .cost-chart-legend {
+        padding: 0 12px 4px;
     }
 
     .provider-tabs {

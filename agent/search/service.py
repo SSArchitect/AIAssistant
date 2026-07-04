@@ -43,6 +43,8 @@ WEB_USER_AGENT = (
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/124.0 Safari/537.36"
 )
+PUBLIC_HTTP_URL_RE = re.compile(r"https?://[^\s<>\[\]{}\"'`，。！？；、【】]+", re.IGNORECASE)
+URL_SURROUNDING_CHARS = " \t\r\n【】[]()（）<>\"'`.,，。!?！？;；:：、"
 
 
 class SearchResult(BaseModel):
@@ -62,6 +64,49 @@ class WebPageContent(BaseModel):
     content_type: str = ""
     status_code: int = 0
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+def extract_public_http_urls(text: str) -> list[str]:
+    urls: list[str] = []
+    seen: set[str] = set()
+    for match in PUBLIC_HTTP_URL_RE.finditer(str(text or "")):
+        url = match.group(0).rstrip(URL_SURROUNDING_CHARS)
+        if not url or url in seen:
+            continue
+        parsed = urlparse(url)
+        if parsed.scheme in {"http", "https"} and parsed.netloc:
+            urls.append(url)
+            seen.add(url)
+    return urls
+
+
+def single_public_http_url(text: str) -> str | None:
+    value = str(text or "").strip()
+    urls = extract_public_http_urls(value)
+    if len(urls) != 1:
+        return None
+    remainder = value.replace(urls[0], "", 1).strip(URL_SURROUNDING_CHARS)
+    return urls[0] if not remainder else None
+
+
+def search_result_from_page(
+    page: WebPageContent,
+    *,
+    source: str = "direct-url",
+    snippet_chars: int = SEARCH_SNIPPET_MAX_CHARS,
+) -> SearchResult:
+    title = page.title or page.final_url or page.url
+    snippet = page.description or page.content
+    return SearchResult(
+        title=title,
+        snippet=snippet[:snippet_chars],
+        url=page.final_url or page.url,
+        source=source,
+        metadata={
+            "direct_url_open": True,
+            "page": page.model_dump(mode="json"),
+        },
+    )
 
 
 class SearchProvider(Protocol):

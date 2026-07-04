@@ -5709,6 +5709,7 @@ function traceEventDisplay(event = {}) {
 
     if (type === 'run.started') return { label: traceCopy('Run 开始', 'Run started'), detail: `${payload.agent_id || ''} ${payload.runtime || ''}`.trim() };
     if (type === 'run.completed') return { label: traceCopy('Run 完成', 'Run completed'), detail: [payload.model_used, duration].filter(Boolean).join(' / ') };
+    if (type === 'run.partial') return { label: traceCopy('Run 部分完成', 'Run partial'), detail: payload.error_message || payload.error_type || payload.response_status || '' };
     if (type === 'run.failed') return { label: traceCopy('Run 失败', 'Run failed'), detail: payload.error_message || payload.error_type || '' };
     if (type === 'workflow.started') return { label: traceCopy('Workflow 开始', 'Workflow started'), detail: workflowDisplayName(payload.workflow) };
     if (type === 'workflow.completed') return { label: traceCopy('Workflow 完成', 'Workflow completed'), detail: [workflowDisplayName(payload.workflow), payload.result].filter(Boolean).join(' / ') };
@@ -5804,6 +5805,7 @@ function tracePlanStepEventSummary(payload = {}) {
 function mergeTraceStatus(...statuses) {
     const normalized = statuses.map((status) => normalizeTraceStatus(status));
     if (normalized.includes('error')) return 'error';
+    if (normalized.includes('partial')) return 'partial';
     if (normalized.includes('completed')) return 'completed';
     if (normalized.includes('running')) return 'running';
     return 'neutral';
@@ -6473,6 +6475,7 @@ function traceStatusDotClass(status) {
     const normalized = normalizeTraceStatus(status);
     if (normalized === 'completed') return 'ok';
     if (normalized === 'running') return 'warn';
+    if (normalized === 'partial') return 'warn';
     if (normalized === 'error') return 'error';
     return '';
 }
@@ -6481,7 +6484,7 @@ function traceStatusChipClass(status) {
     const normalized = normalizeTraceStatus(status);
     if (normalized === 'completed') return 'ok';
     if (normalized === 'error') return 'error';
-    if (normalized === 'running') return 'warn';
+    if (normalized === 'running' || normalized === 'partial') return 'warn';
     return 'neutral';
 }
 
@@ -7070,6 +7073,8 @@ function processEventDetail(event = {}, fallback = '') {
         parts.push(traceCopy(`长期记忆 ${payload.long_term_count || 0}，角色记忆 ${payload.persona_count || 0}。`, `Long-term ${payload.long_term_count || 0}, role ${payload.persona_count || 0}.`));
     } else if (type === 'run.completed') {
         parts.push(traceCopy('最终结果已生成，过程已折叠。', 'Final result generated; process folded.'));
+    } else if (type === 'run.partial') {
+        parts.push(payload.error_message || payload.error_type || traceCopy('已生成阶段性总结。', 'Partial summary generated.'));
     } else if (type.endsWith('.failed') || event.status === 'error') {
         parts.push(payload.error_message || payload.error_type || fallback);
     }
@@ -7174,6 +7179,7 @@ function renderProcessTimelineItem(item) {
 function processStatusLabel(status = '') {
     if (status === 'running') return traceCopy('进行中', 'running');
     if (status === 'completed') return traceCopy('完成', 'done');
+    if (status === 'partial') return traceCopy('部分完成', 'partial');
     if (status === 'error') return traceCopy('异常', 'error');
     return traceCopy('记录', 'event');
 }
@@ -7208,8 +7214,9 @@ function runRecordFromMessage(msg = {}, skillsUsed = [], traceEvents = [], fallb
     if (!runId || !traceEvents.length) return null;
 
     const failed = traceEvents.some((event) => event?.type === 'run.failed' || normalizeTraceStatus(event?.status) === 'error');
+    const partial = traceEvents.some((event) => event?.type === 'run.partial' || normalizeTraceStatus(event?.status) === 'partial');
     const completed = traceEvents.some((event) => event?.type === 'run.completed');
-    const status = failed ? 'failed' : (completed ? 'completed' : (fallbackRun?.status || 'completed'));
+    const status = failed ? 'failed' : (partial ? 'partial' : (completed ? 'completed' : (fallbackRun?.status || 'completed')));
 
     return {
         ...(fallbackRun || {}),
@@ -7265,7 +7272,7 @@ function stopActiveRunWatcher() {
 }
 
 function runIsActive(run) {
-    return run && run.status && run.status !== 'completed' && run.status !== 'failed';
+    return run && run.status && run.status !== 'completed' && run.status !== 'failed' && run.status !== 'partial';
 }
 
 function hasAssistantAfterLastUser(messages = []) {
@@ -7961,6 +7968,7 @@ function traceProgressLabel(event = {}) {
     if (type === 'tool.failed') return currentLanguage === 'zh' ? '工具调用失败，继续整理回答' : 'Tool failed, continuing';
     if (type === 'memory.extracted') return currentLanguage === 'zh' ? '已完成记忆检查' : 'Memory review completed';
     if (type === 'run.completed') return currentLanguage === 'zh' ? '回答完成' : 'Done';
+    if (type === 'run.partial') return currentLanguage === 'zh' ? '已生成阶段性总结' : 'Partial summary ready';
     if (status === 'error') return currentLanguage === 'zh' ? '执行遇到问题' : 'Issue encountered';
     return event.title || type;
 }
@@ -8505,6 +8513,7 @@ function renderTraceEvent(event) {
 function normalizeTraceStatus(status = '') {
     if (status === 'completed') return 'completed';
     if (status === 'running') return 'running';
+    if (status === 'partial') return 'partial';
     if (status === 'error' || status === 'failed') return 'error';
     return 'neutral';
 }

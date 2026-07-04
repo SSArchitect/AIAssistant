@@ -22,7 +22,7 @@ from agent.llm.factory import create_provider
 from agent.memory import RoleMemoryStore
 from agent.orchestrator.engine import AgentEngine
 from agent.runtime.registry import list_agents
-from agent.search import SearchResult, SearchService
+from agent.search import SearchResult, SearchService, search_result_from_page, single_public_http_url
 from agent.schemas.agent import AgentListResponse
 from agent.schemas.aigc import ImageGenerationRequest, ImageGenerationResponse
 from agent.schemas.chat import (
@@ -406,6 +406,23 @@ async def search(request: SearchRequest):
 
     limit = max(1, min(int(request.limit or 5), 10))
     sources = [item.strip() for item in (request.sources or []) if item.strip()] or None
+    direct_url = single_public_http_url(query)
+    if direct_url:
+        try:
+            page = await SearchService().open_url(
+                direct_url,
+                max_chars=max(500, min(int(request.page_chars or 6000), 12000)),
+            )
+        except Exception as e:
+            logger.exception("Open URL from search request failed")
+            raise HTTPException(status_code=502, detail=f"open url failed: {e}") from e
+        return SearchResponse(
+            query=query,
+            sources=["direct-url"],
+            provider_errors=[],
+            results=[search_result_from_page(page)],
+        )
+
     service = SearchService.from_runtime_config()
     if not service.provider_names:
         raise HTTPException(status_code=503, detail="no search providers configured")

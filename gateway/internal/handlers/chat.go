@@ -405,14 +405,17 @@ func compactTracePayload(payload map[string]interface{}) map[string]interface{} 
 	}
 	allowed := map[string]bool{
 		"agent_id": true, "arguments": true, "aspect_ratio": true, "brief_preview": true,
-		"citation_count": true, "command_text": true, "count": true, "error_message": true,
-		"error_type": true, "final_prompt_char_count": true, "image_count": true,
-		"information_strategy": true, "message_count": true, "model": true, "node": true,
-		"provider": true, "reason": true, "result": true, "result_preview": true,
-		"round": true, "skills_used": true, "source_agent_id": true, "status": true,
-		"step": true, "steps": true, "streaming": true, "summary": true,
+		"budget_error_type": true, "budget_reason": true, "citation_count": true,
+		"command_text": true, "count": true, "error_message": true,
+		"error_type": true, "failed_tool_call_count": true, "final_prompt_char_count": true,
+		"finalization_status": true, "image_count": true,
+		"information_strategy": true, "max_failed_tool_calls": true, "max_model_rounds": true,
+		"max_tool_calls": true, "message_count": true, "model": true, "node": true,
+		"provider": true, "reason": true, "response_status": true, "result": true,
+		"result_preview": true, "round": true, "skills_used": true, "source_agent_id": true,
+		"status": true, "step": true, "steps": true, "streaming": true, "summary": true,
 		"target_agent_id": true, "tool_calls": true, "tools_count": true, "total": true,
-		"usage": true, "urls": true, "workflow_node": true,
+		"tool_call_count": true, "usage": true, "urls": true, "workflow_node": true,
 	}
 	compact := make(map[string]interface{})
 	for key, value := range payload {
@@ -1171,8 +1174,14 @@ func storedRunStatus(events []bridge.RunEvent, errorType string) string {
 		if event.Type == "run.failed" || normalizeTraceStatus(event.Status) == "error" {
 			return "failed"
 		}
+		if event.Type == "run.partial" || normalizeTraceStatus(event.Status) == "partial" {
+			status = "partial"
+			continue
+		}
 		if event.Type == "run.completed" || normalizeTraceStatus(event.Status) == "completed" {
-			status = "completed"
+			if status != "partial" {
+				status = "completed"
+			}
 		}
 	}
 	return status

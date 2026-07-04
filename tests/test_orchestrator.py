@@ -416,6 +416,60 @@ async def test_super_chat_auto_searches_when_model_skips_retrieval(engine):
 
 
 @pytest.mark.asyncio
+async def test_max_model_rounds_runs_final_summary_without_tools(engine, monkeypatch):
+    """When the loop hits its model-round budget, it should ask for a no-tool final summary."""
+    monkeypatch.setattr("agent.orchestrator.engine.MAX_MODEL_ROUNDS", 2)
+    monkeypatch.setattr("agent.orchestrator.engine.MAX_TOOL_ROUNDS", 2)
+
+    first_tool_response = LLMResponse(
+        content="",
+        tool_calls=[ToolCall(id="call_1", name="echo", arguments={"text": "first"})],
+        model="test-model",
+        usage={"input": 1, "output": 1},
+    )
+    second_tool_response = LLMResponse(
+        content="还想继续查",
+        tool_calls=[ToolCall(id="call_2", name="echo", arguments={"text": "second"})],
+        model="test-model",
+        usage={"input": 2, "output": 1},
+    )
+    final_summary = LLMResponse(
+        content="阶段性总结：已经完成两次工具调用，后续需要人工继续核验。",
+        tool_calls=[],
+        model="test-model",
+        usage={"input": 3, "output": 2},
+    )
+
+    with patch.object(engine, "_get_provider") as mock_provider:
+        provider = AsyncMock()
+        provider.chat = AsyncMock(
+            side_effect=[first_tool_response, second_tool_response, final_summary]
+        )
+        mock_provider.return_value = provider
+
+        result = await engine.process(
+            ChatRequest(conversation_id="conv-max-round-summary", message="一直调用工具")
+        )
+
+    assert provider.chat.await_count == 3
+    final_call = provider.chat.await_args_list[-1]
+    assert final_call.kwargs["tools"] is None
+    assert "禁止再调用任何工具" in final_call.args[0][-1].content
+    assert result.response == "阶段性总结：已经完成两次工具调用，后续需要人工继续核验。"
+    assert "I've reached the maximum number of tool calls" not in result.response
+
+    run = engine.trace_store.get_run(result.run_id)
+    assert run is not None
+    assert run.status == "partial"
+    assert run.error_type == "max_tool_rounds_reached"
+    event_types = [event.type for event in result.events]
+    assert "agent_loop.budget_exhausted" in event_types
+    assert event_types[-1] == "run.partial"
+    budget_event = next(event for event in result.events if event.type == "agent_loop.budget_exhausted")
+    assert budget_event.payload["reason"] == "max_model_rounds_reached"
+
+
+@pytest.mark.asyncio
 async def test_unknown_tool_call(engine):
     """LLM calls a tool that doesn't exist."""
     tool_response = LLMResponse(

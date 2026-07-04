@@ -39,6 +39,7 @@ from agent.schemas.handoff import (
     AgentStageContext,
 )
 from agent.schemas.memory import MemoryCandidate, MemoryContext, MemoryRecord, MemoryUpdateRequest
+from agent.search import extract_public_http_urls
 from agent.skills.registry import SkillRegistry
 from agent.skills.builtin.agent_tool import AgentToolSkill
 from agent.trace import TraceStore
@@ -50,9 +51,14 @@ SYSTEM_PROMPT = """你是一个可靠、友好的个人助手，可以使用已�
 
 当用户提出请求时，先判断是否有工具能提供更准确或更及时的帮助；需要时主动使用工具，不需要时直接基于已有上下文回答。
 
+如果用户提供明确的 http/https URL，需要读取该页面时优先直接调用 open_url；不要把完整 URL 当作普通搜索关键词。
+
 默认使用中文回答，除非用户明确要求英文或其他语言。回答要简洁、清楚、有帮助。使用工具后，简要说明你做了什么，并清晰呈现结果。"""
 
-MAX_TOOL_ROUNDS = 12
+MAX_MODEL_ROUNDS = 12
+MAX_TOOL_ROUNDS = MAX_MODEL_ROUNDS
+MAX_TOOL_CALLS = 48
+MAX_FAILED_TOOL_CALLS = 12
 CONVERSATION_COMPACTION_THRESHOLD = 40
 CONVERSATION_COMPACTION_KEEP_MESSAGES = 12
 CONVERSATION_COMPACTION_MAX_MESSAGES = 80
@@ -254,6 +260,8 @@ class AgentEngine:
         normalized = re.sub(r"\s+", " ", text).strip()
         if not normalized or self._search_explicitly_disabled(normalized):
             return False
+        if extract_public_http_urls(normalized):
+            return True
 
         explicit_search_terms = [
             "搜索",
@@ -392,6 +400,56 @@ class AgentEngine:
                 }
             )
         return arguments
+
+    def _request_public_urls(self, request: ChatRequest) -> list[str]:
+        values = [
+            request.message or "",
+            " ".join(request.context_blocks or []),
+        ]
+        urls: list[str] = []
+        seen: set[str] = set()
+        for value in values:
+            for url in extract_public_http_urls(value):
+                if url in seen:
+                    continue
+                seen.add(url)
+                urls.append(url)
+        return urls
+
+    def _super_chat_auto_retrieval_call(
+        self,
+        request: ChatRequest,
+        *,
+        round_index: int,
+        allowed_tool_names: set[str],
+    ) -> ToolCall:
+        urls = self._request_public_urls(request)
+        if len(urls) == 1 and "open_url" in allowed_tool_names and self.skill_registry.get("open_url") is not None:
+            return ToolCall(
+                id=f"auto_open_url_{round_index + 1}",
+                name="open_url",
+                arguments={"url": urls[0], "max_chars": 6000},
+            )
+        return ToolCall(
+            id=f"auto_search_{round_index + 1}",
+            name="search",
+            arguments=self._super_chat_auto_search_arguments(request),
+        )
+
+    def _super_chat_auto_retrieval_available(
+        self,
+        request: ChatRequest,
+        *,
+        allowed_tool_names: set[str],
+    ) -> bool:
+        if "search" in allowed_tool_names and self.skill_registry.get("search") is not None:
+            return True
+        urls = self._request_public_urls(request)
+        return (
+            len(urls) == 1
+            and "open_url" in allowed_tool_names
+            and self.skill_registry.get("open_url") is not None
+        )
 
     def _super_chat_auto_search_should_open_results(self, request: ChatRequest) -> bool:
         text = " ".join(
@@ -555,6 +613,158 @@ class AgentEngine:
         result = on_token(token)
         if inspect.isawaitable(result):
             await result
+
+    def _tool_budget_finalization_prompt(
+        self,
+        *,
+        reason: str,
+        model_rounds: int,
+        tool_call_count: int,
+        failed_tool_call_count: int,
+    ) -> str:
+        return (
+            "工具预算已经用完，现在禁止再调用任何工具。请基于上文已有的工具结果，"
+            "直接给用户一个中文阶段性最终总结。\n\n"
+            f"预算停止原因：{reason}\n"
+            f"已用模型轮次：{model_rounds}/{MAX_MODEL_ROUNDS}\n"
+            f"已执行工具调用：{tool_call_count}/{MAX_TOOL_CALLS}\n"
+            f"失败工具调用：{failed_tool_call_count}/{MAX_FAILED_TOOL_CALLS}\n\n"
+            "要求：\n"
+            "- 只总结已经确认的信息和已经失败的尝试。\n"
+            "- 明确说明哪些信息仍未确认，不要编造。\n"
+            "- 不要说“我将继续调用工具”或提出新的工具调用计划。\n"
+            "- 如果足以回答用户，就给出结论；如果不足，就给出下一步人工可执行建议。"
+        )
+
+    def _fallback_tool_budget_summary(
+        self,
+        *,
+        reason: str,
+        fallback_content: str,
+    ) -> str:
+        content = " ".join(str(fallback_content or "").split()).strip()
+        if content:
+            return f"工具预算已用完（{reason}）。我先基于当前已拿到的信息做阶段性总结：\n\n{content}"
+        return f"工具预算已用完（{reason}）。当前轮次没有生成可靠的最终总结，请查看 trace 中已完成和失败的工具调用。"
+
+    async def _finalize_after_tool_budget_exhausted(
+        self,
+        *,
+        provider: LLMProvider,
+        messages: list[LLMMessage],
+        prompt_cache: PromptCacheOptions,
+        run_id: str,
+        request: ChatRequest,
+        reason: str,
+        error_type: str,
+        model_rounds: int,
+        tool_call_count: int,
+        failed_tool_call_count: int,
+        response: LLMResponse | None,
+        workflow_context: dict[str, Any] | None = None,
+    ) -> tuple[LLMResponse, str]:
+        final_messages = list(messages)
+        final_messages.append(
+            LLMMessage(
+                role="user",
+                content=self._tool_budget_finalization_prompt(
+                    reason=reason,
+                    model_rounds=model_rounds,
+                    tool_call_count=tool_call_count,
+                    failed_tool_call_count=failed_tool_call_count,
+                ),
+            )
+        )
+        model_started = perf_counter()
+        payload = {
+            "round": model_rounds + 1,
+            "message_count": len(final_messages),
+            "tools_count": 0,
+            "model_preference": request.model_preference,
+            "finalization": True,
+            "reason": reason,
+            "error_type": error_type,
+        }
+        if workflow_context:
+            payload.update(workflow_context)
+        self.trace_store.append_event(
+            run_id,
+            type="model.started",
+            status="running",
+            title="Final summary after tool budget exhausted",
+            payload=payload,
+        )
+        try:
+            final_response = await provider.chat(final_messages, tools=None, cache=prompt_cache)
+        except Exception as e:
+            logger.exception("Final summary after tool budget exhaustion failed")
+            duration_ms = int((perf_counter() - model_started) * 1000)
+            self.trace_store.append_event(
+                run_id,
+                type="model.failed",
+                status="error",
+                title="Final summary after tool budget exhausted failed",
+                payload={
+                    "error_type": "model_error",
+                    "error_message": str(e),
+                    "finalization": True,
+                    "reason": reason,
+                },
+                duration_ms=duration_ms,
+            )
+            fallback = self._fallback_tool_budget_summary(
+                reason=reason,
+                fallback_content=response.content if response else "",
+            )
+            return (
+                LLMResponse(
+                    content=fallback,
+                    tool_calls=[],
+                    model=response.model if response else getattr(provider, "model", ""),
+                    usage=response.usage if response else {},
+                ),
+                "failed",
+            )
+
+        if final_response.tool_calls:
+            logger.warning("Provider returned tool calls during tool-budget finalization; ignoring tool calls")
+            final_response = LLMResponse(
+                content=final_response.content,
+                tool_calls=[],
+                model=final_response.model,
+                usage=final_response.usage,
+            )
+        if not final_response.content.strip():
+            final_response = LLMResponse(
+                content=self._fallback_tool_budget_summary(
+                    reason=reason,
+                    fallback_content=response.content if response else "",
+                ),
+                tool_calls=[],
+                model=final_response.model,
+                usage=final_response.usage,
+            )
+        completed_payload = {
+            "round": model_rounds + 1,
+            "model": final_response.model,
+            "usage": final_response.usage,
+            "tool_calls": [],
+            "content_preview": final_response.content[:300],
+            "finalization": True,
+            "reason": reason,
+            "error_type": error_type,
+        }
+        if workflow_context:
+            completed_payload.update(workflow_context)
+        self.trace_store.append_event(
+            run_id,
+            type="model.completed",
+            status="completed",
+            title="Final summary after tool budget exhausted completed",
+            payload=completed_payload,
+            duration_ms=int((perf_counter() - model_started) * 1000),
+        )
+        return final_response, "completed"
 
     def _snapshot_run_events(self, run_id: str) -> list:
         run = self.trace_store.get_run(run_id)
@@ -1498,6 +1708,37 @@ class AgentEngine:
             collected.append(citation)
 
         return collected
+
+    def _collect_open_url_citation(
+        self,
+        *,
+        result_data,
+        citations: list[Citation],
+        citation_urls: set[str],
+    ) -> Citation | None:
+        if not isinstance(result_data, dict):
+            return None
+        page = result_data.get("page")
+        if not isinstance(page, dict):
+            return None
+        url = str(page.get("final_url") or page.get("url") or "").strip()
+        if not url or url in citation_urls:
+            return None
+        citation_urls.add(url)
+        citation = Citation(
+            index=len(citations) + 1,
+            title=str(page.get("title") or url).strip(),
+            url=url,
+            snippet=str(page.get("description") or page.get("content") or "").strip()[:900],
+            source="open_url",
+            metadata={
+                "status_code": page.get("status_code"),
+                "content_type": page.get("content_type"),
+                "direct_url_open": True,
+            },
+        )
+        citations.append(citation)
+        return citation
 
     def _citation_metadata_from_search_item(self, item: dict[str, Any]) -> dict[str, Any]:
         metadata = dict(item.get("metadata") if isinstance(item.get("metadata"), dict) else {})
@@ -8768,6 +9009,11 @@ class AgentEngine:
                 "workflow_source": workflow_source,
                 **({"legacy_workflow": legacy_workflow} if legacy_workflow else {}),
                 "workflow_nodes": [workflow_node] if agent_loop_enabled else [],
+                "budgets": {
+                    "max_model_rounds": MAX_MODEL_ROUNDS,
+                    "max_tool_calls": MAX_TOOL_CALLS,
+                    "max_failed_tool_calls": MAX_FAILED_TOOL_CALLS,
+                },
                 "trace_policy": (
                     "main loop boundary plus raw model/tool/agent events"
                     if agent_loop_enabled
@@ -8790,7 +9036,10 @@ class AgentEngine:
                     "loop": "model_function_call",
                     "workflow_source": workflow_source,
                     "legacy_workflow": legacy_workflow,
-                    "max_rounds": MAX_TOOL_ROUNDS,
+                    "max_rounds": MAX_MODEL_ROUNDS,
+                    "max_model_rounds": MAX_MODEL_ROUNDS,
+                    "max_tool_calls": MAX_TOOL_CALLS,
+                    "max_failed_tool_calls": MAX_FAILED_TOOL_CALLS,
                     "tool_names": tool_names,
                     "node_policy": "main_loop is a boundary; raw model/tool/agent events remain visible",
                 },
@@ -8807,7 +9056,10 @@ class AgentEngine:
                     "loop": "model_function_call",
                     "workflow_source": workflow_source,
                     "legacy_workflow": legacy_workflow,
-                    "max_rounds": MAX_TOOL_ROUNDS,
+                    "max_rounds": MAX_MODEL_ROUNDS,
+                    "max_model_rounds": MAX_MODEL_ROUNDS,
+                    "max_tool_calls": MAX_TOOL_CALLS,
+                    "max_failed_tool_calls": MAX_FAILED_TOOL_CALLS,
                     "tool_names": tool_names,
                 },
             )
@@ -8824,8 +9076,16 @@ class AgentEngine:
         # Tool-use loop
         response = None
         max_rounds_reached = False
+        budget_exhausted = False
+        budget_reason = ""
+        budget_error_type = ""
+        budget_finalization_status = ""
+        model_rounds_used = 0
+        tool_call_count = 0
+        failed_tool_call_count = 0
         auto_search_forced = False
-        for round_index in range(MAX_TOOL_ROUNDS):
+        for round_index in range(MAX_MODEL_ROUNDS):
+            model_rounds_used = round_index + 1
             model_started = perf_counter()
             stream_final_answer = (
                 on_token is not None
@@ -9051,27 +9311,29 @@ class AgentEngine:
                 if (
                     agent_id == SUPER_CHAT_AGENT_ID
                     and not auto_search_forced
-                    and "search" in allowed_tool_names
-                    and self.skill_registry.get("search") is not None
+                    and self._super_chat_auto_retrieval_available(
+                        request,
+                        allowed_tool_names=allowed_tool_names,
+                    )
                     and self._super_chat_auto_search_required(request)
                 ):
                     auto_search_forced = True
-                    forced_arguments = self._super_chat_auto_search_arguments(request)
-                    forced_call = ToolCall(
-                        id=f"auto_search_{round_index + 1}",
-                        name="search",
-                        arguments=forced_arguments,
+                    forced_call = self._super_chat_auto_retrieval_call(
+                        request,
+                        round_index=round_index,
+                        allowed_tool_names=allowed_tool_names,
                     )
                     self.trace_store.append_event(
                         run.run_id,
                         type="agent_loop.search_forced",
                         status="completed",
-                        title="Super Chat auto search inserted",
+                        title=f"Super Chat auto {forced_call.name} inserted",
                         step_id=forced_call.id,
                         payload={
                             "reason": "model_returned_without_tool_call_for_retrieval_request",
                             "direct_answer_preview": response.content[:500],
-                            "arguments": forced_arguments,
+                            "name": forced_call.name,
+                            "arguments": forced_call.arguments,
                             "workflow": workflow_name,
                             "workflow_node": workflow_node,
                             "workflow_source": workflow_source,
@@ -9090,6 +9352,28 @@ class AgentEngine:
                         LLMMessage(role="assistant", content=response.content)
                     )
                     break
+
+            if tool_call_count + len(response.tool_calls) > MAX_TOOL_CALLS:
+                budget_exhausted = True
+                budget_reason = "max_tool_calls_reached"
+                budget_error_type = "max_tool_calls_reached"
+                self.trace_store.append_event(
+                    run.run_id,
+                    type="agent_loop.budget_exhausted",
+                    status="partial",
+                    title="Tool call budget exhausted",
+                    payload={
+                        "reason": budget_reason,
+                        "error_type": budget_error_type,
+                        "tool_call_count": tool_call_count,
+                        "requested_tool_calls": len(response.tool_calls),
+                        "max_tool_calls": MAX_TOOL_CALLS,
+                        "max_model_rounds": MAX_MODEL_ROUNDS,
+                        "failed_tool_call_count": failed_tool_call_count,
+                        "max_failed_tool_calls": MAX_FAILED_TOOL_CALLS,
+                    },
+                )
+                break
 
             # Record assistant message with tool calls
             assistant_msg = LLMMessage(
@@ -9219,10 +9503,33 @@ class AgentEngine:
                                             "urls": [citation.url for citation in new_citations],
                                         },
                                     )
+                            elif tc.name == "open_url":
+                                citation = self._collect_open_url_citation(
+                                    result_data=result.data,
+                                    citations=citations,
+                                    citation_urls=citation_urls,
+                                )
+                                if citation:
+                                    self.trace_store.append_event(
+                                        run.run_id,
+                                        type="citations.collected",
+                                        status="completed",
+                                        title="Open URL citation collected",
+                                        step_id=tc.id,
+                                        payload={
+                                            "count": 1,
+                                            "total": len(citations),
+                                            "urls": [citation.url],
+                                        },
+                                    )
                     except Exception as e:
                         logger.exception(f"Skill {tc.name} execution failed")
                         result_text = json.dumps({"error": str(e)})
                         status = "error"
+
+                tool_call_count += 1
+                if status != "completed":
+                    failed_tool_call_count += 1
 
                 tool_duration_ms = int((perf_counter() - tool_started) * 1000)
                 tool_completed_payload = {
@@ -9261,35 +9568,99 @@ class AgentEngine:
                 )
                 messages.append(tool_msg)
                 all_new_messages.append(tool_msg)
+            if failed_tool_call_count >= MAX_FAILED_TOOL_CALLS:
+                budget_exhausted = True
+                budget_reason = "max_failed_tool_calls_reached"
+                budget_error_type = "max_failed_tool_calls_reached"
+                self.trace_store.append_event(
+                    run.run_id,
+                    type="agent_loop.budget_exhausted",
+                    status="partial",
+                    title="Failed tool call budget exhausted",
+                    payload={
+                        "reason": budget_reason,
+                        "error_type": budget_error_type,
+                        "tool_call_count": tool_call_count,
+                        "max_tool_calls": MAX_TOOL_CALLS,
+                        "failed_tool_call_count": failed_tool_call_count,
+                        "max_failed_tool_calls": MAX_FAILED_TOOL_CALLS,
+                        "max_model_rounds": MAX_MODEL_ROUNDS,
+                    },
+                )
+                break
         else:
             max_rounds_reached = True
-            # Exceeded max rounds — response is guaranteed non-None here
-            # because the loop body always assigns it before checking tool_calls
-            fallback_content = response.content if response else ""
-            all_new_messages.append(
-                LLMMessage(
-                    role="assistant",
-                    content="I've reached the maximum number of tool calls. Here's what I found so far: "
-                    + fallback_content,
-                )
+            budget_reason = "max_model_rounds_reached"
+            budget_error_type = "max_tool_rounds_reached"
+            self.trace_store.append_event(
+                run.run_id,
+                type="agent_loop.budget_exhausted",
+                status="partial",
+                title="Model round budget exhausted",
+                payload={
+                    "reason": budget_reason,
+                    "error_type": budget_error_type,
+                    "model_rounds": model_rounds_used,
+                    "max_model_rounds": MAX_MODEL_ROUNDS,
+                    "tool_call_count": tool_call_count,
+                    "max_tool_calls": MAX_TOOL_CALLS,
+                    "failed_tool_call_count": failed_tool_call_count,
+                    "max_failed_tool_calls": MAX_FAILED_TOOL_CALLS,
+                },
             )
 
+        if max_rounds_reached or budget_exhausted:
+            if not budget_reason:
+                budget_reason = "tool_budget_exhausted"
+            if not budget_error_type:
+                budget_error_type = budget_reason
+            response, budget_finalization_status = await self._finalize_after_tool_budget_exhausted(
+                provider=provider,
+                messages=messages,
+                prompt_cache=prompt_cache,
+                run_id=run.run_id,
+                request=request,
+                reason=budget_reason,
+                error_type=budget_error_type,
+                model_rounds=model_rounds_used,
+                tool_call_count=tool_call_count,
+                failed_tool_call_count=failed_tool_call_count,
+                response=response,
+                workflow_context=(
+                    {
+                        "workflow": workflow_name,
+                        "workflow_node": workflow_node,
+                        "workflow_source": workflow_source,
+                        "legacy_workflow": legacy_workflow,
+                    }
+                    if agent_loop_enabled
+                    else None
+                ),
+            )
+            all_new_messages.append(LLMMessage(role="assistant", content=response.content))
+
         if agent_loop_enabled:
-            workflow_result = "max_rounds_reached" if max_rounds_reached else "final_answer"
+            workflow_result = "partial_summary" if (max_rounds_reached or budget_exhausted) else "final_answer"
             self._append_workflow_event(
                 run.run_id,
                 event="workflow.node.completed",
                 workflow=workflow_name,
                 node=workflow_node,
-                status="completed",
+                status="partial" if (max_rounds_reached or budget_exhausted) else "completed",
                 title="Workflow node main_loop completed",
                 payload={
                     "result": workflow_result,
+                    "response_status": "partial_summary" if (max_rounds_reached or budget_exhausted) else "completed",
+                    "budget_reason": budget_reason,
+                    "budget_error_type": budget_error_type,
+                    "finalization_status": budget_finalization_status,
                     "workflow_source": workflow_source,
                     "legacy_workflow": legacy_workflow,
                     "skills_used": list(dict.fromkeys(skills_used)),
                     "citation_count": len(citations),
                     "rounds": len([message for message in messages if message.role == "assistant"]),
+                    "tool_call_count": tool_call_count,
+                    "failed_tool_call_count": failed_tool_call_count,
                 },
                 duration_ms=(
                     int((perf_counter() - workflow_node_started) * 1000)
@@ -9301,10 +9672,14 @@ class AgentEngine:
                 run.run_id,
                 event="workflow.completed",
                 workflow=workflow_name,
-                status="completed",
+                status="partial" if (max_rounds_reached or budget_exhausted) else "completed",
                 title="Workflow agent_loop completed",
                 payload={
                     "result": workflow_result,
+                    "response_status": "partial_summary" if (max_rounds_reached or budget_exhausted) else "completed",
+                    "budget_reason": budget_reason,
+                    "budget_error_type": budget_error_type,
+                    "finalization_status": budget_finalization_status,
                     "workflow_source": workflow_source,
                     "legacy_workflow": legacy_workflow,
                     "skills_used": list(dict.fromkeys(skills_used)),
@@ -9325,13 +9700,24 @@ class AgentEngine:
             final_content = str(final_content)
 
         unique_skills = list(dict.fromkeys(skills_used))
-        self.trace_store.complete_run(
-            run.run_id,
-            output=final_content,
-            model_used=response.model if response else "",
-            tokens_used=response.usage if response else {},
-            skills_used=unique_skills,
-        )
+        if max_rounds_reached or budget_exhausted:
+            self.trace_store.partial_run(
+                run.run_id,
+                output=final_content,
+                error_type=budget_error_type or "partial_summary",
+                error_message=budget_reason or "tool_budget_exhausted",
+                model_used=response.model if response else "",
+                tokens_used=response.usage if response else {},
+                skills_used=unique_skills,
+            )
+        else:
+            self.trace_store.complete_run(
+                run.run_id,
+                output=final_content,
+                model_used=response.model if response else "",
+                tokens_used=response.usage if response else {},
+                skills_used=unique_skills,
+            )
         events = self._snapshot_run_events(run.run_id)
         self._schedule_memory_postprocess(
             request=request,

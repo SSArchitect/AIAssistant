@@ -70,6 +70,34 @@ func TestCompactTraceEventsKeepsTimelineDetailsWithoutLargePayloads(t *testing.T
 	}
 }
 
+func TestStoredRunStatusPreservesPartialRun(t *testing.T) {
+	events := []bridge.RunEvent{
+		{
+			ID:      "evt_started",
+			RunID:   "run_partial",
+			Type:    "run.started",
+			Status:  "running",
+			Title:   "Run started",
+			Payload: map[string]interface{}{},
+		},
+		{
+			ID:      "evt_partial",
+			RunID:   "run_partial",
+			Type:    "run.partial",
+			Status:  "partial",
+			Title:   "Run partial summary",
+			Payload: map[string]interface{}{"response_status": "partial_summary"},
+		},
+	}
+
+	if got := storedRunStatus(events, ""); got != "partial" {
+		t.Fatalf("expected partial status, got %q", got)
+	}
+	if got := storedRunStatus(events, "model_error"); got != "failed" {
+		t.Fatalf("expected explicit error_type to win, got %q", got)
+	}
+}
+
 func TestChatSyncsSettingsBeforeAgentRequest(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

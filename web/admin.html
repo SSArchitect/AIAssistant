@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Settings - Agent Assistant</title>
-    <link rel="stylesheet" href="/static/css/admin.css?v=9">
+    <link rel="stylesheet" href="/static/css/admin.css?v=11">
 </head>
 <body>
     <section class="admin-login" id="admin-login-panel">
@@ -64,13 +64,38 @@
                     </div>
                 </section>
 
+                <section class="settings-card member-management-card">
+                    <div class="card-header">
+                        <div class="provider-title">
+                            <h2 data-i18n="members.title">用户管理</h2>
+                            <span class="provider-badge configured" id="member-count-badge">-</span>
+                        </div>
+                        <p class="card-desc" data-i18n="members.desc">查看成员账号和可恢复密码。</p>
+                    </div>
+                    <div class="card-body">
+                        <div class="cost-table-wrap">
+                            <table class="cost-table member-table">
+                                <thead>
+                                    <tr>
+                                        <th data-i18n="cost.account">账号</th>
+                                        <th data-i18n="cost.password">密码</th>
+                                        <th data-i18n="members.created">创建时间</th>
+                                        <th data-i18n="members.updated">更新时间</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="member-account-rows"></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </section>
+
                 <section class="settings-card cost-management-card">
                     <div class="card-header">
                         <div class="provider-title">
                             <h2 data-i18n="cost.title">成本管理</h2>
                             <span class="provider-badge configured" id="cost-updated-badge">-</span>
                         </div>
-                        <p class="card-desc" data-i18n="cost.desc">账号密码和 token 开销总览。</p>
+                        <p class="card-desc" data-i18n="cost.desc">日均用户、历史用户和模块 token 开销。</p>
                     </div>
                     <div class="card-body">
                         <div class="cost-toolbar">
@@ -83,15 +108,58 @@
                                 <span data-i18n="cost.refresh">刷新</span>
                             </button>
                         </div>
+                        <div class="cost-filter">
+                            <div class="cost-date-fields">
+                                <label>
+                                    <span data-i18n="cost.fromDate">开始日期</span>
+                                    <input type="date" id="cost-filter-from" class="form-input cost-date-input">
+                                </label>
+                                <label>
+                                    <span data-i18n="cost.toDate">结束日期</span>
+                                    <input type="date" id="cost-filter-to" class="form-input cost-date-input">
+                                </label>
+                            </div>
+                            <div class="cost-range-buttons">
+                                <button class="cost-range-button" type="button" data-cost-range="7" data-i18n="cost.last7Days">近 7 天</button>
+                                <button class="cost-range-button" type="button" data-cost-range="30" data-i18n="cost.last30Days">近 30 天</button>
+                                <button class="cost-range-button" type="button" data-cost-range="all" data-i18n="cost.allTime">全部</button>
+                            </div>
+                        </div>
+                        <div class="cost-chart-block">
+                            <div class="cost-chart-head">
+                                <h3 data-i18n="cost.trend">Token 趋势</h3>
+                                <span id="cost-chart-range">-</span>
+                            </div>
+                            <div class="cost-chart" id="cost-trend-chart"></div>
+                        </div>
                         <div class="cost-table-group">
                             <div class="cost-table-block">
-                                <h3 data-i18n="cost.accounts">账号</h3>
+                                <h3 data-i18n="cost.dailyUsers">日均用户开销</h3>
                                 <div class="cost-table-wrap">
                                     <table class="cost-table">
                                         <thead>
                                             <tr>
                                                 <th data-i18n="cost.account">账号</th>
-                                                <th data-i18n="cost.password">密码</th>
+                                                <th data-i18n="cost.activeDays">活跃天</th>
+                                                <th data-i18n="cost.dailyAverage">日均 Token</th>
+                                                <th data-i18n="cost.inputTokens">输入</th>
+                                                <th data-i18n="cost.outputTokens">输出</th>
+                                                <th data-i18n="cost.cacheRead">缓存命中</th>
+                                                <th data-i18n="cost.cacheWrite">缓存写入</th>
+                                                <th data-i18n="cost.requests">请求</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="cost-daily-user-rows"></tbody>
+                                    </table>
+                                </div>
+                            </div>
+                            <div class="cost-table-block">
+                                <h3 data-i18n="cost.historicalUsers">历史用户开销</h3>
+                                <div class="cost-table-wrap">
+                                    <table class="cost-table">
+                                        <thead>
+                                            <tr>
+                                                <th data-i18n="cost.account">账号</th>
                                                 <th data-i18n="cost.requests">请求</th>
                                                 <th data-i18n="cost.totalTokens">总 Token</th>
                                                 <th data-i18n="cost.inputTokens">输入</th>
@@ -99,22 +167,25 @@
                                                 <th data-i18n="cost.cacheRead">缓存命中</th>
                                                 <th data-i18n="cost.cacheWrite">缓存写入</th>
                                                 <th data-i18n="cost.images">图片</th>
+                                                <th data-i18n="cost.activeDays">活跃天</th>
                                                 <th data-i18n="cost.lastUsed">最近使用</th>
                                             </tr>
                                         </thead>
-                                        <tbody id="cost-account-rows"></tbody>
+                                        <tbody id="cost-historical-user-rows"></tbody>
                                     </table>
                                 </div>
                             </div>
                             <div class="cost-table-block">
-                                <h3 data-i18n="cost.modules">账号 x 模块</h3>
+                                <h3 data-i18n="cost.moduleCosts">模块级别开销</h3>
                                 <div class="cost-table-wrap">
                                     <table class="cost-table">
                                         <thead>
                                             <tr>
-                                                <th data-i18n="cost.account">账号</th>
                                                 <th data-i18n="cost.module">模块</th>
                                                 <th data-i18n="cost.runtime">运行时</th>
+                                                <th data-i18n="cost.activeUsers">活跃用户</th>
+                                                <th data-i18n="cost.activeDays">活跃天</th>
+                                                <th data-i18n="cost.dailyAverage">日均 Token</th>
                                                 <th data-i18n="cost.requests">请求</th>
                                                 <th data-i18n="cost.totalTokens">总 Token</th>
                                                 <th data-i18n="cost.inputTokens">输入</th>
@@ -272,6 +343,6 @@
         </main>
     </div>
 
-    <script src="/static/js/admin.js?v=11"></script>
+    <script src="/static/js/admin.js?v=13"></script>
 </body>
 </html>

@@ -24,7 +24,7 @@ func TestAdminCostsReturnsAccountsAndModuleUsage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("hash password: %v", err)
 	}
-	now := time.Now().UTC()
+	now := time.Date(2026, 7, 5, 12, 0, 0, 0, time.Local)
 	accounts := []models.Account{
 		{
 			ID:           "acct-a",
@@ -111,22 +111,128 @@ func TestAdminCostsReturnsAccountsAndModuleUsage(t *testing.T) {
 	if payload.Summary.TotalTokens != 49 || payload.Summary.InputTokens != 33 || payload.Summary.OutputTokens != 16 || payload.Summary.RequestCount != 3 {
 		t.Fatalf("unexpected summary: %#v", payload.Summary)
 	}
+	if payload.Summary.ActiveDays != 1 || payload.Summary.ActiveAccounts != 2 || payload.Summary.AccountActiveDays != 2 {
+		t.Fatalf("unexpected active usage summary: %#v", payload.Summary)
+	}
+	if payload.Summary.DailyAverage.TotalTokens != 49 || payload.Summary.DailyAveragePerActiveAccount.TotalTokens != 24.5 {
+		t.Fatalf("unexpected daily averages: %#v", payload.Summary)
+	}
+	if len(payload.DailySeries) != 1 || payload.DailySeries[0].TotalTokens != 49 || payload.DailySeries[0].ActiveAccounts != 2 {
+		t.Fatalf("unexpected daily series: %#v", payload.DailySeries)
+	}
 	if payload.Summary.AccountsWithPasswords != 1 {
 		t.Fatalf("expected only one visible password, got %#v", payload.Summary)
 	}
 
 	alice := findCostAccount(payload.Accounts, "acct-a")
-	if alice == nil || !alice.PasswordAvailable || alice.Password != "" || alice.TotalTokens != 42 {
+	if alice == nil || !alice.PasswordAvailable || alice.Password != "" || alice.TotalTokens != 42 || alice.ActiveDays != 1 || alice.DailyAverage.TotalTokens != 42 {
 		t.Fatalf("unexpected Alice account summary: %#v", alice)
 	}
 	bob := findCostAccount(payload.Accounts, "acct-b")
 	if bob == nil || bob.PasswordAvailable || bob.PasswordSet != true || bob.TotalTokens != 7 {
 		t.Fatalf("unexpected Bob account summary: %#v", bob)
 	}
+	if len(payload.HistoricalUsers) != 2 || payload.HistoricalUsers[0].ID != "acct-a" {
+		t.Fatalf("expected historical users sorted by total usage, got %#v", payload.HistoricalUsers)
+	}
+	if len(payload.DailyUsers) != 2 || payload.DailyUsers[0].ID != "acct-a" {
+		t.Fatalf("expected daily users sorted by daily average, got %#v", payload.DailyUsers)
+	}
 
-	aliceResearch := findCostModule(payload.Modules, "acct-a", "deep_research_v1")
-	if aliceResearch == nil || aliceResearch.TotalTokens != 27 || aliceResearch.ModuleName != "Deep Research" {
-		t.Fatalf("unexpected Alice research module summary: %#v", aliceResearch)
+	research := findCostModule(payload.Modules, "deep_research_v1")
+	if research == nil || research.TotalTokens != 27 || research.ModuleName != "Deep Research" || research.AccountCount != 1 {
+		t.Fatalf("unexpected research module summary: %#v", research)
+	}
+	superChat := findCostModule(payload.Modules, "super_chat")
+	if superChat == nil || superChat.TotalTokens != 22 || superChat.AccountCount != 2 {
+		t.Fatalf("unexpected super chat module summary: %#v", superChat)
+	}
+	aliceResearch := findCostAccountModule(payload.AccountModules, "acct-a", "deep_research_v1")
+	if aliceResearch == nil || aliceResearch.TotalTokens != 27 {
+		t.Fatalf("unexpected Alice research account-module summary: %#v", aliceResearch)
+	}
+}
+
+func TestAdminCostsFiltersByDateAndReturnsDailySeries(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	if err := database.Init(filepath.Join(t.TempDir(), "assistant.db")); err != nil {
+		t.Fatalf("init database: %v", err)
+	}
+	account := models.Account{
+		ID:        "acct-a",
+		Name:      "Alice",
+		NameKey:   accountNameKey("Alice"),
+		CreatedAt: time.Date(2026, 7, 1, 8, 0, 0, 0, time.Local),
+		UpdatedAt: time.Date(2026, 7, 1, 8, 0, 0, 0, time.Local),
+	}
+	if err := database.DB.Create(&account).Error; err != nil {
+		t.Fatalf("create account: %v", err)
+	}
+	usages := []models.TokenUsage{
+		{
+			UserID:         "acct-a",
+			ConversationID: "conv-a",
+			MessageID:      1,
+			AgentID:        "super_chat",
+			InputTokens:    4,
+			OutputTokens:   6,
+			TotalTokens:    10,
+			CreatedAt:      time.Date(2026, 7, 1, 10, 0, 0, 0, time.Local),
+		},
+		{
+			UserID:         "acct-a",
+			ConversationID: "conv-a",
+			MessageID:      2,
+			AgentID:        "super_chat",
+			InputTokens:    12,
+			OutputTokens:   8,
+			TotalTokens:    20,
+			CreatedAt:      time.Date(2026, 7, 2, 10, 0, 0, 0, time.Local),
+		},
+		{
+			UserID:         "acct-a",
+			ConversationID: "conv-a",
+			MessageID:      3,
+			AgentID:        "deep_research_v1",
+			InputTokens:    30,
+			OutputTokens:   10,
+			TotalTokens:    40,
+			CreatedAt:      time.Date(2026, 7, 4, 10, 0, 0, 0, time.Local),
+		},
+	}
+	if err := database.DB.Create(&usages).Error; err != nil {
+		t.Fatalf("create usages: %v", err)
+	}
+
+	router := gin.New()
+	handler := &AdminHandler{}
+	router.GET("/api/admin/costs", handler.GetCosts)
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/costs?from=2026-07-02&to=2026-07-03", nil)
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("unexpected status %d: %s", recorder.Code, recorder.Body.String())
+	}
+	var payload CostReportResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if payload.Filter.From != "2026-07-02" || payload.Filter.To != "2026-07-03" {
+		t.Fatalf("unexpected filter echo: %#v", payload.Filter)
+	}
+	if payload.Summary.TotalTokens != 20 || payload.Summary.InputTokens != 12 || payload.Summary.OutputTokens != 8 || payload.Summary.RequestCount != 1 {
+		t.Fatalf("expected only usage inside date range, got %#v", payload.Summary)
+	}
+	if len(payload.DailySeries) != 2 {
+		t.Fatalf("expected two daily points including empty day, got %#v", payload.DailySeries)
+	}
+	first := findCostDaily(payload.DailySeries, "2026-07-02")
+	second := findCostDaily(payload.DailySeries, "2026-07-03")
+	if first == nil || first.TotalTokens != 20 || first.ActiveAccounts != 1 {
+		t.Fatalf("unexpected first daily point: %#v", first)
+	}
+	if second == nil || second.TotalTokens != 0 || second.ActiveAccounts != 0 {
+		t.Fatalf("unexpected empty daily point: %#v", second)
 	}
 }
 
@@ -255,7 +361,25 @@ func findCostAccount(accounts []CostAccountSummary, id string) *CostAccountSumma
 	return nil
 }
 
-func findCostModule(modules []CostModuleSummary, accountID string, agentID string) *CostModuleSummary {
+func findCostDaily(series []CostDailySummary, date string) *CostDailySummary {
+	for i := range series {
+		if series[i].Date == date {
+			return &series[i]
+		}
+	}
+	return nil
+}
+
+func findCostModule(modules []CostModuleSummary, agentID string) *CostModuleSummary {
+	for i := range modules {
+		if modules[i].AgentID == agentID {
+			return &modules[i]
+		}
+	}
+	return nil
+}
+
+func findCostAccountModule(modules []CostModuleSummary, accountID string, agentID string) *CostModuleSummary {
 	for i := range modules {
 		if modules[i].AccountID == accountID && modules[i].AgentID == agentID {
 			return &modules[i]

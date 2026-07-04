@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from agent.search import SearchService
+from agent.search import SearchService, search_result_from_page, single_public_http_url
 from agent.skills.base import Skill, SkillMetadata, SkillParameter, SkillResult
 
 
@@ -16,6 +16,7 @@ class SearchSkill(Skill):
                 "区分搜索片段和已验证正文，不要把薄弱来源包装成已验证事实。"
                 "如果仅有标题和摘要不足以回答，或涉及产品说明、安全使用、维修、医疗、法律、金融等高风险细节，"
                 "设置 open_results=true 打开前几条网页读取正文；也可先 search 找到官方页后再调用 open_url 核验。"
+                "如果用户或查询参数已经是明确的 http/https URL，不要把 URL 当关键词搜索；应直接读取该页面正文。"
                 "普通联网检索通常不要指定具体 provider；如果结果偏题，保留完整问题并加入关键实体、"
                 "官方机构/站点、地区、年份、榜单或评分来源等限定词后重试，而不是只搜年份或泛词。"
                 "写作、翻译、整理用户已提供内容、情绪陪伴、纯创意和一般代码解释通常不需要搜索。"
@@ -110,6 +111,31 @@ class SearchSkill(Skill):
             for item in raw_sources.split(",")
             if item.strip()
         ] or None
+
+        direct_url = single_public_http_url(query)
+        if direct_url:
+            try:
+                page = await SearchService().open_url(direct_url, max_chars=page_chars)
+            except Exception as e:
+                return SkillResult(
+                    success=False,
+                    error=f"Open URL failed: {e}",
+                    data={"query": query, "url": direct_url, "direct_url_open": True},
+                )
+            result = search_result_from_page(page)
+            return SkillResult(
+                success=True,
+                data={
+                    "query": query,
+                    "query_variants": [query],
+                    "results": [result.model_dump(mode="json")],
+                    "sources": ["direct-url"],
+                    "provider_errors": [],
+                    "opened_results": 1,
+                    "direct_url_open": True,
+                },
+                display_text=f"1. {result.title} - {result.url}",
+            )
 
         service = SearchService.from_runtime_config()
         if not service.provider_names:

@@ -1100,6 +1100,33 @@ class TestSearchSkill:
         assert seen["limit"] == 20
 
     @pytest.mark.asyncio
+    async def test_search_skill_opens_pure_url_without_search_provider(self, monkeypatch):
+        async def fake_open_url(self, url, *, max_chars=6000):
+            return WebPageContent(
+                url=url,
+                final_url=url,
+                title="菜鸟做贡献 自己翻译的dunlop护养说明",
+                description="Dunlop 护养说明",
+                content="01 指板清洁与预备剂。02 指板深度护养剂。",
+                content_type="text/html",
+                status_code=200,
+            )
+
+        monkeypatch.setattr(SearchService, "open_url", fake_open_url)
+
+        result = await self.skill.execute(
+            query="【https://news.guitarschina.com/?p=7569】",
+            page_chars=6000,
+        )
+
+        assert result.success is True
+        assert result.data["direct_url_open"] is True
+        assert result.data["sources"] == ["direct-url"]
+        assert result.data["opened_results"] == 1
+        assert result.data["results"][0]["url"] == "https://news.guitarschina.com/?p=7569"
+        assert "dunlop" in result.data["results"][0]["title"].lower()
+
+    @pytest.mark.asyncio
     async def test_search_skill_normalizes_sources_and_open_options(self, monkeypatch):
         seen = {}
 
