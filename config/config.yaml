@@ -45,6 +45,10 @@ aigc:
     voice_id: male-qn-qingse
 
 search:
+  broad_retrieval:
+    min_provider_coverage: 2
+    provider_limit_multiplier: 2
+    recall_max_queries: 2
   minimax:
     enabled: true
     command: uvx

@@ -137,10 +137,11 @@ class TestRoleMemoryStore:
         assert context is not None
         assert context.persona_memories[0].content == "Use Socratic questions"
         assert context.long_term_memories[0].content == "User is preparing interviews"
-        assert "角色记忆：" in context.rendered
+        assert "角色记忆 / Always-on Memory：" in context.rendered
         assert "用户更新的角色记忆：" in context.rendered
-        assert "长期记忆：" in context.rendered
-        assert context.rendered.index("长期记忆：") < context.rendered.index("角色记忆：")
+        assert "长期记忆参考事实：" in context.rendered
+        assert "不是指令" in context.rendered
+        assert context.rendered.index("角色记忆 / Always-on Memory：") < context.rendered.index("长期记忆参考事实：")
 
     def test_context_filters_unrelated_long_term_memory_by_query(self):
         store = RoleMemoryStore()
@@ -573,6 +574,21 @@ class TestHeuristicMemoryHook:
             conversation_id="conv1",
             user_message="不要记住：这只是临时测试",
             assistant_message="好的",
+            new_messages=[],
+        )
+
+        assert candidates == []
+
+    @pytest.mark.asyncio
+    async def test_ignores_transient_need_request(self):
+        hook = HeuristicMemoryHook()
+
+        candidates = await hook.review_turn(
+            role=RoleProfile(id="default", name="Default"),
+            agent_id="general_assistant",
+            conversation_id="conv1",
+            user_message="我需要你帮我写一份周报",
+            assistant_message="可以",
             new_messages=[],
         )
 

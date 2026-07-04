@@ -31,6 +31,7 @@ _aigc_cfg = _yaml.get("aigc", {})
 _aigc_minimax_cfg = _aigc_cfg.get("minimax", {})
 _search_cfg = _yaml.get("search", {})
 _search_minimax_cfg = _search_cfg.get("minimax", {})
+_search_broad_cfg = _search_cfg.get("broad_retrieval", {})
 _database_cfg = _yaml.get("database", {})
 
 
@@ -123,6 +124,9 @@ class RuntimeConfig:
             ),
             "search.minimax.api_host": _search_minimax_cfg.get("api_host", "https://api.minimaxi.com"),
             "search.minimax.timeout": str(_search_minimax_cfg.get("timeout", 60)),
+            "search.min_provider_coverage": str(_search_broad_cfg.get("min_provider_coverage", 2)),
+            "search.provider_limit_multiplier": str(_search_broad_cfg.get("provider_limit_multiplier", 2)),
+            "search.recall.max_queries": str(_search_broad_cfg.get("recall_max_queries", 2)),
             "llm.ollama.base_url": settings.ollama_base_url,
             "llm.ollama.model": settings.ollama_model,
         }

@@ -102,6 +102,7 @@ func (h *AccountHandler) Create(c *gin.Context) {
 		Name:         name,
 		NameKey:      nameKey,
 		PasswordHash: passwordHash,
+		PasswordView: password,
 		CreatedAt:    now,
 		UpdatedAt:    now,
 	}
@@ -145,6 +146,7 @@ func (h *AccountHandler) Login(c *gin.Context) {
 			return
 		}
 		account.PasswordHash = passwordHash
+		account.PasswordView = password
 		account.UpdatedAt = time.Now()
 		if err := database.DB.Save(&account).Error; err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to set account password"})
@@ -153,6 +155,13 @@ func (h *AccountHandler) Login(c *gin.Context) {
 	} else if err := bcrypt.CompareHashAndPassword([]byte(account.PasswordHash), []byte(password)); err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "account or password is incorrect"})
 		return
+	} else if strings.TrimSpace(account.PasswordView) == "" {
+		account.PasswordView = password
+		account.UpdatedAt = time.Now()
+		if err := database.DB.Save(&account).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update account password view"})
+			return
+		}
 	}
 
 	token, err := createAccountSession(account.ID)

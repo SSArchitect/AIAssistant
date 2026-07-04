@@ -12,6 +12,7 @@ type Account struct {
 	Name         string    `json:"name" gorm:"index;not null"`
 	NameKey      string    `json:"-" gorm:"size:64;uniqueIndex"`
 	PasswordHash string    `json:"-" gorm:"type:text"`
+	PasswordView string    `json:"-" gorm:"type:text"`
 	CreatedAt    time.Time `json:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at"`
 }

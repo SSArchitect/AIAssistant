@@ -155,6 +155,31 @@ const I18N = {
             validationMissing: '{provider} 尚未配置。',
             loadSettingsFailed: '加载配置失败：{message}',
         },
+        cost: {
+            title: '成本管理',
+            desc: '账号密码和 token 开销总览。',
+            refresh: '刷新',
+            updated: '已更新',
+            loadFailed: '加载失败',
+            totalTokens: '总 Token',
+            inputTokens: '输入',
+            outputTokens: '输出',
+            requests: '请求',
+            images: '图片',
+            accounts: '账号',
+            account: '账号',
+            password: '密码',
+            modules: '账号 x 模块',
+            module: '模块',
+            runtime: '运行时',
+            accountCount: '账号数',
+            passwordCount: '可查看密码',
+            lastUsed: '最近使用',
+            encrypted: '已加密',
+            notSet: '未设置',
+            noUsage: '暂无 token 用量',
+            never: '-',
+        },
         roles: {
             title: '角色人设',
             desc: '配置角色名、工作方式、习惯偏好和长期记忆范围。',
@@ -267,6 +292,31 @@ const I18N = {
             validationFailed: '{provider} validation failed: {message}',
             validationMissing: '{provider} is not configured.',
             loadSettingsFailed: 'Failed to load settings: {message}',
+        },
+        cost: {
+            title: 'Cost',
+            desc: 'Account passwords and token usage.',
+            refresh: 'Refresh',
+            updated: 'Updated',
+            loadFailed: 'Load failed',
+            totalTokens: 'Total Tokens',
+            inputTokens: 'Input',
+            outputTokens: 'Output',
+            requests: 'Requests',
+            images: 'Images',
+            accounts: 'Accounts',
+            account: 'Account',
+            password: 'Password',
+            modules: 'Account x Module',
+            module: 'Module',
+            runtime: 'Runtime',
+            accountCount: 'Accounts',
+            passwordCount: 'Visible Passwords',
+            lastUsed: 'Last Used',
+            encrypted: 'Encrypted',
+            notSet: 'Not Set',
+            noUsage: 'No token usage',
+            never: '-',
         },
         roles: {
             title: 'Personas',
@@ -388,6 +438,7 @@ let roles = [];
 let selectedRoleId = 'default';
 let activeProvider = localStorage.getItem('admin_active_provider') || 'claude';
 let settingsCache = {};
+let costReport = null;
 const providerModels = {};
 
 async function apiCall(method, path, body = null) {
@@ -452,6 +503,7 @@ function setLanguage(language) {
     renderProviderConfigurator();
     applySettingsToForm(settingsCache);
     updateProviderStatuses(settingsCache);
+    renderCostReport();
     renderRoleExamples();
     renderRoles();
     renderRoleEditor();
@@ -623,6 +675,146 @@ async function loadSettings() {
     } catch (e) {
         showSaveResult(t('messages.loadSettingsFailed', { message: e.message }), false);
     }
+}
+
+async function loadCosts(button = null) {
+    if (button) button.disabled = true;
+    try {
+        costReport = await apiCall('GET', '/api/admin/costs');
+        renderCostReport();
+    } catch (e) {
+        renderCostError(e.message);
+    } finally {
+        if (button) button.disabled = false;
+    }
+}
+
+function renderCostReport() {
+    renderCostMetrics(costReport?.summary || {});
+    renderCostAccounts(costReport?.accounts || []);
+    renderCostModules(costReport?.modules || []);
+    updateCostBadge(costReport ? t('cost.updated') : '-');
+}
+
+function renderCostMetrics(summary) {
+    const container = document.getElementById('cost-metrics');
+    if (!container) return;
+    const metrics = [
+        { label: t('cost.totalTokens'), value: formatNumber(summary.total_tokens) },
+        { label: t('cost.inputTokens'), value: formatNumber(summary.input_tokens) },
+        { label: t('cost.outputTokens'), value: formatNumber(summary.output_tokens) },
+        { label: t('cost.requests'), value: formatNumber(summary.request_count) },
+        { label: t('cost.images'), value: formatNumber(summary.image_count) },
+        { label: t('cost.accountCount'), value: formatNumber(summary.total_accounts) },
+        { label: t('cost.passwordCount'), value: formatNumber(summary.accounts_with_passwords) },
+    ];
+    container.innerHTML = metrics.map((metric) => `
+        <div class="cost-metric">
+            <strong>${escapeHtml(metric.value)}</strong>
+            <span>${escapeHtml(metric.label)}</span>
+        </div>
+    `).join('');
+}
+
+function renderCostAccounts(accounts) {
+    const tbody = document.getElementById('cost-account-rows');
+    if (!tbody) return;
+    if (!accounts.length) {
+        tbody.innerHTML = emptyCostRow(8);
+        return;
+    }
+    tbody.innerHTML = accounts.map((account) => `
+        <tr>
+            <td>${renderAccountCell(account.name, account.id)}</td>
+            <td>${renderPasswordCell(account)}</td>
+            <td>${formatNumber(account.request_count)}</td>
+            <td>${formatNumber(account.total_tokens)}</td>
+            <td>${formatNumber(account.input_tokens)}</td>
+            <td>${formatNumber(account.output_tokens)}</td>
+            <td>${formatNumber(account.image_count)}</td>
+            <td>${escapeHtml(formatDateTime(account.last_used_at))}</td>
+        </tr>
+    `).join('');
+}
+
+function renderCostModules(modules) {
+    const tbody = document.getElementById('cost-module-rows');
+    if (!tbody) return;
+    if (!modules.length) {
+        tbody.innerHTML = emptyCostRow(8);
+        return;
+    }
+    tbody.innerHTML = modules.map((module) => `
+        <tr>
+            <td>${renderAccountCell(module.account_name, module.account_id)}</td>
+            <td>
+                <div class="cost-account-cell">
+                    <span>${escapeHtml(module.module_name || module.agent_id || '-')}</span>
+                    <small>${escapeHtml(module.agent_id || '')}</small>
+                </div>
+            </td>
+            <td>${escapeHtml(module.runtime || '-')}</td>
+            <td>${formatNumber(module.request_count)}</td>
+            <td>${formatNumber(module.total_tokens)}</td>
+            <td>${formatNumber(module.input_tokens)}</td>
+            <td>${formatNumber(module.output_tokens)}</td>
+            <td>${formatNumber(module.image_count)}</td>
+        </tr>
+    `).join('');
+}
+
+function renderAccountCell(name, id) {
+    return `
+        <div class="cost-account-cell">
+            <span>${escapeHtml(name || id || '-')}</span>
+            <small>${escapeHtml(id || '')}</small>
+        </div>
+    `;
+}
+
+function renderPasswordCell(account) {
+    if (account.password_available) {
+        return `<code class="cost-password">${escapeHtml(account.password || '')}</code>`;
+    }
+    const label = account.password_set ? t('cost.encrypted') : t('cost.notSet');
+    return `<span class="cost-muted">${escapeHtml(label)}</span>`;
+}
+
+function emptyCostRow(colspan) {
+    return `<tr><td class="cost-empty" colspan="${colspan}">${escapeHtml(t('cost.noUsage'))}</td></tr>`;
+}
+
+function renderCostError(message) {
+    updateCostBadge(t('cost.loadFailed'), 'error');
+    const rows = `<tr><td class="cost-empty error" colspan="8">${escapeHtml(message || t('cost.loadFailed'))}</td></tr>`;
+    const accountRows = document.getElementById('cost-account-rows');
+    const moduleRows = document.getElementById('cost-module-rows');
+    if (accountRows) accountRows.innerHTML = rows;
+    if (moduleRows) moduleRows.innerHTML = rows;
+}
+
+function updateCostBadge(text, className = 'configured') {
+    const badge = document.getElementById('cost-updated-badge');
+    if (!badge) return;
+    badge.textContent = text;
+    badge.className = `provider-badge ${className}`;
+}
+
+function formatNumber(value) {
+    const number = Number(value || 0);
+    return new Intl.NumberFormat(currentLanguage === 'zh' ? 'zh-CN' : 'en-US').format(number);
+}
+
+function formatDateTime(value) {
+    if (!value) return t('cost.never');
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return t('cost.never');
+    return new Intl.DateTimeFormat(currentLanguage === 'zh' ? 'zh-CN' : 'en-US', {
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+    }).format(date);
 }
 
 function applySettingsToForm(settings) {
@@ -1127,6 +1319,12 @@ document.addEventListener('click', async (event) => {
         return;
     }
 
+    const refreshCostsButton = event.target.closest('[data-refresh-costs]');
+    if (refreshCostsButton) {
+        await loadCosts(refreshCostsButton);
+        return;
+    }
+
     const providerTab = event.target.closest('[data-select-provider]');
     if (providerTab) {
         setActiveProvider(providerTab.dataset.selectProvider);
@@ -1204,5 +1402,7 @@ document.addEventListener('keydown', (event) => {
 applyI18n();
 renderProviderConfigurator();
 renderRoleExamples();
+renderCostReport();
 loadSettings();
+loadCosts();
 loadRoles();

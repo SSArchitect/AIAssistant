@@ -638,7 +638,112 @@ func (h *ChatHandler) saveAssistantMessage(conversationID string, userID string,
 		slog.Error("Failed to save assistant message", "error", err)
 		return nil
 	}
+	h.persistTokenUsage(conversationID, userID, &assistantMsg, agentResp)
 	return &assistantMsg
+}
+
+type tokenUsageBreakdown struct {
+	InputTokens              int
+	OutputTokens             int
+	TotalTokens              int
+	CachedInputTokens        int
+	CacheCreationInputTokens int
+	ImageCount               int
+}
+
+func (h *ChatHandler) persistTokenUsage(
+	conversationID string,
+	userID string,
+	message *models.Message,
+	agentResp *bridge.ChatResponse,
+) {
+	if message == nil || agentResp == nil {
+		return
+	}
+	usage := normalizeTokenUsage(agentResp.TokensUsed)
+	if !usage.hasTrackedCost() {
+		return
+	}
+
+	usageJSON, _ := json.Marshal(agentResp.TokensUsed)
+	record := models.TokenUsage{
+		UserID:                   normalizedUserID(userID),
+		ConversationID:           conversationID,
+		MessageID:                message.ID,
+		RunID:                    firstNonEmpty(agentResp.RunID, latestEventRunID(agentResp.Events)),
+		AgentID:                  usageAgentID(conversationID, agentResp),
+		Runtime:                  agentResp.Runtime,
+		ModelUsed:                agentResp.ModelUsed,
+		InputTokens:              usage.InputTokens,
+		OutputTokens:             usage.OutputTokens,
+		TotalTokens:              usage.TotalTokens,
+		CachedInputTokens:        usage.CachedInputTokens,
+		CacheCreationInputTokens: usage.CacheCreationInputTokens,
+		ImageCount:               usage.ImageCount,
+		UsageJSON:                string(usageJSON),
+		CreatedAt:                message.CreatedAt,
+	}
+	if err := database.DB.Create(&record).Error; err != nil {
+		slog.Warn("Failed to persist token usage", "message_id", message.ID, "run_id", agentResp.RunID, "error", err)
+	}
+}
+
+func normalizeTokenUsage(tokens map[string]int) tokenUsageBreakdown {
+	usage := tokenUsageBreakdown{
+		InputTokens:              firstUsageValue(tokens, "input", "input_tokens", "prompt_tokens"),
+		OutputTokens:             firstUsageValue(tokens, "output", "output_tokens", "completion_tokens"),
+		CachedInputTokens:        firstUsageValue(tokens, "input_cached", "cached_input_tokens", "cache_read_input_tokens", "cache_read"),
+		CacheCreationInputTokens: firstUsageValue(tokens, "input_cache_creation", "cache_creation_input_tokens", "cache_creation"),
+		ImageCount:               firstUsageValue(tokens, "images", "image_count"),
+	}
+	usage.TotalTokens = firstUsageValue(tokens, "total", "total_tokens")
+	if usage.TotalTokens == 0 {
+		usage.TotalTokens = usage.InputTokens + usage.OutputTokens
+	}
+	return usage
+}
+
+func firstUsageValue(tokens map[string]int, keys ...string) int {
+	for _, key := range keys {
+		if value, ok := tokens[key]; ok {
+			return value
+		}
+	}
+	return 0
+}
+
+func (usage tokenUsageBreakdown) hasTrackedCost() bool {
+	return usage.InputTokens > 0 ||
+		usage.OutputTokens > 0 ||
+		usage.TotalTokens > 0 ||
+		usage.CachedInputTokens > 0 ||
+		usage.CacheCreationInputTokens > 0 ||
+		usage.ImageCount > 0
+}
+
+func usageAgentID(conversationID string, agentResp *bridge.ChatResponse) string {
+	if agentResp != nil {
+		if value := strings.TrimSpace(agentResp.AgentID); value != "" {
+			return value
+		}
+		if value := inferStoredRunAgentID(agentResp.Events); value != "" {
+			return value
+		}
+	}
+	var conv models.Conversation
+	if err := database.DB.First(&conv, "id = ?", conversationID).Error; err == nil && strings.TrimSpace(conv.AgentID) != "" {
+		return conv.AgentID
+	}
+	return superChatAgentID
+}
+
+func latestEventRunID(events []bridge.RunEvent) string {
+	for i := len(events) - 1; i >= 0; i-- {
+		if strings.TrimSpace(events[i].RunID) != "" {
+			return events[i].RunID
+		}
+	}
+	return ""
 }
 
 func (h *ChatHandler) generateFollowUpsAsync(req ChatRequestBody, assistantMsg *models.Message, agentResp *bridge.ChatResponse) {
@@ -990,7 +1095,7 @@ func storedRunRecord(runID string, userID string) (*bridge.RunRecord, error) {
 		Input:          input,
 		Output:         message.Content,
 		ModelUsed:      message.ModelUsed,
-		TokensUsed:     map[string]int{},
+		TokensUsed:     storedRunTokensUsed(message.ID),
 		SkillsUsed:     skills,
 		ErrorType:      optionalString(errorType),
 		ErrorMessage:   optionalString(errorMessage),
@@ -998,6 +1103,26 @@ func storedRunRecord(runID string, userID string) (*bridge.RunRecord, error) {
 		CompletedAt:    &completedAt,
 		Events:         events,
 	}, nil
+}
+
+func storedRunTokensUsed(messageID uint) map[string]int {
+	var usage models.TokenUsage
+	if err := database.DB.Where("message_id = ?", messageID).First(&usage).Error; err != nil {
+		return map[string]int{}
+	}
+	tokens := map[string]int{}
+	if strings.TrimSpace(usage.UsageJSON) != "" {
+		_ = json.Unmarshal([]byte(usage.UsageJSON), &tokens)
+	}
+	if tokens == nil {
+		tokens = map[string]int{}
+	}
+	if len(tokens) == 0 {
+		tokens["input"] = usage.InputTokens
+		tokens["output"] = usage.OutputTokens
+		tokens["total"] = usage.TotalTokens
+	}
+	return tokens
 }
 
 func storedRunInput(message models.Message) string {

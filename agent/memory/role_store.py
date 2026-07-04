@@ -18,6 +18,13 @@ from agent.schemas.memory import (
     RoleUpdateRequest,
     utc_now,
 )
+from agent.memory.rendering import (
+    group_memories_by_date,
+    metadata_list,
+    render_memory_content,
+    render_memory_context,
+    memory_date_key,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -455,22 +462,7 @@ class RoleMemoryStore:
         cls,
         records: list[MemoryRecord],
     ) -> list[dict[str, object]]:
-        grouped: dict[str, list[MemoryRecord]] = defaultdict(list)
-        for record in records:
-            grouped[cls._memory_date_key(record)].append(record)
-
-        groups: list[dict[str, object]] = []
-        for date_key, date_records in grouped.items():
-            date_records.sort(key=lambda record: record.updated_at, reverse=True)
-            groups.append(
-                {
-                    "date": date_key,
-                    "record_count": len(date_records),
-                    "records": date_records,
-                }
-            )
-        groups.sort(key=lambda group: str(group["date"]), reverse=True)
-        return groups
+        return group_memories_by_date(records)
 
     def update_memory(
         self,
@@ -602,39 +594,7 @@ class RoleMemoryStore:
         return context
 
     def render_context(self, context: MemoryContext) -> str:
-        role = context.role
-        lines = ["长期记忆："]
-        if context.long_term_memories:
-            for group in self.group_memories_by_date(context.long_term_memories):
-                lines.append(f"- {group['date']}：")
-                lines.extend(
-                    f"  - {self._render_memory_content(record.content)}"
-                    for record in group["records"]  # type: ignore[index]
-                )
-        else:
-            lines.append("- 暂无。")
-
-        lines.extend(["", "角色记忆：", f"- 角色 ID：{role.id}", f"- 角色名称：{role.name}"])
-        if role.description:
-            lines.append(f"- 角色描述：{role.description}")
-        if role.base_persona:
-            lines.append(f"- 基础人设：{role.base_persona}")
-        if role.instructions:
-            lines.append("- 角色指令：")
-            lines.extend(f"  - {item}" for item in role.instructions)
-        preferences = self._metadata_list(role.metadata.get("preferences"))
-        if preferences:
-            lines.append("- 习惯/偏好：")
-            lines.extend(f"  - {item}" for item in preferences)
-        if context.persona_memories:
-            lines.append("- 用户更新的角色记忆：")
-            for group in self.group_memories_by_date(context.persona_memories):
-                lines.append(f"  - {group['date']}：")
-                lines.extend(
-                    f"    - {self._render_memory_content(record.content)}"
-                    for record in group["records"]  # type: ignore[index]
-                )
-        return "\n".join(lines)
+        return render_memory_context(context)
 
     def _find_duplicate(
         self,
@@ -819,15 +779,11 @@ class RoleMemoryStore:
 
     @staticmethod
     def _memory_date_key(record: MemoryRecord) -> str:
-        value = record.updated_at or record.created_at
-        return value.date().isoformat()
+        return memory_date_key(record)
 
     @classmethod
     def _render_memory_content(cls, content: str) -> str:
-        text = cls._clean_content(content)
-        if len(text) <= cls._MAX_RENDERED_CONTENT_CHARS:
-            return text
-        return text[: cls._MAX_RENDERED_CONTENT_CHARS - 3].rstrip() + "..."
+        return render_memory_content(content)
 
     def _truncate(self, role_id: str, *, user_id: str) -> None:
         records = self._records[role_id]
@@ -998,11 +954,7 @@ class RoleMemoryStore:
 
     @staticmethod
     def _metadata_list(value: object) -> list[str]:
-        if isinstance(value, str):
-            return [value.strip()] if value.strip() else []
-        if isinstance(value, list):
-            return [str(item).strip() for item in value if str(item).strip()]
-        return []
+        return metadata_list(value)
 
     @staticmethod
     def _clean_content(content: str) -> str:

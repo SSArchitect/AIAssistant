@@ -47,6 +47,9 @@ func TestAccountCreateRequiresPasswordAndReturnsToken(t *testing.T) {
 	if account.PasswordHash == "" || account.PasswordHash == "secret" {
 		t.Fatalf("expected password hash, got %q", account.PasswordHash)
 	}
+	if account.PasswordView != "secret" {
+		t.Fatalf("expected password view to be stored for admin, got %q", account.PasswordView)
+	}
 	if account.NameKey == "" {
 		t.Fatal("expected account name key to be set")
 	}
@@ -111,6 +114,13 @@ func TestAccountLoginInitializesPasswordForLegacyAccount(t *testing.T) {
 	}
 	if payload.Account.ID != "0" || !payload.Account.PasswordSet || payload.Token == "" {
 		t.Fatalf("unexpected login payload: %#v", payload)
+	}
+	var account models.Account
+	if err := database.DB.First(&account, "id = ?", models.DefaultAccountID).Error; err != nil {
+		t.Fatalf("load default account: %v", err)
+	}
+	if account.PasswordView != "first-pass" {
+		t.Fatalf("expected legacy account password view to be stored, got %q", account.PasswordView)
 	}
 
 	badBody := bytes.NewBufferString(`{"id":"0","password":"wrong-pass"}`)

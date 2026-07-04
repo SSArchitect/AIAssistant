@@ -3,7 +3,15 @@ from typing import AsyncIterator
 
 import anthropic
 
-from .base import LLMMessage, LLMProvider, LLMResponse, RateLimitError, ToolCall, ToolDefinition
+from .base import (
+    LLMMessage,
+    LLMProvider,
+    LLMResponse,
+    PromptCacheOptions,
+    RateLimitError,
+    ToolCall,
+    ToolDefinition,
+)
 from .multimodal import content_to_plain_text, data_url_bytes, normalize_content_parts
 
 
@@ -96,11 +104,69 @@ class ClaudeProvider(LLMProvider):
             for t in tools
         ]
 
+    def _system_payload(
+        self,
+        system: str,
+        cache: PromptCacheOptions | None,
+    ) -> str | list[dict]:
+        if not system:
+            return system
+        if not cache or not cache.enabled or not cache.cache_system_prompt:
+            return system
+        stable_chars = int(cache.metadata.get("stable_prompt_chars") or 0)
+        if 0 < stable_chars < len(system):
+            stable_text = system[:stable_chars].rstrip()
+            dynamic_text = system[stable_chars:].lstrip()
+            blocks = [
+                {
+                    "type": "text",
+                    "text": stable_text,
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ]
+            if dynamic_text:
+                blocks.append({"type": "text", "text": dynamic_text})
+            return blocks
+        return [
+            {
+                "type": "text",
+                "text": system,
+                "cache_control": {"type": "ephemeral"},
+            }
+        ]
+
+    def _tools_payload(
+        self,
+        tools: list[dict] | None,
+        cache: PromptCacheOptions | None,
+    ) -> list[dict] | None:
+        if not tools:
+            return None
+        if not cache or not cache.enabled or not cache.cache_tools:
+            return tools
+        cached_tools = [dict(tool) for tool in tools]
+        cached_tools[-1]["cache_control"] = {"type": "ephemeral"}
+        return cached_tools
+
+    def _usage_payload(self, usage) -> dict[str, int]:
+        payload = {
+            "input": getattr(usage, "input_tokens", 0),
+            "output": getattr(usage, "output_tokens", 0),
+        }
+        cache_read = getattr(usage, "cache_read_input_tokens", None)
+        cache_creation = getattr(usage, "cache_creation_input_tokens", None)
+        if cache_read is not None:
+            payload["input_cached"] = cache_read
+        if cache_creation is not None:
+            payload["input_cache_creation"] = cache_creation
+        return payload
+
     async def chat(
         self,
         messages: list[LLMMessage],
         tools: list[ToolDefinition] | None = None,
         temperature: float = 0.7,
+        cache: PromptCacheOptions | None = None,
     ) -> LLMResponse:
         system, converted = self._convert_messages(messages)
         kwargs = {
@@ -110,10 +176,10 @@ class ClaudeProvider(LLMProvider):
             "temperature": temperature,
         }
         if system:
-            kwargs["system"] = system
+            kwargs["system"] = self._system_payload(system, cache)
         anthropic_tools = self._convert_tools(tools)
         if anthropic_tools:
-            kwargs["tools"] = anthropic_tools
+            kwargs["tools"] = self._tools_payload(anthropic_tools, cache)
 
         try:
             response = await self.client.messages.create(**kwargs)
@@ -137,10 +203,7 @@ class ClaudeProvider(LLMProvider):
             content=content,
             tool_calls=tool_calls,
             model=response.model,
-            usage={
-                "input": response.usage.input_tokens,
-                "output": response.usage.output_tokens,
-            },
+            usage=self._usage_payload(response.usage),
         )
 
     async def chat_stream(
@@ -148,6 +211,7 @@ class ClaudeProvider(LLMProvider):
         messages: list[LLMMessage],
         tools: list[ToolDefinition] | None = None,
         temperature: float = 0.7,
+        cache: PromptCacheOptions | None = None,
     ) -> AsyncIterator[str]:
         system, converted = self._convert_messages(messages)
         kwargs = {
@@ -157,10 +221,10 @@ class ClaudeProvider(LLMProvider):
             "temperature": temperature,
         }
         if system:
-            kwargs["system"] = system
+            kwargs["system"] = self._system_payload(system, cache)
         anthropic_tools = self._convert_tools(tools)
         if anthropic_tools:
-            kwargs["tools"] = anthropic_tools
+            kwargs["tools"] = self._tools_payload(anthropic_tools, cache)
 
         async with self.client.messages.stream(**kwargs) as stream:
             async for text in stream.text_stream:

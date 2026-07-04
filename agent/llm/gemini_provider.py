@@ -5,7 +5,15 @@ from typing import AsyncIterator
 from google import genai
 from google.genai import types
 
-from .base import LLMMessage, LLMProvider, LLMResponse, RateLimitError, ToolCall, ToolDefinition
+from .base import (
+    LLMMessage,
+    LLMProvider,
+    LLMResponse,
+    PromptCacheOptions,
+    RateLimitError,
+    ToolCall,
+    ToolDefinition,
+)
 from .multimodal import content_to_plain_text, data_url_bytes, normalize_content_parts
 
 
@@ -105,6 +113,7 @@ class GeminiProvider(LLMProvider):
         messages: list[LLMMessage],
         tools: list[ToolDefinition] | None = None,
         temperature: float = 0.7,
+        cache: PromptCacheOptions | None = None,
     ) -> LLMResponse:
         system, converted = self._convert_messages(messages)
 
@@ -181,6 +190,7 @@ class GeminiProvider(LLMProvider):
         messages: list[LLMMessage],
         tools: list[ToolDefinition] | None = None,
         temperature: float = 0.7,
+        cache: PromptCacheOptions | None = None,
     ) -> AsyncIterator[str]:
         system, converted = self._convert_messages(messages)
 

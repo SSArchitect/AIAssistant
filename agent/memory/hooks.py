@@ -56,7 +56,11 @@ class HeuristicMemoryHook:
     _ignored_fact_keys = {"问题", "请求", "意思", "想法", "观点"}
     _preference_patterns = [
         re.compile(
-            r"我(?:喜欢|偏好|更喜欢|讨厌|不喜欢|习惯|正在|计划|需要|常用).+",
+            r"我(?:喜欢|偏好|更喜欢|讨厌|不喜欢|习惯|常用).+",
+            re.I | re.S,
+        ),
+        re.compile(
+            r"我(?:正在|计划)(?!.*(?:帮我|帮忙|一下|这次|本轮|当前|怎么|如何|吗|？|\?)).+",
             re.I | re.S,
         ),
         re.compile(r"我的(?P<key>[^，。,.!?]{1,24})(?:是|叫|为).+", re.I | re.S),

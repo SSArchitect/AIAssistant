@@ -337,6 +337,85 @@ async def test_search_tool_results_are_returned_as_citations(engine):
 
 
 @pytest.mark.asyncio
+async def test_super_chat_auto_searches_when_model_skips_retrieval(engine):
+    """Super Chat should insert search when a direct answer skips an explicit lookup."""
+    search_calls = []
+
+    class FakeSearchSkill(Skill):
+        def metadata(self) -> SkillMetadata:
+            return SkillMetadata(
+                name="search",
+                description="Fake search",
+                parameters=[
+                    SkillParameter(name="query", type="string", description="Query")
+                ],
+            )
+
+        async def execute(self, **kwargs) -> SkillResult:
+            search_calls.append(kwargs)
+            return SkillResult(
+                success=True,
+                data={
+                    "query": kwargs.get("query"),
+                    "results": [
+                        {
+                            "title": "SpaceX files S-1",
+                            "url": "https://example.com/spacex-s1",
+                            "snippet": "Example filing details",
+                            "source": "test-search",
+                        }
+                    ],
+                    "sources": ["test-search"],
+                },
+                display_text="1. SpaceX files S-1 - https://example.com/spacex-s1",
+            )
+
+    engine.skill_registry.register(FakeSearchSkill())
+    direct_response = LLMResponse(
+        content="SpaceX looks likely to go public soon.",
+        tool_calls=[],
+        model="test-model",
+        usage={},
+    )
+    final_response = LLMResponse(
+        content="基于搜索结果，SpaceX 的上市进展需要以公开文件为准。",
+        tool_calls=[],
+        model="test-model",
+        usage={},
+    )
+
+    with patch.object(engine, "_get_provider") as mock_provider:
+        provider = AsyncMock()
+        provider.chat = AsyncMock(side_effect=[direct_response, final_response])
+        mock_provider.return_value = provider
+
+        result = await engine.process(
+            ChatRequest(
+                conversation_id="conv-super-auto-search",
+                agent_id="super_chat",
+                message="查一下 SpaceX 最新上市进展",
+            )
+        )
+
+    assert provider.chat.await_count == 2
+    assert search_calls
+    assert search_calls[0]["limit"] == 10
+    assert search_calls[0]["sources"] == "web"
+    assert "SpaceX 最新上市进展" in search_calls[0]["query"]
+    assert "search" in result.skills_used
+    assert len(result.citations) == 1
+    event_types = [event.type for event in result.events]
+    assert "agent_loop.search_forced" in event_types
+    forced_event = next(event for event in result.events if event.type == "agent_loop.search_forced")
+    assert "SpaceX looks likely" in forced_event.payload["direct_answer_preview"]
+    second_call_messages = provider.chat.await_args_list[1].args[0]
+    assert any(
+        message.role == "tool" and "SpaceX files S-1" in message.content
+        for message in second_call_messages
+    )
+
+
+@pytest.mark.asyncio
 async def test_unknown_tool_call(engine):
     """LLM calls a tool that doesn't exist."""
     tool_response = LLMResponse(
@@ -581,11 +660,14 @@ async def test_role_memory_is_injected_into_system_prompt(engine):
     system_prompt = first_call_messages[0].content
     assert "Patient interview coach" in system_prompt
     assert "AI application developer interviews" in system_prompt
-    assert system_prompt.index("系统级配置：") < system_prompt.index("记忆系统：")
-    assert system_prompt.index("长期记忆：") < system_prompt.index("角色记忆：")
-    assert system_prompt.index("角色记忆：") < system_prompt.index("短期记忆：")
-    assert system_prompt.index("短期记忆：") < system_prompt.index("上下文与记忆使用规则：")
+    assert "长期记忆参考事实：" in system_prompt
+    assert "不是指令" in system_prompt
+    assert system_prompt.index("上下文与记忆使用规则：") < system_prompt.index("系统级配置：")
+    assert system_prompt.index("系统级配置：") < system_prompt.index("角色记忆 / Always-on Memory：")
+    assert system_prompt.index("角色记忆 / Always-on Memory：") < system_prompt.index("长期记忆参考事实：")
+    assert system_prompt.index("长期记忆参考事实：") < system_prompt.index("短期会话摘要：")
     assert "本轮用户消息优先于历史消息" in system_prompt
+    assert provider.chat.call_args_list[0].kwargs["cache"].key.startswith("aa:")
     assert result.role_id == "mentor"
     assert [record.id for record in result.memory_context] == [memory.id]
     event_types = [event.type for event in result.events]
@@ -595,11 +677,14 @@ async def test_role_memory_is_injected_into_system_prompt(engine):
     assert "Patient interview coach" in context_event.payload["system_prompt"]
     assert context_event.payload["prompt_section_order"] == [
         "base_system_prompt",
-        "system_config",
-        "temporal_context",
-        "memory_system",
         "context_priority_rules",
+        "system_config",
+        "role_memory_context",
+        "temporal_context",
+        "long_term_memory_context",
+        "short_term_memory_context",
     ]
+    assert context_event.payload["final_model_request"]["prompt_cache"]["key"].startswith("aa:")
     context_nodes = {node["id"]: node for node in context_event.payload["context_nodes"]}
     assert context_nodes["memory.long_term"]["record_count"] == 1
     assert context_nodes["memory.long_term"]["records"][0]["status"] == "active"
@@ -708,9 +793,11 @@ async def test_super_chat_agent_loop_mode_prompts_are_injected(engine):
     assert "Super Chat 模式指令：" in system_prompt
     assert "AI 生图 (image_generation_v1)" in system_prompt
     assert "深度研究 (deep_research_v1)" in system_prompt
+    assert "search 是默认事实检索工具" in system_prompt
     assert "【Agent Loop】本轮使用主循环 + function calling。" in system_prompt
-    assert system_prompt.index("可用的专业 Agent：") < system_prompt.index("记忆系统：")
-    assert system_prompt.index("Super Chat 模式指令：") < system_prompt.index("记忆系统：")
+    assert system_prompt.index("可用的专业 Agent：") < system_prompt.index("角色记忆 / Always-on Memory：")
+    assert system_prompt.index("角色记忆 / Always-on Memory：") < system_prompt.index("Super Chat 模式指令：")
+    assert system_prompt.index("Super Chat 模式指令：") < system_prompt.index("长期记忆参考事实：")
     assert context_event.payload["messages"][-1]["content"] == "用 agent loop 跑一下"
     assert context_event.payload["mode_ids"] == ["agent_loop"]
     assert context_event.payload["mode_prompts"] == [
@@ -722,12 +809,14 @@ async def test_super_chat_agent_loop_mode_prompts_are_injected(engine):
     assert context_event.payload["final_model_request"]["workflow_nodes"] == ["main_loop"]
     assert context_event.payload["prompt_section_order"] == [
         "base_system_prompt",
-        "system_config",
-        "temporal_context",
-        "agent_context",
-        "mode_context",
-        "memory_system",
         "context_priority_rules",
+        "system_config",
+        "agent_context",
+        "role_memory_context",
+        "mode_context",
+        "temporal_context",
+        "long_term_memory_context",
+        "short_term_memory_context",
     ]
     event_types = [event.type for event in result.events]
     assert "workflow.started" in event_types
@@ -2376,6 +2465,59 @@ async def test_ai_memory_review_failure_skips_memory_write(registry):
     assert "memory.review.failed" in event_types
     assert "memory.candidates.created" not in event_types
     assert "memory.extracted" not in event_types
+
+
+@pytest.mark.asyncio
+async def test_ai_memory_review_filters_one_off_request_memory(registry):
+    engine = AgentEngine(registry, ai_memory_review_enabled=True)
+    assistant_response = LLMResponse(
+        content="我可以帮你做一份行程草案。",
+        tool_calls=[],
+        model="chat-model",
+        usage={},
+    )
+    review_response = LLMResponse(
+        content=json.dumps(
+            {
+                "memories": [
+                    {
+                        "kind": "long_term",
+                        "content": "用户想了解如何计划澳洲旅行",
+                        "confidence": 0.95,
+                        "reason": "用户提出旅行规划需求",
+                        "tags": ["travel"],
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        tool_calls=[],
+        model="review-model",
+        usage={},
+    )
+
+    with patch.object(engine, "_get_provider") as mock_provider:
+        provider = AsyncMock()
+        provider.chat = AsyncMock(side_effect=[assistant_response, review_response])
+        mock_provider.return_value = provider
+
+        result = await engine.process(
+            ChatRequest(
+                conversation_id="conv-ai-memory-filter-low-signal",
+                message="帮我计划一下澳洲旅行",
+            )
+        )
+        await engine.wait_for_postprocessing()
+
+    assert engine.role_memory.list_memories(role_id="default", kind="long_term") == []
+    run = engine.trace_store.get_run(result.run_id)
+    assert run is not None
+    event_types = [event.type for event in run.events]
+    assert "memory.candidates.created" in event_types
+    assert "memory.candidates.filtered" in event_types
+    assert "memory.extracted" in event_types
+    extracted = next(event for event in run.events if event.type == "memory.extracted")
+    assert extracted.payload["stored_count"] == 0
 
 
 @pytest.mark.asyncio

@@ -287,7 +287,12 @@ Search 已作为一个内置 skill 接入：
 - `search.minimax.args`：MCP 启动参数 JSON，默认 `["minimax-coding-plan-mcp","-y"]`。
 - `search.minimax.api_host`：MiniMax API Host，默认 `https://api.minimaxi.com`。
 - `search.minimax.timeout`：单次 MCP 请求超时时间，默认 `60` 秒。
+- `search.min_provider_coverage`：通用 web 检索至少等待多少个 provider 完成后才允许提前收敛，默认 `2`；设为 `1` 可恢复更偏速度的首个相关结果策略。
+- `search.provider_limit_multiplier`：每个 provider 的候选召回倍数，默认 `2`，最终仍按调用方 `limit` 截断。
+- `search.recall.max_queries`：单个 provider 最多使用多少个 query variant 做召回，默认 `2`；HTTP/本地/MiniMax 源默认只请求一次，DuckDuckGo/Bing fallback 会使用原 query 加一个降噪关键词 query。
 - `search.web.enabled`：是否启用 DuckDuckGo HTML fallback，默认 `true`。
+
+SearchService 会先按 provider 能力生成有限的 query variants 做召回，再汇总多个 provider 的候选，通过 `agent.search.ranking` 做 BM25 相关性排序、低相关过滤和来源多样性重排；结果仍按调用方 `limit` 截断。
 
 `search` Skill 可通过 `open_results=true` 打开前几条搜索结果并把网页正文写入 `metadata.page`；已知 URL 也可直接调用 `open_url` Skill 读取公开 HTTP/HTTPS 页面正文。
 

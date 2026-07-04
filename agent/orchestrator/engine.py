@@ -2,6 +2,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
+import hashlib
 import inspect
 import json
 import logging
@@ -18,11 +19,14 @@ from agent.aigc import (
     is_text_heavy_visual_intent,
     render_share_card_svg,
 )
-from agent.llm.base import LLMMessage, LLMProvider, LLMResponse, RateLimitError, ToolDefinition
+from agent.llm.base import LLMMessage, LLMProvider, LLMResponse, RateLimitError, ToolCall, ToolDefinition
+from agent.llm.base import PromptCacheOptions
 from agent.llm.factory import create_provider
 from agent.memory.conversation import ConversationMemory
 from agent.memory.hooks import HeuristicMemoryHook, MemoryHook
+from agent.memory.rendering import render_memory_context
 from agent.memory.role_store import RoleMemoryStore
+from agent.orchestrator.context_builder import ContextBuilder
 from agent.runtime.registry import get_agent, list_agents
 from agent.schemas.agent import AgentInfo
 from agent.schemas.aigc import IMAGE_ASPECT_RATIOS, GeneratedImage, ImageGenerationRequest, ImageGenerationResponse
@@ -73,6 +77,7 @@ DEEP_RESEARCH_SUMMARY_CHUNK_SIZE = 40
 THINKING_MAX_PLAN_STEPS = 6
 THINKING_SEARCH_LIMIT = 8
 THINKING_MAX_SEARCH_STEPS = 4
+SUPER_CHAT_AUTO_SEARCH_LIMIT = 10
 THINKING_WORKFLOW_NODES = ["analyze", "plan", "execute", "summary"]
 AIGC_PLAN_DECOMPOSE_STEP = "task_decomposition"
 AIGC_PLAN_CONTEXT_STEP = "context_reuse"
@@ -112,6 +117,7 @@ class AgentEngine:
         self.conversation_compaction_keep_messages = conversation_compaction_keep_messages
         self.trace_store = trace_store or TraceStore()
         self.weight_loss_store = weight_loss_store or WeightLossStore()
+        self.context_builder = ContextBuilder(base_system_prompt=SYSTEM_PROMPT)
         self._providers: dict[str, LLMProvider] = {}
         self._postprocess_tasks: set[asyncio.Task[None]] = set()
 
@@ -169,26 +175,10 @@ class AgentEngine:
         return visible
 
     def _normalize_mode_prompts(self, prompts: list[str] | None) -> list[str]:
-        normalized: list[str] = []
-        for prompt in prompts or []:
-            text = " ".join(str(prompt).split())
-            if not text or text in normalized:
-                continue
-            normalized.append(text[:1200])
-            if len(normalized) >= 8:
-                break
-        return normalized
+        return self.context_builder.normalize_mode_prompts(prompts)
 
     def _normalize_context_blocks(self, blocks: list[str] | None) -> list[str]:
-        normalized: list[str] = []
-        for block in blocks or []:
-            text = str(block).replace("\r\n", "\n").replace("\r", "\n").strip()
-            if not text:
-                continue
-            normalized.append(text[:24000])
-            if len(normalized) >= 4:
-                break
-        return normalized
+        return self.context_builder.normalize_context_blocks(blocks)
 
     def _memory_retrieval_query(self, request: ChatRequest) -> str:
         parts: list[str] = []
@@ -253,66 +243,212 @@ class AgentEngine:
             "`/减肥 /history 7d`、`/weight_loss/history 7d`、`/生图 /generate 复古台灯海报`。"
         )
 
+    def _super_chat_auto_search_required(self, request: ChatRequest) -> bool:
+        text = " ".join(
+            [
+                request.message or "",
+                " ".join(request.mode_prompts or []),
+                " ".join(request.context_blocks or []),
+            ]
+        ).lower()
+        normalized = re.sub(r"\s+", " ", text).strip()
+        if not normalized or self._search_explicitly_disabled(normalized):
+            return False
+
+        explicit_search_terms = [
+            "搜索",
+            "搜一下",
+            "搜搜",
+            "检索",
+            "查一下",
+            "查查",
+            "帮我查",
+            "查找",
+            "联网",
+            "引用来源",
+            "核验",
+            "验证",
+            "sources",
+            "citation",
+            "search",
+            "lookup",
+            "look up",
+            "browse",
+            "google",
+        ]
+        if any(term in normalized for term in explicit_search_terms):
+            return True
+
+        time_sensitive_terms = [
+            "最新",
+            "最近",
+            "当前",
+            "现在",
+            "近期",
+            "今天",
+            "昨日",
+            "昨天",
+            "新闻",
+            "报道",
+            "价格",
+            "股价",
+            "汇率",
+            "天气",
+            "赛程",
+            "库存",
+            "版本",
+            "release",
+            "latest",
+            "recent",
+            "current",
+            "today",
+            "yesterday",
+            "news",
+            "price",
+            "schedule",
+        ]
+        if any(term in normalized for term in time_sensitive_terms):
+            return True
+
+        external_fact_terms = [
+            "线上服务器",
+            "线上服务",
+            "生产环境",
+            "线上环境",
+            "官网",
+            "官方网站",
+            "公开报道",
+            "公司",
+            "融资",
+            "上市",
+            "估值",
+            "市场",
+            "政策",
+            "法规",
+            "法律",
+            "医疗",
+            "药",
+            "金融",
+            "投资",
+            "股票",
+            "基金",
+            "榜单",
+            "排名",
+            "推荐",
+            "评测",
+            "评分",
+            "型号",
+            "规格",
+            "参数",
+            "online server",
+            "production",
+            "prod",
+            "official",
+            "ranking",
+            "review",
+            "spec",
+            "sku",
+        ]
+        return any(term in normalized for term in external_fact_terms)
+
+    def _search_explicitly_disabled(self, normalized_text: str) -> bool:
+        disabled_terms = [
+            "不要搜索",
+            "不用搜索",
+            "别搜索",
+            "不要联网",
+            "不用联网",
+            "别联网",
+            "不需要搜索",
+            "无需搜索",
+            "不查外网",
+            "不要查外网",
+            "without searching",
+            "do not search",
+            "don't search",
+            "no search",
+            "without browsing",
+            "do not browse",
+            "don't browse",
+        ]
+        return any(term in normalized_text for term in disabled_terms)
+
+    def _super_chat_auto_search_arguments(self, request: ChatRequest) -> dict[str, Any]:
+        query_parts = [request.message or ""]
+        query_parts.extend(self._normalize_context_blocks(request.context_blocks)[:1])
+        query = " ".join(" ".join(part.split()) for part in query_parts if part).strip()
+        query = query[:220] or (request.message or "用户请求")
+        arguments: dict[str, Any] = {
+            "query": query,
+            "sources": "web",
+            "limit": SUPER_CHAT_AUTO_SEARCH_LIMIT,
+        }
+        if self._super_chat_auto_search_should_open_results(request):
+            arguments.update(
+                {
+                    "open_results": True,
+                    "open_limit": 2,
+                    "page_chars": 6000,
+                }
+            )
+        return arguments
+
+    def _super_chat_auto_search_should_open_results(self, request: ChatRequest) -> bool:
+        text = " ".join(
+            [
+                request.message or "",
+                " ".join(request.mode_prompts or []),
+                " ".join(request.context_blocks or []),
+            ]
+        ).lower()
+        normalized = re.sub(r"\s+", " ", text).strip()
+        high_confidence_terms = [
+            "官网",
+            "官方网站",
+            "官方文档",
+            "说明书",
+            "安全",
+            "风险",
+            "使用方法",
+            "维修",
+            "保养",
+            "兼容",
+            "错误码",
+            "政策",
+            "法规",
+            "法律",
+            "医疗",
+            "药",
+            "金融",
+            "投资",
+            "财报",
+            "official",
+            "docs",
+            "safety",
+            "law",
+            "legal",
+            "medical",
+            "finance",
+            "filing",
+        ]
+        return any(term in normalized for term in high_confidence_terms)
+
     def _render_memory_system(
         self,
         role_context: MemoryContext,
         *,
         short_term_summary: str = "",
     ) -> str:
-        short_term_summary = " ".join(str(short_term_summary or "").split()).strip()
-        short_term_lines = [
-            "短期记忆：",
-            (
-                f"- 会话摘要：{short_term_summary}"
-                if short_term_summary
-                else "- 暂无压缩摘要；最近原始消息会作为后续对话消息提供。"
-            ),
-            "- 最近原始消息会在 system prompt 之后作为对话消息提供，优先于摘要和长期记忆。",
-        ]
-        return "\n".join(
-            [
-                "记忆系统：",
-                "- 长期记忆用于跨会话延续用户事实、偏好和项目状态。",
-                "- 角色记忆用于当前角色的人设、语气、协作习惯和用户主动更新的角色偏好。",
-                "- 短期记忆用于当前会话摘要；它不能覆盖最近原始消息。",
-                "",
-                role_context.rendered.strip(),
-                "",
-                "\n".join(short_term_lines),
-            ]
+        return render_memory_context(
+            role_context,
+            short_term_summary=short_term_summary,
         )
 
     def _build_context_priority_rules(self) -> str:
-        return (
-            "上下文与记忆使用规则：\n"
-            "- 系统级配置、工具权限、Agent 协议和安全边界优先级最高。\n"
-            "- 本轮选择的模式/option 是执行策略，优先于历史消息、长期记忆、角色记忆和短期摘要；"
-            "记忆不得取消或弱化 Deep Research 等模式的执行要求。\n"
-            "- 本轮用户消息优先于历史消息、会话摘要、长期记忆和角色偏好。\n"
-            "- 最近原始消息优先于短期摘要；短期摘要优先于长期记忆。\n"
-            "- 长期记忆是可错的历史上下文；遇到冲突、过期或不确定时，以用户当前表达为准并主动确认。\n"
-            "- 角色记忆主要影响语气、协作方式和默认偏好，不得覆盖事实、工具规则或用户当前明确要求。\n"
-            "- 不得把历史回答中声称的“搜索/检索/来源”当作已执行工具；只有本轮 trace 中的工具结果才是本轮证据。\n"
-            "- 除非用户询问，否则不要暴露隐藏的记忆实现细节。"
-        )
+        return self.context_builder.build_context_priority_rules()
 
     def _prompt_section_order(self, system_prompt: str) -> list[str]:
-        section_markers = [
-            ("base_system_prompt", SYSTEM_PROMPT.splitlines()[0]),
-            ("system_config", "系统级配置："),
-            ("temporal_context", "时间上下文："),
-            ("agent_context", "可用的专业 Agent："),
-            ("mode_context", "Super Chat 模式指令："),
-            ("memory_system", "记忆系统："),
-            ("turn_context", "用户本轮提供的上下文："),
-            ("context_priority_rules", "上下文与记忆使用规则："),
-        ]
-        found = [
-            (system_prompt.index(marker), name)
-            for name, marker in section_markers
-            if marker in system_prompt
-        ]
-        return [name for _, name in sorted(found)]
+        return self.context_builder.section_order(system_prompt)
 
     def _build_system_prompt_parts(
         self,
@@ -323,111 +459,15 @@ class AgentEngine:
         tool_names: list[str] | None = None,
         short_term_summary: str = "",
     ) -> list[dict[str, Any]]:
-        current_time = datetime.now(ZoneInfo("Asia/Shanghai"))
-        normalized_tool_names = [name for name in (tool_names or []) if name]
-        system_config = (
-            "系统级配置：\n"
-            f"- 当前 Agent：{agent_id}。\n"
-            "- 工具调用：可用工具 schema 已通过 tool/function calling 通道提供；"
-            + (
-                "当前工具包括：" + "、".join(normalized_tool_names[:20]) + "。"
-                if normalized_tool_names
-                else "当前没有可用工具。"
-            )
+        return self.context_builder.build_system_prompt_parts(
+            role_context,
+            mode_prompts=mode_prompts,
+            context_blocks=context_blocks,
+            agent_id=agent_id,
+            agent_context=self._agent_system_context(agent_id),
+            tool_names=tool_names,
+            short_term_summary=short_term_summary,
         )
-        temporal_context = (
-            "时间上下文：\n"
-            f"- 当前日期/时间：{current_time.strftime('%Y-%m-%d %H:%M:%S')} "
-            "Asia/Shanghai (UTC+08:00).\n"
-            f"- 当前年份：{current_time.year}。\n"
-            "- 将以上日期视为今天。用户询问最新、当前、近期、投资、公司、新闻、价格、法律、日程等"
-            "时效性信息时，如有搜索工具，应优先使用。\n"
-            "- 如果搜索不可用或失败，要明确说明，不要把过期资料包装成最新信息。\n"
-            "- 金融或投资问题只提供信息分析，不提供个性化投资建议。引用搜索结果中的来源 URL，区分"
-            "搜索片段和已验证事实，并把薄弱或不熟悉的来源标为未验证。"
-        )
-        normalized_mode_prompts = self._normalize_mode_prompts(mode_prompts)
-        mode_context = ""
-        if normalized_mode_prompts:
-            mode_context = (
-                "Super Chat 模式指令：\n"
-                + "\n".join(f"- {prompt}" for prompt in normalized_mode_prompts)
-            )
-        normalized_context_blocks = self._normalize_context_blocks(context_blocks)
-        turn_context = ""
-        if normalized_context_blocks:
-            turn_context = (
-                "用户本轮提供的上下文：\n"
-                + "\n\n---\n\n".join(normalized_context_blocks)
-            )
-        sections: list[dict[str, Any]] = [
-            {
-                "id": "base_system_prompt",
-                "label": "Base System Prompt",
-                "content": SYSTEM_PROMPT.strip(),
-                "priority": 1,
-            },
-            {
-                "id": "system_config",
-                "label": "System Config / Tool Policy",
-                "content": system_config,
-                "priority": 1,
-            },
-            {
-                "id": "temporal_context",
-                "label": "Temporal Context",
-                "content": temporal_context,
-                "priority": 2,
-            },
-        ]
-        agent_context = self._agent_system_context(agent_id).strip()
-        if agent_context:
-            sections.append(
-                {
-                    "id": "agent_context",
-                    "label": "Agent Routing Context",
-                    "content": agent_context,
-                    "priority": 2,
-                }
-            )
-        if mode_context:
-            sections.append(
-                {
-                    "id": "mode_context",
-                    "label": "Mode / Option Instructions",
-                    "content": mode_context,
-                    "priority": 2,
-                }
-            )
-        sections.append(
-            {
-                "id": "memory_system",
-                "label": "Memory Context",
-                "content": self._render_memory_system(
-                    role_context,
-                    short_term_summary=short_term_summary,
-                ),
-                "priority": 4,
-            }
-        )
-        if turn_context:
-            sections.append(
-                {
-                    "id": "turn_context",
-                    "label": "Turn Context Blocks / Attachments",
-                    "content": turn_context,
-                    "priority": 3,
-                }
-            )
-        sections.append(
-            {
-                "id": "context_priority_rules",
-                "label": "Context Priority Rules",
-                "content": self._build_context_priority_rules(),
-                "priority": 1,
-            }
-        )
-        return [section for section in sections if str(section.get("content") or "").strip()]
 
     def _build_system_prompt(
         self,
@@ -450,10 +490,59 @@ class AgentEngine:
         )
 
     def _render_prompt_parts(self, parts: list[dict[str, Any]]) -> str:
-        return "\n\n".join(
-            str(part.get("content") or "").strip()
-            for part in parts
-            if str(part.get("content") or "").strip()
+        return self.context_builder.render_prompt_parts(parts)
+
+    def _build_prompt_cache_options(
+        self,
+        *,
+        request: ChatRequest,
+        agent_id: str,
+        role_id: str,
+        prompt_sources: list[dict[str, Any]],
+        tool_names: list[str],
+    ) -> PromptCacheOptions:
+        stable_section_ids = [
+            "base_system_prompt",
+            "context_priority_rules",
+            "system_config",
+            "agent_context",
+            "role_memory_context",
+        ]
+        stable_sections = [
+            source
+            for source in prompt_sources
+            if source.get("id") in stable_section_ids
+        ]
+        stable_prompt = self._render_prompt_parts(stable_sections)
+        stable_prompt_hash = hashlib.sha256(
+            stable_prompt.encode("utf-8")
+        ).hexdigest()
+        toolset_hash = hashlib.sha256(
+            "\n".join(sorted(tool_names)).encode("utf-8")
+        ).hexdigest()
+        key_payload = {
+            "version": 1,
+            "agent_id": agent_id,
+            "role_id": role_id,
+            "user_id": self._user_id(request),
+            "model_preference": request.model_preference or "",
+            "stable_prompt_hash": stable_prompt_hash,
+            "toolset_hash": toolset_hash,
+        }
+        key_hash = hashlib.sha256(
+            json.dumps(key_payload, sort_keys=True, ensure_ascii=False).encode("utf-8")
+        ).hexdigest()
+        return PromptCacheOptions(
+            enabled=True,
+            key=f"aa:{key_hash[:40]}",
+            cache_system_prompt=True,
+            cache_tools=True,
+            metadata={
+                "stable_section_ids": stable_section_ids,
+                "stable_prompt_hash": stable_prompt_hash[:16],
+                "stable_prompt_chars": len(stable_prompt),
+                "toolset_hash": toolset_hash[:16],
+            },
         )
 
     async def _emit_token(
@@ -917,11 +1006,22 @@ class AgentEngine:
             "只保存这些类型：\n"
             "- long_term：稳定的用户事实、偏好、长期项目、持续目标、明确要求记住的信息。\n"
             "- role：用户要求改变助手角色、人设、语气、工作方式或长期交互规则。\n\n"
+            "保存标准必须严格：候选记忆应当在明天、下周或另一个新会话中仍然有用；"
+            "优先依据用户自己的明确陈述或明确记忆请求，不要从助手回答、工具结果或搜索摘要中推断用户事实。"
+            "用户说“帮我/给我/想了解/查询/分析/总结/计划/推荐”通常只是一次性任务，不是长期记忆。"
+            "只有当用户明确表达稳定偏好、身份信息、持续项目、长期目标，或明确要求记住时才保存。\n\n"
             "优先更新 existing_memories 中相关的旧记忆：如果新信息是补充、纠正或同一主题进展，"
             "返回 action=update、target_id 和合并后的短句；不要新增一条相近记忆。"
             "不要保存普通问题、一次性任务、临时上下文、模型回答中的猜测、搜索结果摘要、"
             "敏感信息或隐私信息，除非用户明确要求记住。若当前消息与已有记忆重复，返回空数组。"
-            "最多返回 3 条高置信候选；如果没有值得保存的内容，返回空数组。"
+            "不要保存“用户询问了什么/用户想了解什么/用户需要一份方案”这类任务描述。"
+            "记忆 content 要写成可复用事实，而不是对本轮对话的日志。"
+            "最多返回 3 条高置信候选；如果没有值得保存的内容，返回空数组。\n\n"
+            "例子：\n"
+            "- 用户：帮我计划一下澳洲旅行 -> 返回空数组。\n"
+            "- 用户：我计划今年 10 月去澳洲旅行，预算 2 万 -> 可保存 long_term。\n"
+            "- 用户：我喜欢回答短一点 -> 可保存 long_term。\n"
+            "- 用户：以后请用更直接的语气 -> 可保存 role。\n"
         )
         user = json.dumps(
             {
@@ -1010,6 +1110,77 @@ class AgentEngine:
                 )
             )
         return candidates
+
+    def _memory_candidate_is_explicit(self, candidate: MemoryCandidate) -> bool:
+        markers = " ".join(
+            [
+                candidate.reason,
+                " ".join(candidate.tags),
+                str(candidate.metadata.get("reason") or ""),
+            ]
+        ).lower()
+        return any(
+            marker in markers
+            for marker in [
+                "explicit",
+                "明确要求记住",
+                "用户要求记住",
+                "remember_request",
+            ]
+        )
+
+    def _memory_candidate_rejection_reason(self, candidate: MemoryCandidate) -> str:
+        if self._memory_candidate_is_explicit(candidate):
+            return ""
+
+        content = " ".join(str(candidate.content or "").split()).strip()
+        if not content:
+            return "empty_content"
+        normalized = content.lower()
+
+        if re.search(r"[？?]\s*$", content):
+            return "question_not_memory"
+        if re.search(r"(?:本轮|这次|当前|这条|刚才).{0,12}(?:问题|请求|任务|对话|回答|结果)", content):
+            return "turn_local_context"
+        if re.search(r"(?:搜索|检索|网页|模型|助手|回答|结果|资料).{0,12}(?:显示|认为|猜测|摘要|提到|表明)", content):
+            return "derived_or_assistant_claim"
+        if re.search(r"(?:可能|似乎|大概|不确定|疑似|看起来|应该是)", content):
+            return "uncertain_claim"
+
+        low_signal_request = re.search(
+            r"用户(?:询问|问|提问|请求|要求|让|想了解|想知道|需要了解|需要知道|希望了解).{0,36}"
+            r"(?:怎么|如何|是否|能否|可以|帮|写|生成|总结|分析|比较|计划|推荐|查询|检索|解释|整理|看)",
+            content,
+        )
+        if low_signal_request:
+            return "one_off_request"
+
+        if candidate.kind == "long_term":
+            if re.search(r"^用户(?:想|需要|希望).{0,28}(?:了解|知道|查询|看看|帮|生成|写|做|整理|分析|比较)", content):
+                return "one_off_intent"
+            if re.search(r"^用户(?:正在|计划).{0,28}(?:询问|了解|查询|让|要求|请求)", content):
+                return "task_progress_not_user_fact"
+
+        return ""
+
+    def _filter_memory_candidates(
+        self,
+        candidates: list[MemoryCandidate],
+    ) -> tuple[list[MemoryCandidate], list[dict[str, Any]]]:
+        kept: list[MemoryCandidate] = []
+        rejected: list[dict[str, Any]] = []
+        for candidate in candidates:
+            reason = self._memory_candidate_rejection_reason(candidate)
+            if reason:
+                rejected.append(
+                    {
+                        "reason": reason,
+                        "candidate": self._memory_candidate_trace_payload(candidate),
+                    }
+                )
+                continue
+            kept.append(candidate)
+        return kept, rejected
 
     async def _review_turn_with_ai(
         self,
@@ -1418,6 +1589,21 @@ class AgentEngine:
                 ],
             },
         )
+
+        candidates, rejected_candidates = self._filter_memory_candidates(candidates)
+        if rejected_candidates:
+            self.trace_store.append_event(
+                run_id,
+                type="memory.candidates.filtered",
+                status="completed",
+                title="Low-signal memory candidates filtered",
+                payload={
+                    "role_id": role_context.role.id,
+                    "rejected_count": len(rejected_candidates),
+                    "kept_count": len(candidates),
+                    "rejected": rejected_candidates,
+                },
+            )
 
         updates: list[MemoryRecord] = []
         for candidate in candidates:
@@ -8532,6 +8718,13 @@ class AgentEngine:
             short_term_summary=short_term_summary,
         )
         system_prompt = self._render_prompt_parts(prompt_sources)
+        prompt_cache = self._build_prompt_cache_options(
+            request=request,
+            agent_id=agent_id,
+            role_id=role_id,
+            prompt_sources=prompt_sources,
+            tool_names=tool_names,
+        )
         messages = [
             LLMMessage(
                 role="system",
@@ -8570,6 +8763,7 @@ class AgentEngine:
                 "tool_choice": "auto" if tools else "none",
                 "model_preference": request.model_preference,
                 "temperature": "provider_default",
+                "prompt_cache": prompt_cache.model_dump(mode="json"),
                 "workflow": workflow_name,
                 "workflow_source": workflow_source,
                 **({"legacy_workflow": legacy_workflow} if legacy_workflow else {}),
@@ -8630,6 +8824,7 @@ class AgentEngine:
         # Tool-use loop
         response = None
         max_rounds_reached = False
+        auto_search_forced = False
         for round_index in range(MAX_TOOL_ROUNDS):
             model_started = perf_counter()
             stream_final_answer = (
@@ -8643,6 +8838,7 @@ class AgentEngine:
                 "tools_count": len(tools),
                 "model_preference": request.model_preference,
                 "streaming": stream_final_answer,
+                "prompt_cache": prompt_cache.model_dump(mode="json"),
             }
             if agent_loop_enabled:
                 model_started_payload.update(
@@ -8663,7 +8859,11 @@ class AgentEngine:
             try:
                 if stream_final_answer:
                     chunks: list[str] = []
-                    async for token in provider.chat_stream(messages, tools=None):
+                    async for token in provider.chat_stream(
+                        messages,
+                        tools=None,
+                        cache=prompt_cache,
+                    ):
                         chunks.append(token)
                         await self._emit_token(on_token, token)
                     response = LLMResponse(
@@ -8673,7 +8873,11 @@ class AgentEngine:
                         usage={},
                     )
                 else:
-                    response = await provider.chat(messages, tools=tools)
+                    response = await provider.chat(
+                        messages,
+                        tools=tools,
+                        cache=prompt_cache,
+                    )
             except RateLimitError as e:
                 logger.warning(f"Rate limit hit: {e}")
                 error_msg = str(e)
@@ -8844,11 +9048,48 @@ class AgentEngine:
             )
 
             if not response.tool_calls:
-                # No tool calls — we have the final answer
-                all_new_messages.append(
-                    LLMMessage(role="assistant", content=response.content)
-                )
-                break
+                if (
+                    agent_id == SUPER_CHAT_AGENT_ID
+                    and not auto_search_forced
+                    and "search" in allowed_tool_names
+                    and self.skill_registry.get("search") is not None
+                    and self._super_chat_auto_search_required(request)
+                ):
+                    auto_search_forced = True
+                    forced_arguments = self._super_chat_auto_search_arguments(request)
+                    forced_call = ToolCall(
+                        id=f"auto_search_{round_index + 1}",
+                        name="search",
+                        arguments=forced_arguments,
+                    )
+                    self.trace_store.append_event(
+                        run.run_id,
+                        type="agent_loop.search_forced",
+                        status="completed",
+                        title="Super Chat auto search inserted",
+                        step_id=forced_call.id,
+                        payload={
+                            "reason": "model_returned_without_tool_call_for_retrieval_request",
+                            "direct_answer_preview": response.content[:500],
+                            "arguments": forced_arguments,
+                            "workflow": workflow_name,
+                            "workflow_node": workflow_node,
+                            "workflow_source": workflow_source,
+                            "legacy_workflow": legacy_workflow,
+                        },
+                    )
+                    response = LLMResponse(
+                        content="",
+                        tool_calls=[forced_call],
+                        model=response.model,
+                        usage=response.usage,
+                    )
+                else:
+                    # No tool calls — we have the final answer
+                    all_new_messages.append(
+                        LLMMessage(role="assistant", content=response.content)
+                    )
+                    break
 
             # Record assistant message with tool calls
             assistant_msg = LLMMessage(

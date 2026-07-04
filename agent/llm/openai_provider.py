@@ -4,7 +4,15 @@ from typing import AsyncIterator
 
 import openai
 
-from .base import LLMMessage, LLMProvider, LLMResponse, RateLimitError, ToolCall, ToolDefinition
+from .base import (
+    LLMMessage,
+    LLMProvider,
+    LLMResponse,
+    PromptCacheOptions,
+    RateLimitError,
+    ToolCall,
+    ToolDefinition,
+)
 from .multimodal import content_to_plain_text, normalize_content_parts
 
 
@@ -88,11 +96,44 @@ class OpenAIProvider(LLMProvider):
     def _extra_chat_kwargs(self) -> dict:
         return {}
 
+    def _supports_prompt_cache_key(self) -> bool:
+        if self.provider_name != "openai":
+            return False
+        base_url = str(getattr(self.client, "base_url", "") or "")
+        return not base_url or "api.openai.com" in base_url
+
+    def _apply_cache_options(
+        self,
+        kwargs: dict,
+        cache: PromptCacheOptions | None,
+    ) -> None:
+        if not cache or not cache.enabled or not cache.key:
+            return
+        if not self._supports_prompt_cache_key():
+            return
+        extra_body = dict(kwargs.get("extra_body") or {})
+        extra_body["prompt_cache_key"] = cache.key
+        kwargs["extra_body"] = extra_body
+
+    def _usage_payload(self, usage) -> dict[str, int]:
+        if not usage:
+            return {"input": 0, "output": 0}
+        payload = {
+            "input": usage.prompt_tokens,
+            "output": usage.completion_tokens,
+        }
+        prompt_details = getattr(usage, "prompt_tokens_details", None)
+        cached_tokens = getattr(prompt_details, "cached_tokens", None)
+        if cached_tokens is not None:
+            payload["input_cached"] = cached_tokens
+        return payload
+
     async def chat(
         self,
         messages: list[LLMMessage],
         tools: list[ToolDefinition] | None = None,
         temperature: float = 0.7,
+        cache: PromptCacheOptions | None = None,
     ) -> LLMResponse:
         converted = self._convert_messages(messages)
         kwargs = {
@@ -104,6 +145,7 @@ class OpenAIProvider(LLMProvider):
         openai_tools = self._convert_tools(tools)
         if openai_tools:
             kwargs["tools"] = openai_tools
+        self._apply_cache_options(kwargs, cache)
 
         try:
             response = await self.client.chat.completions.create(**kwargs)
@@ -134,10 +176,7 @@ class OpenAIProvider(LLMProvider):
             content=message.content or "",
             tool_calls=tool_calls,
             model=response.model,
-            usage={
-                "input": response.usage.prompt_tokens if response.usage else 0,
-                "output": response.usage.completion_tokens if response.usage else 0,
-            },
+            usage=self._usage_payload(response.usage),
         )
 
     async def chat_stream(
@@ -145,6 +184,7 @@ class OpenAIProvider(LLMProvider):
         messages: list[LLMMessage],
         tools: list[ToolDefinition] | None = None,
         temperature: float = 0.7,
+        cache: PromptCacheOptions | None = None,
     ) -> AsyncIterator[str]:
         converted = self._convert_messages(messages)
         kwargs = {
@@ -157,6 +197,7 @@ class OpenAIProvider(LLMProvider):
         openai_tools = self._convert_tools(tools)
         if openai_tools:
             kwargs["tools"] = openai_tools
+        self._apply_cache_options(kwargs, cache)
 
         stream = await self.client.chat.completions.create(**kwargs)
         async for chunk in stream:

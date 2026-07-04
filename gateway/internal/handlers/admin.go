@@ -3,6 +3,7 @@ package handlers
 import (
 	"log/slog"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -63,10 +64,171 @@ func (h *AdminHandler) GetSettings(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"settings": result})
 }
 
+func (h *AdminHandler) GetCosts(c *gin.Context) {
+	var accounts []models.Account
+	if err := database.DB.Order("created_at asc").Find(&accounts).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load accounts"})
+		return
+	}
+
+	usageQuery := database.DB.Order("created_at desc")
+	if rawDays := strings.TrimSpace(c.Query("days")); rawDays != "" {
+		days, err := strconv.Atoi(rawDays)
+		if err != nil || days <= 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid days"})
+			return
+		}
+		usageQuery = usageQuery.Where("created_at >= ?", time.Now().AddDate(0, 0, -days))
+	}
+
+	var usages []models.TokenUsage
+	if err := usageQuery.Find(&usages).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load token usage"})
+		return
+	}
+
+	accountByID := make(map[string]*CostAccountSummary, len(accounts))
+	for _, account := range accounts {
+		password, available, note := accountPasswordForAdmin(account)
+		accountSummary := &CostAccountSummary{
+			ID:                account.ID,
+			Name:              account.Name,
+			Password:          password,
+			PasswordSet:       account.PasswordHash != "",
+			PasswordAvailable: available,
+			PasswordNote:      note,
+			CreatedAt:         account.CreatedAt,
+			UpdatedAt:         account.UpdatedAt,
+		}
+		accountByID[account.ID] = accountSummary
+	}
+
+	moduleByKey := map[string]*CostModuleSummary{}
+	summary := CostReportSummary{TotalAccounts: len(accountByID)}
+	for _, account := range accountByID {
+		if account.PasswordAvailable {
+			summary.AccountsWithPasswords += 1
+		}
+	}
+
+	for _, usage := range usages {
+		userID := normalizedUserID(usage.UserID)
+		accountSummary := accountByID[userID]
+		if accountSummary == nil {
+			accountSummary = &CostAccountSummary{
+				ID:           userID,
+				Name:         "Unknown account " + userID,
+				PasswordNote: "account record was not found",
+			}
+			accountByID[userID] = accountSummary
+			summary.TotalAccounts += 1
+		}
+
+		addUsageTotals(&summary.CostTotals, usage)
+		addUsageTotals(&accountSummary.CostTotals, usage)
+
+		agentID := strings.TrimSpace(usage.AgentID)
+		if agentID == "" {
+			agentID = superChatAgentID
+		}
+		moduleKey := userID + "\x00" + agentID + "\x00" + strings.TrimSpace(usage.Runtime)
+		moduleSummary := moduleByKey[moduleKey]
+		if moduleSummary == nil {
+			moduleSummary = &CostModuleSummary{
+				AccountID:   userID,
+				AccountName: accountSummary.Name,
+				AgentID:     agentID,
+				ModuleName:  moduleDisplayName(agentID),
+				Runtime:     usage.Runtime,
+			}
+			moduleByKey[moduleKey] = moduleSummary
+		}
+		addUsageTotals(&moduleSummary.CostTotals, usage)
+	}
+
+	accountSummaries := make([]CostAccountSummary, 0, len(accountByID))
+	for _, account := range accountByID {
+		accountSummaries = append(accountSummaries, *account)
+	}
+	sort.Slice(accountSummaries, func(i, j int) bool {
+		if accountSummaries[i].TotalTokens != accountSummaries[j].TotalTokens {
+			return accountSummaries[i].TotalTokens > accountSummaries[j].TotalTokens
+		}
+		if accountSummaries[i].CreatedAt.Equal(accountSummaries[j].CreatedAt) {
+			return accountSummaries[i].ID < accountSummaries[j].ID
+		}
+		return accountSummaries[i].CreatedAt.Before(accountSummaries[j].CreatedAt)
+	})
+
+	moduleSummaries := make([]CostModuleSummary, 0, len(moduleByKey))
+	for _, module := range moduleByKey {
+		moduleSummaries = append(moduleSummaries, *module)
+	}
+	sort.Slice(moduleSummaries, func(i, j int) bool {
+		if moduleSummaries[i].AccountName != moduleSummaries[j].AccountName {
+			return moduleSummaries[i].AccountName < moduleSummaries[j].AccountName
+		}
+		if moduleSummaries[i].TotalTokens != moduleSummaries[j].TotalTokens {
+			return moduleSummaries[i].TotalTokens > moduleSummaries[j].TotalTokens
+		}
+		return moduleSummaries[i].AgentID < moduleSummaries[j].AgentID
+	})
+
+	c.JSON(http.StatusOK, CostReportResponse{
+		Summary:  summary,
+		Accounts: accountSummaries,
+		Modules:  moduleSummaries,
+	})
+}
+
 type UpdateSettingsRequest struct {
 	Settings  map[string]string `json:"settings" binding:"required"`
 	Validate  bool              `json:"validate"`
 	Providers []string          `json:"providers"`
+}
+
+type CostTotals struct {
+	RequestCount             int        `json:"request_count"`
+	InputTokens              int        `json:"input_tokens"`
+	OutputTokens             int        `json:"output_tokens"`
+	TotalTokens              int        `json:"total_tokens"`
+	CachedInputTokens        int        `json:"cached_input_tokens"`
+	CacheCreationInputTokens int        `json:"cache_creation_input_tokens"`
+	ImageCount               int        `json:"image_count"`
+	LastUsedAt               *time.Time `json:"last_used_at,omitempty"`
+}
+
+type CostReportSummary struct {
+	TotalAccounts         int `json:"total_accounts"`
+	AccountsWithPasswords int `json:"accounts_with_passwords"`
+	CostTotals
+}
+
+type CostAccountSummary struct {
+	ID                string    `json:"id"`
+	Name              string    `json:"name"`
+	Password          string    `json:"password"`
+	PasswordSet       bool      `json:"password_set"`
+	PasswordAvailable bool      `json:"password_available"`
+	PasswordNote      string    `json:"password_note"`
+	CreatedAt         time.Time `json:"created_at"`
+	UpdatedAt         time.Time `json:"updated_at"`
+	CostTotals
+}
+
+type CostModuleSummary struct {
+	AccountID   string `json:"account_id"`
+	AccountName string `json:"account_name"`
+	AgentID     string `json:"agent_id"`
+	ModuleName  string `json:"module_name"`
+	Runtime     string `json:"runtime"`
+	CostTotals
+}
+
+type CostReportResponse struct {
+	Summary  CostReportSummary    `json:"summary"`
+	Accounts []CostAccountSummary `json:"accounts"`
+	Modules  []CostModuleSummary  `json:"modules"`
 }
 
 // UpdateSettings saves settings and syncs to Python agent
@@ -367,4 +529,47 @@ func sanitizeValidationMessage(provider string, message string, settings map[str
 		return message
 	}
 	return strings.ReplaceAll(message, apiKey, maskKey(apiKey))
+}
+
+func accountPasswordForAdmin(account models.Account) (string, bool, string) {
+	password := strings.TrimSpace(account.PasswordView)
+	if password != "" {
+		return password, true, ""
+	}
+	if strings.TrimSpace(account.PasswordHash) != "" {
+		return "", false, "password is hashed and cannot be recovered"
+	}
+	return "", false, "password is not set"
+}
+
+func addUsageTotals(totals *CostTotals, usage models.TokenUsage) {
+	if totals == nil {
+		return
+	}
+	totals.RequestCount += 1
+	totals.InputTokens += usage.InputTokens
+	totals.OutputTokens += usage.OutputTokens
+	totals.TotalTokens += usage.TotalTokens
+	totals.CachedInputTokens += usage.CachedInputTokens
+	totals.CacheCreationInputTokens += usage.CacheCreationInputTokens
+	totals.ImageCount += usage.ImageCount
+	if totals.LastUsedAt == nil || usage.CreatedAt.After(*totals.LastUsedAt) {
+		lastUsedAt := usage.CreatedAt
+		totals.LastUsedAt = &lastUsedAt
+	}
+}
+
+func moduleDisplayName(agentID string) string {
+	switch strings.TrimSpace(agentID) {
+	case "", superChatAgentID:
+		return "Super Chat"
+	case "deep_research_v1":
+		return "Deep Research"
+	case "image_generation_v1":
+		return "Image Generation"
+	case "weight_loss_v1":
+		return "Weight Loss"
+	default:
+		return agentID
+	}
 }

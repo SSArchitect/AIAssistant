@@ -1,6 +1,7 @@
 """Unit tests for LLM base classes and factory."""
 import pytest
-from agent.llm.base import LLMMessage, LLMResponse, ToolCall, ToolDefinition
+from agent.llm.base import LLMMessage, LLMResponse, PromptCacheOptions, ToolCall, ToolDefinition
+from agent.llm.claude_provider import ClaudeProvider
 from agent.llm.factory import create_provider
 from agent.llm.minimax_provider import MiniMaxProvider
 from agent.llm.openai_provider import OpenAIProvider
@@ -61,6 +62,22 @@ def test_openai_compatible_provider_accepts_explicit_timeout():
 def test_openai_compatible_provider_rejects_empty_api_key():
     with pytest.raises(ValueError, match="MiniMax API key not configured"):
         MiniMaxProvider(api_key="")
+
+
+def test_claude_provider_caches_only_stable_system_prefix():
+    provider = ClaudeProvider(api_key="test-key", model="test-model")
+    stable = "stable policy"
+    system = stable + "\n\ndynamic turn context"
+
+    payload = provider._system_payload(
+        system,
+        PromptCacheOptions(metadata={"stable_prompt_chars": len(stable)}),
+    )
+
+    assert isinstance(payload, list)
+    assert payload[0]["text"] == stable
+    assert payload[0]["cache_control"] == {"type": "ephemeral"}
+    assert payload[1]["text"] == "dynamic turn context"
 
 
 def test_minimax_provider_defaults_to_long_timeout():

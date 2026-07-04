@@ -115,7 +115,7 @@ func TestChatSyncsSettingsBeforeAgentRequest(t *testing.T) {
 				"skills_used": [],
 				"citations": [],
 				"model_used": "test-model",
-				"tokens_used": {},
+				"tokens_used": {"input": 5, "output": 2, "input_cached": 1},
 				"agent_id": "super_chat",
 				"runtime": "self",
 				"run_id": "run_sync",
@@ -173,6 +173,13 @@ func TestChatSyncsSettingsBeforeAgentRequest(t *testing.T) {
 	}
 	if !strings.Contains(messages[1].TraceEvents, "run.completed") {
 		t.Fatalf("expected trace events to persist, got %q", messages[1].TraceEvents)
+	}
+	var usage models.TokenUsage
+	if err := database.DB.First(&usage, "message_id = ?", messages[1].ID).Error; err != nil {
+		t.Fatalf("load token usage: %v", err)
+	}
+	if usage.UserID != models.DefaultAccountID || usage.AgentID != "super_chat" || usage.InputTokens != 5 || usage.OutputTokens != 2 || usage.TotalTokens != 7 || usage.CachedInputTokens != 1 {
+		t.Fatalf("unexpected token usage: %#v", usage)
 	}
 }
 

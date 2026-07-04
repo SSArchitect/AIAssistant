@@ -4,7 +4,14 @@ from typing import AsyncIterator
 
 import ollama
 
-from .base import LLMMessage, LLMProvider, LLMResponse, ToolCall, ToolDefinition
+from .base import (
+    LLMMessage,
+    LLMProvider,
+    LLMResponse,
+    PromptCacheOptions,
+    ToolCall,
+    ToolDefinition,
+)
 from .multimodal import content_to_plain_text
 
 
@@ -40,6 +47,7 @@ class OllamaProvider(LLMProvider):
         messages: list[LLMMessage],
         tools: list[ToolDefinition] | None = None,
         temperature: float = 0.7,
+        cache: PromptCacheOptions | None = None,
     ) -> LLMResponse:
         converted = self._convert_messages(messages)
         kwargs = {
@@ -81,6 +89,7 @@ class OllamaProvider(LLMProvider):
         messages: list[LLMMessage],
         tools: list[ToolDefinition] | None = None,
         temperature: float = 0.7,
+        cache: PromptCacheOptions | None = None,
     ) -> AsyncIterator[str]:
         converted = self._convert_messages(messages)
         response = await self.client.chat(

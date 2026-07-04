@@ -227,6 +227,140 @@ body {
     line-height: 1.5;
 }
 
+.cost-toolbar {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 12px;
+    align-items: start;
+}
+
+.cost-metrics {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 8px;
+}
+
+.cost-metric {
+    min-height: 64px;
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg-input);
+    display: grid;
+    align-content: center;
+    gap: 2px;
+}
+
+.cost-metric strong {
+    min-width: 0;
+    color: var(--text-primary);
+    font-size: 18px;
+    font-weight: 800;
+    line-height: 1.15;
+    overflow-wrap: anywhere;
+}
+
+.cost-metric span {
+    color: var(--text-secondary);
+    font-size: 11px;
+    font-weight: 700;
+}
+
+.cost-table-group {
+    display: grid;
+    gap: 18px;
+    margin-top: 18px;
+}
+
+.cost-table-block h3 {
+    margin-bottom: 8px;
+    font-size: 13px;
+    font-weight: 800;
+}
+
+.cost-table-wrap {
+    width: 100%;
+    overflow-x: auto;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+}
+
+.cost-table {
+    width: 100%;
+    min-width: 760px;
+    border-collapse: collapse;
+    background: var(--bg-card);
+}
+
+.cost-table th,
+.cost-table td {
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border);
+    text-align: left;
+    font-size: 12px;
+    vertical-align: top;
+    white-space: nowrap;
+}
+
+.cost-table th {
+    background: var(--bg-input);
+    color: var(--text-secondary);
+    font-size: 11px;
+    font-weight: 800;
+    text-transform: uppercase;
+}
+
+.cost-table tr:last-child td {
+    border-bottom: 0;
+}
+
+.cost-account-cell {
+    display: grid;
+    gap: 2px;
+    min-width: 120px;
+}
+
+.cost-account-cell span {
+    color: var(--text-primary);
+    font-weight: 700;
+}
+
+.cost-account-cell small {
+    color: var(--text-secondary);
+    font-family: "SF Mono", Menlo, Consolas, monospace;
+    font-size: 10px;
+}
+
+.cost-password {
+    display: inline-block;
+    max-width: 220px;
+    padding: 2px 6px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg-input);
+    color: var(--text-primary);
+    font-family: "SF Mono", Menlo, Consolas, monospace;
+    font-size: 11px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    vertical-align: top;
+}
+
+.cost-muted,
+.cost-empty {
+    color: var(--text-secondary);
+}
+
+.cost-empty {
+    text-align: center;
+    font-style: italic;
+}
+
+.cost-empty.error {
+    color: var(--error);
+    background: var(--error-bg);
+}
+
 .provider-tabs {
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -931,6 +1065,14 @@ body {
         grid-template-columns: 1fr;
     }
 
+    .cost-toolbar {
+        grid-template-columns: 1fr;
+    }
+
+    .cost-metrics {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
     .provider-tabs {
         grid-template-columns: repeat(2, minmax(0, 1fr));
     }
@@ -976,6 +1118,10 @@ body {
     }
 
     .provider-tabs {
+        grid-template-columns: 1fr;
+    }
+
+    .cost-metrics {
         grid-template-columns: 1fr;
     }
 

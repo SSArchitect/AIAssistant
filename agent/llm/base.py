@@ -2,7 +2,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Any, AsyncIterator, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class LLMMessage(BaseModel):
@@ -16,6 +16,14 @@ class ToolDefinition(BaseModel):
     name: str
     description: str
     parameters: dict[str, Any]  # JSON Schema
+
+
+class PromptCacheOptions(BaseModel):
+    enabled: bool = True
+    key: str | None = None
+    cache_system_prompt: bool = True
+    cache_tools: bool = True
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class ToolCall(BaseModel):
@@ -47,6 +55,7 @@ class LLMProvider(ABC):
         messages: list[LLMMessage],
         tools: list[ToolDefinition] | None = None,
         temperature: float = 0.7,
+        cache: PromptCacheOptions | None = None,
     ) -> LLMResponse:
         ...
 
@@ -56,5 +65,6 @@ class LLMProvider(ABC):
         messages: list[LLMMessage],
         tools: list[ToolDefinition] | None = None,
         temperature: float = 0.7,
+        cache: PromptCacheOptions | None = None,
     ) -> AsyncIterator[str]:
         ...

@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Settings - Agent Assistant</title>
-    <link rel="stylesheet" href="/static/css/admin.css?v=7">
+    <link rel="stylesheet" href="/static/css/admin.css?v=8">
 </head>
 <body>
     <div class="admin-app">
@@ -39,6 +39,67 @@
                         <div class="config-hint">
                             <strong data-i18n="basic.hintTitle">配置逻辑已简化</strong>
                             <span data-i18n="basic.hintBody">保存后会自动检测已配置的 API key 是否生效；也可以在当前 provider 面板单独验证。</span>
+                        </div>
+                    </div>
+                </section>
+
+                <section class="settings-card cost-management-card">
+                    <div class="card-header">
+                        <div class="provider-title">
+                            <h2 data-i18n="cost.title">成本管理</h2>
+                            <span class="provider-badge configured" id="cost-updated-badge">-</span>
+                        </div>
+                        <p class="card-desc" data-i18n="cost.desc">账号密码和 token 开销总览。</p>
+                    </div>
+                    <div class="card-body">
+                        <div class="cost-toolbar">
+                            <div class="cost-metrics" id="cost-metrics"></div>
+                            <button class="btn-test" type="button" data-refresh-costs title="Refresh">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+                                <span data-i18n="cost.refresh">刷新</span>
+                            </button>
+                        </div>
+                        <div class="cost-table-group">
+                            <div class="cost-table-block">
+                                <h3 data-i18n="cost.accounts">账号</h3>
+                                <div class="cost-table-wrap">
+                                    <table class="cost-table">
+                                        <thead>
+                                            <tr>
+                                                <th data-i18n="cost.account">账号</th>
+                                                <th data-i18n="cost.password">密码</th>
+                                                <th data-i18n="cost.requests">请求</th>
+                                                <th data-i18n="cost.totalTokens">总 Token</th>
+                                                <th data-i18n="cost.inputTokens">输入</th>
+                                                <th data-i18n="cost.outputTokens">输出</th>
+                                                <th data-i18n="cost.images">图片</th>
+                                                <th data-i18n="cost.lastUsed">最近使用</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="cost-account-rows"></tbody>
+                                    </table>
+                                </div>
+                            </div>
+                            <div class="cost-table-block">
+                                <h3 data-i18n="cost.modules">账号 x 模块</h3>
+                                <div class="cost-table-wrap">
+                                    <table class="cost-table">
+                                        <thead>
+                                            <tr>
+                                                <th data-i18n="cost.account">账号</th>
+                                                <th data-i18n="cost.module">模块</th>
+                                                <th data-i18n="cost.runtime">运行时</th>
+                                                <th data-i18n="cost.requests">请求</th>
+                                                <th data-i18n="cost.totalTokens">总 Token</th>
+                                                <th data-i18n="cost.inputTokens">输入</th>
+                                                <th data-i18n="cost.outputTokens">输出</th>
+                                                <th data-i18n="cost.images">图片</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="cost-module-rows"></tbody>
+                                    </table>
+                                </div>
+                            </div>
                         </div>
                     </div>
                 </section>
@@ -179,6 +240,6 @@
         </main>
     </div>
 
-    <script src="/static/js/admin.js?v=9"></script>
+    <script src="/static/js/admin.js?v=10"></script>
 </body>
 </html>

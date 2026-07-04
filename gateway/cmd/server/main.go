@@ -120,6 +120,7 @@ func main() {
 		{
 			admin.GET("/settings", adminHandler.GetSettings)
 			admin.PUT("/settings", adminHandler.UpdateSettings)
+			admin.GET("/costs", adminHandler.GetCosts)
 			admin.POST("/test-provider", adminHandler.TestProvider)
 			admin.POST("/validate-provider", adminHandler.ValidateProvider)
 			admin.POST("/list-models", adminHandler.ListModels)
