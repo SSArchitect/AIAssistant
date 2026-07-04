@@ -157,6 +157,8 @@ func main() {
 	r.StaticFile("/index.html", filepath.Join(webDir, "index.html"))
 	r.StaticFile("/guest", filepath.Join(webDir, "index.html"))
 	r.StaticFile("/guest/", filepath.Join(webDir, "index.html"))
+	r.StaticFile("/admin", filepath.Join(webDir, "admin.html"))
+	r.StaticFile("/admin/", filepath.Join(webDir, "admin.html"))
 	r.StaticFile("/admin.html", filepath.Join(webDir, "admin.html"))
 
 	// Start server
