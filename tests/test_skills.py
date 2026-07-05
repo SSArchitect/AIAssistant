@@ -1,5 +1,6 @@
 """Unit tests for builtin skills."""
 import asyncio
+import json
 
 import httpx
 import pytest
@@ -7,6 +8,13 @@ from agent.skills.builtin.echo import EchoSkill
 from agent.skills.builtin.datetime_skill import DateTimeSkill
 from agent.skills.builtin.calculator import CalculatorSkill
 from agent.skills.builtin.agent_tool import AgentToolSkill
+from agent.skills.builtin.drive import (
+    DriveGatewayClient,
+    DriveListSkill,
+    DriveReadSkill,
+    DriveSaveSkill,
+    DriveSearchSkill,
+)
 from agent.skills.builtin.open_url import OpenURLSkill
 from agent.skills.builtin.search import SearchSkill
 from agent.skills.base import Skill
@@ -1510,3 +1518,183 @@ class TestOpenURLSkill:
         assert result.success is False
         assert "Open URL failed: SilentConnectError" in result.error
         assert "EndOfStream" in result.error
+
+
+class TestDriveSkills:
+    def client(self, handler):
+        return DriveGatewayClient(
+            "http://gateway.test",
+            transport=httpx.MockTransport(handler),
+        )
+
+    @pytest.mark.asyncio
+    async def test_ls_resolves_drive_path_with_engine_user_context(self):
+        def handler(request: httpx.Request) -> httpx.Response:
+            assert request.headers["X-User-ID"] == "alice"
+            if request.method == "GET" and request.url.path == "/api/drive/tree":
+                return httpx.Response(
+                    200,
+                    json={
+                        "flat_items": [
+                            {"id": "root", "parent_id": "", "type": "folder", "name": "我的网盘"},
+                            {"id": "folder-1", "parent_id": "root", "type": "folder", "name": "Research"},
+                            {"id": "file-1", "parent_id": "folder-1", "type": "file", "name": "Notes.md", "size": 12},
+                        ]
+                    },
+                )
+            if request.method == "GET" and request.url.path == "/api/drive/items":
+                assert request.url.params.get("parent_id") == "folder-1"
+                return httpx.Response(
+                    200,
+                    json={"items": [{"id": "file-1", "parent_id": "folder-1", "type": "file", "name": "Notes.md", "size": 12}]},
+                )
+            return httpx.Response(404, json={"error": "not found"})
+
+        skill = DriveListSkill(client_factory=lambda: self.client(handler))
+
+        result = await skill.execute(path="/Research", _user_id="alice")
+
+        assert result.success is True
+        assert result.data["folder"]["id"] == "folder-1"
+        assert result.data["items"][0]["name"] == "Notes.md"
+        assert "Notes.md" in result.display_text
+
+    @pytest.mark.asyncio
+    async def test_search_drive_uses_gateway_search(self):
+        def handler(request: httpx.Request) -> httpx.Response:
+            assert request.headers["X-User-ID"] == "alice"
+            assert request.url.path == "/api/drive/search"
+            assert request.url.params.get("q") == "embedding"
+            return httpx.Response(
+                200,
+                json={
+                    "results": [
+                        {
+                            "item": {"id": "file-1", "type": "file", "name": "RAG.md", "size": 42},
+                            "score": 10,
+                            "snippet": "embedding search",
+                        }
+                    ]
+                },
+            )
+
+        skill = DriveSearchSkill(client_factory=lambda: self.client(handler))
+
+        result = await skill.execute(query="embedding", _user_id="alice")
+
+        assert result.success is True
+        assert result.data["results"][0]["item"]["id"] == "file-1"
+        assert "embedding search" in result.display_text
+
+    @pytest.mark.asyncio
+    async def test_read_drive_returns_text_content(self):
+        def handler(request: httpx.Request) -> httpx.Response:
+            assert request.headers["X-User-ID"] == "alice"
+            assert request.method == "GET"
+            assert request.url.path == "/api/drive/items/file-1"
+            return httpx.Response(
+                200,
+                json={
+                    "item": {
+                        "id": "file-1",
+                        "parent_id": "folder-1",
+                        "type": "file",
+                        "name": "Notes.md",
+                        "content": "Readable drive content.",
+                        "size": 23,
+                    }
+                },
+            )
+
+        skill = DriveReadSkill(client_factory=lambda: self.client(handler))
+
+        result = await skill.execute(item_id="file-1", _user_id="alice")
+
+        assert result.success is True
+        assert result.data["content"] == "Readable drive content."
+        assert "Readable drive content." in result.display_text
+
+    @pytest.mark.asyncio
+    async def test_read_drive_resolves_display_path_and_returns_item_path(self):
+        def handler(request: httpx.Request) -> httpx.Response:
+            assert request.headers["X-User-ID"] == "alice"
+            if request.method == "GET" and request.url.path == "/api/drive/tree":
+                return httpx.Response(
+                    200,
+                    json={
+                        "flat_items": [
+                            {"id": "root", "parent_id": "", "type": "folder", "name": "我的网盘"},
+                            {"id": "folder-1", "parent_id": "root", "type": "folder", "name": "knowledge"},
+                            {"id": "file-1", "parent_id": "folder-1", "type": "file", "name": "Notes.md", "size": 12},
+                        ]
+                    },
+                )
+            if request.method == "GET" and request.url.path == "/api/drive/items/file-1":
+                return httpx.Response(
+                    200,
+                    json={
+                        "item": {
+                            "id": "file-1",
+                            "parent_id": "folder-1",
+                            "type": "file",
+                            "name": "Notes.md",
+                            "content": "Readable drive content.",
+                            "size": 23,
+                        }
+                    },
+                )
+            return httpx.Response(404, json={"error": "not found"})
+
+        skill = DriveReadSkill(client_factory=lambda: self.client(handler))
+
+        result = await skill.execute(path="`我的网盘 / knowledge / Notes.md`", _user_id="alice")
+
+        assert result.success is True
+        assert result.data["item"]["path"] == "/knowledge/Notes.md"
+        assert result.data["content"] == "Readable drive content."
+
+    @pytest.mark.asyncio
+    async def test_save_drive_injects_user_id_into_gateway_body(self):
+        captured = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            assert request.headers["X-User-ID"] == "bob"
+            if request.method == "GET" and request.url.path == "/api/drive/tree":
+                return httpx.Response(
+                    200,
+                    json={
+                        "flat_items": [
+                            {"id": "root", "parent_id": "", "type": "folder", "name": "我的网盘"},
+                            {"id": "folder-1", "parent_id": "root", "type": "folder", "name": "Notes"},
+                        ]
+                    },
+                )
+            if request.method == "GET" and request.url.path == "/api/drive/items":
+                assert request.url.params.get("parent_id") == "folder-1"
+                return httpx.Response(200, json={"items": []})
+            if request.method == "POST" and request.url.path == "/api/drive/files":
+                captured.update(json.loads(request.content.decode("utf-8")))
+                return httpx.Response(
+                    201,
+                    json={
+                        "item": {
+                            "id": "file-2",
+                            "parent_id": "folder-1",
+                            "type": "file",
+                            "name": "todo.md",
+                            "content": "write me",
+                            "size": 8,
+                        }
+                    },
+                )
+            return httpx.Response(404, json={"error": "not found"})
+
+        skill = DriveSaveSkill(client_factory=lambda: self.client(handler))
+
+        result = await skill.execute(path="/Notes/todo.md", content="write me", _user_id="bob")
+
+        assert result.success is True
+        assert captured["user_id"] == "bob"
+        assert captured["parent_id"] == "folder-1"
+        assert captured["name"] == "todo.md"
+        assert captured["content"] == "write me"

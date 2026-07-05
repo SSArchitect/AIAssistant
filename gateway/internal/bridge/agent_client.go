@@ -28,6 +28,7 @@ type ChatRequest struct {
 	ModeIDs         []string               `json:"mode_ids,omitempty"`
 	ModePrompts     []string               `json:"mode_prompts,omitempty"`
 	ContextBlocks   []string               `json:"context_blocks,omitempty"`
+	DriveContext    *DriveContext          `json:"drive_context,omitempty"`
 	Attachments     []ChatAttachment       `json:"attachments,omitempty"`
 	AgentInput      map[string]interface{} `json:"agent_input,omitempty"`
 	Handoff         map[string]interface{} `json:"handoff,omitempty"`
@@ -67,6 +68,24 @@ type ChatAttachment struct {
 	Truncated bool   `json:"truncated,omitempty"`
 }
 
+type DriveContext struct {
+	CurrentFolderID string             `json:"current_folder_id,omitempty"`
+	CurrentPath     string             `json:"current_path,omitempty"`
+	Items           []DriveContextItem `json:"items,omitempty"`
+	Truncated       bool               `json:"truncated,omitempty"`
+}
+
+type DriveContextItem struct {
+	ID        string `json:"id,omitempty"`
+	Type      string `json:"type,omitempty"`
+	Name      string `json:"name,omitempty"`
+	Path      string `json:"path,omitempty"`
+	MimeType  string `json:"mime_type,omitempty"`
+	Size      int64  `json:"size,omitempty"`
+	Summary   string `json:"summary,omitempty"`
+	UpdatedAt string `json:"updated_at,omitempty"`
+}
+
 type SkillCallInfo struct {
 	Skill         string `json:"skill"`
 	Action        string `json:"action"`
@@ -80,6 +99,18 @@ type Citation struct {
 	URL      string                 `json:"url"`
 	Snippet  string                 `json:"snippet,omitempty"`
 	Source   string                 `json:"source,omitempty"`
+	Metadata map[string]interface{} `json:"metadata,omitempty"`
+}
+
+type ChatArtifact struct {
+	Type     string                 `json:"type"`
+	ItemID   string                 `json:"item_id,omitempty"`
+	Name     string                 `json:"name,omitempty"`
+	Title    string                 `json:"title,omitempty"`
+	MimeType string                 `json:"mime_type,omitempty"`
+	Size     int64                  `json:"size,omitempty"`
+	Summary  string                 `json:"summary,omitempty"`
+	URL      string                 `json:"url,omitempty"`
 	Metadata map[string]interface{} `json:"metadata,omitempty"`
 }
 
@@ -127,6 +158,7 @@ type ChatResponse struct {
 	Response       string          `json:"response"`
 	SkillsUsed     []string        `json:"skills_used"`
 	Citations      []Citation      `json:"citations,omitempty"`
+	Artifacts      []ChatArtifact  `json:"artifacts,omitempty"`
 	Plan           []SkillCallInfo `json:"plan,omitempty"`
 	ModelUsed      string          `json:"model_used"`
 	TokensUsed     map[string]int  `json:"tokens_used"`
@@ -289,6 +321,7 @@ type RunRecord struct {
 	ModelUsed      string         `json:"model_used"`
 	TokensUsed     map[string]int `json:"tokens_used"`
 	SkillsUsed     []string       `json:"skills_used"`
+	Artifacts      []ChatArtifact `json:"artifacts,omitempty"`
 	ErrorType      *string        `json:"error_type,omitempty"`
 	ErrorMessage   *string        `json:"error_message,omitempty"`
 	DurationMS     *int           `json:"duration_ms,omitempty"`
@@ -728,6 +761,24 @@ func (c *AgentClient) GetRun(runID string) (*RunRecord, error) {
 	}
 
 	return &run, nil
+}
+
+func (c *AgentClient) CancelRun(runID string) error {
+	httpReq, err := http.NewRequest(http.MethodPost, c.baseURL+"/agent/runs/"+url.PathEscape(runID)+"/cancel", nil)
+	if err != nil {
+		return fmt.Errorf("build cancel run request: %w", err)
+	}
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		return fmt.Errorf("cancel run request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("agent returned status %d: %s", resp.StatusCode, string(respBody))
+	}
+	return nil
 }
 
 func (c *AgentClient) UpdateConfig(config map[string]string) error {

@@ -143,6 +143,391 @@ async def test_disabled_tools_are_filtered_per_request(engine):
 
 
 @pytest.mark.asyncio
+async def test_drive_tools_are_super_chat_only_and_get_user_context(engine):
+    drive_calls = []
+
+    class FakeDriveListSkill(Skill):
+        def metadata(self) -> SkillMetadata:
+            return SkillMetadata(
+                name="ls_drive",
+                description="Fake drive list",
+                parameters=[
+                    SkillParameter(name="path", type="string", description="Drive path", required=False)
+                ],
+            )
+
+        async def execute(self, **kwargs) -> SkillResult:
+            drive_calls.append(kwargs)
+            return SkillResult(
+                success=True,
+                data={"items": [{"id": "file-1", "name": "Notes.md"}]},
+                display_text="Notes.md",
+            )
+
+    engine.skill_registry.register(FakeDriveListSkill())
+    tool_response = LLMResponse(
+        content="",
+        tool_calls=[ToolCall(id="call_ls_drive", name="ls_drive", arguments={"path": "/"})],
+        model="test-model",
+        usage={},
+    )
+    final_response = LLMResponse(
+        content="网盘根目录有 Notes.md。",
+        tool_calls=[],
+        model="test-model",
+        usage={},
+    )
+
+    with patch.object(engine, "_get_provider") as mock_provider:
+        provider = AsyncMock()
+        provider.chat = AsyncMock(side_effect=[tool_response, final_response])
+        mock_provider.return_value = provider
+
+        result = await engine.process(
+            ChatRequest(
+                conversation_id="conv-drive-tools",
+                user_id="alice",
+                message="列一下我的网盘根目录",
+                agent_id="super_chat",
+            )
+        )
+
+    assert result.response == "网盘根目录有 Notes.md。"
+    assert result.skills_used == ["ls_drive"]
+    assert drive_calls == [{"path": "/", "_user_id": "alice"}]
+    first_tools = provider.chat.await_args_list[0].kwargs["tools"]
+    ls_drive_tool = next(tool for tool in first_tools if tool.name == "ls_drive")
+    assert "_user_id" not in ls_drive_tool.parameters["properties"]
+    tool_started = next(event for event in result.events if event.type == "tool.started")
+    assert tool_started.payload["engine_context"] == {"user_id": "alice"}
+
+
+@pytest.mark.asyncio
+async def test_drive_tools_are_hidden_from_general_assistant(engine):
+    class FakeDriveListSkill(Skill):
+        def metadata(self) -> SkillMetadata:
+            return SkillMetadata(
+                name="ls_drive",
+                description="Fake drive list",
+                parameters=[
+                    SkillParameter(name="path", type="string", description="Drive path", required=False)
+                ],
+            )
+
+        async def execute(self, **kwargs) -> SkillResult:
+            return SkillResult(success=True, data={})
+
+    engine.skill_registry.register(FakeDriveListSkill())
+    mock_response = LLMResponse(
+        content="Hello.",
+        tool_calls=[],
+        model="test-model",
+        usage={},
+    )
+
+    with patch.object(engine, "_get_provider") as mock_provider:
+        provider = AsyncMock()
+        provider.chat = AsyncMock(return_value=mock_response)
+        mock_provider.return_value = provider
+
+        await engine.process(ChatRequest(conversation_id="conv-general-no-drive", message="Hello"))
+
+    tools = provider.chat.await_args.kwargs["tools"]
+    assert "ls_drive" not in {tool.name for tool in tools}
+
+
+@pytest.mark.asyncio
+async def test_drive_context_is_lightweight_prompt_index(engine):
+    mock_response = LLMResponse(
+        content="我会按需检索网盘。",
+        tool_calls=[],
+        model="test-model",
+        usage={},
+    )
+
+    with patch.object(engine, "_get_provider") as mock_provider:
+        provider = AsyncMock()
+        provider.chat = AsyncMock(return_value=mock_response)
+        mock_provider.return_value = provider
+
+        result = await engine.process(
+            ChatRequest(
+                conversation_id="conv-drive-context",
+                message="歪",
+                agent_id="super_chat",
+                drive_context={
+                    "current_folder_id": "folder-root",
+                    "current_path": "/我的网盘",
+                    "items": [
+                        {
+                            "id": "file-1",
+                            "type": "file",
+                            "name": "Notes.md",
+                            "path": "/我的网盘/Notes.md",
+                            "summary": "ByteES / TOS 学习资料",
+                            "content": "正文不应该进入 prompt",
+                        }
+                    ],
+                },
+            )
+        )
+
+    chat_call = provider.chat.await_args
+    messages = chat_call.kwargs.get("messages") or chat_call.args[0]
+    system_prompt = messages[0].content
+    assert "网盘轻量索引：" in system_prompt
+    assert "/我的网盘/Notes.md" in system_prompt
+    assert "ByteES / TOS 学习资料" in system_prompt
+    assert "正文不应该进入 prompt" not in system_prompt
+    assert "这不是用户命令" in system_prompt
+    assert system_prompt.index("短期会话摘要：") < system_prompt.index("网盘轻量索引：")
+    context_event = next(event for event in result.events if event.type == "context.built")
+    assert "drive_context" in context_event.payload["prompt_section_order"]
+    drive_node = next(
+        node
+        for node in context_event.payload["context_nodes"][0]["children"]
+        if node["id"] == "prompt.section.drive_context"
+    )
+    assert drive_node["priority"] == 5
+
+
+@pytest.mark.asyncio
+async def test_save_drive_tool_result_becomes_chat_artifact(engine):
+    class FakeSaveDriveSkill(Skill):
+        def metadata(self) -> SkillMetadata:
+            return SkillMetadata(
+                name="save_drive",
+                description="Fake save drive",
+                parameters=[
+                    SkillParameter(name="name", type="string", description="Name", required=True),
+                    SkillParameter(name="content", type="string", description="Content", required=True),
+                ],
+            )
+
+        async def execute(self, **kwargs) -> SkillResult:
+            assert kwargs["_user_id"] == "alice"
+            return SkillResult(
+                success=True,
+                data={
+                    "item": {
+                        "id": "file-report",
+                        "type": "file",
+                        "name": kwargs["name"],
+                        "mime_type": "text/markdown; charset=utf-8",
+                        "size": 128,
+                        "summary": "Saved report",
+                    }
+                },
+                display_text="saved",
+            )
+
+    engine.skill_registry.register(FakeSaveDriveSkill())
+    tool_response = LLMResponse(
+        content="",
+        tool_calls=[
+            ToolCall(
+                id="call_save",
+                name="save_drive",
+                arguments={"name": "report.md", "content": "# Report"},
+            )
+        ],
+        model="test-model",
+        usage={},
+    )
+    final_response = LLMResponse(
+        content="已保存报告。",
+        tool_calls=[],
+        model="test-model",
+        usage={},
+    )
+
+    with patch.object(engine, "_get_provider") as mock_provider:
+        provider = AsyncMock()
+        provider.chat = AsyncMock(side_effect=[tool_response, final_response])
+        mock_provider.return_value = provider
+
+        result = await engine.process(
+            ChatRequest(
+                conversation_id="conv-save-drive-artifact",
+                user_id="alice",
+                message="生成报告并保存",
+                agent_id="super_chat",
+            )
+        )
+
+    assert result.skills_used == ["save_drive"]
+    assert len(result.artifacts) == 1
+    artifact = result.artifacts[0]
+    assert artifact.type == "drive_file"
+    assert artifact.item_id == "file-report"
+    assert artifact.name == "report.md"
+
+
+@pytest.mark.asyncio
+async def test_model_error_after_read_drive_retries_then_returns_final_answer(engine):
+    class FakeReadDriveSkill(Skill):
+        def metadata(self) -> SkillMetadata:
+            return SkillMetadata(
+                name="read_drive",
+                description="Fake read drive",
+                parameters=[
+                    SkillParameter(name="item_id", type="string", description="Item ID"),
+                ],
+            )
+
+        async def execute(self, **kwargs) -> SkillResult:
+            return SkillResult(
+                success=True,
+                data={
+                    "item": {
+                        "id": kwargs.get("item_id"),
+                        "type": "file",
+                        "name": "notes.md",
+                        "path": "/knowledge/notes.md",
+                        "mime_type": "text/markdown",
+                    },
+                    "content": "# Notes\n\nReadable drive content.",
+                    "truncated": False,
+                },
+                display_text="notes.md\n\n# Notes\n\nReadable drive content.",
+            )
+
+    engine.skill_registry.register(FakeReadDriveSkill())
+    tool_response = LLMResponse(
+        content="",
+        tool_calls=[
+            ToolCall(
+                id="call_read_drive",
+                name="read_drive",
+                arguments={"item_id": "file-1"},
+            )
+        ],
+        model="test-model",
+        usage={"input": 10, "output": 2},
+    )
+    final_response = LLMResponse(
+        content="已经读完：Readable drive content.",
+        tool_calls=[],
+        model="test-model",
+        usage={"input": 20, "output": 5},
+    )
+
+    with patch.object(engine, "_get_provider") as mock_provider:
+        provider = AsyncMock()
+        provider.model = "test-model"
+        provider.chat = AsyncMock(side_effect=[tool_response, RuntimeError("Connection error."), final_response])
+        mock_provider.return_value = provider
+
+        with patch("agent.orchestrator.engine.asyncio.sleep", new_callable=AsyncMock) as sleep_mock:
+            result = await engine.process(
+                ChatRequest(
+                    conversation_id="conv-read-drive-retry",
+                    user_id="alice",
+                    agent_id="super_chat",
+                    message="把那个 md 文件完整内容读出来看看？",
+                )
+            )
+
+    assert provider.chat.await_count == 3
+    sleep_mock.assert_awaited_once_with(0.5)
+    assert result.error_type is None
+    assert result.skills_used == ["read_drive"]
+    assert result.response == "已经读完：Readable drive content."
+
+    run = engine.trace_store.get_run(result.run_id)
+    assert run is not None
+    assert run.status == "completed"
+    event_types = [event.type for event in result.events]
+    assert event_types.count("model.retrying") == 1
+    assert event_types[-1] == "run.completed"
+
+
+@pytest.mark.asyncio
+async def test_model_error_after_read_drive_returns_tool_result_fallback_after_retries(engine):
+    class FakeReadDriveSkill(Skill):
+        def metadata(self) -> SkillMetadata:
+            return SkillMetadata(
+                name="read_drive",
+                description="Fake read drive",
+                parameters=[
+                    SkillParameter(name="item_id", type="string", description="Item ID"),
+                ],
+            )
+
+        async def execute(self, **kwargs) -> SkillResult:
+            return SkillResult(
+                success=True,
+                data={
+                    "item": {
+                        "id": kwargs.get("item_id"),
+                        "type": "file",
+                        "name": "notes.md",
+                        "path": "/knowledge/notes.md",
+                        "mime_type": "text/markdown",
+                    },
+                    "content": "# Notes\n\nReadable drive content.",
+                    "truncated": False,
+                },
+                display_text="notes.md\n\n# Notes\n\nReadable drive content.",
+            )
+
+    engine.skill_registry.register(FakeReadDriveSkill())
+    tool_response = LLMResponse(
+        content="",
+        tool_calls=[
+            ToolCall(
+                id="call_read_drive",
+                name="read_drive",
+                arguments={"item_id": "file-1"},
+            )
+        ],
+        model="test-model",
+        usage={"input": 10, "output": 2},
+    )
+
+    with patch.object(engine, "_get_provider") as mock_provider:
+        provider = AsyncMock()
+        provider.model = "test-model"
+        provider.chat = AsyncMock(
+            side_effect=[
+                tool_response,
+                RuntimeError("Connection error."),
+                RuntimeError("Connection error."),
+                RuntimeError("Connection error."),
+            ]
+        )
+        mock_provider.return_value = provider
+
+        with patch("agent.orchestrator.engine.asyncio.sleep", new_callable=AsyncMock) as sleep_mock:
+            result = await engine.process(
+                ChatRequest(
+                    conversation_id="conv-read-drive-fallback",
+                    user_id="alice",
+                    agent_id="super_chat",
+                    message="把那个 md 文件完整内容读出来看看？",
+                )
+            )
+
+    assert provider.chat.await_count == 4
+    assert [call.args[0] for call in sleep_mock.await_args_list] == [0.5, 1.5]
+    assert result.error_type is None
+    assert result.skills_used == ["read_drive"]
+    assert "模型在整理最终回复时连接失败" in result.response
+    assert "/knowledge/notes.md" in result.response
+    assert "Readable drive content." in result.response
+
+    run = engine.trace_store.get_run(result.run_id)
+    assert run is not None
+    assert run.status == "partial"
+    assert run.error_type == "model_error_after_tool_results"
+    event_types = [event.type for event in result.events]
+    assert "tool.completed" in event_types
+    assert event_types.count("model.retrying") == 2
+    assert "model.failed" in event_types
+    assert event_types[-1] == "run.partial"
+
+
+@pytest.mark.asyncio
 async def test_tool_call_calculator(engine):
     """LLM calls calculator tool, then returns final answer."""
     # First LLM call: wants to use calculator
@@ -413,6 +798,162 @@ async def test_super_chat_auto_searches_when_model_skips_retrieval(engine):
         message.role == "tool" and "SpaceX files S-1" in message.content
         for message in second_call_messages
     )
+
+
+@pytest.mark.asyncio
+async def test_super_chat_does_not_force_search_after_model_used_a_tool(engine):
+    """A no-tool final answer should not trigger forced search after any tool already ran."""
+    search_calls = []
+
+    class FakeSearchSkill(Skill):
+        def metadata(self) -> SkillMetadata:
+            return SkillMetadata(
+                name="search",
+                description="Fake search",
+                parameters=[
+                    SkillParameter(name="query", type="string", description="Query")
+                ],
+            )
+
+        async def execute(self, **kwargs) -> SkillResult:
+            search_calls.append(kwargs)
+            return SkillResult(
+                success=True,
+                data={
+                    "query": kwargs.get("query"),
+                    "results": [
+                        {
+                            "title": "SpaceX IPO update",
+                            "url": "https://example.com/spacex-ipo",
+                            "snippet": "Example update",
+                            "source": "test-search",
+                        }
+                    ],
+                    "sources": ["test-search"],
+                },
+                display_text="1. SpaceX IPO update - https://example.com/spacex-ipo",
+            )
+
+    engine.skill_registry.register(FakeSearchSkill())
+    search_response = LLMResponse(
+        content="",
+        tool_calls=[
+            ToolCall(
+                id="call_search",
+                name="search",
+                arguments={"query": "SpaceX 最新上市进展", "limit": 5},
+            )
+        ],
+        model="test-model",
+        usage={},
+    )
+    final_response = LLMResponse(
+        content="基于搜索结果，SpaceX 暂无确定上市时间。",
+        tool_calls=[],
+        model="test-model",
+        usage={},
+    )
+
+    with patch.object(engine, "_get_provider") as mock_provider:
+        provider = AsyncMock()
+        provider.chat = AsyncMock(side_effect=[search_response, final_response])
+        mock_provider.return_value = provider
+
+        result = await engine.process(
+            ChatRequest(
+                conversation_id="conv-super-model-search",
+                agent_id="super_chat",
+                message="查一下 SpaceX 最新上市进展",
+            )
+        )
+
+    assert provider.chat.await_count == 2
+    assert len(search_calls) == 1
+    assert search_calls[0]["query"] == "SpaceX 最新上市进展"
+    assert result.skills_used == ["search"]
+    event_types = [event.type for event in result.events]
+    assert "agent_loop.search_forced" not in event_types
+
+
+def test_super_chat_forced_search_only_handles_explicit_retrieval(engine):
+    assert engine._super_chat_auto_search_required(
+        ChatRequest(
+            conversation_id="conv-review-report",
+            agent_id="super_chat",
+            message="帮我看看我最新的研究报告有没有什么问题",
+        )
+    ) is False
+    assert engine._super_chat_auto_search_required(
+        ChatRequest(
+            conversation_id="conv-lookup",
+            agent_id="super_chat",
+            message="查一下 SpaceX 最新上市进展",
+        )
+    ) is True
+
+
+@pytest.mark.asyncio
+async def test_super_chat_drive_file_task_filters_search_tool(engine):
+    response = LLMResponse(
+        content="我会继续复制这几份网盘文件。",
+        tool_calls=[],
+        model="test-model",
+        usage={},
+    )
+
+    with patch.object(engine, "_get_provider") as mock_provider:
+        provider = AsyncMock()
+        provider.chat = AsyncMock(return_value=response)
+        mock_provider.return_value = provider
+
+        result = await engine.process(
+            ChatRequest(
+                conversation_id="conv-drive-file-task-no-web",
+                agent_id="super_chat",
+                message="可以，A",
+                context_blocks=[
+                    "上一轮方案 A：复制三份旧文件到新文件夹。"
+                    "需要 read_drive 读取旧文件，再用 save_drive 保存到 /我的网盘/AI行业最新进展 文件夹。"
+                ],
+            )
+        )
+
+    tools = provider.chat.await_args.kwargs["tools"]
+    tool_names = {tool.name for tool in tools}
+    assert "search" not in tool_names
+    event_types = [event.type for event in result.events]
+    assert "tools.filtered" in event_types
+    filtered = next(event for event in result.events if event.type == "tools.filtered")
+    assert filtered.payload["reason"] == "drive_task_without_explicit_retrieval"
+
+
+@pytest.mark.asyncio
+async def test_super_chat_latest_info_keeps_search_available_for_model_choice(engine):
+    response = LLMResponse(
+        content="我先按当前理解给一个概览。",
+        tool_calls=[],
+        model="test-model",
+        usage={},
+    )
+
+    with patch.object(engine, "_get_provider") as mock_provider:
+        provider = AsyncMock()
+        provider.chat = AsyncMock(return_value=response)
+        mock_provider.return_value = provider
+
+        result = await engine.process(
+            ChatRequest(
+                conversation_id="conv-super-latest-info",
+                agent_id="super_chat",
+                message="我想了解一下具身智能行业最新的进展",
+            )
+        )
+
+    tools = provider.chat.await_args.kwargs["tools"]
+    assert "search" in {tool.name for tool in tools}
+    event_types = [event.type for event in result.events]
+    assert "tools.filtered" not in event_types
+    assert "agent_loop.search_forced" not in event_types
 
 
 @pytest.mark.asyncio
@@ -986,14 +1527,39 @@ async def test_super_chat_deep_research_mode_routes_to_research_agent(engine):
                 agent_id="super_chat",
                 mode_ids=["deep_research"],
                 mode_prompts=["【深度研究】先确认研究计划，再执行。"],
+                drive_context={
+                    "current_folder_id": "folder-root",
+                    "current_path": "/knowledge",
+                    "items": [
+                        {
+                            "id": "file-1",
+                            "type": "file",
+                            "name": "market.md",
+                            "path": "/knowledge/market.md",
+                            "summary": "AI Agent 市场资料",
+                        }
+                    ],
+                },
             )
         )
 
     assert result.agent_id == "deep_research_v1"
     assert "研究计划大纲" in result.response
+    plan_messages = provider.chat.await_args.args[0]
+    assert "网盘轻量索引：" in plan_messages[-1].content
+    assert "/knowledge/market.md" in plan_messages[-1].content
     event_types = [event.type for event in result.events]
+    assert "agent.delegated" in event_types
     assert "research.plan.completed" in event_types
     assert "model.started" not in event_types
+    context_event = next(event for event in result.events if event.type == "context.built")
+    assert "drive_context" in context_event.payload["prompt_section_order"]
+    drive_node = next(
+        node
+        for node in context_event.payload["context_nodes"][0]["children"]
+        if node["id"] == "prompt.section.drive_context"
+    )
+    assert "/knowledge/market.md" in drive_node["content"]
 
 
 @pytest.mark.asyncio

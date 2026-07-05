@@ -1,0 +1,19 @@
+package models
+
+import "time"
+
+type DriveItem struct {
+	ID        string    `json:"id" gorm:"primaryKey"`
+	UserID    string    `json:"user_id" gorm:"index;not null;default:0"`
+	ParentID  string    `json:"parent_id,omitempty" gorm:"index"`
+	Type      string    `json:"type" gorm:"index;not null"`
+	Name      string    `json:"name" gorm:"index;not null"`
+	MimeType  string    `json:"mime_type,omitempty"`
+	Encoding  string    `json:"encoding,omitempty"`
+	Size      int64     `json:"size"`
+	Summary   string    `json:"summary,omitempty" gorm:"type:text"`
+	TagsJSON  string    `json:"tags_json,omitempty" gorm:"type:text"`
+	Content   string    `json:"content,omitempty" gorm:"type:text"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}

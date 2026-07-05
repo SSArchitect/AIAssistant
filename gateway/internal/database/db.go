@@ -20,7 +20,7 @@ func Init(dbPath string) error {
 	}
 
 	var err error
-	DB, err = gorm.Open(sqlite.Open(dbPath), &gorm.Config{
+	DB, err = gorm.Open(sqlite.Open(dbPath+"?_busy_timeout=5000"), &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Warn),
 	})
 	if err != nil {
@@ -39,6 +39,10 @@ func Init(dbPath string) error {
 		&models.PulseItem{},
 		&models.PulseModule{},
 		&models.PulseEvent{},
+		&models.KnowledgeProject{},
+		&models.KnowledgeDocument{},
+		&models.KnowledgeLink{},
+		&models.DriveItem{},
 	); err != nil {
 		return err
 	}

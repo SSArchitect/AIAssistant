@@ -39,6 +39,7 @@ type conversationMessageResponse struct {
 	Content        string    `json:"content"`
 	SkillsUsed     string    `json:"skills_used,omitempty"`
 	Citations      string    `json:"citations,omitempty"`
+	Artifacts      string    `json:"artifacts,omitempty"`
 	ModelUsed      string    `json:"model_used,omitempty"`
 	Runtime        string    `json:"runtime,omitempty"`
 	RunID          string    `json:"run_id,omitempty"`
@@ -125,6 +126,7 @@ func conversationMessageFromModel(message models.Message, includeTrace bool) con
 		Content:        message.Content,
 		SkillsUsed:     message.SkillsUsed,
 		Citations:      message.Citations,
+		Artifacts:      message.Artifacts,
 		ModelUsed:      message.ModelUsed,
 		Runtime:        message.Runtime,
 		RunID:          message.RunID,

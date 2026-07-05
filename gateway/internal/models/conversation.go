@@ -19,6 +19,7 @@ type Message struct {
 	Content        string    `json:"content"`
 	SkillsUsed     string    `json:"skills_used,omitempty"` // JSON array
 	Citations      string    `json:"citations,omitempty"`   // JSON array
+	Artifacts      string    `json:"artifacts,omitempty"`   // JSON array
 	ModelUsed      string    `json:"model_used,omitempty"`
 	Runtime        string    `json:"runtime,omitempty"`
 	RunID          string    `json:"run_id,omitempty" gorm:"index"`

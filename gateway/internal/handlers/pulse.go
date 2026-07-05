@@ -1393,6 +1393,10 @@ func (h *PulseHandler) requestPulseChat(conversationID string, userID string, me
 			MemoryEnabled:   &memoryEnabled,
 		})
 		if err == nil {
+			if resp == nil {
+				return "", fmt.Errorf("agent returned empty response")
+			}
+			persistTokenUsageRecord(conversationID, userID, 0, pulseBackgroundAgentID, time.Now(), resp)
 			return resp.Response, nil
 		}
 		errors = append(errors, fmt.Sprintf("%s: %v", pulseModelPreferenceLabel(modelPreference), err))

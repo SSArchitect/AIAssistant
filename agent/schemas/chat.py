@@ -18,6 +18,24 @@ class ChatAttachment(BaseModel):
     truncated: bool = False
 
 
+class DriveContextItem(BaseModel):
+    id: str = ""
+    type: str = ""
+    name: str = ""
+    path: str = ""
+    mime_type: str = ""
+    size: int = 0
+    summary: str = ""
+    updated_at: str = ""
+
+
+class DriveContext(BaseModel):
+    current_folder_id: str = ""
+    current_path: str = ""
+    items: list[DriveContextItem] = Field(default_factory=list)
+    truncated: bool = False
+
+
 class ChatRequest(BaseModel):
     conversation_id: str
     user_id: str = "0"
@@ -29,6 +47,7 @@ class ChatRequest(BaseModel):
     mode_ids: list[str] = Field(default_factory=list)
     mode_prompts: list[str] = Field(default_factory=list)
     context_blocks: list[str] = Field(default_factory=list)
+    drive_context: DriveContext | None = None
     attachments: list["ChatAttachment"] = Field(default_factory=list)
     agent_input: AgentInputPacket | None = None
     handoff: AgentInputPacket | None = None
@@ -53,11 +72,24 @@ class Citation(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class ChatArtifact(BaseModel):
+    type: str = "drive_file"
+    item_id: str = ""
+    name: str = ""
+    title: str = ""
+    mime_type: str = ""
+    size: int = 0
+    summary: str = ""
+    url: str = ""
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 class ChatResponse(BaseModel):
     conversation_id: str
     response: str
     skills_used: list[str] = Field(default_factory=list)
     citations: list[Citation] = Field(default_factory=list)
+    artifacts: list[ChatArtifact] = Field(default_factory=list)
     plan: Optional[list[SkillCallInfo]] = None
     model_used: str = ""
     tokens_used: dict[str, int] = Field(default_factory=dict)

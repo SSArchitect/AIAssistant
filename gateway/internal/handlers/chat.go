@@ -30,20 +30,24 @@ func NewChatHandler(agent *bridge.AgentClient, syncers ...*ConfigSyncer) *ChatHa
 }
 
 type ChatRequestBody struct {
-	ConversationID  string                  `json:"conversation_id" binding:"required"`
-	UserID          string                  `json:"user_id,omitempty"`
-	Query           string                  `json:"query" binding:"required"`
-	Stream          bool                    `json:"stream"`
-	ModelPreference *string                 `json:"model_preference,omitempty"`
-	AgentID         string                  `json:"agent_id,omitempty"`
-	RoleID          string                  `json:"role_id,omitempty"`
-	ModeIDs         []string                `json:"mode_ids,omitempty"`
-	ModePrompts     []string                `json:"mode_prompts,omitempty"`
-	ContextBlocks   []string                `json:"context_blocks,omitempty"`
-	Attachments     []bridge.ChatAttachment `json:"attachments,omitempty"`
-	AgentInput      map[string]interface{}  `json:"agent_input,omitempty"`
-	Handoff         map[string]interface{}  `json:"handoff,omitempty"`
-	Regenerate      bool                    `json:"regenerate,omitempty"`
+	ConversationID    string                  `json:"conversation_id" binding:"required"`
+	UserID            string                  `json:"user_id,omitempty"`
+	Query             string                  `json:"query" binding:"required"`
+	Stream            bool                    `json:"stream"`
+	ModelPreference   *string                 `json:"model_preference,omitempty"`
+	AgentID           string                  `json:"agent_id,omitempty"`
+	RoleID            string                  `json:"role_id,omitempty"`
+	ModeIDs           []string                `json:"mode_ids,omitempty"`
+	ModePrompts       []string                `json:"mode_prompts,omitempty"`
+	ContextBlocks     []string                `json:"context_blocks,omitempty"`
+	DriveContext      *bridge.DriveContext    `json:"drive_context,omitempty"`
+	Attachments       []bridge.ChatAttachment `json:"attachments,omitempty"`
+	AgentInput        map[string]interface{}  `json:"agent_input,omitempty"`
+	Handoff           map[string]interface{}  `json:"handoff,omitempty"`
+	Regenerate        bool                    `json:"regenerate,omitempty"`
+	RunID             string                  `json:"run_id,omitempty"`
+	SuppressUserMsg   bool                    `json:"suppress_user_message,omitempty"`
+	SuppressFollowUps bool                    `json:"suppress_follow_ups,omitempty"`
 }
 
 type streamErrorPayload struct {
@@ -56,7 +60,10 @@ type streamRunPayload struct {
 	RunID string `json:"run_id"`
 }
 
-const superChatAgentID = "super_chat"
+const (
+	superChatAgentID       = "super_chat"
+	pulseBackgroundAgentID = "pulse_background"
+)
 
 const (
 	conversationContextMessageLimit    = 30
@@ -91,7 +98,7 @@ func (h *ChatHandler) Chat(c *gin.Context) {
 	}
 	contextBlocks = append(contextBlocks, req.ContextBlocks...)
 
-	if !req.Regenerate {
+	if !req.Regenerate && !req.SuppressUserMsg {
 		// Save user message
 		userMsg := models.Message{
 			ConversationID: req.ConversationID,
@@ -116,9 +123,11 @@ func (h *ChatHandler) Chat(c *gin.Context) {
 		ModeIDs:         req.ModeIDs,
 		ModePrompts:     req.ModePrompts,
 		ContextBlocks:   contextBlocks,
+		DriveContext:    req.DriveContext,
 		Attachments:     req.Attachments,
 		AgentInput:      req.AgentInput,
 		Handoff:         req.Handoff,
+		RunID:           req.RunID,
 		DisabledTools:   disabledTools,
 	}
 
@@ -139,8 +148,12 @@ func (h *ChatHandler) Chat(c *gin.Context) {
 	}
 
 	assistantMsg := h.saveAssistantMessage(req.ConversationID, req.UserID, agentResp)
-	h.generateFollowUpsAsync(req, assistantMsg, agentResp)
-	h.updateConversationTitle(conv, req.Query)
+	if !req.SuppressFollowUps {
+		h.generateFollowUpsAsync(req, assistantMsg, agentResp)
+	}
+	if !req.SuppressUserMsg {
+		h.updateConversationTitle(conv, req.Query)
+	}
 
 	c.JSON(http.StatusOK, agentResp)
 }
@@ -160,7 +173,9 @@ func (h *ChatHandler) streamChat(
 			AgentID:        req.AgentID,
 			RoleID:         req.RoleID,
 		})
-		h.updateConversationTitle(conv, req.Query)
+		if !req.SuppressUserMsg {
+			h.updateConversationTitle(conv, req.Query)
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "agent error: " + err.Error()})
 		return
 	}
@@ -266,8 +281,12 @@ func (h *ChatHandler) streamChat(
 			finalResp.Events = streamEvents
 		}
 		assistantMsg := h.saveAssistantMessage(req.ConversationID, req.UserID, &finalResp)
-		h.generateFollowUpsAsync(req, assistantMsg, &finalResp)
-		h.updateConversationTitle(conv, req.Query)
+		if !req.SuppressFollowUps {
+			h.generateFollowUpsAsync(req, assistantMsg, &finalResp)
+		}
+		if !req.SuppressUserMsg {
+			h.updateConversationTitle(conv, req.Query)
+		}
 	} else if streamErr.Error != "" || traceErrorMessage != "" {
 		errorMessage := streamErr.Error
 		if errorMessage == "" {
@@ -280,6 +299,9 @@ func (h *ChatHandler) streamChat(
 		if errorType == "" {
 			errorType = "stream_error"
 		}
+		if errorType == "cancelled" {
+			return
+		}
 		h.saveAssistantMessage(req.ConversationID, req.UserID, &bridge.ChatResponse{
 			ConversationID: req.ConversationID,
 			Response:       errorMessage,
@@ -289,7 +311,9 @@ func (h *ChatHandler) streamChat(
 			RunID:          firstNonEmpty(streamErr.RunID, latestRunID),
 			Events:         streamEvents,
 		})
-		h.updateConversationTitle(conv, req.Query)
+		if !req.SuppressUserMsg {
+			h.updateConversationTitle(conv, req.Query)
+		}
 	}
 }
 
@@ -316,6 +340,7 @@ func (h *ChatHandler) recoverCompletedRunResponse(runID string, req ChatRequestB
 		Response:       run.Output,
 		SkillsUsed:     run.SkillsUsed,
 		Citations:      nil,
+		Artifacts:      run.Artifacts,
 		ModelUsed:      run.ModelUsed,
 		TokensUsed:     run.TokensUsed,
 		AgentID:        run.AgentID,
@@ -620,6 +645,7 @@ func (h *ChatHandler) syncConfigToAgent(c *gin.Context) bool {
 func (h *ChatHandler) saveAssistantMessage(conversationID string, userID string, agentResp *bridge.ChatResponse) *models.Message {
 	skillsJSON, _ := json.Marshal(agentResp.SkillsUsed)
 	citationsJSON, _ := json.Marshal(agentResp.Citations)
+	artifactsJSON, _ := json.Marshal(agentResp.Artifacts)
 	traceEventsJSON, _ := json.Marshal(agentResp.Events)
 	traceSummaryJSON, _ := json.Marshal(compactTraceEvents(agentResp.Events))
 	assistantMsg := models.Message{
@@ -629,6 +655,7 @@ func (h *ChatHandler) saveAssistantMessage(conversationID string, userID string,
 		Content:        agentResp.Response,
 		SkillsUsed:     string(skillsJSON),
 		Citations:      string(citationsJSON),
+		Artifacts:      string(artifactsJSON),
 		ModelUsed:      agentResp.ModelUsed,
 		Runtime:        agentResp.Runtime,
 		RunID:          agentResp.RunID,
@@ -663,18 +690,38 @@ func (h *ChatHandler) persistTokenUsage(
 	if message == nil || agentResp == nil {
 		return
 	}
+	persistTokenUsageRecord(conversationID, userID, message.ID, "", message.CreatedAt, agentResp)
+}
+
+func persistTokenUsageRecord(
+	conversationID string,
+	userID string,
+	messageID uint,
+	agentID string,
+	createdAt time.Time,
+	agentResp *bridge.ChatResponse,
+) {
+	if agentResp == nil {
+		return
+	}
 	usage := normalizeTokenUsage(agentResp.TokensUsed)
 	if !usage.hasTrackedCost() {
 		return
+	}
+	if strings.TrimSpace(agentID) == "" {
+		agentID = usageAgentID(conversationID, agentResp)
+	}
+	if createdAt.IsZero() {
+		createdAt = time.Now()
 	}
 
 	usageJSON, _ := json.Marshal(agentResp.TokensUsed)
 	record := models.TokenUsage{
 		UserID:                   normalizedUserID(userID),
 		ConversationID:           conversationID,
-		MessageID:                message.ID,
+		MessageID:                messageID,
 		RunID:                    firstNonEmpty(agentResp.RunID, latestEventRunID(agentResp.Events)),
-		AgentID:                  usageAgentID(conversationID, agentResp),
+		AgentID:                  agentID,
 		Runtime:                  agentResp.Runtime,
 		ModelUsed:                agentResp.ModelUsed,
 		InputTokens:              usage.InputTokens,
@@ -684,10 +731,10 @@ func (h *ChatHandler) persistTokenUsage(
 		CacheCreationInputTokens: usage.CacheCreationInputTokens,
 		ImageCount:               usage.ImageCount,
 		UsageJSON:                string(usageJSON),
-		CreatedAt:                message.CreatedAt,
+		CreatedAt:                createdAt,
 	}
 	if err := database.DB.Create(&record).Error; err != nil {
-		slog.Warn("Failed to persist token usage", "message_id", message.ID, "run_id", agentResp.RunID, "error", err)
+		slog.Warn("Failed to persist token usage", "conversation_id", conversationID, "message_id", messageID, "run_id", agentResp.RunID, "agent_id", agentID, "error", err)
 	}
 }
 
@@ -1058,6 +1105,24 @@ func (h *ChatHandler) GetRun(c *gin.Context) {
 	c.JSON(http.StatusInternalServerError, gin.H{"error": "agent error: " + err.Error()})
 }
 
+func (h *ChatHandler) CancelRun(c *gin.Context) {
+	userID := requestUserID(c)
+	runID := strings.TrimSpace(c.Param("id"))
+	if runID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "run id is required"})
+		return
+	}
+	if run, err := h.agent.GetRun(runID); err == nil && normalizedUserID(run.UserID) != userID {
+		c.JSON(http.StatusNotFound, gin.H{"error": "run not found"})
+		return
+	}
+	if err := h.agent.CancelRun(runID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "agent error: " + err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"status": "cancelling", "run_id": runID})
+}
+
 func storedRunRecord(runID string, userID string) (*bridge.RunRecord, error) {
 	var message models.Message
 	if err := database.DB.
@@ -1083,6 +1148,13 @@ func storedRunRecord(runID string, userID string) (*bridge.RunRecord, error) {
 	if skills == nil {
 		skills = []string{}
 	}
+	artifacts := []bridge.ChatArtifact{}
+	if strings.TrimSpace(message.Artifacts) != "" {
+		_ = json.Unmarshal([]byte(message.Artifacts), &artifacts)
+	}
+	if artifacts == nil {
+		artifacts = []bridge.ChatArtifact{}
+	}
 
 	input := storedRunInput(message)
 	completedAt := firstNonEmpty(storedRunCompletedAt(events), message.CreatedAt.Format(time.RFC3339))
@@ -1100,6 +1172,7 @@ func storedRunRecord(runID string, userID string) (*bridge.RunRecord, error) {
 		ModelUsed:      message.ModelUsed,
 		TokensUsed:     storedRunTokensUsed(message.ID),
 		SkillsUsed:     skills,
+		Artifacts:      artifacts,
 		ErrorType:      optionalString(errorType),
 		ErrorMessage:   optionalString(errorMessage),
 		StartedAt:      firstNonEmpty(storedRunStartedAt(events), message.CreatedAt.Format(time.RFC3339)),
@@ -1171,6 +1244,9 @@ func storedRunStatus(events []bridge.RunEvent, errorType string) string {
 	}
 	status := "completed"
 	for _, event := range events {
+		if event.Type == "run.cancelled" || normalizeTraceStatus(event.Status) == "cancelled" {
+			return "cancelled"
+		}
 		if event.Type == "run.failed" || normalizeTraceStatus(event.Status) == "error" {
 			return "failed"
 		}

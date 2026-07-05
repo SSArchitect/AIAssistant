@@ -6,15 +6,24 @@ const DEEP_RESEARCH_MODE_ID = 'deep_research';
 const DEEP_RESEARCH_AGENT_ID = 'deep_research_v1';
 const CURRENT_CONVERSATION_STORAGE_KEY = 'agent_assistant_current_conversation_id';
 const CURRENT_ROLE_ID_STORAGE_KEY = 'agent_assistant_current_role_id';
+const CURRENT_PROJECT_STORAGE_KEY = 'agent_assistant_current_project_id';
+const CHAT_DRIVE_PATH_STORAGE_KEY = 'agent_assistant_chat_drive_path_id';
+const PROJECT_CHAT_CONVERSATION_STORAGE_KEY = 'agent_assistant_project_conversation_id';
+const DRIVE_COLLAPSED_FOLDERS_STORAGE_KEY = 'agent_assistant_drive_collapsed_folder_ids';
+const DRIVE_RECENT_PATHS_STORAGE_KEY = 'agent_assistant_drive_recent_path_ids';
 const SIDEBAR_COLLAPSE_STORAGE_KEY = 'agent_assistant_sidebar_collapsed_sections';
 const CURRENT_USER_ID_STORAGE_KEY = 'agent_assistant_current_user_id';
 const ACCOUNT_SESSION_STORAGE_KEY = 'agent_assistant_account_session';
 const GUEST_ACCOUNT_ID = '0';
 const MOBILE_BREAKPOINT_QUERY = '(max-width: 720px)';
+const PROJECT_MAX_DOCUMENT_CHARS = 180000;
+const PROJECT_SEARCH_DEBOUNCE_MS = 260;
+const DRIVE_PROMPT_CONTEXT_ITEM_LIMIT = 16;
 
 const VIEW_COPY = {
     chat: ['views.chat.title', 'views.chat.subtitle'],
     pulse: ['views.pulse.title', 'views.pulse.subtitle'],
+    projects: ['views.projects.title', 'views.projects.subtitle'],
     agents: ['views.agents.title', 'views.agents.subtitle'],
     tools: ['views.tools.title', 'views.tools.subtitle'],
     trace: ['views.trace.title', 'views.trace.subtitle'],
@@ -24,16 +33,18 @@ const VIEW_COPY = {
 const I18N = {
     zh: {
         app: { name: '阿安的工作台' },
-        nav: { chat: 'Super Chat', pulse: 'Pulse', agents: 'Agents', tools: 'Tools', trace: 'Trace', runs: 'Runs', developer: 'Developer' },
+        nav: { chat: 'Super Chat', pulse: 'Pulse', projects: '网盘', agents: 'Agents', tools: 'Tools', trace: 'Trace', runs: 'Runs', developer: 'Developer', memory: 'Memory' },
         sidebar: {
             navigation: '导航',
             pinned: '固定 Agent',
+            projects: '网盘',
             recent: '最近会话',
             fullConfig: '完整配置',
             modelSelect: '模型选择',
             defaultModel: '默认模型',
             emptyConversations: '暂无会话',
             emptyPinned: '在 Agents 中固定常用功能',
+            emptyProjects: '网盘为空',
         },
         topbar: { agent: 'Agent', role: '角色' },
         account: {
@@ -63,7 +74,23 @@ const I18N = {
             toggleSidebar: '切换侧边栏',
             refresh: '刷新数据',
             send: '发送',
+            back: '返回',
+            save: '保存',
+            cancel: '取消',
+            cancelTask: '取消任务',
+            usePath: '使用此路径',
             delete: '删除',
+            createProject: '新建文件夹',
+            uploadKnowledge: '上传文件',
+            saveAsDocument: '保存到网盘',
+            saveToDrive: '生成报告',
+            chatWithPath: '去 Super Chat 问答',
+            chatThisPath: '问答',
+            previewDocument: '预览',
+            createFromSelection: '清空选择',
+            clearSelection: '清空选择',
+            moveUp: '上移',
+            moveDown: '下移',
             attach: '上传附件',
             removeAttachment: '移除附件',
             startTask: '开始任务',
@@ -82,6 +109,8 @@ const I18N = {
             copyFailed: '复制失败',
             confirmDeleteConversation: '确定删除这个会话及其全部消息吗？',
             confirmDeleteTopic: '确定删除 Topic「{name}」吗？',
+            confirmDeleteProject: '确定删除「{name}」及其中全部内容吗？',
+            confirmDeleteDocument: '确定删除「{name}」吗？',
         },
         media: {
             preview: '图片预览',
@@ -97,11 +126,81 @@ const I18N = {
         views: {
             chat: { title: 'Super Chat', subtitle: '意图识别、Agent 调用与汇总回答入口' },
             pulse: { title: 'Pulse', subtitle: 'Topic 推荐、信息簇阅读与下一跳学习入口' },
+            projects: { title: '网盘', subtitle: '每个帐号独立的文件树、上传下载与 Super Chat 上下文' },
             agents: { title: 'Agents', subtitle: 'Agent 功能入口、实现版本和能力状态' },
             tools: { title: 'Tools', subtitle: '内置工具、参数和调用状态' },
             runs: { title: 'Runs', subtitle: '执行轨迹、事件和调试信息' },
             trace: { title: 'Trace', subtitle: '层级事件、节点详情与调试定位' },
-            developer: { title: 'Developer', subtitle: 'Memory 系统、持久化记录和最近一轮注入信息' },
+            developer: { title: 'Memory', subtitle: 'Memory 系统、持久化记录和最近一轮注入信息' },
+        },
+        projects: {
+            emptyTitle: '网盘还没有内容',
+            emptyDetail: '上传文件，或把 Super Chat 的输出保存进来。',
+            createTitle: '文件夹名称',
+            createPlaceholder: '例如：产品资料',
+            sourceLibrary: '网盘内容',
+            knowledgeMap: '当前文件夹',
+            contextChat: '网盘问答',
+            search: '检索网盘文件',
+            documents: '{count} 个项目',
+            links: '{count} 个文件夹',
+            selected: '已选 {count}',
+            noDocuments: '暂无文件',
+            noSearchResults: '没有匹配文件',
+            activeDocument: '当前文件',
+            uploadFailed: '上传失败：{message}',
+            uploadDone: '已上传 {count} 个文件',
+            uploadBinaryNote: '已保存原文件，可下载；暂不参与正文问答。',
+            askPlaceholder: '基于选中的网盘内容提问；未选择时会检索全网盘',
+            ask: '提问',
+            asking: '生成中...',
+            expandMap: '整理知识',
+            answer: '回答',
+            answerEmpty: '等待网盘问答',
+            saveDialogTitle: '保存到网盘',
+            saveNameLabel: '文件名',
+            pathLabel: '路径',
+            pathDialogTitle: '选择路径',
+            pathCurrent: '当前：{path}',
+            pathJump: '路径',
+            frequentPaths: '常用路径',
+            allPaths: '全部路径',
+            pathEmpty: '暂无文件夹',
+            pathRequired: '请选择路径',
+            saveNameRequired: '请输入文件名',
+            saving: '保存中...',
+            canceling: '正在取消...',
+            saveTitle: '文件名',
+            saveDone: '已保存到网盘',
+            saveFailed: '保存失败：{message}',
+            saveCancelled: '已取消生成报告。',
+            saveTaskStarted: '正在生成并保存「{title}」',
+            previewLoading: '正在加载文档...',
+            previewFailed: '加载文档失败：{message}',
+            previewBinary: '此文件已保存到网盘，可下载原文件；当前格式暂不提取为问答正文。',
+            createSelectionTitle: '新文件夹名称',
+            createSelectionDone: '已处理选择',
+            createSelectionFailed: '创建失败：{message}',
+            loadFailed: '加载网盘失败：{message}',
+            deleteFailed: '删除失败：{message}',
+            moveDone: '已移动 {count} 个项目',
+            moveFailed: '移动失败：{message}',
+            contextSources: '上下文来源',
+            generatedDocDefaultTitle: 'Super Chat 报告.md',
+            rootName: '我的网盘',
+            chatPathChip: '网盘路径',
+            chatPathTitle: 'Super Chat 网盘路径：{path}',
+            folderContents: '{folders} 个文件夹 · {files} 个文件',
+            download: '下载',
+            expandPrompt: '请基于当前网盘上下文，帮我整理可以沉淀的新知识：\n1. 提炼关键结论。\n2. 标出缺失或薄弱的资料。\n3. 生成一篇可以直接保存到网盘的新知识文档草稿。',
+            type: {
+                folder: '文件夹',
+                file: '文件',
+                source: '资料',
+                note: '笔记',
+                generated: '生成',
+                summary: '总结',
+            },
         },
         aigc: {
             formTitle: 'AI 生图',
@@ -409,6 +508,7 @@ const I18N = {
         trace: {
             open: '打开 Trace',
             backToChat: '回到对话',
+            copyTraceId: '复制 Trace ID',
             events: '{count} 个事件',
             waiting: '等待 run id',
             hierarchy: '层级',
@@ -484,16 +584,18 @@ const I18N = {
     },
     en: {
         app: { name: '阿安的工作台' },
-        nav: { chat: 'Super Chat', pulse: 'Pulse', agents: 'Agents', tools: 'Tools', trace: 'Trace', runs: 'Runs', developer: 'Developer' },
+        nav: { chat: 'Super Chat', pulse: 'Pulse', projects: 'Drive', agents: 'Agents', tools: 'Tools', trace: 'Trace', runs: 'Runs', developer: 'Developer', memory: 'Memory' },
         sidebar: {
             navigation: 'Navigation',
             pinned: 'Pinned Agents',
+            projects: 'Drive',
             recent: 'Recent Chats',
             fullConfig: 'Full Settings',
             modelSelect: 'Model selection',
             defaultModel: 'Default Model',
             emptyConversations: 'No conversations',
             emptyPinned: 'Pin frequent agents from Agents',
+            emptyProjects: 'Empty drive',
         },
         topbar: { agent: 'Agent', role: 'Role' },
         account: {
@@ -523,7 +625,23 @@ const I18N = {
             toggleSidebar: 'Toggle sidebar',
             refresh: 'Refresh data',
             send: 'Send',
+            back: 'Back',
+            save: 'Save',
+            cancel: 'Cancel',
+            cancelTask: 'Cancel task',
+            usePath: 'Use Path',
             delete: 'Delete',
+            createProject: 'New Folder',
+            uploadKnowledge: 'Upload Files',
+            saveAsDocument: 'Save to Drive',
+            saveToDrive: 'Generate Report',
+            chatWithPath: 'Ask in Super Chat',
+            chatThisPath: 'Ask',
+            previewDocument: 'Preview',
+            createFromSelection: 'New From Selection',
+            clearSelection: 'Clear selection',
+            moveUp: 'Move up',
+            moveDown: 'Move down',
             attach: 'Upload attachment',
             removeAttachment: 'Remove attachment',
             startTask: 'Start Task',
@@ -542,6 +660,8 @@ const I18N = {
             copyFailed: 'Copy Failed',
             confirmDeleteConversation: 'Delete this conversation and all of its messages?',
             confirmDeleteTopic: 'Delete topic "{name}"?',
+            confirmDeleteProject: 'Delete "{name}" and all nested contents?',
+            confirmDeleteDocument: 'Delete "{name}"?',
         },
         media: {
             preview: 'Image Preview',
@@ -557,11 +677,81 @@ const I18N = {
         views: {
             chat: { title: 'Super Chat', subtitle: 'Intent routing, agent calls, and final answers' },
             pulse: { title: 'Pulse', subtitle: 'Topic seeds, information clusters, and next-step reading' },
+            projects: { title: 'Drive', subtitle: 'Per-account file tree, uploads, downloads, and Super Chat context' },
             agents: { title: 'Agents', subtitle: 'Agent entry points, runtimes, and capability status' },
             tools: { title: 'Tools', subtitle: 'Built-in tools, parameters, and execution status' },
             runs: { title: 'Runs', subtitle: 'Execution traces, events, and debugging details' },
             trace: { title: 'Trace', subtitle: 'Hierarchical events, node details, and debugging context' },
-            developer: { title: 'Developer', subtitle: 'Memory system, persisted records, and latest run injection' },
+            developer: { title: 'Memory', subtitle: 'Memory system, persisted records, and latest run injection' },
+        },
+        projects: {
+            emptyTitle: 'Your drive is empty',
+            emptyDetail: 'Upload files or save Super Chat outputs here.',
+            createTitle: 'Folder name',
+            createPlaceholder: 'e.g. Product notes',
+            sourceLibrary: 'Drive Contents',
+            knowledgeMap: 'Current Folder',
+            contextChat: 'Drive Q&A',
+            search: 'Search drive files',
+            documents: '{count} items',
+            links: '{count} folders',
+            selected: '{count} selected',
+            noDocuments: 'No files',
+            noSearchResults: 'No matching files',
+            activeDocument: 'Active file',
+            uploadFailed: 'Upload failed: {message}',
+            uploadDone: 'Uploaded {count} files',
+            uploadBinaryNote: 'Original file saved and downloadable; not used as text context yet.',
+            askPlaceholder: 'Ask with selected drive context; if nothing is selected, the drive will be searched',
+            ask: 'Ask',
+            asking: 'Generating...',
+            expandMap: 'Organize',
+            answer: 'Answer',
+            answerEmpty: 'Waiting for Drive Q&A',
+            saveDialogTitle: 'Save to Drive',
+            saveNameLabel: 'File name',
+            pathLabel: 'Path',
+            pathDialogTitle: 'Choose Path',
+            pathCurrent: 'Current: {path}',
+            pathJump: 'Path',
+            frequentPaths: 'Frequent Paths',
+            allPaths: 'All Paths',
+            pathEmpty: 'No folders',
+            pathRequired: 'Choose a path',
+            saveNameRequired: 'Enter a file name',
+            saving: 'Saving...',
+            canceling: 'Canceling...',
+            saveTitle: 'File name',
+            saveDone: 'Saved to Drive',
+            saveFailed: 'Save failed: {message}',
+            saveCancelled: 'Report generation was canceled.',
+            saveTaskStarted: 'Generating and saving "{title}"',
+            previewLoading: 'Loading document...',
+            previewFailed: 'Failed to load document: {message}',
+            previewBinary: 'This file is saved in Drive and can be downloaded; this format is not extracted as text context yet.',
+            createSelectionTitle: 'New folder name',
+            createSelectionDone: 'Selection handled',
+            createSelectionFailed: 'Create failed: {message}',
+            loadFailed: 'Failed to load Drive: {message}',
+            deleteFailed: 'Delete failed: {message}',
+            moveDone: 'Moved {count} items',
+            moveFailed: 'Move failed: {message}',
+            contextSources: 'Context sources',
+            generatedDocDefaultTitle: 'Super Chat Report.md',
+            rootName: 'My Drive',
+            chatPathChip: 'Drive path',
+            chatPathTitle: 'Super Chat drive path: {path}',
+            folderContents: '{folders} folders · {files} files',
+            download: 'Download',
+            expandPrompt: 'Use the current drive context to organize durable knowledge:\n1. Extract the key conclusions.\n2. Identify missing or weak source material.\n3. Draft a new knowledge document that can be saved directly.',
+            type: {
+                folder: 'Folder',
+                file: 'File',
+                source: 'Source',
+                note: 'Note',
+                generated: 'Generated',
+                summary: 'Summary',
+            },
         },
         aigc: {
             formTitle: 'AI Image',
@@ -869,6 +1059,7 @@ const I18N = {
         trace: {
             open: 'Open Trace',
             backToChat: 'Back to chat',
+            copyTraceId: 'Copy Trace ID',
             events: '{count} events',
             waiting: 'Waiting for run id',
             hierarchy: 'Hierarchy',
@@ -985,6 +1176,7 @@ function allModes() {
 
 const MAX_TEXT_ATTACHMENT_BYTES = 1024 * 1024;
 const MAX_MEDIA_ATTACHMENT_BYTES = 8 * 1024 * 1024;
+const MAX_DRIVE_BINARY_BYTES = 2 * 1024 * 1024;
 const MAX_ATTACHMENT_CHARS = 12000;
 const MAX_TOTAL_ATTACHMENT_CHARS = 24000;
 const ACTIVE_RUN_POLL_MS = 1500;
@@ -994,14 +1186,25 @@ const FOLLOW_UP_QUESTION_COUNT = 3;
 const FOLLOW_UP_POLL_DELAYS_MS = [500, 1000, 1500, 2000, 3000, 4000];
 const TEXT_ATTACHMENT_EXTENSIONS = new Set([
     'txt', 'md', 'markdown', 'csv', 'tsv', 'json', 'jsonl', 'yaml', 'yml',
-    'xml', 'html', 'htm', 'log', 'ini', 'toml', 'env',
-    'js', 'jsx', 'ts', 'tsx', 'css', 'scss', 'less',
+    'xml', 'html', 'htm', 'log', 'ini', 'toml', 'env', 'conf', 'cfg', 'properties',
+    'rst', 'adoc', 'tex', 'srt', 'vtt', 'ics', 'lock',
+    'js', 'jsx', 'ts', 'tsx', 'css', 'scss', 'less', 'vue', 'svelte',
     'py', 'go', 'java', 'c', 'h', 'cpp', 'hpp', 'cs', 'rs', 'rb', 'php',
-    'sh', 'bash', 'zsh', 'sql',
+    'sh', 'bash', 'zsh', 'fish', 'sql', 'swift', 'scala', 'kt', 'kts', 'lua',
+    'r', 'pl', 'dart', 'dockerfile', 'gitignore',
 ]);
 const IMAGE_ATTACHMENT_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'webp', 'gif', 'avif', 'bmp', 'heic', 'heif', 'svg']);
 const AUDIO_ATTACHMENT_EXTENSIONS = new Set(['mp3', 'wav', 'm4a', 'aac', 'ogg', 'flac', 'webm']);
 const VIDEO_ATTACHMENT_EXTENSIONS = new Set(['mp4', 'mov', 'webm', 'm4v', 'avi', 'mkv', 'ogv']);
+const DOCUMENT_ATTACHMENT_EXTENSIONS = new Set(['pdf', 'doc', 'docx', 'rtf', 'odt', 'xls', 'xlsx', 'ods', 'ppt', 'pptx', 'odp', 'key', 'numbers', 'pages']);
+const ARCHIVE_ATTACHMENT_EXTENSIONS = new Set(['zip', 'rar', '7z', 'tar', 'gz', 'tgz', 'bz2']);
+const DRIVE_BINARY_EXTENSIONS = new Set([
+    ...IMAGE_ATTACHMENT_EXTENSIONS,
+    ...AUDIO_ATTACHMENT_EXTENSIONS,
+    ...VIDEO_ATTACHMENT_EXTENSIONS,
+    ...DOCUMENT_ATTACHMENT_EXTENSIONS,
+    ...ARCHIVE_ATTACHMENT_EXTENSIONS,
+]);
 
 let activeView = 'chat';
 let currentConversationId = null;
@@ -1025,6 +1228,36 @@ let currentUserId = loadCurrentUserId();
 let currentAccountToken = '';
 let accounts = [];
 let currentAgentId = SUPER_CHAT_AGENT_ID;
+let projects = [];
+let currentProjectId = loadCurrentProjectId();
+let chatDrivePathId = loadChatDrivePathId();
+let projectDetail = null;
+let activeProjectDocumentId = '';
+let projectSearchQuery = '';
+let projectSearchResults = [];
+let projectSearchDebounceTimer = null;
+let projectSearchComposing = false;
+let projectSearchRequestSeq = 0;
+let projectOpenClickTimer = null;
+let projectInlineFileId = '';
+let projectInlineFileDetail = { item: null, loading: false, error: '' };
+let projectError = '';
+let projectStatusText = '';
+let projectStatusType = 'muted';
+let projectUploadBusy = false;
+let projectAskInput = '';
+let projectAskAnswer = '';
+let projectAskError = '';
+let projectAskLoading = false;
+let projectAskSources = [];
+let selectedProjectDocumentIds = new Set();
+let lastSelectedProjectDocumentId = '';
+let driveDragState = createEmptyDriveDragState();
+let driveSelectionBoxState = createEmptyDriveSelectionBoxState();
+let pendingProjectDeletes = new Set();
+let pendingProjectDocumentDeletes = new Set();
+let collapsedDriveFolderIds = loadDriveCollapsedFolderIds();
+let driveRecentPathIds = loadDriveRecentPathIds();
 let roles = [];
 let currentRoleId = loadCurrentRoleId();
 let roleMemories = [];
@@ -1059,6 +1292,7 @@ let collapsedTraceNodeIds = new Set();
 let expandedTraceNodeIds = new Set();
 let defaultModelText = '';
 const activeConversationRequests = new Set();
+const streamingTaskCancellers = new Map();
 const pendingConversationDeletes = new Set();
 const pendingPulseTopicDeletes = new Set();
 let toolsError = '';
@@ -1091,6 +1325,9 @@ let guestLoginBusy = false;
 let followUpRenderToken = 0;
 let chatHistoryPanelOpen = false;
 let chatNavigationUpdateScheduled = false;
+let driveSaveDialogState = createEmptyDriveSaveDialogState();
+let drivePathDialogState = createEmptyDrivePathDialogState();
+let drivePreviewState = createEmptyDrivePreviewState();
 
 const sidebar = document.getElementById('sidebar');
 const sidebarBackdrop = document.getElementById('sidebar-backdrop');
@@ -1136,14 +1373,38 @@ const viewTitle = document.getElementById('view-title');
 const viewSubtitle = document.getElementById('view-subtitle');
 const systemStatus = document.getElementById('system-status');
 const agentCount = document.getElementById('agent-count');
+const projectCount = document.getElementById('project-count');
 const toolCount = document.getElementById('tool-count');
 const runCount = document.getElementById('run-count');
 const pinnedAgentList = document.getElementById('pinned-agent-list');
+const projectList = document.getElementById('project-list');
 const navSectionCount = document.getElementById('nav-section-count');
 const pinnedSectionCount = document.getElementById('pinned-section-count');
+const projectSectionCount = document.getElementById('project-section-count');
 const conversationSectionCount = document.getElementById('conversation-section-count');
 const agentsGrid = document.getElementById('agents-grid');
 const toolsGrid = document.getElementById('tools-grid');
+const projectWorkbench = document.getElementById('project-workbench');
+const projectUploadInput = document.getElementById('project-upload-input');
+const driveSaveDialog = document.getElementById('drive-save-dialog');
+const driveSaveForm = document.getElementById('drive-save-form');
+const driveSaveNameInput = document.getElementById('drive-save-name-input');
+const driveSaveTree = document.getElementById('drive-save-tree');
+const driveSavePathCurrent = document.getElementById('drive-save-path-current');
+const driveSaveError = document.getElementById('drive-save-error');
+const btnDriveSaveConfirm = document.getElementById('btn-drive-save-confirm');
+const drivePathDialog = document.getElementById('drive-path-dialog');
+const drivePathForm = document.getElementById('drive-path-form');
+const drivePathTree = document.getElementById('drive-path-tree');
+const drivePathCurrent = document.getElementById('drive-path-current');
+const drivePathError = document.getElementById('drive-path-error');
+const btnDrivePathConfirm = document.getElementById('btn-drive-path-confirm');
+const drivePreviewDialog = document.getElementById('drive-preview-dialog');
+const drivePreviewTitle = document.getElementById('drive-preview-title');
+const drivePreviewMeta = document.getElementById('drive-preview-meta');
+const drivePreviewStatus = document.getElementById('drive-preview-status');
+const drivePreviewContent = document.getElementById('drive-preview-content');
+const drivePreviewDownload = document.querySelector('[data-drive-preview-download]');
 const runList = document.getElementById('run-list');
 const runDetail = document.getElementById('run-detail');
 const developerWorkbench = document.getElementById('developer-workbench');
@@ -1256,7 +1517,7 @@ function applyI18n() {
     document.querySelectorAll('[data-i18n-aria-label]').forEach((el) => {
         el.setAttribute('aria-label', t(el.dataset.i18nAriaLabel));
     });
-    document.querySelectorAll('[data-copy-answer], [data-copy-code]').forEach(resetCopyButtonFeedback);
+    document.querySelectorAll('[data-copy-answer], [data-copy-code], [data-copy-trace-id]').forEach(resetCopyButtonFeedback);
     if (languageToggle) languageToggle.textContent = currentLanguage === 'zh' ? 'EN' : '中';
     setGuestLoginBusy(guestLoginBusy);
 }
@@ -1268,6 +1529,7 @@ function setLanguage(language) {
     applyI18n();
     renderHealth();
     renderConversationList();
+    renderProjectList();
     renderAgentSelect();
     renderPinnedAgents();
     renderAgents();
@@ -1276,6 +1538,10 @@ function setLanguage(language) {
     renderTools();
     renderRuns();
     renderSettings();
+    renderProjects();
+    renderDriveSaveDialog();
+    renderDrivePathDialog();
+    renderDriveDocumentPreview();
     renderPulse();
     renderAccountControls();
     renderRoleSelect();
@@ -1338,7 +1604,7 @@ function saveCollapsedSidebarSections() {
 }
 
 function setSidebarSectionCollapsed(sectionId, collapsed) {
-    const allowed = ['nav', 'pinned', 'conversations'];
+    const allowed = ['nav', 'pinned', 'projects', 'conversations'];
     if (!allowed.includes(sectionId)) return;
 
     if (collapsed) {
@@ -1413,6 +1679,70 @@ function loadCurrentUserId() {
 function saveCurrentConversationId(id) {
     if (!currentUserId) return;
     localStorage.setItem(accountStorageKey(CURRENT_CONVERSATION_STORAGE_KEY), id || '');
+}
+
+function loadCurrentProjectId() {
+    if (!currentUserId) return '';
+    return localStorage.getItem(accountStorageKey(CURRENT_PROJECT_STORAGE_KEY)) || '';
+}
+
+function saveCurrentProjectId(id) {
+    if (!currentUserId) return;
+    localStorage.setItem(accountStorageKey(CURRENT_PROJECT_STORAGE_KEY), id || '');
+}
+
+function loadChatDrivePathId() {
+    if (!currentUserId) return '';
+    return localStorage.getItem(accountStorageKey(CHAT_DRIVE_PATH_STORAGE_KEY)) || '';
+}
+
+function saveChatDrivePathId(id) {
+    if (!currentUserId) return;
+    localStorage.setItem(accountStorageKey(CHAT_DRIVE_PATH_STORAGE_KEY), id || '');
+}
+
+function loadDriveCollapsedFolderIds() {
+    if (!currentUserId) return new Set();
+    try {
+        const parsed = JSON.parse(localStorage.getItem(accountStorageKey(DRIVE_COLLAPSED_FOLDERS_STORAGE_KEY)) || '[]');
+        return new Set(Array.isArray(parsed) ? parsed.map(String).filter(Boolean) : []);
+    } catch {
+        return new Set();
+    }
+}
+
+function saveDriveCollapsedFolderIds() {
+    if (!currentUserId) return;
+    localStorage.setItem(accountStorageKey(DRIVE_COLLAPSED_FOLDERS_STORAGE_KEY), JSON.stringify(Array.from(collapsedDriveFolderIds)));
+}
+
+function loadDriveRecentPathIds() {
+    if (!currentUserId) return [];
+    try {
+        const parsed = JSON.parse(localStorage.getItem(accountStorageKey(DRIVE_RECENT_PATHS_STORAGE_KEY)) || '[]');
+        return Array.isArray(parsed) ? Array.from(new Set(parsed.map(String).filter(Boolean))).slice(0, 8) : [];
+    } catch {
+        return [];
+    }
+}
+
+function saveDriveRecentPathIds() {
+    if (!currentUserId) return;
+    localStorage.setItem(accountStorageKey(DRIVE_RECENT_PATHS_STORAGE_KEY), JSON.stringify(driveRecentPathIds.slice(0, 8)));
+}
+
+function projectConversationStorageKey(projectId) {
+    return accountStorageKey(`${PROJECT_CHAT_CONVERSATION_STORAGE_KEY}:${projectId || 'draft'}`);
+}
+
+function loadProjectConversationId(projectId) {
+    if (!currentUserId || !projectId) return '';
+    return localStorage.getItem(projectConversationStorageKey(projectId)) || '';
+}
+
+function saveProjectConversationId(projectId, conversationId) {
+    if (!currentUserId || !projectId) return;
+    localStorage.setItem(projectConversationStorageKey(projectId), conversationId || '');
 }
 
 function saveCurrentUserId(id) {
@@ -1625,6 +1955,8 @@ async function switchAccount(userId, options = {}) {
         return;
     }
     currentConversationId = loadCurrentConversationId();
+    currentProjectId = loadCurrentProjectId();
+    chatDrivePathId = loadChatDrivePathId();
     selectedModeIds = loadSelectedModes(currentConversationId);
     currentRoleId = loadCurrentRoleId();
     roleMemories = [];
@@ -1639,6 +1971,30 @@ async function switchAccount(userId, options = {}) {
     toolSettingsStatusType = 'muted';
     runs = [];
     pulse = { date: '', generated_at: '', topics: [], suggested_topics: [], items: [] };
+    projects = [];
+    projectDetail = null;
+    activeProjectDocumentId = '';
+    projectSearchQuery = '';
+    projectSearchResults = [];
+    projectInlineFileId = '';
+    projectInlineFileDetail = { item: null, loading: false, error: '' };
+    projectError = '';
+    projectStatusText = '';
+    projectStatusType = 'muted';
+    projectUploadBusy = false;
+    projectAskInput = '';
+    projectAskAnswer = '';
+    projectAskError = '';
+    projectAskLoading = false;
+    projectAskSources = [];
+    selectedProjectDocumentIds = new Set();
+    lastSelectedProjectDocumentId = '';
+    driveDragState = createEmptyDriveDragState();
+    driveSelectionBoxState = createEmptyDriveSelectionBoxState();
+    pendingProjectDeletes = new Set();
+    pendingProjectDocumentDeletes = new Set();
+    collapsedDriveFolderIds = loadDriveCollapsedFolderIds();
+    driveRecentPathIds = loadDriveRecentPathIds();
     runsError = '';
     pulseError = '';
     pulseErrorType = 'load';
@@ -1659,6 +2015,8 @@ async function switchAccount(userId, options = {}) {
     renderRoleSelect();
     renderRoleMemoryList();
     renderConversationList();
+    renderProjectList();
+    renderProjects();
     renderPulse();
     renderRuns();
     showWelcome();
@@ -1726,9 +2084,10 @@ function renderModes() {
     }).join('');
 
     const activeModes = getSelectedModes();
+    const hasDrivePathChip = Boolean(chatDrivePathChipHtml());
     if (modeChips) {
         modeChips.innerHTML = renderInputContextChips(activeModes);
-        modeChips.hidden = activeModes.length === 0 && attachedContexts.length === 0;
+        modeChips.hidden = activeModes.length === 0 && attachedContexts.length === 0 && !hasDrivePathChip;
     }
     if (modeCount) {
         modeCount.textContent = activeModes.length ? String(activeModes.length) : '';
@@ -1746,8 +2105,26 @@ function renderInputContextChips(activeModes = getSelectedModes()) {
         const copy = modeCopy(mode);
         return `<span class="mode-chip" title="${escapeAttr(copy.detail)}">${escapeHtml(copy.name)}</span>`;
     });
+    const drivePathChip = chatDrivePathChipHtml();
     const attachmentItems = attachedContexts.map(renderAttachmentChip);
-    return [...modeItems, ...attachmentItems].join('');
+    return [...modeItems, drivePathChip, ...attachmentItems].filter(Boolean).join('');
+}
+
+function chatDrivePathChipHtml() {
+    if (selectedModeAgentId() !== SUPER_CHAT_AGENT_ID) return '';
+    const item = chatDrivePathItem();
+    if (!item?.id) return '';
+    const display = chatDrivePathDisplay();
+    const title = t('projects.chatPathTitle', { path: display });
+    return `
+        <button class="mode-chip drive-path-chip" type="button"
+                data-open-chat-drive-path
+                title="${escapeAttr(title)}"
+                aria-label="${escapeAttr(title)}">
+            <span>${escapeHtml(t('projects.chatPathChip'))}</span>
+            <small>${escapeHtml(display)}</small>
+        </button>
+    `;
 }
 
 function attachmentStatusText(item) {
@@ -1840,9 +2217,7 @@ function selectedModePayload() {
 }
 
 function selectedModeAgentId(fallbackAgentId = currentAgentId) {
-    return getSelectedModes().some((mode) => mode.id === DEEP_RESEARCH_MODE_ID)
-        ? DEEP_RESEARCH_AGENT_ID
-        : fallbackAgentId;
+    return fallbackAgentId;
 }
 
 function hasReadyAttachments() {
@@ -2188,6 +2563,13 @@ function readFileAsDataURL(file) {
     });
 }
 
+function dataUrlBase64Content(dataUrl = '') {
+    const value = String(dataUrl || '');
+    const commaIndex = value.indexOf(',');
+    if (commaIndex < 0) return '';
+    return value.slice(commaIndex + 1);
+}
+
 function isReadableAttachment(file) {
     const type = (file.type || '').toLowerCase();
     if (type.startsWith('text/')) return true;
@@ -2196,6 +2578,28 @@ function isReadableAttachment(file) {
     }
     const ext = fileExtension(file.name);
     return TEXT_ATTACHMENT_EXTENSIONS.has(ext);
+}
+
+function isSupportedDriveBinaryFile(file) {
+    const type = (file.type || '').toLowerCase();
+    const ext = fileExtension(file.name);
+    if (type.startsWith('image/') || type.startsWith('audio/') || type.startsWith('video/')) return true;
+    if (['application/pdf', 'application/zip', 'application/x-zip-compressed'].includes(type)) return true;
+    return DRIVE_BINARY_EXTENSIONS.has(ext);
+}
+
+function driveMimeTypeForFile(file) {
+    if (file.type) return file.type;
+    const ext = fileExtension(file.name);
+    if (ext === 'pdf') return 'application/pdf';
+    if (ext === 'doc') return 'application/msword';
+    if (ext === 'docx') return 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+    if (ext === 'xls') return 'application/vnd.ms-excel';
+    if (ext === 'xlsx') return 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+    if (ext === 'ppt') return 'application/vnd.ms-powerpoint';
+    if (ext === 'pptx') return 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
+    if (ext === 'zip') return 'application/zip';
+    return mediaMimeTypeForFile(file, attachmentKind(file)) || 'application/octet-stream';
 }
 
 function fileExtension(name = '') {
@@ -2284,6 +2688,11 @@ function chatAttachmentPayload(items = attachedContexts) {
         }));
 }
 
+function driveWriteToolsUsed(resp) {
+    const skills = Array.isArray(resp?.skills_used) ? resp.skills_used : [];
+    return skills.some((skill) => skill === 'save_drive' || skill === 'mkdir_drive');
+}
+
 function isAgentPinned(agentId) {
     return pinnedAgentIds.includes(agentId);
 }
@@ -2347,6 +2756,1098 @@ async function deleteConversation(id) {
         pendingConversationDeletes.delete(id);
         renderConversationList();
     }
+}
+
+async function loadProjects() {
+    projectError = '';
+    try {
+        const data = await apiCall('GET', '/api/drive/tree');
+        projectDetail = {
+            items: Array.isArray(data.items) ? data.items : [],
+            flat_items: Array.isArray(data.flat_items) ? data.flat_items : [],
+        };
+        projects = projectDetail.flat_items;
+        const root = driveRootItem();
+        if (!currentProjectId || !driveItemIsFolder(currentProjectId)) {
+            currentProjectId = root?.id || '';
+            saveCurrentProjectId(currentProjectId);
+        }
+        if (!chatDrivePathId || !driveItemIsFolder(chatDrivePathId)) {
+            chatDrivePathId = root?.id || '';
+            saveChatDrivePathId(chatDrivePathId);
+        }
+        if (activeProjectDocumentId && !driveItemById(activeProjectDocumentId)) {
+            activeProjectDocumentId = '';
+        }
+        if (projectInlineFileId && driveItemById(projectInlineFileId)?.type !== 'file') {
+            projectInlineFileId = '';
+            projectInlineFileDetail = { item: null, loading: false, error: '' };
+        }
+        collapsedDriveFolderIds = new Set(Array.from(collapsedDriveFolderIds).filter((id) => driveItemIsFolder(id)));
+        saveDriveCollapsedFolderIds();
+        driveRecentPathIds = driveRecentPathIds.filter((id) => driveItemIsFolder(id));
+        if (root?.id) rememberDrivePath(root.id, { render: false });
+        selectedProjectDocumentIds = new Set(Array.from(selectedProjectDocumentIds).filter((id) => driveSelectableItem(driveItemById(id))));
+        if (lastSelectedProjectDocumentId && !selectedProjectDocumentIds.has(lastSelectedProjectDocumentId)) {
+            lastSelectedProjectDocumentId = Array.from(selectedProjectDocumentIds).pop() || '';
+        }
+        renderProjectList();
+        updateCounts();
+        renderProjects();
+        renderModes();
+    } catch (err) {
+        projects = [];
+        projectDetail = { items: [], flat_items: [] };
+        projectError = t('projects.loadFailed', { message: err.message });
+        renderProjectList();
+        renderProjects();
+        updateCounts();
+    }
+}
+
+async function loadProjectDetail(id = currentProjectId) {
+    const item = id ? driveItemById(id) : null;
+    if (!id || item?.type === 'folder') {
+        currentProjectId = id || '';
+        saveCurrentProjectId(currentProjectId);
+        rememberDrivePath(currentProjectId, { render: false });
+    } else if (item?.type === 'file') {
+        currentProjectId = item.parent_id || '';
+        activeProjectDocumentId = item.id;
+        saveCurrentProjectId(currentProjectId);
+        rememberDrivePath(currentProjectId, { render: false });
+    }
+    renderProjectList();
+    renderProjects();
+    return projectDetail;
+}
+
+function currentProjectRecord(id = currentProjectId) {
+    if (!id) {
+        return driveRootItem() || { id: '', name: t('projects.rootName'), type: 'folder', parent_id: '' };
+    }
+    return driveItemById(id);
+}
+
+function projectDocuments() {
+    return driveChildren(currentProjectId);
+}
+
+function projectLinks() {
+    return driveItems().filter((item) => item.type === 'folder');
+}
+
+async function createProject(name = '') {
+    const requestedName = String(name || window.prompt(t('projects.createTitle'), t('projects.createPlaceholder')) || '').trim();
+    if (!requestedName) return null;
+    const data = await apiCall('POST', '/api/drive/folders', {
+        parent_id: currentProjectId || '',
+        name: requestedName,
+    });
+    const folder = data.item;
+    if (folder?.id) {
+        currentProjectId = folder.id;
+        saveCurrentProjectId(folder.id);
+        activeProjectDocumentId = '';
+        projectInlineFileId = '';
+        projectInlineFileDetail = { item: null, loading: false, error: '' };
+        projectAskAnswer = '';
+        projectAskSources = [];
+        setView('projects', { skipLoad: true });
+        await loadProjects();
+        rememberDrivePath(folder.id, { render: false });
+    }
+    return folder || null;
+}
+
+async function deleteProject(id) {
+    if (!id || pendingProjectDeletes.has(id)) return;
+    const item = driveItemById(id);
+    if (!window.confirm(t('actions.confirmDeleteProject', { name: driveDisplayName(item) || id }))) return;
+
+    pendingProjectDeletes.add(id);
+    renderProjectList();
+    renderProjects();
+    try {
+        await apiCall('DELETE', `/api/drive/items/${encodeURIComponent(id)}`);
+        selectedProjectDocumentIds.delete(id);
+        if (lastSelectedProjectDocumentId === id) lastSelectedProjectDocumentId = '';
+        if (activeProjectDocumentId === id) activeProjectDocumentId = '';
+        if (projectInlineFileId === id || driveHasAncestor(projectInlineFileId, id)) {
+            projectInlineFileId = '';
+            projectInlineFileDetail = { item: null, loading: false, error: '' };
+        }
+        if (currentProjectId === id || driveHasAncestor(currentProjectId, id)) {
+            currentProjectId = item?.parent_id || '';
+            saveCurrentProjectId(currentProjectId);
+            activeProjectDocumentId = '';
+            projectAskAnswer = '';
+            projectAskSources = [];
+        }
+        if (chatDrivePathId === id || driveHasAncestor(chatDrivePathId, id)) {
+            chatDrivePathId = item?.parent_id || driveRootItem()?.id || '';
+            saveChatDrivePathId(chatDrivePathId);
+        }
+        await loadProjects();
+    } catch (err) {
+        projectStatusText = t('projects.deleteFailed', { message: err.message });
+        projectStatusType = 'error';
+        renderProjects();
+    } finally {
+        pendingProjectDeletes.delete(id);
+        renderProjectList();
+    }
+}
+
+async function reorderProject(id, direction) {
+    void id;
+    void direction;
+}
+
+async function selectProject(id) {
+    const item = id ? driveItemById(id) : driveRootItem();
+    if (!id || item?.type === 'folder') {
+        currentProjectId = item?.id || '';
+        saveCurrentProjectId(currentProjectId);
+        rememberDrivePath(currentProjectId, { render: false });
+        activeProjectDocumentId = '';
+    } else if (item?.type === 'file') {
+        currentProjectId = item.parent_id || '';
+        activeProjectDocumentId = item.id;
+        saveCurrentProjectId(currentProjectId);
+        rememberDrivePath(currentProjectId, { render: false });
+    }
+    setView('projects', { skipLoad: true });
+    renderProjectList();
+    renderProjects();
+    closeMobileSidebar();
+}
+
+function setProjectStatus(text = '', type = 'muted') {
+    projectStatusText = text;
+    projectStatusType = type;
+    renderProjects();
+}
+
+async function createProjectDocument(projectId, payload) {
+    const name = payload.name || payload.title || payload.source_name || t('projects.generatedDocDefaultTitle');
+    const data = await apiCall('POST', '/api/drive/files', {
+        parent_id: projectId || '',
+        name,
+        mime_type: payload.mime_type || 'text/plain; charset=utf-8',
+        encoding: payload.encoding || '',
+        content: payload.content || '',
+        summary: payload.summary || '',
+        tags: Array.isArray(payload.tags) ? payload.tags : [],
+    });
+    await loadProjects();
+    if (data.item?.id) {
+        activeProjectDocumentId = data.item.id;
+        currentProjectId = data.item.parent_id || currentProjectId || '';
+        saveCurrentProjectId(currentProjectId);
+        renderProjects();
+    }
+    return data.item;
+}
+
+async function deleteProjectDocument(projectId, documentId) {
+    void projectId;
+    if (!documentId || pendingProjectDocumentDeletes.has(documentId)) return;
+    const item = driveItemById(documentId);
+    if (!window.confirm(t('actions.confirmDeleteDocument', { name: driveDisplayName(item) || documentId }))) return;
+    pendingProjectDocumentDeletes.add(documentId);
+    renderProjects();
+    try {
+        await apiCall('DELETE', `/api/drive/items/${encodeURIComponent(documentId)}`);
+        selectedProjectDocumentIds.delete(documentId);
+        if (lastSelectedProjectDocumentId === documentId) lastSelectedProjectDocumentId = '';
+        if (activeProjectDocumentId === documentId) activeProjectDocumentId = '';
+        if (projectInlineFileId === documentId) {
+            projectInlineFileId = '';
+            projectInlineFileDetail = { item: null, loading: false, error: '' };
+        }
+        if (currentProjectId === documentId || driveHasAncestor(currentProjectId, documentId)) {
+            currentProjectId = item?.parent_id || '';
+            saveCurrentProjectId(currentProjectId);
+        }
+        await loadProjects();
+    } catch (err) {
+        setProjectStatus(t('projects.deleteFailed', { message: err.message }), 'error');
+    } finally {
+        pendingProjectDocumentDeletes.delete(documentId);
+        renderProjects();
+    }
+}
+
+async function searchProjectDocuments(query = projectSearchQuery, options = {}) {
+    const { render = true } = options;
+    projectSearchQuery = String(query || '');
+    if (!projectSearchQuery.trim()) {
+        projectSearchResults = [];
+        if (render) renderProjects();
+        return [];
+    }
+    const data = await apiCall('GET', `/api/drive/search?q=${encodeURIComponent(projectSearchQuery.trim())}`);
+    projectSearchResults = Array.isArray(data.results) ? data.results : [];
+    if (render) renderProjects();
+    return projectSearchResults;
+}
+
+function scheduleProjectSearch(inputEl, delay = PROJECT_SEARCH_DEBOUNCE_MS) {
+    if (!inputEl) return;
+    projectSearchQuery = inputEl.value || '';
+    if (projectSearchComposing) return;
+    const cursor = inputEl.selectionStart;
+    const query = projectSearchQuery;
+    clearTimeout(projectSearchDebounceTimer);
+    projectSearchDebounceTimer = setTimeout(() => {
+        void runProjectSearch(query, cursor);
+    }, delay);
+}
+
+async function runProjectSearch(query = projectSearchQuery, cursor = null) {
+    const requestSeq = ++projectSearchRequestSeq;
+    try {
+        await searchProjectDocuments(query, { render: false });
+        if (requestSeq !== projectSearchRequestSeq) return;
+        renderProjects();
+        const nextSearch = document.querySelector('[data-project-search]');
+        if (nextSearch && document.activeElement !== nextSearch) {
+            nextSearch.focus({ preventScroll: true });
+        }
+        if (nextSearch && typeof cursor === 'number' && nextSearch.setSelectionRange) {
+            nextSearch.setSelectionRange(cursor, cursor);
+        }
+    } catch (err) {
+        if (requestSeq !== projectSearchRequestSeq) return;
+        projectStatusText = err.message;
+        projectStatusType = 'error';
+        renderProjects();
+    }
+}
+
+async function handleProjectUpload(files) {
+    if (projectUploadBusy) return;
+    const list = Array.from(files || []);
+    if (!list.length) return;
+    projectUploadBusy = true;
+    setProjectStatus('', 'muted');
+    let uploaded = 0;
+    try {
+        for (const file of list) {
+            if (isReadableAttachment(file)) {
+                const rawText = await file.text();
+                let content = normalizeAttachmentText(rawText);
+                if (!content) throw new Error(`${file.name}: ${t('attachments.empty')}`);
+                if (content.length > PROJECT_MAX_DOCUMENT_CHARS) {
+                    content = content.slice(0, PROJECT_MAX_DOCUMENT_CHARS);
+                }
+                await createProjectDocument(currentProjectId, {
+                    title: file.name || '',
+                    source_name: file.name || '',
+                    type: 'source',
+                    mime_type: file.type || 'text/plain; charset=utf-8',
+                    content,
+                });
+                uploaded += 1;
+                continue;
+            }
+            if (!isSupportedDriveBinaryFile(file)) {
+                throw new Error(`${file.name}: ${t('attachments.unsupported')}`);
+            }
+            if (file.size > MAX_DRIVE_BINARY_BYTES) {
+                throw new Error(`${file.name}: ${t('attachments.tooLarge', { size: formatBytes(MAX_DRIVE_BINARY_BYTES) })}`);
+            }
+            const content = dataUrlBase64Content(await readFileAsDataURL(file));
+            if (!content) throw new Error(`${file.name}: ${t('attachments.readFailed', { message: 'empty data' })}`);
+            await createProjectDocument(currentProjectId, {
+                title: file.name || '',
+                source_name: file.name || '',
+                type: 'source',
+                mime_type: driveMimeTypeForFile(file),
+                encoding: 'base64',
+                content,
+                summary: `${t('projects.uploadBinaryNote')} ${formatBytes(file.size || 0)}`,
+            });
+            uploaded += 1;
+        }
+        setProjectStatus(t('projects.uploadDone', { count: uploaded }), 'ok');
+    } catch (err) {
+        setProjectStatus(t('projects.uploadFailed', { message: err.message }), 'error');
+    } finally {
+        projectUploadBusy = false;
+        if (projectUploadInput) projectUploadInput.value = '';
+        renderProjects();
+    }
+}
+
+async function ensureProjectConversation(projectId) {
+    const storedId = loadProjectConversationId(projectId || 'root');
+    if (storedId && conversations.some((conv) => conv.id === storedId)) {
+        return conversations.find((conv) => conv.id === storedId);
+    }
+    if (storedId) {
+        try {
+            const existing = await loadConversation(storedId);
+            if (existing?.conversation?.id) {
+                if (!conversations.some((conv) => conv.id === existing.conversation.id)) {
+                    conversations.unshift(existing.conversation);
+                    renderConversationList();
+                }
+                return existing.conversation;
+            }
+        } catch {
+            saveProjectConversationId(projectId, '');
+        }
+    }
+    const conv = await apiCall('POST', '/api/conversations', {
+        user_id: currentUserId,
+        agent_id: SUPER_CHAT_AGENT_ID,
+    });
+    conversations.unshift(conv);
+    saveProjectConversationId(projectId || 'root', conv.id);
+    renderConversationList();
+    return conv;
+}
+
+async function askProject(queryOverride = '') {
+    if (projectAskLoading) return;
+    const query = String(queryOverride || projectAskInput || '').trim();
+    if (!query) return;
+    projectAskLoading = true;
+    projectAskError = '';
+    projectAskInput = query;
+    renderProjects();
+    try {
+        const contextData = await apiCall('POST', '/api/drive/context', {
+            query,
+            item_ids: Array.from(selectedProjectDocumentIds),
+        });
+        const conversation = await ensureProjectConversation(currentProjectId || 'root');
+        const model = modelSelect.value || undefined;
+        const resp = await apiCall('POST', '/api/chat', {
+            conversation_id: conversation.id,
+            user_id: currentUserId,
+            query,
+            stream: false,
+            model_preference: model || undefined,
+            agent_id: SUPER_CHAT_AGENT_ID,
+            role_id: currentRoleId || undefined,
+            context_blocks: Array.isArray(contextData.context_blocks) ? contextData.context_blocks : [],
+        });
+        projectAskAnswer = resp.response || '';
+        projectAskSources = Array.isArray(contextData.items) ? contextData.items : [];
+        captureMemoryDebug(resp, conversation.id);
+        void Promise.allSettled([loadConversations(), loadRuns()]);
+    } catch (err) {
+        projectAskError = err.message;
+    } finally {
+        projectAskLoading = false;
+        renderProjects();
+    }
+}
+
+async function expandProjectMap() {
+    projectAskInput = t('projects.expandPrompt');
+    await askProject(projectAskInput);
+}
+
+async function saveProjectAnswerAsDocument() {
+    if (!projectAskAnswer.trim()) return;
+    const result = await openDriveSaveDialog({
+        title: t('projects.generatedDocDefaultTitle'),
+        content: projectAskAnswer,
+        defaultFolderId: currentProjectId || driveRootItem()?.id || '',
+        returnFocus: document.querySelector('[data-project-save-answer]'),
+        onSave: ({ title, folderId, content }) => createProjectDocument(folderId, {
+            title,
+            type: 'generated',
+            source_document_id: selectedProjectDocumentIds.size === 1 ? Array.from(selectedProjectDocumentIds)[0] : '',
+            content,
+        }),
+    });
+    if (result?.saved) {
+        setProjectStatus(t('projects.saveDone'), 'ok');
+    }
+}
+
+async function saveAssistantMessageToDrive(button) {
+    const message = button.closest('[data-copy-text]');
+    const text = message?.dataset.copyText || '';
+    if (!text.trim()) return;
+    if (!currentConversationId || activeConversationRequests.has(currentConversationId)) return;
+    button.disabled = true;
+    button.setAttribute('aria-disabled', 'true');
+    try {
+        const result = await openDriveSaveDialog({
+            title: defaultDriveFileName(text),
+            content: text,
+            defaultFolderId: chatDrivePathItem()?.id || driveRootItem()?.id || '',
+            returnFocus: button,
+            closeOnSaveStart: true,
+            onSave: ({ title, folderId, content }) => generateAssistantReportToDrive({
+                title,
+                folderId,
+                content,
+            }),
+            onBackgroundSaveDone: () => {
+                projectStatusText = t('projects.saveDone');
+                projectStatusType = 'ok';
+                renderProjectList();
+                if (activeView === 'projects') renderProjects();
+            },
+            onBackgroundSaveError: (err) => {
+                if (isCancelledError(err)) return;
+                projectStatusText = t('projects.saveFailed', { message: err.message });
+                projectStatusType = 'error';
+                if (activeView === 'projects') renderProjects();
+            },
+        });
+        if (!result?.saved) return;
+        projectStatusText = t('projects.saveDone');
+        projectStatusType = 'ok';
+        renderProjectList();
+        if (activeView === 'projects') renderProjects();
+    } catch (err) {
+        projectStatusText = t('projects.saveFailed', { message: err.message });
+        projectStatusType = 'error';
+        if (activeView === 'projects') renderProjects();
+    } finally {
+        button.disabled = false;
+        button.removeAttribute('aria-disabled');
+    }
+}
+
+async function generateAssistantReportToDrive({ title, folderId, content }) {
+    const conversationId = currentConversationId;
+    if (!conversationId) throw new Error(t('chat.createConversationFailed', { message: '' }));
+    if (activeConversationRequests.has(conversationId)) throw new Error(t('errors.requestFailed'));
+
+    const folder = driveItemById(folderId) || chatDrivePathItem() || driveRootItem();
+    const safeTitle = String(title || defaultDriveFileName(content)).trim();
+    const reportRunId = createClientRunId();
+    const cancelTaskId = createClientTaskId('report-save');
+    const controller = new AbortController();
+    let cancelled = false;
+    const query = currentLanguage === 'zh'
+        ? `请基于上一条助手回答生成 Markdown 报告，并保存到网盘文件「${safeTitle}」。`
+        : `Generate a Markdown report from the previous assistant answer and save it to Drive as "${safeTitle}".`;
+    const contextBlock = [
+        '【Report generation source】',
+        'The following is the assistant answer that must be transformed into a clean, reusable Markdown report.',
+        '',
+        content,
+    ].join('\n');
+    const instruction = [
+        `目标文件名：${safeTitle}`,
+        `目标 folder_id：${folder?.id || folderId || ''}`,
+        '必须调用 save_drive 工具保存报告。save_drive 参数使用：name=目标文件名，folder_id=目标 folder_id，mime_type=text/markdown; charset=utf-8，content=生成后的 Markdown 报告正文。',
+        '保存成功后只简短说明已保存，不要在聊天里重复输出完整报告正文。',
+    ].join('\n');
+    const fullQuery = `${query}\n\n${instruction}`;
+
+    activeConversationRequests.add(conversationId);
+    forgetConversationRender(conversationId);
+    removeFollowUpMessages();
+    updateSendState();
+    const streamView = appendStreamingAssistantMessage('', conversationId, {
+        cancelTaskId,
+        onCancel: () => {
+            if (cancelled) return;
+            cancelled = true;
+            streamView.setPending(t('projects.canceling'));
+            void requestRunCancellation(reportRunId);
+            controller.abort();
+        },
+    });
+    streamView.setPending(t('projects.saveTaskStarted', { title: safeTitle }));
+    scrollToBottom();
+    try {
+        const resp = await sendMessageStream(conversationId, fullQuery, streamView, '', [], {
+            agent_id: SUPER_CHAT_AGENT_ID,
+            mode_ids: [],
+            mode_prompts: [],
+            context_blocks: [contextBlock],
+            run_id: reportRunId,
+            suppress_user_message: true,
+            suppress_follow_ups: true,
+            signal: controller.signal,
+        });
+        streamView.finalize(resp);
+        captureMemoryDebug(resp, conversationId);
+        if (driveWriteToolsUsed(resp)) await loadProjects();
+        void Promise.allSettled([loadConversations(), loadRuns()]).then(() => {
+            if (currentConversationId === conversationId) updateTopbar();
+        });
+        const artifact = normalizeArtifacts(resp.artifacts || []).find((item) => item.type === 'drive_file');
+        if (!artifact) throw new Error(t('projects.saveFailed', { message: t('errors.requestFailed') }));
+        return driveItemById(artifact.item_id) || driveArtifactAsItem(artifact);
+    } catch (err) {
+        if (cancelled || isCancelledError(err)) {
+            streamView.showCancelled(t('projects.saveCancelled'));
+            throw markCancelledError(err);
+        }
+        streamView.showError(`Error: ${err.message}`);
+        throw err;
+    } finally {
+        activeConversationRequests.delete(conversationId);
+        updateSendState();
+        if (currentConversationId === conversationId) {
+            scrollToBottom();
+            focusMessageInput();
+        }
+    }
+}
+
+function defaultDriveFileName(content = '') {
+    const text = String(content || '').replace(/\r/g, '\n');
+    const lines = text.split('\n').map((line) => line.trim()).filter(Boolean);
+    const candidates = [];
+    const heading = lines.find((line) => /^#{1,3}\s+\S/.test(line));
+    if (heading) candidates.push(heading);
+    const boldTitle = lines.find((line) => /^\*\*[^*]{4,80}\*\*$/.test(line));
+    if (boldTitle) candidates.push(boldTitle);
+    candidates.push(...lines.slice(0, 8));
+
+    const base = candidates
+        .map(cleanDriveFileNameCandidate)
+        .find((value) => value.length >= 4 && !looksLikeDriveFilenameNoise(value));
+    const fallback = cleanDriveFileNameCandidate(t('projects.generatedDocDefaultTitle').replace(/\.md$/i, ''));
+    const name = truncateText(base || fallback || 'Super Chat Report', 48).replace(/\.md$/i, '').trim();
+    return `${name || 'Super Chat Report'}.md`;
+}
+
+function cleanDriveFileNameCandidate(value = '') {
+    const withoutImages = String(value)
+        .replace(/!\[[^\]]*]\([^)]+\)/g, '')
+        .replace(/\[([^\]]+)]\([^)]+\)/g, '$1')
+        .replace(/`([^`]+)`/g, '$1')
+        .replace(/^#{1,6}\s+/, '')
+        .replace(/^>\s*/, '')
+        .replace(/^[-*+]\s+/, '')
+        .replace(/^\d+[.)、]\s+/, '')
+        .replace(/^\*\*(.*)\*\*$/, '$1')
+        .replace(/^(当然|好的|可以|下面是|以下是|Sure|Here is|Absolutely)[，,\s]+/i, '')
+        .replace(/[\\/:*?"<>|]/g, '')
+        .replace(/[\u0000-\u001f]/g, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+    const firstSentence = withoutImages.split(/[。.!?！？；;]/).map((part) => part.trim()).find(Boolean) || withoutImages;
+    return firstSentence.replace(/[.。]+$/g, '').trim();
+}
+
+function looksLikeDriveFilenameNoise(value = '') {
+    const text = String(value).trim();
+    if (!text) return true;
+    if (/^https?:\/\//i.test(text)) return true;
+    if (/^[-*_`~]+$/.test(text)) return true;
+    if (/^(摘要|总结|结论|回答|执行摘要|Report|Summary)$/i.test(text)) return true;
+    return false;
+}
+
+function createClientRunId() {
+    const id = crypto?.randomUUID?.().replace(/-/g, '')
+        || `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+    return `run_${id}`;
+}
+
+function createClientTaskId(prefix = 'task') {
+    return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 9)}`;
+}
+
+function isCancelledError(err) {
+    return err?.cancelled === true || err?.name === 'AbortError' || err?.errorType === 'cancelled' || err?.message === 'cancelled';
+}
+
+function markCancelledError(err) {
+    const error = err instanceof Error ? err : new Error(t('projects.saveCancelled'));
+    error.cancelled = true;
+    return error;
+}
+
+async function requestRunCancellation(runId) {
+    if (!runId) return;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+        try {
+            await apiCall('POST', `/api/runs/${encodeURIComponent(runId)}/cancel`, {});
+            return;
+        } catch (err) {
+            if (attempt >= 2) {
+                console.warn('Cancel run failed', err);
+                return;
+            }
+            await wait(150);
+        }
+    }
+}
+
+function createEmptyDriveSaveDialogState() {
+    return {
+        open: false,
+        saving: false,
+        title: '',
+        content: '',
+        targetFolderId: '',
+        error: '',
+        returnFocus: null,
+        onSave: null,
+        onBackgroundSaveDone: null,
+        onBackgroundSaveError: null,
+        closeOnSaveStart: false,
+        resolve: null,
+    };
+}
+
+function driveSaveDialogIsOpen() {
+    return Boolean(driveSaveDialogState.open);
+}
+
+async function openDriveSaveDialog(options = {}) {
+    const content = String(options.content || '');
+    if (!content.trim()) return { saved: false };
+    if (driveSaveDialogState.open) closeDriveSaveDialog({ saved: false }, { force: true });
+
+    const resultPromise = new Promise((resolve) => {
+        driveSaveDialogState = {
+            ...createEmptyDriveSaveDialogState(),
+            open: true,
+            title: String(options.title || defaultDriveFileName(content)),
+            content,
+            returnFocus: options.returnFocus || document.activeElement,
+            onSave: typeof options.onSave === 'function' ? options.onSave : null,
+            onBackgroundSaveDone: typeof options.onBackgroundSaveDone === 'function' ? options.onBackgroundSaveDone : null,
+            onBackgroundSaveError: typeof options.onBackgroundSaveError === 'function' ? options.onBackgroundSaveError : null,
+            closeOnSaveStart: Boolean(options.closeOnSaveStart),
+            resolve,
+        };
+    });
+
+    renderDriveSaveDialog();
+
+    try {
+        const root = await ensureDriveTreeForSave();
+        if (!driveSaveDialogState.open) return resultPromise;
+        driveSaveDialogState.targetFolderId = normalizeDriveSaveFolderId(options.defaultFolderId, root.id);
+        renderDriveSaveDialog();
+        requestAnimationFrame(() => {
+            driveSaveNameInput?.focus({ preventScroll: true });
+            driveSaveNameInput?.select?.();
+        });
+    } catch (err) {
+        if (driveSaveDialogState.open) {
+            driveSaveDialogState.error = err.message || t('projects.pathRequired');
+            renderDriveSaveDialog();
+        }
+    }
+
+    return resultPromise;
+}
+
+async function ensureDriveTreeForSave() {
+    if (!currentUserId) {
+        showAccountLogin();
+        throw new Error(t('account.loginTitle'));
+    }
+    if (!driveRootItem() || projectError) {
+        await loadProjects();
+    }
+    const root = driveRootItem();
+    if (!root) throw new Error(projectError || t('projects.pathRequired'));
+    return root;
+}
+
+function normalizeDriveSaveFolderId(folderId = '', fallbackId = '') {
+    const candidate = driveItemById(folderId);
+    if (candidate?.type === 'folder') return candidate.id;
+    const fallback = driveItemById(fallbackId);
+    if (fallback?.type === 'folder') return fallback.id;
+    return driveRootItem()?.id || '';
+}
+
+function closeDriveSaveDialog(result = { saved: false }, options = {}) {
+    if (!driveSaveDialogState.open) return;
+    if (driveSaveDialogState.saving && !options.force) return;
+
+    const resolve = driveSaveDialogState.resolve;
+    const returnFocus = driveSaveDialogState.returnFocus;
+    driveSaveDialogState = createEmptyDriveSaveDialogState();
+    renderDriveSaveDialog();
+    if (typeof resolve === 'function') resolve(result);
+    requestAnimationFrame(() => {
+        if (returnFocus && typeof returnFocus.focus === 'function') {
+            returnFocus.focus({ preventScroll: true });
+        }
+    });
+}
+
+function renderDriveSaveDialog() {
+    if (!driveSaveDialog) return;
+    const isOpen = driveSaveDialogState.open;
+    driveSaveDialog.classList.toggle('hidden', !isOpen);
+    document.body.classList.toggle('drive-save-open', isOpen);
+    if (!isOpen) {
+        if (driveSaveNameInput) driveSaveNameInput.value = '';
+        if (driveSaveTree) driveSaveTree.innerHTML = '';
+        if (driveSavePathCurrent) driveSavePathCurrent.textContent = '';
+        if (driveSaveError) driveSaveError.textContent = '';
+        if (btnDriveSaveConfirm) btnDriveSaveConfirm.textContent = t('actions.save');
+        return;
+    }
+
+    if (driveSaveNameInput && driveSaveNameInput.value !== driveSaveDialogState.title) {
+        driveSaveNameInput.value = driveSaveDialogState.title;
+    }
+    if (driveSavePathCurrent) {
+        const path = driveSaveDialogState.targetFolderId ? driveBreadcrumbText(driveSaveDialogState.targetFolderId) : '';
+        driveSavePathCurrent.textContent = path ? t('projects.pathCurrent', { path }) : '';
+    }
+    if (driveSaveTree) {
+        const roots = driveSaveFolderTreeRoots();
+        driveSaveTree.innerHTML = roots.length
+            ? roots.map((item) => renderDriveSaveFolderOption(item)).join('')
+            : `<div class="drive-save-empty">${escapeHtml(t('projects.pathEmpty'))}</div>`;
+    }
+    if (driveSaveError) {
+        driveSaveError.textContent = driveSaveDialogState.error || '';
+        driveSaveError.classList.toggle('visible', Boolean(driveSaveDialogState.error));
+    }
+    if (btnDriveSaveConfirm) {
+        btnDriveSaveConfirm.disabled = driveSaveDialogState.saving || !driveSaveDialogState.targetFolderId;
+        btnDriveSaveConfirm.setAttribute('aria-busy', driveSaveDialogState.saving ? 'true' : 'false');
+        btnDriveSaveConfirm.textContent = driveSaveDialogState.saving ? t('projects.saving') : t('actions.save');
+    }
+    driveSaveDialog.querySelectorAll('[data-drive-save-cancel]').forEach((button) => {
+        button.disabled = driveSaveDialogState.saving;
+    });
+}
+
+function createEmptyDrivePathDialogState() {
+    return {
+        open: false,
+        targetFolderId: '',
+        error: '',
+        returnFocus: null,
+    };
+}
+
+function drivePathDialogIsOpen() {
+    return Boolean(drivePathDialogState.open);
+}
+
+async function openChatDrivePathDialog(returnFocus = null) {
+    if (drivePathDialogState.open) closeDrivePathDialog();
+    drivePathDialogState = {
+        ...createEmptyDrivePathDialogState(),
+        open: true,
+        targetFolderId: chatDrivePathItem()?.id || driveRootItem()?.id || '',
+        returnFocus: returnFocus || document.activeElement,
+    };
+    renderDrivePathDialog();
+    try {
+        const root = await ensureDriveTreeForSave();
+        if (!drivePathDialogState.open) return;
+        drivePathDialogState.targetFolderId = normalizeDriveSaveFolderId(drivePathDialogState.targetFolderId, root.id);
+        renderDrivePathDialog();
+    } catch (err) {
+        if (drivePathDialogState.open) {
+            drivePathDialogState.error = err.message || t('projects.pathRequired');
+            renderDrivePathDialog();
+        }
+    }
+}
+
+function closeDrivePathDialog() {
+    if (!drivePathDialogState.open) return;
+    const returnFocus = drivePathDialogState.returnFocus;
+    drivePathDialogState = createEmptyDrivePathDialogState();
+    renderDrivePathDialog();
+    requestAnimationFrame(() => {
+        if (returnFocus && typeof returnFocus.focus === 'function') {
+            returnFocus.focus({ preventScroll: true });
+        }
+    });
+}
+
+function renderDrivePathDialog() {
+    if (!drivePathDialog) return;
+    const isOpen = drivePathDialogState.open;
+    drivePathDialog.classList.toggle('hidden', !isOpen);
+    document.body.classList.toggle('drive-path-open', isOpen);
+    if (!isOpen) {
+        if (drivePathTree) drivePathTree.innerHTML = '';
+        if (drivePathCurrent) drivePathCurrent.textContent = '';
+        if (drivePathError) drivePathError.textContent = '';
+        return;
+    }
+
+    if (drivePathCurrent) {
+        const path = drivePathDialogState.targetFolderId ? driveBreadcrumbText(drivePathDialogState.targetFolderId) : '';
+        drivePathCurrent.textContent = path ? t('projects.pathCurrent', { path }) : '';
+    }
+    if (drivePathTree) {
+        const roots = driveSaveFolderTreeRoots();
+        drivePathTree.innerHTML = roots.length
+            ? roots.map((item) => renderDrivePathFolderOption(item)).join('')
+            : `<div class="drive-save-empty">${escapeHtml(t('projects.pathEmpty'))}</div>`;
+    }
+    if (drivePathError) {
+        drivePathError.textContent = drivePathDialogState.error || '';
+        drivePathError.classList.toggle('visible', Boolean(drivePathDialogState.error));
+    }
+    if (btnDrivePathConfirm) {
+        btnDrivePathConfirm.disabled = !drivePathDialogState.targetFolderId;
+    }
+}
+
+function renderDrivePathFolderOption(item, depth = 0) {
+    if (!item || item.type !== 'folder') return '';
+    const selected = item.id === drivePathDialogState.targetFolderId;
+    const childFolders = (Array.isArray(item.children) ? item.children : [])
+        .filter((child) => child.type === 'folder');
+    return `
+        <button class="drive-save-folder ${selected ? 'active' : ''}" type="button"
+                data-drive-path-folder="${escapeAttr(item.id)}"
+                aria-pressed="${selected ? 'true' : 'false'}"
+                style="--drive-depth:${Math.min(depth, 6)}">
+            ${driveItemIconSvg(item)}
+            <span>
+                <strong>${escapeHtml(driveDisplayName(item))}</strong>
+                <small>${escapeHtml(driveItemMeta(item))}</small>
+            </span>
+            ${selected ? '<svg class="drive-save-check" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.6"><path d="m5 12 4 4L19 6"/></svg>' : ''}
+        </button>
+        ${childFolders.map((child) => renderDrivePathFolderOption(child, depth + 1)).join('')}
+    `;
+}
+
+function selectDrivePathFolder(folderId = '') {
+    if (!drivePathDialogState.open) return;
+    drivePathDialogState.targetFolderId = normalizeDriveSaveFolderId(folderId, drivePathDialogState.targetFolderId);
+    drivePathDialogState.error = '';
+    renderDrivePathDialog();
+}
+
+function submitDrivePathDialog() {
+    if (!drivePathDialogState.open) return;
+    drivePathDialogState.targetFolderId = normalizeDriveSaveFolderId(drivePathDialogState.targetFolderId);
+    if (!drivePathDialogState.targetFolderId) {
+        drivePathDialogState.error = t('projects.pathRequired');
+        renderDrivePathDialog();
+        return;
+    }
+    setChatDrivePath(drivePathDialogState.targetFolderId);
+    rememberDrivePath(drivePathDialogState.targetFolderId, { render: false });
+    closeDrivePathDialog();
+}
+
+function driveSaveFolderTreeRoots() {
+    const roots = driveTreeItems().filter((item) => item.type === 'folder');
+    if (roots.length) return roots;
+    const root = driveRootItem();
+    return root ? [root] : [];
+}
+
+function renderDriveSaveFolderOption(item, depth = 0) {
+    if (!item || item.type !== 'folder') return '';
+    const selected = item.id === driveSaveDialogState.targetFolderId;
+    const childFolders = (Array.isArray(item.children) ? item.children : [])
+        .filter((child) => child.type === 'folder');
+    return `
+        <button class="drive-save-folder ${selected ? 'active' : ''}" type="button"
+                data-drive-save-folder="${escapeAttr(item.id)}"
+                aria-pressed="${selected ? 'true' : 'false'}"
+                style="--drive-depth:${Math.min(depth, 6)}">
+            ${driveItemIconSvg(item)}
+            <span>
+                <strong>${escapeHtml(driveDisplayName(item))}</strong>
+                <small>${escapeHtml(driveItemMeta(item))}</small>
+            </span>
+            ${selected ? '<svg class="drive-save-check" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.6"><path d="m5 12 4 4L19 6"/></svg>' : ''}
+        </button>
+        ${childFolders.map((child) => renderDriveSaveFolderOption(child, depth + 1)).join('')}
+    `;
+}
+
+function selectDriveSaveFolder(folderId = '') {
+    if (!driveSaveDialogState.open || driveSaveDialogState.saving) return;
+    if (driveSaveNameInput) driveSaveDialogState.title = driveSaveNameInput.value;
+    driveSaveDialogState.targetFolderId = normalizeDriveSaveFolderId(folderId, driveSaveDialogState.targetFolderId);
+    driveSaveDialogState.error = '';
+    renderDriveSaveDialog();
+}
+
+async function submitDriveSaveDialog() {
+    if (!driveSaveDialogState.open || driveSaveDialogState.saving) return;
+    driveSaveDialogState.title = String(driveSaveNameInput?.value || '').trim();
+    driveSaveDialogState.targetFolderId = normalizeDriveSaveFolderId(driveSaveDialogState.targetFolderId);
+    driveSaveDialogState.error = '';
+
+    if (!driveSaveDialogState.title) {
+        driveSaveDialogState.error = t('projects.saveNameRequired');
+        renderDriveSaveDialog();
+        driveSaveNameInput?.focus({ preventScroll: true });
+        return;
+    }
+    if (!driveSaveDialogState.targetFolderId) {
+        driveSaveDialogState.error = t('projects.pathRequired');
+        renderDriveSaveDialog();
+        return;
+    }
+    if (typeof driveSaveDialogState.onSave !== 'function') {
+        driveSaveDialogState.error = t('projects.saveFailed', { message: t('errors.requestFailed') });
+        renderDriveSaveDialog();
+        return;
+    }
+
+    driveSaveDialogState.saving = true;
+    renderDriveSaveDialog();
+    const savePayload = {
+        title: driveSaveDialogState.title,
+        folderId: driveSaveDialogState.targetFolderId,
+        content: driveSaveDialogState.content,
+    };
+    if (driveSaveDialogState.closeOnSaveStart) {
+        const onSave = driveSaveDialogState.onSave;
+        const onDone = driveSaveDialogState.onBackgroundSaveDone;
+        const onError = driveSaveDialogState.onBackgroundSaveError;
+        try {
+            const savePromise = Promise.resolve(onSave(savePayload));
+            rememberDrivePath(savePayload.folderId, { render: false });
+            closeDriveSaveDialog({
+                saved: false,
+                submitted: true,
+                title: savePayload.title,
+                folderId: savePayload.folderId,
+            }, { force: true });
+            savePromise.then((savedItem) => {
+                if (typeof onDone === 'function') {
+                    onDone({
+                        item: savedItem || null,
+                        title: savePayload.title,
+                        folderId: savePayload.folderId,
+                    });
+                }
+            }).catch((err) => {
+                if (typeof onError === 'function') {
+                    onError(err);
+                } else if (!isCancelledError(err)) {
+                    console.warn('Background drive save failed', err);
+                }
+            });
+        } catch (err) {
+            driveSaveDialogState.saving = false;
+            driveSaveDialogState.error = t('projects.saveFailed', { message: err.message });
+            renderDriveSaveDialog();
+        }
+        return;
+    }
+    try {
+        const savedItem = await driveSaveDialogState.onSave(savePayload);
+        rememberDrivePath(savePayload.folderId, { render: false });
+        closeDriveSaveDialog({
+            saved: true,
+            item: savedItem || null,
+            title: savePayload.title,
+            folderId: savePayload.folderId,
+        }, { force: true });
+    } catch (err) {
+        driveSaveDialogState.saving = false;
+        driveSaveDialogState.error = t('projects.saveFailed', { message: err.message });
+        renderDriveSaveDialog();
+    }
+}
+
+async function createProjectFromSelection() {
+    selectedProjectDocumentIds = new Set();
+    renderModes();
+    renderProjects();
+}
+
+function toggleProjectDocumentSelection(documentId, selected) {
+    if (!driveSelectableItemId(documentId)) return;
+    const next = new Set(selectedProjectDocumentIds);
+    if (selected) {
+        next.add(documentId);
+    } else {
+        next.delete(documentId);
+    }
+    setDriveSelection(Array.from(next), { lastId: documentId });
+}
+
+function openProjectDocument(documentId, options = {}) {
+    const item = driveItemById(documentId);
+    if (item?.type === 'folder') {
+        enterDriveFolder(item.id);
+        return;
+    }
+    if (item?.type === 'file') {
+        if (options.surface === 'detail') {
+            activeProjectDocumentId = item.id;
+            void openDriveDocumentPreview(item.id);
+            renderProjectList();
+            renderProjects();
+            return;
+        }
+        void openDriveFileInline(item.id);
+        return;
+    }
+    renderProjectList();
+    renderProjects();
+}
+
+function clearProjectOpenClickTimer() {
+    if (!projectOpenClickTimer) return;
+    clearTimeout(projectOpenClickTimer);
+    projectOpenClickTimer = null;
+}
+
+async function openDriveArtifact(itemId = '') {
+    const id = String(itemId || '').trim();
+    if (!id) return;
+    if (!driveItemById(id)) {
+        await loadProjects();
+    }
+    const item = driveItemById(id);
+    if (!item) return;
+    if (item.type === 'folder') {
+        enterDriveFolder(item.id);
+        setView('projects', { skipLoad: true });
+        return;
+    }
+    if (item.type === 'file') {
+        await openDriveDocumentPreview(item.id);
+    }
+}
+
+async function openDriveFileInline(itemId = '') {
+    const cached = driveItemById(itemId);
+    if (!cached || cached.type !== 'file') return;
+    currentProjectId = cached.parent_id || currentProjectId || '';
+    activeProjectDocumentId = cached.id;
+    projectInlineFileId = cached.id;
+    projectInlineFileDetail = { item: cached, loading: true, error: '' };
+    saveCurrentProjectId(currentProjectId);
+    rememberDrivePath(currentProjectId, { render: false });
+    renderProjectList();
+    renderProjects();
+    try {
+        const data = await apiCall('GET', `/api/drive/items/${encodeURIComponent(itemId)}`);
+        if (projectInlineFileId !== itemId) return;
+        projectInlineFileDetail = { item: data.item || cached, loading: false, error: '' };
+        renderProjects();
+    } catch (err) {
+        if (projectInlineFileId !== itemId) return;
+        projectInlineFileDetail = { item: cached, loading: false, error: t('projects.previewFailed', { message: err.message }) };
+        renderProjects();
+    }
+}
+
+function clearDriveFileInlineDetail() {
+    if (!projectInlineFileId) return;
+    projectInlineFileId = '';
+    projectInlineFileDetail = { item: null, loading: false, error: '' };
+    renderProjectList();
+    renderProjects();
 }
 
 async function loadAgents() {
@@ -3642,6 +5143,7 @@ async function refreshAll() {
     await Promise.allSettled([
         loadHealth(),
         loadConversations(),
+        loadProjects(),
         loadAgents(),
         loadRoles(),
         loadTools(),
@@ -3708,6 +5210,15 @@ function setView(view, options = {}) {
     document.querySelectorAll('.nav-item').forEach((item) => {
         item.classList.toggle('active', item.dataset.view === view);
     });
+    document.querySelectorAll('[data-nav-group]').forEach((group) => {
+        const active = Array.from(group.querySelectorAll('.nav-item[data-view]')).some((item) => item.dataset.view === view);
+        group.classList.toggle('active', active);
+        if (active) {
+            group.classList.remove('collapsed');
+            const toggle = group.querySelector('[data-toggle-nav-group]');
+            if (toggle) toggle.setAttribute('aria-expanded', 'true');
+        }
+    });
     document.querySelectorAll('[data-view-panel]').forEach((panel) => {
         panel.classList.toggle('active', panel.dataset.viewPanel === view);
     });
@@ -3716,6 +5227,16 @@ function setView(view, options = {}) {
     if (view === 'trace' && !options.skipLoad) loadRuns();
     if (view === 'tools') renderTools();
     if (view === 'agents') renderAgents();
+    if (view === 'projects') {
+        renderProjects();
+        if (!options.skipLoad) {
+            if (!projects.length) {
+                loadProjects();
+            } else if (currentProjectId) {
+                loadProjectDetail(currentProjectId);
+            }
+        }
+    }
     if (view === 'developer') {
         renderDeveloperView();
         if (!options.skipLoad) loadDeveloperMemory();
@@ -3750,6 +5271,10 @@ function updateTopbar() {
 
 function updateCounts() {
     agentCount.textContent = agents.length ? String(agents.length) : '';
+    if (projectCount) {
+        const driveCount = driveContentItems().length;
+        projectCount.textContent = driveCount ? String(driveCount) : '';
+    }
     if (tools.length) {
         const enabledTools = tools.filter(toolEffectiveEnabled).length;
         toolCount.textContent = enabledTools === tools.length ? String(tools.length) : `${enabledTools}/${tools.length}`;
@@ -3758,10 +5283,14 @@ function updateCounts() {
     }
     runCount.textContent = runs.length ? String(runs.length) : '';
     if (navSectionCount) {
-        const navItems = document.querySelectorAll('#sidebar-nav .nav-item').length;
+        const navItems = document.querySelectorAll('#sidebar-nav > .nav-item, #sidebar-nav > .nav-group').length;
         navSectionCount.textContent = navItems ? String(navItems) : '';
     }
     if (pinnedSectionCount) pinnedSectionCount.textContent = pinnedAgentIds.length ? String(pinnedAgentIds.length) : '';
+    if (projectSectionCount) {
+        const driveCount = driveContentItems().length;
+        projectSectionCount.textContent = driveCount ? String(driveCount) : '';
+    }
     if (conversationSectionCount) conversationSectionCount.textContent = conversations.length ? String(conversations.length) : '';
 }
 
@@ -3799,6 +5328,1368 @@ function renderConversationList() {
             </div>
         `;
     }).join('');
+}
+
+function renderProjectList() {
+    if (projectSectionCount) {
+        projectSectionCount.textContent = projects.length ? String(projects.length) : '';
+    }
+    if (!projectList) return;
+    if (!projects.length) {
+        projectList.innerHTML = `<div class="empty-inline">${escapeHtml(t('sidebar.emptyProjects'))}</div>`;
+        return;
+    }
+
+    projectList.innerHTML = projects.map((project, index) => {
+        const active = project.id === currentProjectId && activeView === 'projects';
+        const deleting = pendingProjectDeletes.has(project.id);
+        return `
+            <div class="project-item ${active ? 'active' : ''}">
+                <button class="project-item-main" type="button" data-select-project="${escapeAttr(project.id)}">
+                    <strong>${escapeHtml(project.name || '')}</strong>
+                    <small>${escapeHtml(t('projects.documents', { count: project.document_count || 0 }))}</small>
+                </button>
+                <span class="project-item-actions">
+                    <button class="project-mini-button" type="button" data-project-move="${escapeAttr(project.id)}" data-project-move-direction="up" title="${escapeAttr(t('actions.moveUp'))}" ${index === 0 ? 'disabled' : ''}>
+                        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.4"><path d="m18 15-6-6-6 6"/></svg>
+                    </button>
+                    <button class="project-mini-button" type="button" data-project-move="${escapeAttr(project.id)}" data-project-move-direction="down" title="${escapeAttr(t('actions.moveDown'))}" ${index === projects.length - 1 ? 'disabled' : ''}>
+                        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.4"><path d="m6 9 6 6 6-6"/></svg>
+                    </button>
+                    <button class="project-mini-button danger" type="button" data-delete-project="${escapeAttr(project.id)}" title="${escapeAttr(t('actions.delete'))}" ${deleting ? 'disabled aria-busy="true"' : ''}>
+                        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v5M14 11v5"/></svg>
+                    </button>
+                </span>
+            </div>
+        `;
+    }).join('');
+}
+
+function renderProjects() {
+    if (!projectWorkbench) return;
+    if (projectError) {
+        projectWorkbench.innerHTML = `<div class="project-panel">${emptyState(projectError, '')}</div>`;
+        return;
+    }
+    if (!projects.length) {
+        projectWorkbench.innerHTML = `
+            <div class="project-panel">
+                ${emptyState(t('projects.emptyTitle'), t('projects.emptyDetail'))}
+                <div class="project-empty-actions">
+                    <button class="btn-primary" type="button" data-create-project>
+                        <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 5v14M5 12h14"/></svg>
+                        <span>${escapeHtml(t('actions.createProject'))}</span>
+                    </button>
+                </div>
+            </div>
+        `;
+        return;
+    }
+    const project = projectDetail?.project || currentProjectRecord();
+    if (!project) {
+        projectWorkbench.innerHTML = emptyState(t('projects.emptyTitle'), '');
+        return;
+    }
+    const documents = projectDocuments();
+    const links = projectLinks();
+    const activeDoc = documents.find((doc) => doc.id === activeProjectDocumentId) || documents[0] || null;
+    if (activeDoc && activeProjectDocumentId !== activeDoc.id) activeProjectDocumentId = activeDoc.id;
+
+    projectWorkbench.innerHTML = `
+        <aside class="project-panel project-library-panel">
+            <div class="project-panel-head">
+                <div>
+                    <h2>${escapeHtml(t('projects.sourceLibrary'))}</h2>
+                    <p>${escapeHtml(t('projects.documents', { count: documents.length }))}</p>
+                </div>
+                <div class="project-panel-actions">
+                    <button class="btn-secondary" type="button" data-create-project title="${escapeAttr(t('actions.createProject'))}">
+                        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M12 5v14M5 12h14"/></svg>
+                    </button>
+                    <button class="btn-secondary" type="button" data-project-upload-trigger ${projectUploadBusy ? 'disabled aria-busy="true"' : ''}>
+                        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M12 3v12"/><path d="m7 8 5-5 5 5"/><path d="M5 21h14"/></svg>
+                        <span>${escapeHtml(t('actions.uploadKnowledge'))}</span>
+                    </button>
+                </div>
+            </div>
+            <div class="project-panel-body">
+                <div class="project-library-toolbar">
+                    <input class="project-search" type="search" data-project-search
+                           placeholder="${escapeAttr(t('projects.search'))}"
+                           value="${escapeAttr(projectSearchQuery)}">
+                    ${renderProjectDocumentList()}
+                </div>
+            </div>
+        </aside>
+
+        <section class="project-panel project-map-panel">
+            <div class="project-panel-head">
+                <div>
+                    <h2>${escapeHtml(project.name || t('views.projects.title'))}</h2>
+                    <p>${escapeHtml(`${t('projects.documents', { count: documents.length })} · ${t('projects.links', { count: links.length })}`)}</p>
+                </div>
+                <div class="project-panel-actions">
+                    <button class="btn-secondary" type="button" data-project-refresh>
+                        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.3"><path d="M21 12a9 9 0 0 1-9 9 9.8 9.8 0 0 1-6.7-2.7"/><path d="M3 12a9 9 0 0 1 9-9 9.8 9.8 0 0 1 6.7 2.7"/><path d="M3 20v-5h5M21 4v5h-5"/></svg>
+                    </button>
+                </div>
+            </div>
+            ${renderProjectMap(documents, links, activeDoc)}
+            <div class="project-detail-pane">
+                ${renderProjectDocumentDetail(activeDoc)}
+            </div>
+        </section>
+
+        <aside class="project-panel project-context-panel">
+            <div class="project-panel-head">
+                <div>
+                    <h2>${escapeHtml(t('projects.contextChat'))}</h2>
+                    <p>${escapeHtml(t('projects.selected', { count: selectedProjectDocumentIds.size }))}</p>
+                </div>
+            </div>
+            <div class="project-panel-body">
+                ${renderProjectSelectionBar()}
+                <textarea data-project-ask-input placeholder="${escapeAttr(t('projects.askPlaceholder'))}">${escapeHtml(projectAskInput)}</textarea>
+                <div class="project-context-actions">
+                    <button class="btn-primary" type="button" data-project-ask ${projectAskLoading || !documents.length ? 'disabled' : ''}>
+                        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4Z"/></svg>
+                        <span>${escapeHtml(projectAskLoading ? t('projects.asking') : t('projects.ask'))}</span>
+                    </button>
+                    <button class="btn-secondary" type="button" data-project-expand ${projectAskLoading || !documents.length ? 'disabled' : ''}>
+                        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M4 12h16"/><path d="M12 4v16"/></svg>
+                        <span>${escapeHtml(t('projects.expandMap'))}</span>
+                    </button>
+                </div>
+                ${renderProjectStatus()}
+                ${renderProjectAnswer()}
+                ${renderProjectContextSources()}
+            </div>
+        </aside>
+    `;
+}
+
+function renderDrivePathJumpSelect() {
+    const root = driveRootItem();
+    const selectedId = currentProjectId || root?.id || '';
+    const folders = driveItems()
+        .filter((item) => item.type === 'folder')
+        .sort((a, b) => driveBreadcrumbText(a.id).localeCompare(driveBreadcrumbText(b.id), currentLanguage === 'zh' ? 'zh-CN' : 'en'));
+    const recentFolders = driveRecentPathIds
+        .map((id) => driveItemById(id))
+        .filter((item) => item?.type === 'folder' && item.id !== root?.id);
+    const recentIds = new Set(recentFolders.map((item) => item.id));
+    const allFolders = folders.filter((item) => item.id !== root?.id && !recentIds.has(item.id));
+    const option = (item) => `<option value="${escapeAttr(item.id)}" ${item.id === selectedId ? 'selected' : ''}>${escapeHtml(driveBreadcrumbText(item.id))}</option>`;
+    return `
+        <label class="project-path-jump">
+            <span class="visually-hidden">${escapeHtml(t('projects.pathJump'))}</span>
+            <select data-drive-path-jump aria-label="${escapeAttr(t('projects.pathJump'))}">
+                ${root ? `<option value="${escapeAttr(root.id)}" ${root.id === selectedId ? 'selected' : ''}>${escapeHtml(t('projects.rootName'))}</option>` : ''}
+                ${recentFolders.length ? `<optgroup label="${escapeAttr(t('projects.frequentPaths'))}">${recentFolders.map(option).join('')}</optgroup>` : ''}
+                ${allFolders.length ? `<optgroup label="${escapeAttr(t('projects.allPaths'))}">${allFolders.map(option).join('')}</optgroup>` : ''}
+            </select>
+        </label>
+    `;
+}
+
+function renderProjectDocumentList() {
+    const documents = projectSearchQuery.trim()
+        ? projectSearchResults.map((result) => ({ ...result.document, _score: result.score, _snippet: result.snippet }))
+        : projectDocuments();
+    if (!documents.length) {
+        return `<div class="empty-inline">${escapeHtml(projectSearchQuery.trim() ? t('projects.noSearchResults') : t('projects.noDocuments'))}</div>`;
+    }
+    return `
+        <div class="project-document-list">
+            ${documents.map(renderProjectDocumentRow).join('')}
+        </div>
+    `;
+}
+
+function renderProjectDocumentRow(doc) {
+    const active = doc.id === activeProjectDocumentId;
+    const deleting = pendingProjectDocumentDeletes.has(doc.id);
+    const tags = Array.isArray(doc.tags) ? doc.tags.slice(0, 3) : [];
+    const score = doc._score ? `<span class="chip muted">${escapeHtml(String(doc._score))}</span>` : '';
+    return `
+        <div class="project-document-row ${active ? 'active' : ''}">
+            <button class="project-document-main" type="button" data-project-open-document="${escapeAttr(doc.id)}">
+                <strong>${escapeHtml(doc.title || '')}</strong>
+                <p>${escapeHtml(truncateText(doc._snippet || doc.summary || doc.content || '', 150))}</p>
+                <span class="project-document-meta">
+                    <span class="status-chip neutral">${escapeHtml(projectTypeLabel(doc))}</span>
+                    ${score}
+                    ${tags.map((tag) => `<span class="chip">${escapeHtml(tag)}</span>`).join('')}
+                </span>
+            </button>
+            <button class="project-mini-button danger" type="button" data-project-delete-document="${escapeAttr(doc.id)}" title="${escapeAttr(t('actions.delete'))}" ${deleting ? 'disabled aria-busy="true"' : ''}>
+                <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v5M14 11v5"/></svg>
+            </button>
+        </div>
+    `;
+}
+
+function renderProjectMap(documents = [], links = [], activeDoc = null) {
+    if (!documents.length) {
+        return `<div class="project-map-wrap">${emptyState(t('projects.noDocuments'), '')}</div>`;
+    }
+    const nodes = documents.slice(0, 24);
+    const positions = projectMapPositions(nodes.length);
+    const positionById = new Map(nodes.map((doc, index) => [doc.id, positions[index]]));
+    const edges = links.filter((link) => positionById.has(link.from_document_id) && positionById.has(link.to_document_id));
+    return `
+        <div class="project-map-wrap">
+            <div class="project-map-stage">
+                <svg viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+                    ${edges.map((edge) => {
+                        const from = positionById.get(edge.from_document_id);
+                        const to = positionById.get(edge.to_document_id);
+                        return `<line class="project-map-edge" x1="${from.x}" y1="${from.y}" x2="${to.x}" y2="${to.y}"><title>${escapeHtml(edge.relation || '')}</title></line>`;
+                    }).join('')}
+                </svg>
+                ${nodes.map((doc, index) => {
+                    const position = positions[index];
+                    const active = activeDoc?.id === doc.id;
+                    return `
+                        <button class="project-map-node ${active ? 'active' : ''}" type="button"
+                                style="left:${position.x}%;top:${position.y}%"
+                                data-project-open-document="${escapeAttr(doc.id)}">
+                            <strong>${escapeHtml(doc.title || '')}</strong>
+                            <small>${escapeHtml(projectTypeLabel(doc))}</small>
+                        </button>
+                    `;
+                }).join('')}
+            </div>
+        </div>
+    `;
+}
+
+function projectMapPositions(count) {
+    if (count <= 1) return [{ x: 50, y: 50 }];
+    const positions = [];
+    const radiusX = 36;
+    const radiusY = 34;
+    for (let index = 0; index < count; index += 1) {
+        const angle = (Math.PI * 2 * index) / count - Math.PI / 2;
+        positions.push({
+            x: Math.round((50 + Math.cos(angle) * radiusX) * 10) / 10,
+            y: Math.round((50 + Math.sin(angle) * radiusY) * 10) / 10,
+        });
+    }
+    return positions;
+}
+
+function renderProjectDocumentDetail(doc) {
+    if (!doc) return emptyState(t('projects.activeDocument'), t('projects.noDocuments'));
+    const tags = Array.isArray(doc.tags) ? doc.tags : [];
+    const related = projectLinks()
+        .filter((link) => link.from_document_id === doc.id || link.to_document_id === doc.id)
+        .slice(0, 8);
+    return `
+        <article class="project-detail-head">
+            <div>
+                <span class="status-chip neutral">${escapeHtml(projectTypeLabel(doc))}</span>
+                <h2>${escapeHtml(doc.title || '')}</h2>
+                <p>${escapeHtml(doc.summary || '')}</p>
+            </div>
+            ${tags.length ? `<div class="project-tag-row">${tags.map((tag) => `<span class="chip">${escapeHtml(tag)}</span>`).join('')}</div>` : ''}
+            ${related.length ? `
+                <div class="project-map-meta">
+                    ${related.map((link) => `<span class="status-chip ok">${escapeHtml(link.relation || '')} · ${escapeHtml(String(link.confidence || 0))}</span>`).join('')}
+                </div>
+            ` : ''}
+            <div class="project-doc-content">${escapeHtml(doc.content || '')}</div>
+        </article>
+    `;
+}
+
+function renderProjectSelectionBar() {
+    const count = selectedProjectDocumentIds.size;
+    return `
+        <div class="project-selection-bar">
+            <div class="project-selection-meta">
+                <span class="status-chip neutral">${escapeHtml(t('projects.selected', { count }))}</span>
+            </div>
+            <div class="project-panel-actions">
+                <button class="btn-secondary" type="button" data-project-create-from-selection ${count ? '' : 'disabled'}>
+                    <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M4 5h7l2 2h7v12a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2Z"/><path d="M12 11v6M9 14h6"/></svg>
+                    <span>${escapeHtml(t('actions.createFromSelection'))}</span>
+                </button>
+                <button class="btn-secondary" type="button" data-project-clear-selection ${count ? '' : 'disabled'}>
+                    <span>${escapeHtml(t('actions.clearSelection'))}</span>
+                </button>
+            </div>
+        </div>
+    `;
+}
+
+function renderProjectStatus() {
+    const status = projectAskError || projectStatusText;
+    if (!status) return '<div class="project-status"></div>';
+    const type = projectAskError ? 'error' : projectStatusType;
+    return `<div class="project-status ${escapeAttr(type)}">${escapeHtml(status)}</div>`;
+}
+
+function renderProjectAnswer() {
+    const answer = projectAskAnswer || '';
+    return `
+        <section class="project-answer">
+            <div class="project-answer-head">
+                <strong>${escapeHtml(t('projects.answer'))}</strong>
+                <button class="btn-secondary" type="button" data-project-save-answer ${answer.trim() && !projectAskLoading ? '' : 'disabled'}>
+                    <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2Z"/><path d="M17 21v-8H7v8"/><path d="M7 3v5h8"/></svg>
+                    <span>${escapeHtml(t('actions.saveAsDocument'))}</span>
+                </button>
+            </div>
+            <div class="project-answer-body">${escapeHtml(answer || t('projects.answerEmpty'))}</div>
+        </section>
+    `;
+}
+
+function renderProjectContextSources() {
+    const sources = Array.isArray(projectAskSources) ? projectAskSources : [];
+    if (!sources.length) return '';
+    return `
+        <section class="project-answer">
+            <div class="project-answer-head">
+                <strong>${escapeHtml(t('projects.contextSources'))}</strong>
+            </div>
+            <div class="project-source-list">
+                ${sources.map((doc) => `
+                    <button class="project-source-item" type="button" data-project-open-document="${escapeAttr(doc.id)}">
+                        <strong>${escapeHtml(doc.title || '')}</strong>
+                        <small>${escapeHtml(doc.summary || '')}</small>
+                    </button>
+                `).join('')}
+            </div>
+        </section>
+    `;
+}
+
+function projectTypeLabel(itemOrType = '') {
+    const labels = I18N[currentLanguage].projects.type;
+    if (itemOrType && typeof itemOrType === 'object') {
+        const type = String(itemOrType.type || '');
+        if (type === 'folder') return labels.folder;
+        if (type === 'file') {
+            const ext = driveFileExtension(itemOrType);
+            if (ext) return currentLanguage === 'zh' ? `${ext}文件` : `${ext} file`;
+            return labels.file;
+        }
+        return labels[type] || type || labels.source;
+    }
+    const type = String(itemOrType || '');
+    return labels[type] || type || labels.source;
+}
+
+function driveItems() {
+    return Array.isArray(projectDetail?.flat_items) ? projectDetail.flat_items : projects;
+}
+
+function driveContentItems() {
+    return driveItems().filter((item) => !driveIsRootItem(item));
+}
+
+function driveTreeItems() {
+    return Array.isArray(projectDetail?.items) ? projectDetail.items : [];
+}
+
+function driveRootItem() {
+    return driveItems().find(driveIsRootItem) || driveTreeItems().find(driveIsRootItem) || null;
+}
+
+function driveIsRootItem(item) {
+    return Boolean(item && item.type === 'folder' && !item.parent_id);
+}
+
+function driveDisplayName(item) {
+    if (!item) return '';
+    return driveIsRootItem(item) ? t('projects.rootName') : (item.name || '');
+}
+
+function driveItemById(id = '') {
+    if (!id) return null;
+    return driveItems().find((item) => item.id === id) || null;
+}
+
+function driveItemIsFolder(id = '') {
+    return driveItemById(id)?.type === 'folder';
+}
+
+function chatDrivePathItem() {
+    const item = driveItemById(chatDrivePathId);
+    if (item?.type === 'folder') return item;
+    return driveRootItem();
+}
+
+function chatDrivePathDisplay() {
+    const item = chatDrivePathItem();
+    return item?.id ? driveBreadcrumbText(item.id) : t('projects.rootName');
+}
+
+function setChatDrivePath(id = '') {
+    const folderId = normalizeDriveSaveFolderId(id, driveRootItem()?.id || '');
+    chatDrivePathId = folderId;
+    saveChatDrivePathId(chatDrivePathId);
+    rememberDrivePath(chatDrivePathId, { render: false });
+    renderModes();
+}
+
+function rememberDrivePath(folderId = '', options = {}) {
+    const folder = driveItemById(folderId);
+    if (!folder || folder.type !== 'folder') return;
+    driveRecentPathIds = [folder.id, ...driveRecentPathIds.filter((id) => id !== folder.id && driveItemIsFolder(id))].slice(0, 8);
+    saveDriveRecentPathIds();
+    if (options.render !== false) renderProjects();
+}
+
+function enterDriveFolder(folderId = '') {
+    const folder = driveItemById(folderId) || driveRootItem();
+    if (!folder || folder.type !== 'folder') return;
+    currentProjectId = folder.id;
+    activeProjectDocumentId = '';
+    projectInlineFileId = '';
+    projectInlineFileDetail = { item: null, loading: false, error: '' };
+    saveCurrentProjectId(currentProjectId);
+    rememberDrivePath(currentProjectId, { render: false });
+    renderProjectList();
+    renderProjects();
+}
+
+function goToDriveParentFolder() {
+    const folder = currentProjectRecord();
+    const parent = folder?.parent_id ? driveItemById(folder.parent_id) : null;
+    enterDriveFolder(parent?.id || driveRootItem()?.id || '');
+}
+
+function toggleDriveFolderCollapsed(folderId = '') {
+    if (!folderId || !driveItemIsFolder(folderId)) return;
+    if (collapsedDriveFolderIds.has(folderId)) {
+        collapsedDriveFolderIds.delete(folderId);
+    } else {
+        collapsedDriveFolderIds.add(folderId);
+    }
+    saveDriveCollapsedFolderIds();
+    renderProjects();
+}
+
+function driveChildren(parentId = '') {
+    const normalizedParent = parentId || '';
+    return driveItems().filter((item) => (item.parent_id || '') === normalizedParent);
+}
+
+function driveChildCounts(parentId = '') {
+    const children = driveChildren(parentId);
+    return {
+        folders: children.filter((item) => item.type === 'folder').length,
+        files: children.filter((item) => item.type === 'file').length,
+    };
+}
+
+function driveFolderHasFiles(folderId = '') {
+    const children = driveChildren(folderId);
+    return children.some((item) => item.type === 'file' || (item.type === 'folder' && driveFolderHasFiles(item.id)));
+}
+
+function driveSelectedItems() {
+    return Array.from(selectedProjectDocumentIds).map((id) => driveItemById(id)).filter(Boolean);
+}
+
+function createEmptyDriveDragState() {
+    return {
+        sourceId: '',
+        itemIds: [],
+        dropFolderId: '',
+    };
+}
+
+function createEmptyDriveSelectionBoxState() {
+    return {
+        active: false,
+        pointerId: null,
+        list: null,
+        rectEl: null,
+        startX: 0,
+        startY: 0,
+        currentX: 0,
+        currentY: 0,
+        additive: false,
+        moved: false,
+        selectedBefore: new Set(),
+    };
+}
+
+function driveSelectableItem(item) {
+    return Boolean(item?.id && !driveIsRootItem(item));
+}
+
+function driveSelectableItemId(itemId = '') {
+    return driveSelectableItem(driveItemById(itemId));
+}
+
+function driveSelectableIdsInList(listEl) {
+    if (!listEl) return [];
+    return Array.from(listEl.querySelectorAll('[data-drive-selectable="true"][data-drive-item-id]'))
+        .map((row) => row.dataset.driveItemId || '')
+        .filter(driveSelectableItemId);
+}
+
+function normalizeDriveSelection(ids = []) {
+    const normalized = [];
+    const seen = new Set();
+    ids.forEach((id) => {
+        if (!id || seen.has(id) || !driveSelectableItemId(id)) return;
+        seen.add(id);
+        normalized.push(id);
+    });
+    return normalized;
+}
+
+function setDriveSelection(ids = [], options = {}) {
+    const normalized = normalizeDriveSelection(ids);
+    selectedProjectDocumentIds = new Set(normalized);
+    const preferredLastId = options.lastId || lastSelectedProjectDocumentId;
+    if (preferredLastId && selectedProjectDocumentIds.has(preferredLastId)) {
+        lastSelectedProjectDocumentId = preferredLastId;
+    } else {
+        lastSelectedProjectDocumentId = normalized.length ? normalized[normalized.length - 1] : '';
+    }
+    if (options.render === false) {
+        updateDriveSelectionDom(options.scope || document);
+        return;
+    }
+    renderModes();
+    renderProjects();
+}
+
+function updateDriveSelectionDom(scope = document) {
+    scope.querySelectorAll?.('[data-drive-item-id]').forEach((row) => {
+        row.classList.toggle('selected', selectedProjectDocumentIds.has(row.dataset.driveItemId || ''));
+    });
+}
+
+function selectDriveDocumentRange(anchorId = '', targetId = '', listEl = null, selected = true) {
+    if (!driveSelectableItemId(targetId)) return;
+    const ids = driveSelectableIdsInList(listEl);
+    const anchorIndex = ids.indexOf(anchorId);
+    const targetIndex = ids.indexOf(targetId);
+    if (anchorIndex === -1 || targetIndex === -1) {
+        toggleProjectDocumentSelection(targetId, selected);
+        return;
+    }
+    const [start, end] = anchorIndex < targetIndex ? [anchorIndex, targetIndex] : [targetIndex, anchorIndex];
+    const next = new Set(selectedProjectDocumentIds);
+    ids.slice(start, end + 1).forEach((id) => {
+        if (selected) {
+            next.add(id);
+        } else {
+            next.delete(id);
+        }
+    });
+    setDriveSelection(Array.from(next), { lastId: targetId });
+}
+
+function handleProjectDocumentModifiedClick(button, event) {
+    const documentId = button?.dataset.projectOpenDocument || '';
+    if (!driveSelectableItemId(documentId)) return false;
+    const isRange = event.shiftKey && lastSelectedProjectDocumentId;
+    const isToggle = event.metaKey || event.ctrlKey;
+    if (!isRange && !isToggle) return false;
+    event.preventDefault();
+    if (isRange) {
+        selectDriveDocumentRange(lastSelectedProjectDocumentId, documentId, button.closest('.project-document-list'), true);
+    } else {
+        toggleProjectDocumentSelection(documentId, !selectedProjectDocumentIds.has(documentId));
+    }
+    return true;
+}
+
+function noteDrivePlainClick(documentId = '') {
+    if (!driveSelectableItemId(documentId)) return;
+    if (selectedProjectDocumentIds.size) {
+        selectedProjectDocumentIds = new Set();
+        updateDriveSelectionDom(document);
+        renderModes();
+    }
+    lastSelectedProjectDocumentId = documentId;
+}
+
+function driveTopLevelItemIds(ids = []) {
+    const normalized = normalizeDriveSelection(ids);
+    const selected = new Set(normalized);
+    return normalized.filter((id) => {
+        let item = driveItemById(id);
+        while (item?.parent_id) {
+            if (selected.has(item.parent_id)) return false;
+            item = driveItemById(item.parent_id);
+        }
+        return true;
+    });
+}
+
+function driveDragItemIds(sourceId = '') {
+    if (!driveSelectableItemId(sourceId)) return [];
+    const candidates = selectedProjectDocumentIds.has(sourceId) && selectedProjectDocumentIds.size
+        ? Array.from(selectedProjectDocumentIds)
+        : [sourceId];
+    return driveTopLevelItemIds(candidates);
+}
+
+function driveCanMoveItemToFolder(itemId = '', folderId = '') {
+    const item = driveItemById(itemId);
+    const folder = driveItemById(folderId);
+    if (!driveSelectableItem(item) || !folder || folder.type !== 'folder') return false;
+    if (item.id === folder.id || item.parent_id === folder.id) return false;
+    if (item.type === 'folder' && driveHasAncestor(folder.id, item.id)) return false;
+    return true;
+}
+
+function driveMovableItemIds(folderId = '', itemIds = driveDragState.itemIds) {
+    return driveTopLevelItemIds(itemIds).filter((id) => driveCanMoveItemToFolder(id, folderId));
+}
+
+function driveDropTargetFromEvent(event) {
+    if (!event?.target?.closest) return null;
+    const row = event.target.closest('.project-document-row');
+    if (row) {
+        const folderId = row.dataset.driveDropFolderId || '';
+        return folderId ? { element: row, folderId } : null;
+    }
+    const zone = event.target.closest('[data-drive-drop-folder-id]');
+    const folderId = zone?.dataset.driveDropFolderId || '';
+    return folderId ? { element: zone, folderId } : null;
+}
+
+function clearDriveDropTargets() {
+    document.querySelectorAll('.drive-drop-target, .drive-drop-target-invalid').forEach((el) => {
+        el.classList.remove('drive-drop-target', 'drive-drop-target-invalid');
+    });
+}
+
+function markDriveDropTarget(target, valid) {
+    clearDriveDropTargets();
+    if (!target?.element) return;
+    target.element.classList.add(valid ? 'drive-drop-target' : 'drive-drop-target-invalid');
+}
+
+function clearDriveDragState() {
+    clearDriveDropTargets();
+    document.body.classList.remove('drive-dragging');
+    document.querySelectorAll('.project-document-row.dragging').forEach((row) => row.classList.remove('dragging'));
+    driveDragState = createEmptyDriveDragState();
+}
+
+function shouldStartDriveSelectionBox(event) {
+    if (activeView !== 'projects' || event.button !== 0 || event.pointerType === 'touch') return false;
+    if (drivePreviewIsOpen() || driveSaveDialogIsOpen() || drivePathDialogIsOpen()) return false;
+    if (event.target.closest?.('button, input, select, textarea, a, [contenteditable="true"], .project-document-row')) return false;
+    const list = event.target.closest?.('.project-document-list');
+    return Boolean(list?.querySelector('[data-drive-selectable="true"]'));
+}
+
+function startDriveSelectionBox(event) {
+    if (!shouldStartDriveSelectionBox(event)) return;
+    const list = event.target.closest('.project-document-list');
+    const rectEl = document.createElement('div');
+    rectEl.className = 'drive-selection-rect';
+    document.body.appendChild(rectEl);
+    driveSelectionBoxState = {
+        ...createEmptyDriveSelectionBoxState(),
+        active: true,
+        pointerId: event.pointerId,
+        list,
+        rectEl,
+        startX: event.clientX,
+        startY: event.clientY,
+        currentX: event.clientX,
+        currentY: event.clientY,
+        additive: event.metaKey || event.ctrlKey,
+        selectedBefore: new Set(selectedProjectDocumentIds),
+    };
+    document.body.classList.add('drive-selecting');
+    event.preventDefault();
+}
+
+function updateDriveSelectionBox(event) {
+    if (!driveSelectionBoxState.active || event.pointerId !== driveSelectionBoxState.pointerId) return;
+    driveSelectionBoxState.currentX = event.clientX;
+    driveSelectionBoxState.currentY = event.clientY;
+    const left = Math.min(driveSelectionBoxState.startX, driveSelectionBoxState.currentX);
+    const top = Math.min(driveSelectionBoxState.startY, driveSelectionBoxState.currentY);
+    const width = Math.abs(driveSelectionBoxState.currentX - driveSelectionBoxState.startX);
+    const height = Math.abs(driveSelectionBoxState.currentY - driveSelectionBoxState.startY);
+    if (width < 4 && height < 4) return;
+    driveSelectionBoxState.moved = true;
+    Object.assign(driveSelectionBoxState.rectEl.style, {
+        left: `${left}px`,
+        top: `${top}px`,
+        width: `${width}px`,
+        height: `${height}px`,
+    });
+    const selectionRect = { left, top, right: left + width, bottom: top + height };
+    const hitIds = Array.from(driveSelectionBoxState.list.querySelectorAll('[data-drive-selectable="true"][data-drive-item-id]'))
+        .filter((row) => rectsIntersect(selectionRect, row.getBoundingClientRect()))
+        .map((row) => row.dataset.driveItemId || '')
+        .filter(driveSelectableItemId);
+    const next = new Set(driveSelectionBoxState.additive ? driveSelectionBoxState.selectedBefore : []);
+    hitIds.forEach((id) => next.add(id));
+    setDriveSelection(Array.from(next), { render: false, scope: driveSelectionBoxState.list });
+    event.preventDefault();
+}
+
+function rectsIntersect(a, b) {
+    return a.left <= b.right && a.right >= b.left && a.top <= b.bottom && a.bottom >= b.top;
+}
+
+function finishDriveSelectionBox(event) {
+    if (!driveSelectionBoxState.active || event.pointerId !== driveSelectionBoxState.pointerId) return;
+    const moved = driveSelectionBoxState.moved;
+    cancelDriveSelectionBox();
+    if (moved) {
+        event.preventDefault();
+        renderModes();
+        renderProjects();
+    }
+}
+
+function cancelDriveSelectionBox() {
+    if (driveSelectionBoxState.rectEl) {
+        driveSelectionBoxState.rectEl.remove();
+    }
+    document.body.classList.remove('drive-selecting');
+    driveSelectionBoxState = createEmptyDriveSelectionBoxState();
+}
+
+async function moveDriveItemsToFolder(itemIds = [], folderId = '') {
+    const movableIds = driveMovableItemIds(folderId, itemIds);
+    if (!movableIds.length) return;
+    try {
+        await Promise.all(movableIds.map((id) => apiCall('PUT', `/api/drive/items/${encodeURIComponent(id)}`, {
+            parent_id: folderId,
+        })));
+        projectStatusText = t('projects.moveDone', { count: movableIds.length });
+        projectStatusType = 'ok';
+        setDriveSelection(movableIds, { render: false });
+        await loadProjects();
+    } catch (err) {
+        projectStatusText = t('projects.moveFailed', { message: err.message });
+        projectStatusType = 'error';
+        renderProjects();
+    }
+}
+
+function handleDriveDragStart(event) {
+    if (activeView !== 'projects') return;
+    const row = event.target.closest?.('[data-drive-item-id][draggable="true"]');
+    const sourceId = row?.dataset.driveItemId || '';
+    const itemIds = driveDragItemIds(sourceId);
+    if (!row || !itemIds.length) {
+        event.preventDefault();
+        return;
+    }
+    driveDragState = {
+        ...createEmptyDriveDragState(),
+        sourceId,
+        itemIds,
+    };
+    if (!selectedProjectDocumentIds.has(sourceId)) {
+        setDriveSelection([sourceId], { lastId: sourceId, render: false });
+        renderModes();
+    }
+    row.classList.add('dragging');
+    document.body.classList.add('drive-dragging');
+    if (event.dataTransfer) {
+        event.dataTransfer.effectAllowed = 'move';
+        event.dataTransfer.setData('application/x-drive-item-ids', JSON.stringify(itemIds));
+        event.dataTransfer.setData('text/plain', itemIds.join(','));
+    }
+}
+
+function handleDriveDragOver(event) {
+    if (!driveDragState.itemIds.length) return;
+    const target = driveDropTargetFromEvent(event);
+    if (!target) {
+        clearDriveDropTargets();
+        return;
+    }
+    const movableIds = driveMovableItemIds(target.folderId);
+    const valid = movableIds.length > 0;
+    event.preventDefault();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = valid ? 'move' : 'none';
+    markDriveDropTarget(target, valid);
+}
+
+async function handleDriveDrop(event) {
+    if (!driveDragState.itemIds.length) return;
+    const target = driveDropTargetFromEvent(event);
+    if (!target) {
+        clearDriveDragState();
+        return;
+    }
+    event.preventDefault();
+    const itemIds = [...driveDragState.itemIds];
+    const folderId = target.folderId;
+    clearDriveDragState();
+    await moveDriveItemsToFolder(itemIds, folderId);
+}
+
+function driveHasAncestor(itemId = '', ancestorId = '') {
+    let item = driveItemById(itemId);
+    while (item?.parent_id) {
+        if (item.parent_id === ancestorId) return true;
+        item = driveItemById(item.parent_id);
+    }
+    return false;
+}
+
+function driveBreadcrumbText(folderId = currentProjectId) {
+    const stack = [];
+    let item = driveItemById(folderId);
+    const seen = new Set();
+    while (item && !seen.has(item.id)) {
+        seen.add(item.id);
+        stack.unshift(driveDisplayName(item));
+        item = driveItemById(item.parent_id);
+    }
+    return stack.filter(Boolean).join(' / ') || t('projects.rootName');
+}
+
+function driveItemSnippet(item) {
+    if (item.type === 'folder') return driveItemMeta(item);
+    return truncateText(item._snippet || item.summary || item.content || '', 150) || driveItemMeta(item);
+}
+
+function driveItemMeta(item) {
+    if (item.type === 'folder') {
+        return t('projects.folderContents', driveChildCounts(item.id));
+    }
+    const updated = item.updated_at ? formatFullTime(item.updated_at) : '';
+    return [formatBytes(item.size || 0), updated].filter(Boolean).join(' · ');
+}
+
+function drivePromptContext(agentId = selectedModeAgentId()) {
+    if (agentId !== SUPER_CHAT_AGENT_ID) return null;
+    const folder = chatDrivePathItem() || driveRootItem();
+    if (!folder?.id) return null;
+    const children = driveChildren(folder.id).filter((item) => item && !driveIsRootItem(item));
+    const visibleItems = children.slice(0, DRIVE_PROMPT_CONTEXT_ITEM_LIMIT);
+    return {
+        current_folder_id: folder.id,
+        current_path: drivePromptPath(folder),
+        items: visibleItems.map((item) => ({
+            id: item.id || '',
+            type: item.type || '',
+            name: driveDisplayName(item),
+            path: drivePromptPath(item),
+            mime_type: item.mime_type || '',
+            size: Number(item.size || 0),
+            summary: truncateText(item.summary || driveItemMeta(item), 240),
+            updated_at: item.updated_at || '',
+        })),
+        truncated: children.length > visibleItems.length,
+    };
+}
+
+function drivePromptPath(item) {
+    if (!item?.id) return '';
+    if (driveIsRootItem(item)) return '/';
+    const breadcrumb = driveBreadcrumbText(item.id);
+    return breadcrumb ? `/${breadcrumb}` : '/';
+}
+
+function driveFileExtension(item) {
+    const name = String(item?.name || item?.title || '').toLowerCase();
+    const match = name.match(/\.([a-z0-9]+)$/);
+    return match ? match[1] : '';
+}
+
+function driveItemIconKind(item) {
+    if (item?.type === 'folder') return 'folder';
+    const mime = String(item?.mime_type || '').toLowerCase();
+    const ext = driveFileExtension(item);
+    if (mime.includes('pdf') || ext === 'pdf') return 'pdf';
+    if (mime.startsWith('image/') || ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'heic'].includes(ext)) return 'image';
+    if (mime.startsWith('audio/') || ['mp3', 'wav', 'm4a', 'aac', 'flac', 'ogg'].includes(ext)) return 'audio';
+    if (mime.startsWith('video/') || ['mp4', 'mov', 'webm', 'mkv', 'avi'].includes(ext)) return 'video';
+    if (mime.includes('spreadsheet') || mime.includes('excel') || ['xls', 'xlsx', 'csv', 'tsv', 'ods'].includes(ext)) return 'sheet';
+    if (mime.includes('presentation') || mime.includes('powerpoint') || ['ppt', 'pptx', 'key', 'odp'].includes(ext)) return 'slide';
+    if (mime.includes('word') || mime.includes('rtf') || ['doc', 'docx', 'rtf', 'odt'].includes(ext)) return 'document';
+    if (mime.includes('markdown') || ['md', 'mdx', 'markdown'].includes(ext)) return 'markdown';
+    if (mime.includes('zip') || mime.includes('compressed') || ['zip', 'rar', '7z', 'tar', 'gz'].includes(ext)) return 'archive';
+    if (['json', 'yaml', 'yml', 'toml', 'xml'].includes(ext)) return 'data';
+    if (mime.includes('javascript') || mime.includes('typescript') || ['js', 'jsx', 'ts', 'tsx', 'go', 'py', 'java', 'kt', 'rs', 'rb', 'php', 'c', 'cpp', 'h', 'css', 'scss', 'html', 'sh', 'sql'].includes(ext)) return 'code';
+    if (mime.startsWith('text/') || ['txt', 'log'].includes(ext)) return 'text';
+    return 'file';
+}
+
+function driveItemIconSvg(item) {
+    const kind = driveItemIconKind(item);
+    const className = `drive-inline-icon drive-inline-icon-${kind}`;
+    if (kind === 'folder') {
+        return `<svg class="${className}" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.3" aria-hidden="true" focusable="false"><path d="M4 5h7l2 2h7v12a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2Z" fill="currentColor" fill-opacity=".14"/><path d="M4 5h7l2 2h7v12a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2Z"/></svg>`;
+    }
+    if (kind === 'image') {
+        return `<svg class="${className}" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.1" aria-hidden="true" focusable="false"><rect x="4" y="5" width="16" height="14" rx="2.5"/><path d="m7 16 3.5-4 3 3 2-2.2L18 16"/><circle cx="15.5" cy="9" r="1.2" fill="currentColor" stroke="none"/></svg>`;
+    }
+    if (kind === 'pdf') {
+        return `<svg class="${className}" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true" focusable="false"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8Z"/><path d="M14 3v5h5"/><text x="6.2" y="17" fill="currentColor" stroke="none" font-size="6.2" font-weight="800">PDF</text></svg>`;
+    }
+    if (kind === 'sheet') {
+        return `<svg class="${className}" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true" focusable="false"><rect x="5" y="4" width="14" height="16" rx="2"/><path d="M5 10h14M5 15h14M10 4v16M15 4v16"/></svg>`;
+    }
+    if (kind === 'slide') {
+        return `<svg class="${className}" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.1" aria-hidden="true" focusable="false"><rect x="4" y="5" width="16" height="11" rx="2"/><path d="M12 16v4M8 20h8"/><path d="M9 12h5M9 9h6"/></svg>`;
+    }
+    if (kind === 'document' || kind === 'text' || kind === 'markdown') {
+        const label = kind === 'markdown' ? '<text x="7" y="17" fill="currentColor" stroke="none" font-size="6.5" font-weight="800">MD</text>' : '<path d="M8 11h8M8 15h6"/>';
+        return `<svg class="${className}" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true" focusable="false"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8Z"/><path d="M14 3v5h5"/>${label}</svg>`;
+    }
+    if (kind === 'code') {
+        return `<svg class="${className}" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true" focusable="false"><path d="m9 9-3 3 3 3M15 9l3 3-3 3"/><path d="m13 7-2 10"/></svg>`;
+    }
+    if (kind === 'data') {
+        return `<svg class="${className}" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true" focusable="false"><path d="M8 7c-2 0-2 2-2 3v1c0 1-1 1-2 1 1 0 2 0 2 1v1c0 1 0 3 2 3M16 7c2 0 2 2 2 3v1c0 1 1 1 2 1-1 0-2 0-2 1v1c0 1 0 3-2 3"/><path d="M11 9h2M11 15h2"/></svg>`;
+    }
+    if (kind === 'archive') {
+        return `<svg class="${className}" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.1" aria-hidden="true" focusable="false"><path d="M6 4h12v16H6Z"/><path d="M10 4v4h4V4M10 12h4M10 16h4"/></svg>`;
+    }
+    if (kind === 'audio') {
+        return `<svg class="${className}" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true" focusable="false"><path d="M9 18V6l9-2v12"/><circle cx="7" cy="18" r="2"/><circle cx="16" cy="16" r="2"/></svg>`;
+    }
+    if (kind === 'video') {
+        return `<svg class="${className}" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true" focusable="false"><rect x="4" y="6" width="16" height="12" rx="2"/><path d="m11 10 4 2-4 2Z" fill="currentColor" stroke="none"/></svg>`;
+    }
+    return `<svg class="${className}" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.1" aria-hidden="true" focusable="false"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8Z"/><path d="M14 3v5h5"/></svg>`;
+}
+
+function downloadDriveItem(id = '') {
+    const item = driveItemById(id);
+    if (!item || item.type !== 'file') return;
+    const params = new URLSearchParams();
+    if (currentAccountToken) {
+        params.set('account_session', currentAccountToken);
+    } else if (currentUserId) {
+        params.set('user_id', currentUserId);
+    }
+    const query = params.toString();
+    const url = `${API_BASE}/api/drive/items/${encodeURIComponent(id)}/download${query ? `?${query}` : ''}`;
+    window.open(url, '_blank', 'noopener');
+}
+
+function openChatWithDrivePath(folderId = currentProjectId) {
+    const folder = driveItemById(folderId) || driveRootItem();
+    if (!folder || folder.type !== 'folder') return;
+    setChatDrivePath(folder.id);
+    setView('chat');
+    focusMessageInput();
+}
+
+function createEmptyDrivePreviewState() {
+    return {
+        open: false,
+        loading: false,
+        itemId: '',
+        item: null,
+        error: '',
+        returnFocus: null,
+    };
+}
+
+function drivePreviewIsOpen() {
+    return Boolean(drivePreviewState.open);
+}
+
+async function openDriveDocumentPreview(itemId = '', returnFocus = null) {
+    const cached = driveItemById(itemId);
+    if (!cached || cached.type !== 'file') return;
+    drivePreviewState = {
+        ...createEmptyDrivePreviewState(),
+        open: true,
+        loading: true,
+        itemId,
+        item: cached,
+        returnFocus: returnFocus || document.activeElement,
+    };
+    renderDriveDocumentPreview();
+    try {
+        const data = await apiCall('GET', `/api/drive/items/${encodeURIComponent(itemId)}`);
+        if (!drivePreviewState.open || drivePreviewState.itemId !== itemId) return;
+        drivePreviewState.item = data.item || cached;
+        drivePreviewState.loading = false;
+        drivePreviewState.error = '';
+        renderDriveDocumentPreview();
+    } catch (err) {
+        if (!drivePreviewState.open || drivePreviewState.itemId !== itemId) return;
+        drivePreviewState.loading = false;
+        drivePreviewState.error = t('projects.previewFailed', { message: err.message });
+        renderDriveDocumentPreview();
+    }
+}
+
+function closeDriveDocumentPreview() {
+    if (!drivePreviewState.open) return;
+    const returnFocus = drivePreviewState.returnFocus;
+    drivePreviewState = createEmptyDrivePreviewState();
+    renderDriveDocumentPreview();
+    requestAnimationFrame(() => {
+        if (returnFocus && typeof returnFocus.focus === 'function') {
+            returnFocus.focus({ preventScroll: true });
+        }
+    });
+}
+
+function renderDriveDocumentPreview() {
+    if (!drivePreviewDialog) return;
+    const isOpen = drivePreviewState.open;
+    drivePreviewDialog.classList.toggle('hidden', !isOpen);
+    document.body.classList.toggle('drive-preview-open', isOpen);
+    const item = drivePreviewState.item;
+    if (!isOpen) {
+        if (drivePreviewTitle) drivePreviewTitle.textContent = '';
+        if (drivePreviewMeta) drivePreviewMeta.textContent = '';
+        if (drivePreviewStatus) drivePreviewStatus.textContent = '';
+        if (drivePreviewContent) drivePreviewContent.textContent = '';
+        if (drivePreviewDownload) drivePreviewDownload.disabled = true;
+        return;
+    }
+    if (drivePreviewTitle) drivePreviewTitle.textContent = driveDisplayName(item) || t('projects.activeDocument');
+    if (drivePreviewMeta) drivePreviewMeta.textContent = item ? [driveBreadcrumbText(item.parent_id), driveItemMeta(item)].filter(Boolean).join(' · ') : '';
+    if (drivePreviewStatus) {
+        drivePreviewStatus.textContent = drivePreviewState.loading ? t('projects.previewLoading') : (drivePreviewState.error || '');
+        drivePreviewStatus.classList.toggle('error', Boolean(drivePreviewState.error));
+        drivePreviewStatus.hidden = !drivePreviewState.loading && !drivePreviewState.error;
+    }
+    if (drivePreviewContent) {
+        drivePreviewContent.classList.toggle('binary', Boolean(item?.encoding === 'base64'));
+        if (item?.encoding === 'base64') {
+            drivePreviewContent.innerHTML = renderDriveBinaryPreview(item);
+        } else {
+            drivePreviewContent.textContent = item?.content || item?.summary || '';
+        }
+    }
+    if (drivePreviewDownload) {
+        drivePreviewDownload.disabled = !item?.id || drivePreviewState.loading;
+        drivePreviewDownload.dataset.drivePreviewDownload = item?.id || '';
+    }
+}
+
+function driveItemDataUrl(item) {
+    if (!item || item.encoding !== 'base64' || !item.content) return '';
+    const mime = item.mime_type || 'application/octet-stream';
+    return `data:${mime};base64,${item.content}`;
+}
+
+function renderDriveBinaryPreview(item) {
+    const dataUrl = driveItemDataUrl(item);
+    const mime = String(item?.mime_type || '').toLowerCase();
+    const message = escapeHtml(item?.summary || t('projects.previewBinary'));
+    if (dataUrl && mime.startsWith('image/')) {
+        return `<figure class="drive-preview-media"><img src="${escapeAttr(dataUrl)}" alt="${escapeAttr(driveDisplayName(item))}"><figcaption>${message}</figcaption></figure>`;
+    }
+    if (dataUrl && mime.startsWith('audio/')) {
+        return `<div class="drive-preview-media"><audio controls src="${escapeAttr(dataUrl)}"></audio><p>${message}</p></div>`;
+    }
+    if (dataUrl && mime.startsWith('video/')) {
+        return `<div class="drive-preview-media"><video controls src="${escapeAttr(dataUrl)}"></video><p>${message}</p></div>`;
+    }
+    if (dataUrl && mime === 'application/pdf') {
+        return `<div class="drive-preview-media drive-preview-pdf"><iframe src="${escapeAttr(dataUrl)}" title="${escapeAttr(driveDisplayName(item))}"></iframe><p>${message}</p></div>`;
+    }
+    return `<div class="drive-preview-binary-message">${message}</div>`;
+}
+
+function renderDriveSidebarItem(item, depth = 0) {
+    const active = activeView === 'projects' && (item.id === currentProjectId || item.id === activeProjectDocumentId);
+    const deleting = pendingProjectDeletes.has(item.id) || pendingProjectDocumentDeletes.has(item.id);
+    const children = Array.isArray(item.children) ? item.children : [];
+    const canDelete = !driveIsRootItem(item);
+    return `
+        <div class="project-item drive-tree-item ${active ? 'active' : ''}" style="--drive-depth:${Math.min(depth, 5)}">
+            <button class="project-item-main" type="button" data-select-project="${escapeAttr(item.id)}">
+                <strong>${driveItemIconSvg(item)}${escapeHtml(driveDisplayName(item))}</strong>
+                <small>${escapeHtml(projectTypeLabel(item))}</small>
+            </button>
+            <span class="project-item-actions">
+                ${canDelete ? `
+                <button class="project-mini-button danger" type="button" data-delete-project="${escapeAttr(item.id)}" title="${escapeAttr(t('actions.delete'))}" ${deleting ? 'disabled aria-busy="true"' : ''}>
+                    <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/></svg>
+                </button>
+                ` : ''}
+            </span>
+        </div>
+        ${children.map((child) => renderDriveSidebarItem(child, depth + 1)).join('')}
+    `;
+}
+
+function renderProjectList() {
+    const allItems = driveItems();
+    const contentItems = driveContentItems();
+    if (projectSectionCount) {
+        projectSectionCount.textContent = contentItems.length ? String(contentItems.length) : '';
+    }
+    if (!projectList) return;
+    const tree = driveTreeItems().map((item) => renderDriveSidebarItem(item, 0)).join('');
+    projectList.innerHTML = tree || `<div class="empty-inline">${escapeHtml(t('sidebar.emptyProjects'))}</div>`;
+}
+
+function renderProjects() {
+    if (!projectWorkbench) return;
+    if (projectError) {
+        projectWorkbench.innerHTML = `<div class="project-panel">${emptyState(projectError, '')}</div>`;
+        return;
+    }
+    const allItems = driveItems();
+    const contentItems = driveContentItems();
+    const folder = currentProjectRecord();
+    const documents = projectDocuments();
+    const counts = driveChildCounts(currentProjectId);
+    const isRootFolder = driveIsRootItem(folder);
+    const inlineFile = projectInlineFileId
+        ? (projectInlineFileDetail.item?.id === projectInlineFileId ? projectInlineFileDetail.item : driveItemById(projectInlineFileId))
+        : null;
+
+    projectWorkbench.innerHTML = `
+        <aside class="project-panel project-library-panel">
+            <div class="project-panel-head">
+                <div>
+                    <h2>${escapeHtml(t('projects.sourceLibrary'))}</h2>
+                    <p>${escapeHtml(t('projects.documents', { count: contentItems.length }))}</p>
+                </div>
+                <div class="project-panel-actions">
+                    <button class="btn-secondary" type="button" data-create-project title="${escapeAttr(t('actions.createProject'))}">
+                        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M12 5v14M5 12h14"/></svg>
+                    </button>
+                    <button class="btn-secondary" type="button" data-project-upload-trigger ${projectUploadBusy ? 'disabled aria-busy="true"' : ''}>
+                        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M12 3v12"/><path d="m7 8 5-5 5 5"/><path d="M5 21h14"/></svg>
+                        <span>${escapeHtml(t('actions.uploadKnowledge'))}</span>
+                    </button>
+                </div>
+            </div>
+            <div class="project-panel-body">
+                <div class="project-library-toolbar">
+                    <input class="project-search" type="search" data-project-search
+                           placeholder="${escapeAttr(t('projects.search'))}"
+                           value="${escapeAttr(projectSearchQuery)}">
+                    ${renderProjectDocumentList()}
+                </div>
+            </div>
+        </aside>
+
+        <section class="project-panel project-map-panel">
+            ${inlineFile?.type === 'file'
+                ? renderProjectInlineFilePanel(inlineFile)
+                : renderProjectFolderPanel(folder, counts, documents, isRootFolder)}
+        </section>
+    `;
+}
+
+function renderProjectFolderPanel(folder, counts, documents, isRootFolder) {
+    return `
+        <div class="project-panel-head">
+            <div>
+                <h2>${escapeHtml(driveDisplayName(folder) || t('projects.rootName'))}</h2>
+                <p>${escapeHtml(`${driveBreadcrumbText()} · ${t('projects.folderContents', counts)}`)}</p>
+            </div>
+            <div class="project-panel-actions">
+                ${renderDrivePathJumpSelect()}
+                <button class="btn-secondary" type="button" data-drive-go-parent title="${escapeAttr(t('actions.back'))}" ${isRootFolder ? 'disabled' : ''}>
+                    <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.3"><path d="m12 19-7-7 7-7"/><path d="M19 12H5"/></svg>
+                </button>
+                <button class="btn-primary" type="button" data-project-chat-path="${escapeAttr(folder?.id || '')}">
+                    <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.3"><path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4Z"/></svg>
+                    <span>${escapeHtml(t('actions.chatWithPath'))}</span>
+                </button>
+                <button class="btn-secondary" type="button" data-project-refresh>
+                    <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.3"><path d="M21 12a9 9 0 0 1-9 9 9.8 9.8 0 0 1-6.7-2.7"/><path d="M3 12a9 9 0 0 1 9-9 9.8 9.8 0 0 1 6.7 2.7"/><path d="M3 20v-5h5M21 4v5h-5"/></svg>
+                </button>
+            </div>
+        </div>
+        <div class="project-panel-body">
+            ${renderProjectStatus()}
+            ${renderCurrentFolderList(documents)}
+        </div>
+    `;
+}
+
+function renderProjectInlineFilePanel(item) {
+    const parent = driveItemById(item.parent_id) || driveRootItem();
+    return `
+        <div class="project-panel-head">
+            <div>
+                <h2>${escapeHtml(driveDisplayName(item) || t('projects.activeDocument'))}</h2>
+                <p>${escapeHtml([parent?.id ? driveBreadcrumbText(parent.id) : '', driveItemMeta(item)].filter(Boolean).join(' · '))}</p>
+            </div>
+            <div class="project-panel-actions">
+                ${renderDrivePathJumpSelect()}
+                <button class="btn-secondary" type="button" data-drive-back-to-folder title="${escapeAttr(t('actions.back'))}">
+                    <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.3"><path d="m12 19-7-7 7-7"/><path d="M19 12H5"/></svg>
+                </button>
+                <button class="btn-secondary" type="button" data-project-download-document="${escapeAttr(item.id)}" title="${escapeAttr(t('projects.download'))}">
+                    <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.3"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>
+                </button>
+            </div>
+        </div>
+        <div class="project-panel-body">
+            ${renderProjectStatus()}
+            ${renderInlineDriveFileContent(item)}
+        </div>
+    `;
+}
+
+function renderInlineDriveFileContent(item) {
+    const detail = projectInlineFileDetail.item?.id === item.id ? projectInlineFileDetail.item : item;
+    if (projectInlineFileDetail.loading && !detail.content) {
+        return `<div class="project-map-wrap drive-folder-wrap">${emptyState(t('projects.previewLoading'), driveItemMeta(item))}</div>`;
+    }
+    if (projectInlineFileDetail.error) {
+        return `<div class="project-map-wrap drive-folder-wrap">${emptyState(projectInlineFileDetail.error, driveItemMeta(item))}</div>`;
+    }
+    if (detail.encoding === 'base64') {
+        return `<div class="project-file-detail-content binary">${renderDriveBinaryPreview(detail)}</div>`;
+    }
+    return `<pre class="project-file-detail-content">${escapeHtml(detail.content || detail.summary || '')}</pre>`;
+}
+
+function renderProjectDocumentList() {
+    const items = projectSearchQuery.trim()
+        ? projectSearchResults.map((result) => ({ ...result.item, _score: result.score, _snippet: result.snippet }))
+        : driveTreeItems();
+    if (!items.length) {
+        return `<div class="empty-inline">${escapeHtml(projectSearchQuery.trim() ? t('projects.noSearchResults') : t('projects.noDocuments'))}</div>`;
+    }
+    return `
+        <div class="project-document-list" data-drive-list-surface="library">
+            ${projectSearchQuery.trim()
+                ? items.map((item) => renderProjectDocumentRow(item, 0, { surface: 'library' })).join('')
+                : items.map((item) => renderDriveTreeDocumentRow(item, 0)).join('')}
+        </div>
+    `;
+}
+
+function renderDriveTreeDocumentRow(item, depth = 0) {
+    const children = Array.isArray(item.children) ? item.children : [];
+    const collapsed = item.type === 'folder' && collapsedDriveFolderIds.has(item.id);
+    return `
+        ${renderProjectDocumentRow(item, depth, {
+            tree: true,
+            hasChildren: children.length > 0,
+            collapsed,
+            surface: 'library',
+        })}
+        ${collapsed ? '' : children.map((child) => renderDriveTreeDocumentRow(child, depth + 1)).join('')}
+    `;
+}
+
+function renderProjectDocumentRow(doc, depth = 0, options = {}) {
+    const selected = selectedProjectDocumentIds.has(doc.id);
+    const active = doc.id === activeProjectDocumentId || doc.id === currentProjectId;
+    const deleting = pendingProjectDocumentDeletes.has(doc.id) || pendingProjectDeletes.has(doc.id);
+    const score = doc._score ? `<span class="chip muted">${escapeHtml(String(doc._score))}</span>` : '';
+    const canDelete = !driveIsRootItem(doc);
+    const canSelect = driveSelectableItem(doc);
+    const canDrag = canSelect && !deleting;
+    const showToggle = options.tree && doc.type === 'folder';
+    const toggleDisabled = !options.hasChildren;
+    const surface = options.surface || (options.tree ? 'library' : 'detail');
+    const dropAttr = doc.type === 'folder' ? `data-drive-drop-folder-id="${escapeAttr(doc.id)}"` : '';
+    return `
+        <div class="project-document-row drive-content-row ${active ? 'active' : ''} ${selected ? 'selected' : ''}"
+             style="--drive-depth:${Math.min(depth, 8)}"
+             data-drive-item-id="${escapeAttr(doc.id)}"
+             data-drive-item-type="${escapeAttr(doc.type || '')}"
+             data-drive-selectable="${canSelect ? 'true' : 'false'}"
+             ${dropAttr}
+             draggable="${canDrag ? 'true' : 'false'}">
+            <span class="drive-row-leading">
+                ${showToggle ? `
+                    <button class="drive-tree-toggle" type="button"
+                            data-drive-toggle-folder="${escapeAttr(doc.id)}"
+                            aria-expanded="${options.collapsed ? 'false' : 'true'}"
+                            title="${escapeAttr(options.collapsed ? t('actions.expand') : t('actions.collapse'))}"
+                            ${toggleDisabled ? 'disabled' : ''}>
+                        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5">
+                            <path d="m9 6 6 6-6 6"/>
+                        </svg>
+                    </button>
+                ` : '<span class="drive-tree-toggle-placeholder"></span>'}
+            </span>
+            <button class="project-document-main" type="button" data-project-open-document="${escapeAttr(doc.id)}" data-project-open-surface="${escapeAttr(surface)}">
+                <strong>${driveItemIconSvg(doc)}${escapeHtml(driveDisplayName(doc))}</strong>
+                <p>${escapeHtml(driveItemSnippet(doc))}</p>
+                <span class="project-document-meta">
+                    <span class="status-chip neutral">${escapeHtml(projectTypeLabel(doc))}</span>
+                    ${score}
+                    ${doc.type === 'file' ? `<span class="chip muted">${escapeHtml(formatBytes(doc.size || 0))}</span>` : ''}
+                </span>
+            </button>
+            <span class="drive-row-actions">
+                ${doc.type === 'folder' ? `
+                    <button class="project-mini-button" type="button" data-project-chat-path="${escapeAttr(doc.id)}" title="${escapeAttr(t('actions.chatWithPath'))}">
+                        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4Z"/></svg>
+                    </button>
+                ` : ''}
+                ${doc.type === 'file' ? `
+                    <button class="project-mini-button" type="button" data-project-download-document="${escapeAttr(doc.id)}" title="${escapeAttr(t('projects.download'))}">
+                        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>
+                    </button>
+                ` : ''}
+                ${canDelete ? `
+                <button class="project-mini-button danger" type="button" data-project-delete-document="${escapeAttr(doc.id)}" title="${escapeAttr(t('actions.delete'))}" ${deleting ? 'disabled aria-busy="true"' : ''}>
+                    <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v5M14 11v5"/></svg>
+                </button>
+                ` : ''}
+            </span>
+        </div>
+    `;
+}
+
+function renderCurrentFolderList(items = projectDocuments()) {
+    if (!items.length) {
+        return `<div class="project-map-wrap drive-folder-wrap drive-drop-zone" data-drive-drop-folder-id="${escapeAttr(currentProjectId || driveRootItem()?.id || '')}">${emptyState(t('projects.noDocuments'), t('projects.emptyDetail'))}</div>`;
+    }
+    return `
+        <div class="project-document-list current-folder-list drive-drop-zone" data-drive-list-surface="detail" data-drive-drop-folder-id="${escapeAttr(currentProjectId || driveRootItem()?.id || '')}">
+            ${items.map((item) => renderProjectDocumentRow(item, 0, { surface: 'detail' })).join('')}
+        </div>
+    `;
+}
+
+function renderProjectSelectionBar() {
+    const selectedItems = driveSelectedItems();
+    const count = selectedItems.length;
+    return `
+        <div class="project-selection-bar">
+            <div class="project-selection-meta">
+                <span class="status-chip neutral">${escapeHtml(t('projects.selected', { count }))}</span>
+                ${selectedItems.slice(0, 5).map((item) => `<span class="chip">${escapeHtml(driveDisplayName(item))}</span>`).join('')}
+            </div>
+            <div class="project-panel-actions">
+                <button class="btn-secondary" type="button" data-project-clear-selection ${count ? '' : 'disabled'}>
+                    <span>${escapeHtml(t('actions.clearSelection'))}</span>
+                </button>
+            </div>
+        </div>
+    `;
+}
+
+function renderProjectContextSources() {
+    const sources = Array.isArray(projectAskSources) ? projectAskSources : [];
+    if (!sources.length) return '';
+    return `
+        <section class="project-answer">
+            <div class="project-answer-head">
+                <strong>${escapeHtml(t('projects.contextSources'))}</strong>
+            </div>
+            <div class="project-source-list">
+                ${sources.map((item) => `
+                    <button class="project-source-item" type="button" data-project-open-document="${escapeAttr(item.id)}">
+                        <strong>${driveItemIconSvg(item)}${escapeHtml(driveDisplayName(item))}</strong>
+                        <small>${escapeHtml(item.summary || driveItemMeta(item))}</small>
+                    </button>
+                `).join('')}
+            </div>
+        </section>
+    `;
 }
 
 function renderPinnedAgents() {
@@ -4958,7 +7849,7 @@ function renderRuns() {
 
     runList.innerHTML = runs.map((run) => {
         const active = run.run_id === selectedRunId;
-        const statusClass = run.status === 'completed' ? 'ok' : (run.status === 'failed' ? 'error' : 'warn');
+        const statusClass = runStatusClass(run.status);
         const queryText = runQueryText(run);
         const queryPreview = truncateText(queryText, 120) || t('runs.noQuery');
         const scenario = runScenarioLabel(run);
@@ -4993,6 +7884,13 @@ function renderRuns() {
     }
 }
 
+function runStatusClass(status = '') {
+    if (status === 'completed') return 'ok';
+    if (status === 'failed') return 'error';
+    if (status === 'cancelled') return 'neutral';
+    return 'warn';
+}
+
 function renderRunDetail(run) {
     const runChanged = selectedTraceRunId !== run.run_id;
     if (runChanged) {
@@ -5019,12 +7917,15 @@ function renderRunDetail(run) {
             <div class="trace-run-summary">
                 <div class="run-panel-head">
                     <div>
-                        <span class="mono">${escapeHtml(run.run_id || '')}</span>
+                        <span class="trace-run-id-copy">
+                            <span class="mono">${escapeHtml(run.run_id || '')}</span>
+                            ${renderTraceIdCopyButton(run.run_id)}
+                        </span>
                         <h2>${escapeHtml(run.agent_id || 'agent')}</h2>
                     </div>
                     <div class="run-panel-actions">
                         ${renderTraceReturnButton(returnConversationId)}
-                        <span class="status-chip ${run.status === 'completed' ? 'ok' : (run.status === 'failed' ? 'error' : 'warn')}">${escapeHtml(run.status || '')}</span>
+                        <span class="status-chip ${runStatusClass(run.status)}">${escapeHtml(run.status || '')}</span>
                     </div>
                 </div>
                 <dl class="run-facts">
@@ -5064,6 +7965,25 @@ function renderTraceReturnButton(conversationId = '') {
                 <path d="M7 12h10"/>
             </svg>
             <span>${escapeHtml(t('trace.backToChat'))}</span>
+        </button>
+    `;
+}
+
+function renderTraceIdCopyButton(runId = '') {
+    if (!runId) return '';
+
+    const label = t('trace.copyTraceId');
+    return `
+        <button class="trace-copy-id-button assistant-copy" type="button"
+                data-copy-trace-id="${escapeAttr(runId)}"
+                data-copy-label-key="trace.copyTraceId"
+                title="${escapeAttr(label)}"
+                aria-label="${escapeAttr(label)}">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+                <rect x="9" y="9" width="10" height="10" rx="2"/>
+                <path d="M5 15H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v1"/>
+            </svg>
+            ${renderAssistantActionLabel(label)}
         </button>
     `;
 }
@@ -5711,6 +8631,7 @@ function traceEventDisplay(event = {}) {
     if (type === 'run.completed') return { label: traceCopy('Run 完成', 'Run completed'), detail: [payload.model_used, duration].filter(Boolean).join(' / ') };
     if (type === 'run.partial') return { label: traceCopy('Run 部分完成', 'Run partial'), detail: payload.error_message || payload.error_type || payload.response_status || '' };
     if (type === 'run.failed') return { label: traceCopy('Run 失败', 'Run failed'), detail: payload.error_message || payload.error_type || '' };
+    if (type === 'run.cancelled') return { label: traceCopy('Run 已取消', 'Run cancelled'), detail: payload.error_message || payload.error_type || '' };
     if (type === 'workflow.started') return { label: traceCopy('Workflow 开始', 'Workflow started'), detail: workflowDisplayName(payload.workflow) };
     if (type === 'workflow.completed') return { label: traceCopy('Workflow 完成', 'Workflow completed'), detail: [workflowDisplayName(payload.workflow), payload.result].filter(Boolean).join(' / ') };
     if (type === 'workflow.failed') return { label: traceCopy('Workflow 失败', 'Workflow failed'), detail: payload.error_message || payload.error_type || workflowDisplayName(payload.workflow) };
@@ -5939,7 +8860,7 @@ function renderRunNodeDetails(node, run) {
                 <span class="trace-kind">${escapeHtml(t('trace.runOverview'))}</span>
                 <h3>${escapeHtml(run.agent_id || 'agent')}</h3>
             </div>
-            <span class="status-chip ${run.status === 'completed' ? 'ok' : (run.status === 'failed' ? 'error' : 'warn')}">${escapeHtml(run.status || '')}</span>
+            <span class="status-chip ${runStatusClass(run.status)}">${escapeHtml(run.status || '')}</span>
         </div>
         ${renderTraceDetailGrid(rows)}
         ${renderTraceTextSection(t('trace.input'), run.input)}
@@ -6476,6 +9397,7 @@ function traceStatusDotClass(status) {
     if (normalized === 'completed') return 'ok';
     if (normalized === 'running') return 'warn';
     if (normalized === 'partial') return 'warn';
+    if (normalized === 'cancelled') return '';
     if (normalized === 'error') return 'error';
     return '';
 }
@@ -6484,6 +9406,7 @@ function traceStatusChipClass(status) {
     const normalized = normalizeTraceStatus(status);
     if (normalized === 'completed') return 'ok';
     if (normalized === 'error') return 'error';
+    if (normalized === 'cancelled') return 'neutral';
     if (normalized === 'running' || normalized === 'partial') return 'warn';
     return 'neutral';
 }
@@ -6834,6 +9757,7 @@ function renderConversationMessageListHtml(messages = []) {
         }
         const skillsUsed = parseSkills(msg.skills_used);
         const citations = parseCitations(msg.citations);
+        const artifacts = parseArtifacts(msg.artifacts);
         const savedTraceEvents = parseTraceEvents(msg.trace_summary || msg.trace_events);
         const savedRun = runRecordFromMessage(msg, skillsUsed, savedTraceEvents);
         if (savedRun) savedRuns.push(savedRun);
@@ -6848,6 +9772,7 @@ function renderConversationMessageListHtml(messages = []) {
             msg.run_id || traceRun?.run_id || '',
             msg.runtime || traceRun?.runtime || '',
             citations,
+            artifacts,
             null,
             msg.role === 'assistant' ? latestUserQuery : ''
         );
@@ -6918,7 +9843,7 @@ function processTotalDuration(events = []) {
     const completed = [...events]
         .reverse()
         .find((event) => (
-            (event?.type === 'run.completed' || event?.type === 'run.failed')
+            (event?.type === 'run.completed' || event?.type === 'run.failed' || event?.type === 'run.cancelled')
             && Number.isFinite(event.duration_ms)
         ));
     if (completed) return completed.duration_ms;
@@ -7075,6 +10000,8 @@ function processEventDetail(event = {}, fallback = '') {
         parts.push(traceCopy('最终结果已生成，过程已折叠。', 'Final result generated; process folded.'));
     } else if (type === 'run.partial') {
         parts.push(payload.error_message || payload.error_type || traceCopy('已生成阶段性总结。', 'Partial summary generated.'));
+    } else if (type === 'run.cancelled') {
+        parts.push(payload.error_message || payload.error_type || traceCopy('用户已取消任务。', 'Task cancelled by user.'));
     } else if (type.endsWith('.failed') || event.status === 'error') {
         parts.push(payload.error_message || payload.error_type || fallback);
     }
@@ -7180,6 +10107,7 @@ function processStatusLabel(status = '') {
     if (status === 'running') return traceCopy('进行中', 'running');
     if (status === 'completed') return traceCopy('完成', 'done');
     if (status === 'partial') return traceCopy('部分完成', 'partial');
+    if (status === 'cancelled') return traceCopy('已取消', 'cancelled');
     if (status === 'error') return traceCopy('异常', 'error');
     return traceCopy('记录', 'event');
 }
@@ -7195,6 +10123,7 @@ function conversationMessagesSignature(messages = []) {
         msg.created_at || '',
         msg.skills_used || '',
         msg.citations || '',
+        msg.artifacts || '',
         msg.trace_summary || msg.trace_events || '',
         msg.follow_ups || '',
         msg.content || '',
@@ -7213,10 +10142,11 @@ function runRecordFromMessage(msg = {}, skillsUsed = [], traceEvents = [], fallb
     const runId = msg.run_id || fallbackRun?.run_id || '';
     if (!runId || !traceEvents.length) return null;
 
+    const cancelled = traceEvents.some((event) => event?.type === 'run.cancelled' || normalizeTraceStatus(event?.status) === 'cancelled');
     const failed = traceEvents.some((event) => event?.type === 'run.failed' || normalizeTraceStatus(event?.status) === 'error');
     const partial = traceEvents.some((event) => event?.type === 'run.partial' || normalizeTraceStatus(event?.status) === 'partial');
     const completed = traceEvents.some((event) => event?.type === 'run.completed');
-    const status = failed ? 'failed' : (partial ? 'partial' : (completed ? 'completed' : (fallbackRun?.status || 'completed')));
+    const status = cancelled ? 'cancelled' : (failed ? 'failed' : (partial ? 'partial' : (completed ? 'completed' : (fallbackRun?.status || 'completed'))));
 
     return {
         ...(fallbackRun || {}),
@@ -7272,7 +10202,7 @@ function stopActiveRunWatcher() {
 }
 
 function runIsActive(run) {
-    return run && run.status && run.status !== 'completed' && run.status !== 'failed' && run.status !== 'partial';
+    return run && run.status && run.status !== 'completed' && run.status !== 'failed' && run.status !== 'partial' && run.status !== 'cancelled';
 }
 
 function hasAssistantAfterLastUser(messages = []) {
@@ -7398,6 +10328,7 @@ function chatResponseFromRun(run = {}) {
         model_used: run.model_used || '',
         skills_used: run.skills_used || [],
         citations: [],
+        artifacts: run.artifacts || [],
         tokens_used: run.tokens_used || {},
         agent_id: run.agent_id || currentAgentId,
     };
@@ -7540,7 +10471,7 @@ async function handleSend(queryOverride = '') {
     autoResizeInput();
 
     const modeMeta = getSelectedModes().map((mode) => ({ id: mode.id, name: modeCopy(mode).name }));
-    appendMessage('user', query, [], '', '', [], '', '', [], {
+    appendMessage('user', query, [], '', '', [], '', '', [], [], {
         modes: modeMeta,
         attachments: attachmentSummary(attachmentsForTurn),
     });
@@ -7549,9 +10480,13 @@ async function handleSend(queryOverride = '') {
     scrollToBottom();
 
     try {
-        const resp = await sendMessageStream(conversationId, query, streamView, attachmentContext, attachmentPayload);
+        const contextBlocks = [attachmentContext].filter(Boolean);
+        const resp = await sendMessageStream(conversationId, query, streamView, attachmentContext, attachmentPayload, {
+            context_blocks: contextBlocks,
+        });
         streamView.finalize(resp);
         captureMemoryDebug(resp, conversationId);
+        if (driveWriteToolsUsed(resp)) void loadProjects();
         if (activeView === 'developer') void loadDeveloperMemory();
         void Promise.allSettled([loadConversations(), loadRuns()]).then(() => {
             if (currentConversationId === conversationId) updateTopbar();
@@ -7604,6 +10539,7 @@ async function regenerateAssistantAnswer(button) {
         const resp = await sendMessageStream(conversationId, query, streamView, '', [], { regenerate: true });
         streamView.finalize(resp);
         captureMemoryDebug(resp, conversationId);
+        if (driveWriteToolsUsed(resp)) void loadProjects();
         if (activeView === 'developer') void loadDeveloperMemory();
         void Promise.allSettled([loadConversations(), loadRuns()]).then(() => {
             if (currentConversationId === conversationId) updateTopbar();
@@ -7624,6 +10560,7 @@ async function sendMessage(conversationId, query, attachmentContext = '', attach
     const model = modelSelect.value || undefined;
     const modePayload = selectedModePayload();
     const targetAgentId = selectedModeAgentId();
+    const driveContext = drivePromptContext(targetAgentId);
     return apiCall('POST', '/api/chat', {
         conversation_id: conversationId,
         user_id: currentUserId,
@@ -7633,6 +10570,7 @@ async function sendMessage(conversationId, query, attachmentContext = '', attach
         agent_id: targetAgentId,
         role_id: currentRoleId || undefined,
         context_blocks: attachmentContext ? [attachmentContext] : [],
+        drive_context: driveContext || undefined,
         attachments,
         ...modePayload,
     });
@@ -7642,6 +10580,9 @@ async function sendMessageStream(conversationId, query, streamView, attachmentCo
     const model = modelSelect.value || undefined;
     const modePayload = selectedModePayload();
     const targetAgentId = selectedModeAgentId();
+    const effectiveAgentId = extraPayload.agent_id || targetAgentId;
+    const driveContext = drivePromptContext(effectiveAgentId);
+    const { signal, onRunId, ...requestPayload } = extraPayload || {};
     const resp = await fetch(API_BASE + '/api/chat', {
         method: 'POST',
         headers: {
@@ -7649,6 +10590,7 @@ async function sendMessageStream(conversationId, query, streamView, attachmentCo
             ...(currentAccountToken ? { 'X-Account-Session': currentAccountToken } : {}),
             ...(currentUserId ? { 'X-User-ID': currentUserId } : {}),
         },
+        signal,
         body: JSON.stringify({
             conversation_id: conversationId,
             user_id: currentUserId,
@@ -7658,9 +10600,10 @@ async function sendMessageStream(conversationId, query, streamView, attachmentCo
             agent_id: targetAgentId,
             role_id: currentRoleId || undefined,
             context_blocks: attachmentContext ? [attachmentContext] : [],
+            drive_context: driveContext || undefined,
             attachments,
             ...modePayload,
-            ...extraPayload,
+            ...requestPayload,
         }),
     });
 
@@ -7694,6 +10637,7 @@ async function sendMessageStream(conversationId, query, streamView, attachmentCo
 
             if (event === 'meta') {
                 runId = data.run_id || runId;
+                if (runId && typeof onRunId === 'function') onRunId(runId);
                 streamView.setMeta({ runId, runtime, modelUsed });
             } else if (event === 'trace') {
                 traceEvents.push(data);
@@ -7713,7 +10657,10 @@ async function sendMessageStream(conversationId, query, streamView, attachmentCo
                 }
                 streamView.setTrace(traceEvents.length ? traceEvents : (data.events || []), { runId, runtime, modelUsed });
             } else if (event === 'error') {
-                throw new Error(data.error || t('errors.streamFailed'));
+                const error = new Error(data.error || t('errors.streamFailed'));
+                error.errorType = data.error_type || '';
+                error.runId = data.run_id || runId || '';
+                throw error;
             }
         }
     }
@@ -7729,13 +10676,16 @@ async function sendMessageStream(conversationId, query, streamView, attachmentCo
     };
 }
 
-function appendStreamingAssistantMessage(regenerateQuery = '', conversationId = currentConversationId) {
+function appendStreamingAssistantMessage(regenerateQuery = '', conversationId = currentConversationId, options = {}) {
     const welcome = messagesContainer.querySelector('.welcome-screen');
     if (welcome) welcome.remove();
 
+    const cancelTaskId = String(options.cancelTaskId || '');
+    const cancellable = Boolean(cancelTaskId && typeof options.onCancel === 'function');
     const div = document.createElement('div');
     div.className = 'message assistant streaming';
     div.dataset.copyText = '';
+    if (cancelTaskId) div.dataset.streamingTaskId = cancelTaskId;
     if (regenerateQuery) div.dataset.regenerateQuery = regenerateQuery;
     div.innerHTML = `
         <div class="avatar">AI</div>
@@ -7745,23 +10695,33 @@ function appendStreamingAssistantMessage(regenerateQuery = '', conversationId = 
             <div class="streaming-content">
                 <div class="loading-dots"><span></span><span></span><span></span></div>
             </div>
+            <div class="streaming-artifacts"></div>
             <div class="streaming-citations"></div>
             <div class="streaming-skills"></div>
+            ${cancellable ? renderStreamingCancelButton(cancelTaskId) : ''}
             ${renderAssistantActions({ copyEnabled: false, regenerateQuery, regenerateEnabled: false })}
         </div>
     `;
     messagesContainer.appendChild(div);
+    if (cancellable) streamingTaskCancellers.set(cancelTaskId, options.onCancel);
 
     const statusEl = div.querySelector('.streaming-status');
     const contentEl = div.querySelector('.streaming-content');
+    const artifactsEl = div.querySelector('.streaming-artifacts');
     const citationsEl = div.querySelector('.streaming-citations');
     const skillsEl = div.querySelector('.streaming-skills');
     const traceEl = div.querySelector('.streaming-trace');
+    const cancelActionsEl = div.querySelector('.streaming-task-actions');
     let lastContent = '';
     let lastEvents = [];
     let lastMeta = {};
     let processExpanded = true;
     let processTouched = false;
+
+    function finishStreamingTask() {
+        if (cancelTaskId) streamingTaskCancellers.delete(cancelTaskId);
+        cancelActionsEl?.remove();
+    }
 
     function rememberProcessPanelIntent(summary) {
         const panel = summary?.closest?.('.process-panel');
@@ -7840,6 +10800,7 @@ function appendStreamingAssistantMessage(regenerateQuery = '', conversationId = 
             });
         },
         finalize(resp) {
+            finishStreamingTask();
             const displayError = resp.error_type
                 ? (resp.error_type === 'rate_limit' ? 'rate_limit' : 'error')
                 : '';
@@ -7848,6 +10809,7 @@ function appendStreamingAssistantMessage(regenerateQuery = '', conversationId = 
                 return;
             }
             this.setContent(resp.response || lastContent);
+            artifactsEl.innerHTML = renderArtifactPanel(resp.artifacts || []);
             citationsEl.innerHTML = renderCitationPanel(resp.citations || []);
             const skills = resp.skills_used || [];
             skillsEl.innerHTML = skills.length
@@ -7873,6 +10835,7 @@ function appendStreamingAssistantMessage(regenerateQuery = '', conversationId = 
             updateRegenerateButtonsState();
         },
         showError(message, type = 'error') {
+            finishStreamingTask();
             statusEl.hidden = true;
             div.dataset.copyText = message || '';
             div.classList.toggle('has-final-content', Boolean(message));
@@ -7901,7 +10864,37 @@ function appendStreamingAssistantMessage(regenerateQuery = '', conversationId = 
             });
             updateRegenerateButtonsState();
         },
+        showCancelled(message) {
+            finishStreamingTask();
+            statusEl.hidden = true;
+            div.dataset.copyText = message || '';
+            div.classList.toggle('has-final-content', Boolean(message));
+            updateCopyButtonState(div, Boolean(message));
+            contentEl.innerHTML = `<div class="streaming-cancelled">${escapeHtml(message)}</div>`;
+            div.classList.remove('streaming');
+            updateAssistantActions(div, {
+                copyEnabled: Boolean(message),
+                traceEvents: lastEvents,
+                runId: lastMeta.runId || '',
+                runtime: lastMeta.runtime || '',
+                modelUsed: lastMeta.modelUsed || '',
+                regenerateQuery,
+                regenerateEnabled: Boolean(regenerateQuery),
+            });
+            updateRegenerateButtonsState();
+        },
     };
+}
+
+function renderStreamingCancelButton(taskId = '') {
+    return `
+        <div class="streaming-task-actions">
+            <button class="btn-secondary streaming-cancel-button" type="button"
+                    data-cancel-streaming-task="${escapeAttr(taskId)}">
+                ${escapeHtml(t('actions.cancelTask'))}
+            </button>
+        </div>
+    `;
 }
 
 function parseSseBlock(block) {
@@ -7969,6 +10962,7 @@ function traceProgressLabel(event = {}) {
     if (type === 'memory.extracted') return currentLanguage === 'zh' ? '已完成记忆检查' : 'Memory review completed';
     if (type === 'run.completed') return currentLanguage === 'zh' ? '回答完成' : 'Done';
     if (type === 'run.partial') return currentLanguage === 'zh' ? '已生成阶段性总结' : 'Partial summary ready';
+    if (type === 'run.cancelled') return currentLanguage === 'zh' ? '任务已取消' : 'Task cancelled';
     if (status === 'error') return currentLanguage === 'zh' ? '执行遇到问题' : 'Issue encountered';
     return event.title || type;
 }
@@ -8024,6 +11018,7 @@ function appendMessage(
     runId = '',
     runtime = '',
     citations = [],
+    artifacts = [],
     inputMeta = null,
     regenerateQuery = ''
 ) {
@@ -8040,6 +11035,7 @@ function appendMessage(
         runId,
         runtime,
         citations,
+        artifacts,
         inputMeta,
         regenerateQuery
     ));
@@ -8056,6 +11052,7 @@ function renderMessageHtml(
     runId = '',
     runtime = '',
     citations = [],
+    artifacts = [],
     inputMeta = null,
     regenerateQuery = ''
 ) {
@@ -8093,11 +11090,13 @@ function renderMessageHtml(
             ? renderProcessPanel(traceEvents, { expanded: false })
             : '';
         const citationPanel = renderCitationPanel(citations);
+        const artifactPanel = renderArtifactPanel(artifacts);
         bubbleContent = [
             renderInputMeta(inputMeta),
             processPanel,
             processPanel ? renderMessageDivider() : '',
             formatContent(content),
+            artifactPanel,
             citationPanel ? renderMessageDivider() : '',
             citationPanel,
             skillBadges,
@@ -8145,6 +11144,7 @@ function renderAssistantActionButtons(options = {}) {
     return `
         ${renderTraceActionButton(traceEvents, runId, runtime, modelUsed)}
         ${renderRegenerateActionButton(regenerateQuery, regenerateEnabled)}
+        ${renderSaveToDriveActionButton(copyEnabled)}
         ${renderCopyActionButton(copyEnabled, label)}
     `;
 }
@@ -8168,8 +11168,30 @@ function renderCopyActionButton(copyEnabled = true, label = t('actions.copyAnswe
                 <rect x="9" y="9" width="10" height="10" rx="2"/>
                 <path d="M5 15H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v1"/>
             </svg>
-            <span class="visually-hidden">${escapeHtml(label)}</span>
+            ${renderAssistantActionLabel(label)}
         </button>
+    `;
+}
+
+function renderSaveToDriveActionButton(enabled = true) {
+    const label = t('actions.saveToDrive');
+    const disabled = enabled ? '' : 'disabled aria-disabled="true"';
+    return `
+        <button class="assistant-action-button assistant-save-drive" type="button" data-save-answer-to-drive ${disabled}
+                title="${escapeAttr(label)}" aria-label="${escapeAttr(label)}">
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M4 5h7l2 2h7v12a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2Z"/>
+                <path d="M12 11v6M9 14h6"/>
+            </svg>
+            ${renderAssistantActionLabel(label)}
+        </button>
+    `;
+}
+
+function renderAssistantActionLabel(label = '', visibleLabel = label) {
+    return `
+        <span class="assistant-action-label" aria-hidden="true">${escapeHtml(visibleLabel)}</span>
+        <span class="visually-hidden">${escapeHtml(label)}</span>
     `;
 }
 
@@ -8206,7 +11228,7 @@ function renderRegenerateActionButton(query = '', enabled = true) {
                 <path d="M21 12a9 9 0 1 1-2.64-6.36"/>
                 <path d="M21 3v6h-6"/>
             </svg>
-            <span class="visually-hidden">${escapeHtml(label)}</span>
+            ${renderAssistantActionLabel(label)}
         </button>
     `;
 }
@@ -8225,7 +11247,7 @@ function renderTraceActionButton(events = [], runId = '', runtime = '', modelUse
                 <path d="M4 19V5"/>
                 <path d="M4 12h6l2-4 3 8 2-4h3"/>
             </svg>
-            <span class="visually-hidden">${escapeHtml(title)}</span>
+            ${renderAssistantActionLabel(title, t('trace.open'))}
         </button>
     `;
 }
@@ -8262,6 +11284,8 @@ function resetCopyButtonFeedback(button) {
     button.setAttribute('aria-label', label);
     const text = button.querySelector('.visually-hidden');
     if (text) text.textContent = label;
+    const visibleText = button.querySelector('.assistant-action-label');
+    if (visibleText) visibleText.textContent = label;
 }
 
 function setCopyButtonFeedback(button, ok) {
@@ -8273,6 +11297,8 @@ function setCopyButtonFeedback(button, ok) {
     button.setAttribute('aria-label', label);
     const text = button.querySelector('.visually-hidden');
     if (text) text.textContent = label;
+    const visibleText = button.querySelector('.assistant-action-label');
+    if (visibleText) visibleText.textContent = label;
     button._copyFeedbackTimer = setTimeout(() => resetCopyButtonFeedback(button), 1400);
 }
 
@@ -8303,8 +11329,14 @@ async function copyTextToClipboard(text) {
 }
 
 function renderInputMeta(meta) {
-    if (!meta || (!meta.modes?.length && !meta.attachments?.length)) return '';
+    if (!meta || (!meta.modes?.length && !meta.drive?.length && !meta.attachments?.length)) return '';
     const modes = (meta.modes || []).map((mode) => `<span>${escapeHtml(mode.name)}</span>`).join('');
+    const drive = (meta.drive || []).map((item) => `
+        <span title="${escapeAttr(item.name)}">
+            ${escapeHtml(`${t('views.projects.title')}: ${item.name}`)}
+            <small>${escapeHtml(projectTypeLabel(item))}</small>
+        </span>
+    `).join('');
     const attachments = (meta.attachments || []).map((item) => `
         <span title="${escapeAttr(item.name)}">
             ${escapeHtml(item.name)}
@@ -8314,6 +11346,7 @@ function renderInputMeta(meta) {
     return `
         <div class="input-meta">
             ${modes ? `<div class="input-meta-row">${modes}</div>` : ''}
+            ${drive ? `<div class="input-meta-row drive-meta-row">${drive}</div>` : ''}
             ${attachments ? `<div class="input-meta-row attachment-meta-row">${attachments}</div>` : ''}
         </div>
     `;
@@ -8364,6 +11397,48 @@ function renderCitationPanel(citations = []) {
     `;
 }
 
+function renderArtifactPanel(artifacts = []) {
+    const normalized = normalizeArtifacts(artifacts);
+    if (!normalized.length) return '';
+    return `
+        <div class="message-artifacts">
+            ${normalized.map(renderDriveArtifactCard).join('')}
+        </div>
+    `;
+}
+
+function renderDriveArtifactCard(artifact) {
+    const item = driveArtifactAsItem(artifact);
+    const title = artifact.title || artifact.name || artifact.item_id || t('projects.activeDocument');
+    const meta = [
+        projectTypeLabel(item),
+        artifact.size ? formatBytes(artifact.size) : '',
+        artifact.summary || '',
+    ].filter(Boolean).join(' · ');
+    return `
+        <button class="drive-artifact-card" type="button" data-drive-artifact-id="${escapeAttr(artifact.item_id)}">
+            <span class="drive-artifact-icon">${driveItemIconSvg(item)}</span>
+            <span class="drive-artifact-main">
+                <strong>${escapeHtml(title)}</strong>
+                <small>${escapeHtml(meta || t('projects.saveDone'))}</small>
+            </span>
+        </button>
+    `;
+}
+
+function driveArtifactAsItem(artifact) {
+    return {
+        id: artifact.item_id || '',
+        type: artifact.type === 'drive_folder' ? 'folder' : 'file',
+        name: artifact.name || artifact.title || '',
+        mime_type: artifact.mime_type || '',
+        size: artifact.size || 0,
+        summary: artifact.summary || '',
+        parent_id: artifact.metadata?.parent_id || '',
+        updated_at: artifact.metadata?.updated_at || '',
+    };
+}
+
 function normalizeCitations(citations = []) {
     if (!Array.isArray(citations)) return [];
     const seen = new Set();
@@ -8380,6 +11455,35 @@ function normalizeCitations(citations = []) {
             url,
             snippet: String(item.snippet || item.Snippet || '').trim(),
             source: String(item.source || item.Source || '').trim(),
+            metadata: metadata && typeof metadata === 'object' ? metadata : {},
+        });
+    });
+    return normalized;
+}
+
+function normalizeArtifacts(artifacts = []) {
+    if (!Array.isArray(artifacts)) return [];
+    const seen = new Set();
+    const normalized = [];
+    artifacts.forEach((item) => {
+        if (!item || typeof item !== 'object') return;
+        const type = String(item.type || item.Type || 'drive_file').trim() || 'drive_file';
+        const itemId = String(item.item_id || item.ItemID || item.id || '').trim();
+        const name = String(item.name || item.Name || item.title || item.Title || '').trim();
+        if (!itemId && !name) return;
+        const key = `${type}:${itemId || name}`;
+        if (seen.has(key)) return;
+        seen.add(key);
+        const metadata = item.metadata || item.Metadata || {};
+        normalized.push({
+            type,
+            item_id: itemId,
+            name,
+            title: String(item.title || item.Title || name).trim(),
+            mime_type: String(item.mime_type || item.MimeType || '').trim(),
+            size: Number(item.size || item.Size || 0),
+            summary: String(item.summary || item.Summary || '').trim(),
+            url: String(item.url || item.URL || '').trim(),
             metadata: metadata && typeof metadata === 'object' ? metadata : {},
         });
     });
@@ -8514,6 +11618,7 @@ function normalizeTraceStatus(status = '') {
     if (status === 'completed') return 'completed';
     if (status === 'running') return 'running';
     if (status === 'partial') return 'partial';
+    if (status === 'cancelled' || status === 'canceled') return 'cancelled';
     if (status === 'error' || status === 'failed') return 'error';
     return 'neutral';
 }
@@ -9082,6 +12187,17 @@ function parseCitations(citations) {
     }
 }
 
+function parseArtifacts(artifacts) {
+    if (!artifacts) return [];
+    if (Array.isArray(artifacts)) return artifacts;
+    try {
+        const parsed = JSON.parse(artifacts);
+        return Array.isArray(parsed) ? parsed : [];
+    } catch {
+        return [];
+    }
+}
+
 function parseTraceEvents(events) {
     if (!events) return [];
     if (Array.isArray(events)) return events;
@@ -9428,6 +12544,93 @@ document.addEventListener('click', async (event) => {
         return;
     }
 
+    const driveSaveCancelButton = event.target.closest('[data-drive-save-cancel]');
+    if (driveSaveCancelButton) {
+        event.preventDefault();
+        closeDriveSaveDialog({ saved: false });
+        return;
+    }
+
+    const streamingCancelButton = event.target.closest('[data-cancel-streaming-task]');
+    if (streamingCancelButton) {
+        event.preventDefault();
+        event.stopPropagation();
+        if (streamingCancelButton.disabled) return;
+        const taskId = streamingCancelButton.dataset.cancelStreamingTask || '';
+        const cancelTask = streamingTaskCancellers.get(taskId);
+        if (!cancelTask) return;
+        streamingCancelButton.disabled = true;
+        streamingCancelButton.textContent = t('projects.canceling');
+        Promise.resolve(cancelTask()).catch((err) => {
+            if (!isCancelledError(err)) console.warn('Cancel streaming task failed', err);
+        });
+        return;
+    }
+
+    const driveSaveFolderButton = event.target.closest('[data-drive-save-folder]');
+    if (driveSaveFolderButton) {
+        event.preventDefault();
+        selectDriveSaveFolder(driveSaveFolderButton.dataset.driveSaveFolder);
+        return;
+    }
+
+    const drivePathCancelButton = event.target.closest('[data-drive-path-cancel]');
+    if (drivePathCancelButton) {
+        event.preventDefault();
+        closeDrivePathDialog();
+        return;
+    }
+
+    const drivePathFolderButton = event.target.closest('[data-drive-path-folder]');
+    if (drivePathFolderButton) {
+        event.preventDefault();
+        selectDrivePathFolder(drivePathFolderButton.dataset.drivePathFolder);
+        return;
+    }
+
+    const openChatDrivePathButton = event.target.closest('[data-open-chat-drive-path]');
+    if (openChatDrivePathButton) {
+        event.preventDefault();
+        await openChatDrivePathDialog(openChatDrivePathButton);
+        return;
+    }
+
+    const driveToggleFolderButton = event.target.closest('[data-drive-toggle-folder]');
+    if (driveToggleFolderButton && !driveToggleFolderButton.disabled) {
+        event.preventDefault();
+        event.stopPropagation();
+        toggleDriveFolderCollapsed(driveToggleFolderButton.dataset.driveToggleFolder);
+        return;
+    }
+
+    const driveGoParentButton = event.target.closest('[data-drive-go-parent]');
+    if (driveGoParentButton && !driveGoParentButton.disabled) {
+        event.preventDefault();
+        goToDriveParentFolder();
+        return;
+    }
+
+    const driveBackToFolderButton = event.target.closest('[data-drive-back-to-folder]');
+    if (driveBackToFolderButton && !driveBackToFolderButton.disabled) {
+        event.preventDefault();
+        clearDriveFileInlineDetail();
+        return;
+    }
+
+    const drivePreviewCloseButton = event.target.closest('[data-drive-preview-close]');
+    if (drivePreviewCloseButton) {
+        event.preventDefault();
+        closeDriveDocumentPreview();
+        return;
+    }
+
+    const drivePreviewDownloadButton = event.target.closest('[data-drive-preview-download]');
+    if (drivePreviewDownloadButton && !drivePreviewDownloadButton.disabled) {
+        event.preventDefault();
+        downloadDriveItem(drivePreviewDownloadButton.dataset.drivePreviewDownload);
+        return;
+    }
+
     const mediaCloseButton = event.target.closest('[data-media-preview-close]');
     if (mediaCloseButton) {
         event.preventDefault();
@@ -9548,6 +12751,17 @@ document.addEventListener('click', async (event) => {
 
     closeModePopover();
 
+    const navGroupToggle = event.target.closest('[data-toggle-nav-group]');
+    if (navGroupToggle) {
+        event.preventDefault();
+        const group = navGroupToggle.closest('[data-nav-group]');
+        if (group) {
+            const collapsed = group.classList.toggle('collapsed');
+            navGroupToggle.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+        }
+        return;
+    }
+
     const viewTarget = event.target.closest('[data-view]');
     if (viewTarget) {
         if (viewTarget.dataset.view === 'chat') {
@@ -9555,6 +12769,136 @@ document.addEventListener('click', async (event) => {
             return;
         }
         setView(viewTarget.dataset.view);
+        return;
+    }
+
+    const createProjectButton = event.target.closest('[data-create-project]');
+    if (createProjectButton) {
+        event.preventDefault();
+        await createProject();
+        return;
+    }
+
+    const selectProjectButton = event.target.closest('[data-select-project]');
+    if (selectProjectButton) {
+        event.preventDefault();
+        await selectProject(selectProjectButton.dataset.selectProject);
+        return;
+    }
+
+    const deleteProjectButton = event.target.closest('[data-delete-project]');
+    if (deleteProjectButton && !deleteProjectButton.disabled) {
+        event.preventDefault();
+        event.stopPropagation();
+        await deleteProject(deleteProjectButton.dataset.deleteProject);
+        return;
+    }
+
+    const moveProjectButton = event.target.closest('[data-project-move]');
+    if (moveProjectButton && !moveProjectButton.disabled) {
+        event.preventDefault();
+        await reorderProject(moveProjectButton.dataset.projectMove, moveProjectButton.dataset.projectMoveDirection);
+        return;
+    }
+
+    const projectUploadButton = event.target.closest('[data-project-upload-trigger]');
+    if (projectUploadButton && !projectUploadButton.disabled) {
+        event.preventDefault();
+        projectUploadInput?.click();
+        return;
+    }
+
+    const projectRefreshButton = event.target.closest('[data-project-refresh]');
+    if (projectRefreshButton) {
+        event.preventDefault();
+        await Promise.allSettled([loadProjects(), loadProjectDetail(currentProjectId)]);
+        return;
+    }
+
+    const projectOpenDocumentButton = event.target.closest('[data-project-open-document]');
+    if (projectOpenDocumentButton) {
+        event.preventDefault();
+        if (handleProjectDocumentModifiedClick(projectOpenDocumentButton, event)) return;
+        const documentId = projectOpenDocumentButton.dataset.projectOpenDocument || '';
+        noteDrivePlainClick(documentId);
+        const item = driveItemById(documentId);
+        const surface = projectOpenDocumentButton.dataset.projectOpenSurface || 'library';
+        const isExpandableLibraryFolder = surface === 'library' && item?.type === 'folder' && driveChildren(item.id).length > 0;
+        if (isExpandableLibraryFolder) {
+            if (event.detail > 1) {
+                clearProjectOpenClickTimer();
+                toggleDriveFolderCollapsed(item.id);
+                return;
+            }
+            clearProjectOpenClickTimer();
+            projectOpenClickTimer = window.setTimeout(() => {
+                projectOpenClickTimer = null;
+                openProjectDocument(item.id, { surface });
+            }, 220);
+            return;
+        }
+        clearProjectOpenClickTimer();
+        openProjectDocument(documentId, {
+            surface,
+        });
+        return;
+    }
+
+    const projectChatPathButton = event.target.closest('[data-project-chat-path]');
+    if (projectChatPathButton && !projectChatPathButton.disabled) {
+        event.preventDefault();
+        openChatWithDrivePath(projectChatPathButton.dataset.projectChatPath);
+        return;
+    }
+
+    const projectDeleteDocumentButton = event.target.closest('[data-project-delete-document]');
+    if (projectDeleteDocumentButton && !projectDeleteDocumentButton.disabled) {
+        event.preventDefault();
+        await deleteProjectDocument(currentProjectId, projectDeleteDocumentButton.dataset.projectDeleteDocument);
+        return;
+    }
+
+    const projectDownloadDocumentButton = event.target.closest('[data-project-download-document]');
+    if (projectDownloadDocumentButton && !projectDownloadDocumentButton.disabled) {
+        event.preventDefault();
+        downloadDriveItem(projectDownloadDocumentButton.dataset.projectDownloadDocument);
+        return;
+    }
+
+    const projectCreateFromSelectionButton = event.target.closest('[data-project-create-from-selection]');
+    if (projectCreateFromSelectionButton && !projectCreateFromSelectionButton.disabled) {
+        event.preventDefault();
+        await createProjectFromSelection();
+        return;
+    }
+
+    const projectClearSelectionButton = event.target.closest('[data-project-clear-selection]');
+    if (projectClearSelectionButton && !projectClearSelectionButton.disabled) {
+        event.preventDefault();
+        selectedProjectDocumentIds = new Set();
+        renderModes();
+        renderProjects();
+        return;
+    }
+
+    const projectAskButton = event.target.closest('[data-project-ask]');
+    if (projectAskButton && !projectAskButton.disabled) {
+        event.preventDefault();
+        await askProject();
+        return;
+    }
+
+    const projectExpandButton = event.target.closest('[data-project-expand]');
+    if (projectExpandButton && !projectExpandButton.disabled) {
+        event.preventDefault();
+        await expandProjectMap();
+        return;
+    }
+
+    const projectSaveAnswerButton = event.target.closest('[data-project-save-answer]');
+    if (projectSaveAnswerButton && !projectSaveAnswerButton.disabled) {
+        event.preventDefault();
+        await saveProjectAnswerAsDocument();
         return;
     }
 
@@ -9847,6 +13191,22 @@ document.addEventListener('click', async (event) => {
         return;
     }
 
+    const driveArtifactButton = event.target.closest('[data-drive-artifact-id]');
+    if (driveArtifactButton) {
+        event.preventDefault();
+        event.stopPropagation();
+        await openDriveArtifact(driveArtifactButton.dataset.driveArtifactId);
+        return;
+    }
+
+    const saveAnswerToDriveButton = event.target.closest('[data-save-answer-to-drive]');
+    if (saveAnswerToDriveButton) {
+        event.stopPropagation();
+        if (saveAnswerToDriveButton.disabled) return;
+        await saveAssistantMessageToDrive(saveAnswerToDriveButton);
+        return;
+    }
+
     const copyAnswerButton = event.target.closest('[data-copy-answer]');
     if (copyAnswerButton) {
         event.stopPropagation();
@@ -9879,6 +13239,23 @@ document.addEventListener('click', async (event) => {
             setCopyButtonFeedback(copyCodeButton, true);
         } catch {
             setCopyButtonFeedback(copyCodeButton, false);
+        }
+        return;
+    }
+
+    const copyTraceIdButton = event.target.closest('[data-copy-trace-id]');
+    if (copyTraceIdButton) {
+        event.stopPropagation();
+        if (copyTraceIdButton.disabled) return;
+
+        const text = copyTraceIdButton.dataset.copyTraceId || '';
+        if (!text) return;
+
+        try {
+            await copyTextToClipboard(text);
+            setCopyButtonFeedback(copyTraceIdButton, true);
+        } catch {
+            setCopyButtonFeedback(copyTraceIdButton, false);
         }
         return;
     }
@@ -9936,7 +13313,27 @@ document.addEventListener('click', async (event) => {
     }
 });
 
+document.addEventListener('pointerdown', startDriveSelectionBox);
+document.addEventListener('pointermove', updateDriveSelectionBox);
+document.addEventListener('pointerup', finishDriveSelectionBox);
+document.addEventListener('pointercancel', cancelDriveSelectionBox);
+document.addEventListener('dragstart', handleDriveDragStart);
+document.addEventListener('dragover', handleDriveDragOver);
+document.addEventListener('drop', handleDriveDrop);
+document.addEventListener('dragend', clearDriveDragState);
+
 document.addEventListener('change', async (event) => {
+    const drivePathJump = event.target.closest('[data-drive-path-jump]');
+    if (drivePathJump) {
+        enterDriveFolder(drivePathJump.value || driveRootItem()?.id || '');
+        return;
+    }
+
+    if (event.target === projectUploadInput) {
+        await handleProjectUpload(projectUploadInput.files);
+        return;
+    }
+
     const toolToggle = event.target.closest('[data-tool-enabled]');
     if (toolToggle && !toolToggle.disabled) {
         const toolName = toolToggle.dataset.toolEnabled || '';
@@ -9954,6 +13351,18 @@ document.addEventListener('change', async (event) => {
 });
 
 document.addEventListener('input', (event) => {
+    const projectSearch = event.target.closest('[data-project-search]');
+    if (projectSearch) {
+        scheduleProjectSearch(projectSearch);
+        return;
+    }
+
+    const projectAsk = event.target.closest('[data-project-ask-input]');
+    if (projectAsk) {
+        projectAskInput = projectAsk.value || '';
+        return;
+    }
+
     const toolSearch = event.target.closest('[data-tool-search]');
     if (toolSearch) {
         toolSearchQuery = toolSearch.value || '';
@@ -9975,7 +13384,50 @@ document.addEventListener('input', (event) => {
     }
 });
 
+document.addEventListener('compositionstart', (event) => {
+    if (!event.target.closest?.('[data-project-search]')) return;
+    projectSearchComposing = true;
+    clearTimeout(projectSearchDebounceTimer);
+});
+
+document.addEventListener('compositionend', (event) => {
+    const projectSearch = event.target.closest?.('[data-project-search]');
+    if (!projectSearch) return;
+    projectSearchComposing = false;
+    scheduleProjectSearch(projectSearch, 0);
+});
+
 document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && driveSelectionBoxState.active) {
+        event.preventDefault();
+        cancelDriveSelectionBox();
+        return;
+    }
+
+    if (event.key === 'Escape' && driveDragState.itemIds.length) {
+        event.preventDefault();
+        clearDriveDragState();
+        return;
+    }
+
+    if (event.key === 'Escape' && driveSaveDialogIsOpen()) {
+        event.preventDefault();
+        closeDriveSaveDialog({ saved: false });
+        return;
+    }
+
+    if (event.key === 'Escape' && drivePathDialogIsOpen()) {
+        event.preventDefault();
+        closeDrivePathDialog();
+        return;
+    }
+
+    if (event.key === 'Escape' && drivePreviewIsOpen()) {
+        event.preventDefault();
+        closeDriveDocumentPreview();
+        return;
+    }
+
     if (event.key === 'Escape' && accountLoginIsOpen()) {
         event.preventDefault();
         dismissAccountLogin();
@@ -10063,6 +13515,32 @@ if (btnAttach && attachmentInput) {
     attachmentInput.addEventListener('change', async () => {
         await handleAttachmentSelection(attachmentInput.files);
         attachmentInput.value = '';
+    });
+}
+
+if (driveSaveForm) {
+    driveSaveForm.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        await submitDriveSaveDialog();
+    });
+}
+
+if (drivePathForm) {
+    drivePathForm.addEventListener('submit', (event) => {
+        event.preventDefault();
+        submitDrivePathDialog();
+    });
+}
+
+if (driveSaveNameInput) {
+    driveSaveNameInput.addEventListener('input', () => {
+        if (!driveSaveDialogState.open) return;
+        driveSaveDialogState.title = driveSaveNameInput.value;
+        driveSaveDialogState.error = '';
+        if (driveSaveError) {
+            driveSaveError.textContent = '';
+            driveSaveError.classList.remove('visible');
+        }
     });
 }
 

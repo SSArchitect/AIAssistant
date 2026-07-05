@@ -59,6 +59,7 @@ logger = logging.getLogger(__name__)
 skill_registry = SkillRegistry()
 trace_store = TraceStore()
 engine: AgentEngine | None = None
+active_stream_tasks: dict[str, asyncio.Task[ChatResponse]] = {}
 
 
 class SearchRequest(BaseModel):
@@ -515,6 +516,7 @@ async def chat_stream(request: ChatRequest):
         yield _sse("meta", {"run_id": run_id})
 
         task = asyncio.create_task(engine.process(stream_request, on_token=on_token))
+        active_stream_tasks[run_id] = task
         try:
             while not task.done():
                 run = trace_store.get_run(run_id)
@@ -549,6 +551,24 @@ async def chat_stream(request: ChatRequest):
 
             yield _sse("response", _jsonable_model(response))
             yield _sse("done", {"run_id": run_id})
+        except asyncio.CancelledError:
+            logger.info("Streaming chat cancelled", extra={"run_id": run_id})
+            trace_store.cancel_run(run_id, reason="user_cancelled")
+            run = trace_store.get_run(run_id)
+            if run is not None:
+                events = run.events[yielded_events:]
+                yielded_events += len(events)
+                for event in events:
+                    yield _sse("trace", _jsonable_model(event))
+            yield _sse(
+                "error",
+                {
+                    "run_id": run_id,
+                    "error": "cancelled",
+                    "error_type": "cancelled",
+                },
+            )
+            yield _sse("done", {"run_id": run_id})
         except Exception as e:
             logger.exception("Streaming chat failed")
             run = trace_store.get_run(run_id)
@@ -564,6 +584,9 @@ async def chat_stream(request: ChatRequest):
                     "error": str(e),
                 },
             )
+        finally:
+            if active_stream_tasks.get(run_id) is task:
+                active_stream_tasks.pop(run_id, None)
 
     return StreamingResponse(
         generate(),
@@ -597,6 +620,19 @@ async def get_run(run_id: str):
     if run is None:
         raise HTTPException(status_code=404, detail="run not found")
     return run
+
+
+@app.post("/agent/runs/{run_id}/cancel")
+async def cancel_run(run_id: str):
+    task = active_stream_tasks.get(run_id)
+    run = trace_store.get_run(run_id)
+    if task is not None and not task.done():
+        trace_store.cancel_run(run_id, reason="user_cancelled")
+        task.cancel()
+        return {"status": "cancelling", "run_id": run_id}
+    if run is None:
+        raise HTTPException(status_code=404, detail="run not found")
+    return {"status": run.status, "run_id": run_id}
 
 
 # ==================== Config Management ====================

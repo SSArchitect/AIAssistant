@@ -236,6 +236,67 @@ func TestAdminCostsFiltersByDateAndReturnsDailySeries(t *testing.T) {
 	}
 }
 
+func TestAdminCostsIncludesPulseBackgroundTokenUsage(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	if err := database.Init(filepath.Join(t.TempDir(), "assistant.db")); err != nil {
+		t.Fatalf("init database: %v", err)
+	}
+	now := time.Date(2026, 7, 6, 9, 0, 0, 0, time.Local)
+	if err := database.DB.Create(&models.Account{
+		ID:        "acct-a",
+		Name:      "Alice",
+		NameKey:   accountNameKey("Alice"),
+		CreatedAt: now.Add(-time.Hour),
+		UpdatedAt: now.Add(-time.Hour),
+	}).Error; err != nil {
+		t.Fatalf("create account: %v", err)
+	}
+	if err := database.DB.Create(&models.TokenUsage{
+		UserID:            "acct-a",
+		ConversationID:    "pulse-acct-a-2026-07-06",
+		MessageID:         0,
+		RunID:             "run-pulse",
+		AgentID:           pulseBackgroundAgentID,
+		Runtime:           "self",
+		ModelUsed:         "MiniMax-M3",
+		InputTokens:       23,
+		OutputTokens:      11,
+		TotalTokens:       34,
+		CachedInputTokens: 8,
+		CreatedAt:         now,
+	}).Error; err != nil {
+		t.Fatalf("create pulse usage: %v", err)
+	}
+
+	router := gin.New()
+	handler := &AdminHandler{}
+	router.GET("/api/admin/costs", handler.GetCosts)
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/costs", nil)
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("unexpected status %d: %s", recorder.Code, recorder.Body.String())
+	}
+	var payload CostReportResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if payload.Summary.TokenUsageRecords != 1 || payload.Summary.TraceFallbackRecords != 0 {
+		t.Fatalf("unexpected source counts: %#v", payload.Summary)
+	}
+	if payload.Summary.TotalTokens != 34 || payload.Summary.InputTokens != 23 || payload.Summary.OutputTokens != 11 || payload.Summary.CachedInputTokens != 8 {
+		t.Fatalf("unexpected pulse totals: %#v", payload.Summary)
+	}
+	pulseModule := findCostModule(payload.Modules, pulseBackgroundAgentID)
+	if pulseModule == nil || pulseModule.ModuleName != "Pulse Background" || pulseModule.TotalTokens != 34 || pulseModule.AccountCount != 1 {
+		t.Fatalf("unexpected pulse module summary: %#v", pulseModule)
+	}
+	accountModule := findCostAccountModule(payload.AccountModules, "acct-a", pulseBackgroundAgentID)
+	if accountModule == nil || accountModule.TotalTokens != 34 {
+		t.Fatalf("unexpected account pulse module summary: %#v", accountModule)
+	}
+}
+
 func TestAdminLoginAndAccountPasswordEndpoint(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	if err := database.Init(filepath.Join(t.TempDir(), "assistant.db")); err != nil {

@@ -94,6 +94,7 @@ class TraceStore:
         model_used: str = "",
         tokens_used: Optional[dict[str, int]] = None,
         skills_used: Optional[list[str]] = None,
+        artifacts: Optional[list[dict[str, Any]]] = None,
     ) -> RunRecord | None:
         with self._lock:
             run = self._runs.get(run_id)
@@ -104,6 +105,7 @@ class TraceStore:
             run.model_used = model_used
             run.tokens_used = tokens_used or {}
             run.skills_used = skills_used or []
+            run.artifacts = artifacts or []
             run.completed_at = _now()
             run.duration_ms = self._duration_ms(run_id)
         self.append_event(
@@ -114,6 +116,7 @@ class TraceStore:
             payload={
                 "model_used": model_used,
                 "skills_used": skills_used or [],
+                "artifacts": artifacts or [],
                 "tokens_used": tokens_used or {},
             },
             duration_ms=run.duration_ms,
@@ -130,6 +133,7 @@ class TraceStore:
         model_used: str = "",
         tokens_used: Optional[dict[str, int]] = None,
         skills_used: Optional[list[str]] = None,
+        artifacts: Optional[list[dict[str, Any]]] = None,
     ) -> RunRecord | None:
         with self._lock:
             run = self._runs.get(run_id)
@@ -140,6 +144,7 @@ class TraceStore:
             run.model_used = model_used
             run.tokens_used = tokens_used or {}
             run.skills_used = skills_used or []
+            run.artifacts = artifacts or []
             run.error_type = error_type
             run.error_message = error_message
             run.completed_at = _now()
@@ -154,6 +159,7 @@ class TraceStore:
                 "error_message": error_message,
                 "model_used": model_used,
                 "skills_used": skills_used or [],
+                "artifacts": artifacts or [],
                 "tokens_used": tokens_used or {},
                 "response_status": "partial_summary",
             },
@@ -185,6 +191,35 @@ class TraceStore:
             status="error",
             title="Run failed",
             payload={"error_type": error_type, "error_message": error_message},
+            duration_ms=run.duration_ms,
+        )
+        return run
+
+    def cancel_run(
+        self,
+        run_id: str,
+        *,
+        reason: str = "user_cancelled",
+        output: str = "",
+    ) -> RunRecord | None:
+        with self._lock:
+            run = self._runs.get(run_id)
+            if run is None:
+                return None
+            if run.status == "cancelled":
+                return run
+            run.status = "cancelled"
+            run.output = output
+            run.error_type = "cancelled"
+            run.error_message = reason
+            run.completed_at = _now()
+            run.duration_ms = self._duration_ms(run_id)
+        self.append_event(
+            run_id,
+            type="run.cancelled",
+            status="cancelled",
+            title="Run cancelled",
+            payload={"error_type": "cancelled", "error_message": reason},
             duration_ms=run.duration_ms,
         )
         return run

@@ -151,6 +151,73 @@ func TestPulseUsesAgentGeneratedModules(t *testing.T) {
 	}
 }
 
+func TestPulseChatPersistsBackgroundTokenUsage(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	if err := database.Init(filepath.Join(t.TempDir(), "assistant.db")); err != nil {
+		t.Fatalf("init database: %v", err)
+	}
+
+	agentServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/agent/chat" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		var req bridge.ChatRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if req.ConversationID != "pulse-acct-a-2026-07-06" || req.UserID != "acct-a" || req.AgentID != superChatAgentID {
+			t.Fatalf("unexpected pulse chat request: %#v", req)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(bridge.ChatResponse{
+			ConversationID: req.ConversationID,
+			Response:       `{"modules":[]}`,
+			SkillsUsed:     []string{},
+			ModelUsed:      "MiniMax-M3",
+			TokensUsed: map[string]int{
+				"input":        10,
+				"output":       3,
+				"input_cached": 4,
+			},
+			AgentID: "super_chat",
+			Runtime: "self",
+			RunID:   "run-pulse",
+		})
+	}))
+	defer agentServer.Close()
+
+	handler := NewPulseHandler(bridge.NewAgentClient(agentServer.URL, time.Second))
+	response, err := handler.requestPulseChat("pulse-acct-a-2026-07-06", "acct-a", "generate pulse", []string{"system"}, []string{"context"})
+	if err != nil {
+		t.Fatalf("request pulse chat: %v", err)
+	}
+	if response != `{"modules":[]}` {
+		t.Fatalf("unexpected response: %s", response)
+	}
+
+	var usages []models.TokenUsage
+	if err := database.DB.Find(&usages).Error; err != nil {
+		t.Fatalf("load token usages: %v", err)
+	}
+	if len(usages) != 1 {
+		t.Fatalf("expected one token usage row, got %#v", usages)
+	}
+	usage := usages[0]
+	if usage.UserID != "acct-a" || usage.ConversationID != "pulse-acct-a-2026-07-06" || usage.MessageID != 0 || usage.AgentID != pulseBackgroundAgentID {
+		t.Fatalf("unexpected pulse usage identity: %#v", usage)
+	}
+	if usage.RunID != "run-pulse" || usage.Runtime != "self" || usage.ModelUsed != "MiniMax-M3" {
+		t.Fatalf("unexpected pulse usage metadata: %#v", usage)
+	}
+	if usage.InputTokens != 10 || usage.OutputTokens != 3 || usage.TotalTokens != 13 || usage.CachedInputTokens != 4 {
+		t.Fatalf("unexpected pulse usage totals: %#v", usage)
+	}
+	if !strings.Contains(usage.UsageJSON, "input_cached") {
+		t.Fatalf("expected raw token JSON to be persisted, got %q", usage.UsageJSON)
+	}
+}
+
 func TestPulseSyncsSettingsBeforeGeneration(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	if err := database.Init(filepath.Join(t.TempDir(), "assistant.db")); err != nil {

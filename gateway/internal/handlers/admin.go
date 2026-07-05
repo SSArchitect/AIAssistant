@@ -1196,6 +1196,8 @@ func moduleDisplayName(agentID string) string {
 		return "Image Generation"
 	case "weight_loss_v1":
 		return "Weight Loss"
+	case pulseBackgroundAgentID:
+		return "Pulse Background"
 	default:
 		return agentID
 	}

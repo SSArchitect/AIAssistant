@@ -392,6 +392,13 @@ func TestChatSendsPersistedConversationContextToAgent(t *testing.T) {
 		"stream": false,
 		"agent_id": "super_chat",
 		"context_blocks": ["Uploaded note: use a clean blue visual style"],
+		"drive_context": {
+			"current_folder_id": "folder-root",
+			"current_path": "/我的网盘",
+			"items": [
+				{"id": "file-1", "type": "file", "name": "Notes.md", "path": "/我的网盘/Notes.md", "summary": "lightweight summary"}
+			]
+		},
 		"agent_input": {
 			"protocol_version": "agent_input.v1",
 			"source_agent_id": "web",
@@ -429,6 +436,12 @@ func TestChatSendsPersistedConversationContextToAgent(t *testing.T) {
 	}
 	if captured.ContextBlocks[1] != "Uploaded note: use a clean blue visual style" {
 		t.Fatalf("caller context was not preserved: %#v", captured.ContextBlocks)
+	}
+	if captured.DriveContext == nil || captured.DriveContext.CurrentPath != "/我的网盘" {
+		t.Fatalf("drive context was not forwarded: %#v", captured.DriveContext)
+	}
+	if len(captured.DriveContext.Items) != 1 || captured.DriveContext.Items[0].Summary != "lightweight summary" {
+		t.Fatalf("drive context items were not forwarded: %#v", captured.DriveContext.Items)
 	}
 	if captured.AgentInput["protocol_version"] != "agent_input.v1" {
 		t.Fatalf("agent input packet was not forwarded: %#v", captured.AgentInput)
