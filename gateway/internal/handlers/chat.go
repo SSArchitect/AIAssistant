@@ -3,6 +3,7 @@ package handlers
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 	"github.com/aan/agent-assistant-gateway/internal/database"
 	"github.com/aan/agent-assistant-gateway/internal/models"
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
 
 type ChatHandler struct {
@@ -1101,6 +1103,10 @@ func (h *ChatHandler) GetRun(c *gin.Context) {
 		c.JSON(http.StatusOK, storedRun)
 		return
 	}
+	if errors.Is(storedErr, gorm.ErrRecordNotFound) && strings.Contains(err.Error(), "status 404") {
+		c.JSON(http.StatusNotFound, gin.H{"error": "run not found"})
+		return
+	}
 
 	c.JSON(http.StatusInternalServerError, gin.H{"error": "agent error: " + err.Error()})
 }
@@ -1243,21 +1249,38 @@ func storedRunStatus(events []bridge.RunEvent, errorType string) string {
 		return "failed"
 	}
 	status := "completed"
+	hasRunTerminalEvent := false
 	for _, event := range events {
-		if event.Type == "run.cancelled" || normalizeTraceStatus(event.Status) == "cancelled" {
+		if event.Type == "run.cancelled" {
 			return "cancelled"
 		}
-		if event.Type == "run.failed" || normalizeTraceStatus(event.Status) == "error" {
+		if event.Type == "run.failed" {
 			return "failed"
 		}
-		if event.Type == "run.partial" || normalizeTraceStatus(event.Status) == "partial" {
+		if event.Type == "run.partial" {
+			hasRunTerminalEvent = true
 			status = "partial"
 			continue
 		}
-		if event.Type == "run.completed" || normalizeTraceStatus(event.Status) == "completed" {
+		if event.Type == "run.completed" {
+			hasRunTerminalEvent = true
 			if status != "partial" {
 				status = "completed"
 			}
+		}
+	}
+	if hasRunTerminalEvent {
+		return status
+	}
+	for _, event := range events {
+		if normalizeTraceStatus(event.Status) == "cancelled" {
+			return "cancelled"
+		}
+		if normalizeTraceStatus(event.Status) == "error" {
+			return "failed"
+		}
+		if normalizeTraceStatus(event.Status) == "partial" {
+			status = "partial"
 		}
 	}
 	return status

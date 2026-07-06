@@ -114,19 +114,29 @@ class SearchSkill(Skill):
 
         direct_url = single_public_http_url(query)
         if direct_url:
+            query_rewrite = _direct_url_query_rewrite(query)
+            search_trace = _direct_url_search_trace(query_rewrite, direct_url)
             try:
                 page = await SearchService().open_url(direct_url, max_chars=page_chars)
             except Exception as e:
                 return SkillResult(
                     success=False,
                     error=f"Open URL failed: {e}",
-                    data={"query": query, "url": direct_url, "direct_url_open": True},
+                    data={
+                        "query": query,
+                        "query_rewrite": query_rewrite,
+                        "search_trace": search_trace,
+                        "url": direct_url,
+                        "direct_url_open": True,
+                    },
                 )
             result = search_result_from_page(page)
             return SkillResult(
                 success=True,
                 data={
                     "query": query,
+                    "query_rewrite": query_rewrite,
+                    "search_trace": search_trace,
                     "query_variants": [query],
                     "results": [result.model_dump(mode="json")],
                     "sources": ["direct-url"],
@@ -166,6 +176,8 @@ class SearchSkill(Skill):
                 error=f"Search failed: {e}",
                 data={
                     "query": query,
+                    "query_rewrite": getattr(service, "last_query_rewrite", None) or _fallback_query_rewrite(query),
+                    "search_trace": getattr(service, "last_trace_nodes", None) or _fallback_search_trace(query),
                     "query_variants": getattr(service, "last_query_variants", None) or [query],
                     "sources": service.provider_names,
                     "provider_errors": getattr(service, "last_provider_errors", provider_errors),
@@ -173,6 +185,8 @@ class SearchSkill(Skill):
             )
         provider_errors = getattr(service, "last_provider_errors", provider_errors)
         query_variants = getattr(service, "last_query_variants", None) or [query]
+        query_rewrite = getattr(service, "last_query_rewrite", None) or _fallback_query_rewrite(query)
+        search_trace = getattr(service, "last_trace_nodes", None) or _fallback_search_trace(query)
 
         data = [result.model_dump(mode="json") for result in results]
         opened_count = sum(
@@ -187,6 +201,8 @@ class SearchSkill(Skill):
                 success=True,
                 data={
                     "query": query,
+                    "query_rewrite": query_rewrite,
+                    "search_trace": search_trace,
                     "query_variants": query_variants,
                     "results": [],
                     "sources": service.provider_names,
@@ -205,6 +221,8 @@ class SearchSkill(Skill):
             success=True,
             data={
                 "query": query,
+                "query_rewrite": query_rewrite,
+                "search_trace": search_trace,
                 "query_variants": query_variants,
                 "results": data,
                 "sources": service.provider_names,
@@ -226,3 +244,53 @@ def _coerce_bool(value, *, default: bool) -> bool:
     if normalized in {"0", "false", "no", "n", "off"}:
         return False
     return default
+
+
+def _fallback_query_rewrite(query: str) -> dict:
+    return {
+        "node": "query_rewrite",
+        "strategy": "keyword_recall",
+        "original_query": query,
+        "queries": [query],
+    }
+
+
+def _direct_url_query_rewrite(query: str) -> dict:
+    return {
+        "node": "query_rewrite",
+        "strategy": "direct_url",
+        "original_query": query,
+        "queries": [query],
+    }
+
+
+def _fallback_search_trace(query: str) -> list[dict]:
+    query_rewrite = _fallback_query_rewrite(query)
+    return [
+        {
+            "node": "query_rewrite",
+            "status": "completed",
+            "strategy": query_rewrite["strategy"],
+            "original_query": query,
+            "queries": [query],
+            "query_count": 1,
+        }
+    ]
+
+
+def _direct_url_search_trace(query_rewrite: dict, direct_url: str) -> list[dict]:
+    return [
+        {
+            "node": "query_rewrite",
+            "status": "completed",
+            "strategy": query_rewrite["strategy"],
+            "original_query": query_rewrite["original_query"],
+            "queries": query_rewrite["queries"],
+            "query_count": 1,
+        },
+        {
+            "node": "direct_url_open",
+            "status": "completed",
+            "url": direct_url,
+        },
+    ]

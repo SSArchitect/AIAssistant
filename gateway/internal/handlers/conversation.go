@@ -210,8 +210,19 @@ func (h *ConversationHandler) Delete(c *gin.Context) {
 	id := c.Param("id")
 	userID := requestUserID(c)
 
-	database.DB.Where("conversation_id = ? AND user_id = ?", id, userID).Delete(&models.Message{})
-	database.DB.Delete(&models.Conversation{}, "id = ? AND user_id = ?", id, userID)
+	result := database.DB.Delete(&models.Conversation{}, "id = ? AND user_id = ?", id, userID)
+	if result.Error != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete conversation"})
+		return
+	}
+	if result.RowsAffected == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"error": "conversation not found"})
+		return
+	}
+	if err := database.DB.Where("conversation_id = ? AND user_id = ?", id, userID).Delete(&models.Message{}).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "conversation deleted, but messages cleanup failed"})
+		return
+	}
 
 	c.JSON(http.StatusOK, gin.H{"status": "deleted"})
 }

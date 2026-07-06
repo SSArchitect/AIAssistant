@@ -40,6 +40,7 @@ from agent.schemas.handoff import (
 )
 from agent.schemas.memory import MemoryCandidate, MemoryContext, MemoryRecord, MemoryUpdateRequest
 from agent.search import extract_public_http_urls
+from agent.skills.base import SkillResult
 from agent.skills.registry import SkillRegistry
 from agent.skills.builtin.agent_tool import AgentToolSkill
 from agent.skills.builtin.drive import DRIVE_TOOL_NAMES
@@ -83,6 +84,10 @@ DEEP_RESEARCH_DEFAULT_TARGET_RESULTS = 400
 DEEP_RESEARCH_SEARCH_LIMIT = 20
 DEEP_RESEARCH_MAX_QUERIES = 24
 DEEP_RESEARCH_SUMMARY_CHUNK_SIZE = 40
+DEEP_RESEARCH_REPORT_FOLDER_PATH = "/研究报告"
+DEEP_RESEARCH_SUPPLEMENTAL_MAX_ROUNDS = 2
+DEEP_RESEARCH_SUPPLEMENTAL_MAX_QUERIES = 6
+DEEP_RESEARCH_SUPPLEMENTAL_MIN_NEW_SOURCES = 2
 THINKING_MAX_PLAN_STEPS = 6
 THINKING_SEARCH_LIMIT = 8
 THINKING_MAX_SEARCH_STEPS = 4
@@ -99,9 +104,24 @@ AIGC_GENERATE_COMMANDS = {"generate", "gen", "create", "draw", "image", "生成"
 AIGC_REFINE_COMMANDS = {"refine", "polish", "prompt", "rewrite", "修饰", "润色", "专业修饰", "提示词", "优化"}
 AIGC_REFERENCE_COMMANDS = {"reference", "references", "ref", "素材", "参考", "参考素材", "参考图"}
 AIGC_HELP_COMMANDS = {"help", "h", "?", "帮助", "命令"}
-TERMINAL_AGENT_TOOL_IDS = {AIGC_AGENT_ID, RESEARCH_AGENT_ID, WEIGHT_LOSS_AGENT_ID}
+AGENT_TOOL_IDS = {AIGC_AGENT_ID, WEIGHT_LOSS_AGENT_ID}
 WEIGHT_LOSS_ANALYSIS_MAX_ATTEMPTS = 5
 WEIGHT_LOSS_ANALYSIS_RETRY_DELAYS_SECONDS = (2.0, 5.0, 10.0, 20.0)
+
+
+def _safe_trace_node_name(value: str) -> str:
+    normalized = re.sub(r"[^a-zA-Z0-9_]+", "_", value.strip().lower())
+    normalized = normalized.strip("_")
+    return normalized or "node"
+
+
+def _trace_status_suffix(status: str) -> str:
+    normalized = str(status or "").strip().lower()
+    if normalized in {"error", "failed", "failure"}:
+        return "failed"
+    if normalized in {"partial", "timed_out", "timeout"}:
+        return "partial"
+    return "completed"
 
 
 class AgentEngine:
@@ -132,7 +152,7 @@ class AgentEngine:
 
     def _ensure_system_tools_registered(self) -> None:
         for agent in list_agents():
-            if agent.id in TERMINAL_AGENT_TOOL_IDS and self.skill_registry.get(agent.id) is None:
+            if agent.id in AGENT_TOOL_IDS and self.skill_registry.get(agent.id) is None:
                 self.skill_registry.register(AgentToolSkill(agent))
 
     def clear_providers(self) -> None:
@@ -315,6 +335,68 @@ class AgentEngine:
     def _conversation_memory_id(self, request: ChatRequest) -> str:
         return f"user:{self._user_id(request)}:conversation:{request.conversation_id}"
 
+    def _compact_tool_result_for_memory(self, content: str | list[dict[str, Any]]) -> str:
+        text = content if isinstance(content, str) else json.dumps(content, ensure_ascii=False)
+        try:
+            payload = json.loads(text)
+        except Exception:
+            return str(text)[:4000]
+        if not isinstance(payload, dict):
+            return json.dumps(payload, ensure_ascii=False)[:4000]
+
+        compact: dict[str, Any] = {}
+        for key in ("success", "error"):
+            if key in payload:
+                compact[key] = payload[key]
+        display_text = str(payload.get("display_text") or "").strip()
+        if display_text:
+            compact["display_text"] = display_text[:1800]
+
+        data = payload.get("data")
+        if isinstance(data, dict):
+            compact_data: dict[str, Any] = {}
+            for key in (
+                "agent_id",
+                "child_run_id",
+                "task",
+                "reason",
+                "response",
+                "skills_used",
+                "model_used",
+                "tokens_used",
+                "error_type",
+                "query",
+                "url",
+                "title",
+                "item",
+            ):
+                if key not in data:
+                    continue
+                value = data[key]
+                if isinstance(value, str):
+                    compact_data[key] = value[:4000 if key == "response" else 1000]
+                else:
+                    compact_data[key] = value
+            if isinstance(data.get("results"), list):
+                compact_data["results"] = data["results"][:5]
+            if isinstance(data.get("citations"), list):
+                compact_data["citations"] = data["citations"][:8]
+            if isinstance(data.get("artifacts"), list):
+                compact_data["artifacts"] = data["artifacts"][:8]
+            if compact_data:
+                compact["data"] = compact_data
+        elif data is not None:
+            compact["data"] = str(data)[:2000]
+
+        return json.dumps(compact or payload, ensure_ascii=False)[:6000]
+
+    def _conversation_memory_message(self, message: LLMMessage) -> LLMMessage:
+        if message.role != "tool":
+            return message
+        return message.model_copy(
+            update={"content": self._compact_tool_result_for_memory(message.content)}
+        )
+
     def _add_conversation_memory(
         self,
         request: ChatRequest,
@@ -322,7 +404,10 @@ class AgentEngine:
     ) -> None:
         if not request.memory_enabled or not messages:
             return
-        self.memory.add_many(self._conversation_memory_id(request), messages)
+        self.memory.add_many(
+            self._conversation_memory_id(request),
+            [self._conversation_memory_message(message) for message in messages],
+        )
 
     def _resolve_role_id(self, request: ChatRequest, agent_metadata: dict) -> str:
         if request.role_id:
@@ -350,6 +435,26 @@ class AgentEngine:
 
     def _normalize_context_blocks(self, blocks: list[str] | None) -> list[str]:
         return self.context_builder.normalize_context_blocks(blocks)
+
+    def _is_persisted_conversation_context(self, block: str) -> bool:
+        return str(block or "").lstrip().startswith(
+            ("Persisted conversation history", "持久化会话历史")
+        )
+
+    def _context_blocks_for_model(
+        self,
+        blocks: list[str] | None,
+        *,
+        history: list[LLMMessage],
+    ) -> list[str]:
+        normalized = self._normalize_context_blocks(blocks)
+        if not history:
+            return normalized
+        return [
+            block
+            for block in normalized
+            if not self._is_persisted_conversation_context(block)
+        ]
 
     def _memory_retrieval_query(self, request: ChatRequest) -> str:
         parts: list[str] = []
@@ -393,26 +498,7 @@ class AgentEngine:
         return "\n".join(deduped)[:6000]
 
     def _agent_system_context(self, agent_id: str) -> str:
-        if agent_id != SUPER_CHAT_AGENT_ID:
-            return ""
-        return (
-            "可用的专业 Agent：\n"
-            f"- 深度研究 ({RESEARCH_AGENT_ID})：当用户要像 ChatGPT 研究模式一样先确认研究计划，"
-            "再进行多轮外网检索、分步归纳并产出研究报告时，使用这个 Agent。可通过 "
-            "`/agent deep_research_v1 /plan <问题>`、`/研究 /plan <问题>` 或在 Agents 中进入。\n"
-            f"- AI 生图 ({AIGC_AGENT_ID})：当用户要生成、绘制、设计或产出图片、照片、插画、海报、"
-            "封面、头像、视觉概念或生图提示词时，使用这个 Agent。Super Chat 应直接调用 "
-            f"`{AIGC_AGENT_ID}` 这个 terminal tool，而不是在主循环里用关键词硬判。"
-            f"\n- 减肥 Agent ({WEIGHT_LOSS_AGENT_ID})：当用户上传食物图片、记录餐食热量、设置减脂目标、"
-            "统计摄入/运动/热量缺口或请求减脂建议时，使用这个 Agent；不要仅因为生活复盘里提到吃饭、"
-            f"外卖或餐点就委托。需要时直接调用 `{WEIGHT_LOSS_AGENT_ID}` terminal tool。"
-            f"\n\nAgent-as-tool：`{AIGC_AGENT_ID}`、`{WEIGHT_LOSS_AGENT_ID}`、`{RESEARCH_AGENT_ID}` "
-            "都是终止型工具；一旦调用，当前 Super Chat 轮次会交给目标 Agent 完成，不要同轮再调用普通工具。"
-            "\n\nAgent 命令协议：当用户在 Super Chat 中输入 `/agent <agent_id或别名> <命令>`、"
-            "`/<agent别名> <命令>` 或 `/<agent别名>/<命令>` 时，必须按 agent_command.v1 "
-            "转交给目标 Agent 执行，不要把它当作普通聊天。示例：`/agent weight_loss_v1 /today`、"
-            "`/减肥 /history 7d`、`/weight_loss/history 7d`、`/生图 /generate 复古台灯海报`。"
-        )
+        return ""
 
     def _super_chat_auto_search_required(self, request: ChatRequest) -> bool:
         text = " ".join(
@@ -1989,6 +2075,57 @@ class AgentEngine:
 
         return collected
 
+    def _append_search_trace_nodes(
+        self,
+        run_id: str,
+        *,
+        tool_call_id: str,
+        result_data: Any,
+        workflow_context: dict[str, Any] | None = None,
+    ) -> None:
+        if not isinstance(result_data, dict):
+            return
+        raw_nodes = result_data.get("search_trace")
+        nodes = raw_nodes if isinstance(raw_nodes, list) else []
+        if not nodes:
+            rewrite = result_data.get("query_rewrite")
+            if isinstance(rewrite, dict):
+                queries = rewrite.get("queries") if isinstance(rewrite.get("queries"), list) else []
+                nodes = [
+                    {
+                        "node": rewrite.get("node") or "query_rewrite",
+                        "status": "completed",
+                        "strategy": rewrite.get("strategy"),
+                        "original_query": rewrite.get("original_query"),
+                        "queries": queries,
+                        "query_count": len(queries),
+                    }
+                ]
+
+        for raw_node in nodes:
+            if not isinstance(raw_node, dict):
+                continue
+            node_name = _safe_trace_node_name(str(raw_node.get("node") or "node"))
+            status = str(raw_node.get("status") or "completed")
+            payload = {
+                "name": node_name,
+                "tool": "search",
+                **raw_node,
+                "node": node_name,
+            }
+            if workflow_context:
+                payload.update(workflow_context)
+            duration_ms = raw_node.get("duration_ms")
+            self.trace_store.append_event(
+                run_id,
+                type=f"search.{node_name}.{_trace_status_suffix(status)}",
+                status=status,
+                title=f"Search {node_name} {status}",
+                step_id=tool_call_id,
+                payload=payload,
+                duration_ms=duration_ms if isinstance(duration_ms, int) else None,
+            )
+
     def _collect_open_url_citation(
         self,
         *,
@@ -2296,7 +2433,7 @@ class AgentEngine:
         if agent_id != SUPER_CHAT_AGENT_ID:
             return False, "", False
         mode_ids = set(request.mode_ids or [])
-        if DEEP_RESEARCH_MODE_ID in mode_ids or RESEARCH_AGENT_ID in mode_ids:
+        if DEEP_RESEARCH_MODE_ID in mode_ids:
             return True, "mode", True
         return False, "", False
 
@@ -2323,32 +2460,63 @@ class AgentEngine:
             agent
             for agent in list_agents()
             if agent.id != SUPER_CHAT_AGENT_ID
+            and agent.id != RESEARCH_AGENT_ID
             and agent.runtime == "self"
             and bool((agent.metadata or {}).get("command_protocol"))
         ]
 
-    def _parse_agent_command_protocol(self, request: ChatRequest, agent_id: str) -> dict[str, Any] | None:
-        if agent_id != SUPER_CHAT_AGENT_ID:
-            return None
-        text = (request.message or "").strip()
+    def _parse_agent_command_parts(self, message: str) -> tuple[str, str] | None:
+        text = (message or "").strip()
         if not text.startswith("/"):
             return None
 
         explicit = re.match(r"^/(?:agent|agent:|a)\s+([^\s]+)\s+(.+)$", text, flags=re.IGNORECASE | re.DOTALL)
         if explicit:
-            target_token = explicit.group(1).strip()
-            command_text = explicit.group(2).strip()
-        else:
-            nested = re.match(r"^/([^\s/]+)/(.+)$", text, flags=re.DOTALL)
-            if nested:
-                target_token = nested.group(1).strip()
-                command_text = nested.group(2).strip()
-            else:
-                implicit = re.match(r"^/([^\s/]+)\s+(.+)$", text, flags=re.DOTALL)
-                if not implicit:
-                    return None
-                target_token = implicit.group(1).strip()
-                command_text = implicit.group(2).strip()
+            return explicit.group(1).strip(), explicit.group(2).strip()
+
+        nested = re.match(r"^/([^\s/]+)/(.+)$", text, flags=re.DOTALL)
+        if nested:
+            return nested.group(1).strip(), nested.group(2).strip()
+
+        implicit = re.match(r"^/([^\s/]+)\s+(.+)$", text, flags=re.DOTALL)
+        if implicit:
+            return implicit.group(1).strip(), implicit.group(2).strip()
+
+        return None
+
+    def _is_deep_research_command_attempt(self, request: ChatRequest, agent_id: str) -> bool:
+        if agent_id != SUPER_CHAT_AGENT_ID:
+            return False
+        parts = self._parse_agent_command_parts(request.message)
+        if parts is None:
+            return False
+        target_token, _command_text = parts
+        target_agent = get_agent(RESEARCH_AGENT_ID)
+        if target_agent is None:
+            return False
+        legacy_aliases = {
+            self._normalize_agent_command_alias(alias)
+            for alias in {
+                "research",
+                "deep-research",
+                "deep_research",
+                "researcher",
+                "调研",
+                "研究",
+                "深度研究",
+            }
+        }
+        blocked_aliases = set(self._agent_command_aliases(target_agent)) | legacy_aliases
+        return self._normalize_agent_command_alias(target_token) in blocked_aliases
+
+    def _parse_agent_command_protocol(self, request: ChatRequest, agent_id: str) -> dict[str, Any] | None:
+        if agent_id != SUPER_CHAT_AGENT_ID:
+            return None
+        parts = self._parse_agent_command_parts(request.message)
+        if parts is None:
+            return None
+        target_token, command_text = parts
+        text = (request.message or "").strip()
 
         if not command_text.startswith("/"):
             command_text = "/" + command_text
@@ -2401,7 +2569,7 @@ class AgentEngine:
             for tool in self.skill_registry.get_tool_definitions()
             if tool.name not in disabled
             if tool.name not in DRIVE_TOOL_NAMES or agent_id == SUPER_CHAT_AGENT_ID
-            if tool.name not in TERMINAL_AGENT_TOOL_IDS or agent_id == SUPER_CHAT_AGENT_ID
+            if tool.name not in AGENT_TOOL_IDS or agent_id == SUPER_CHAT_AGENT_ID
         ]
 
     def _tool_arguments_for_execution(
@@ -2421,6 +2589,41 @@ class AgentEngine:
         if artifact.item_id and any(existing.item_id == artifact.item_id for existing in artifacts):
             return
         artifacts.append(artifact)
+
+    def _merge_agent_tool_payload(
+        self,
+        *,
+        payload: Any,
+        skills_used: list[str],
+        citations: list[Citation],
+        citation_urls: set[str],
+        artifacts: list[ChatArtifact],
+    ) -> None:
+        if not isinstance(payload, dict):
+            return
+        for skill in payload.get("skills_used") or []:
+            skill_name = str(skill or "").strip()
+            if skill_name:
+                skills_used.append(skill_name)
+        for raw_citation in payload.get("citations") or []:
+            if not isinstance(raw_citation, dict):
+                continue
+            try:
+                citation = Citation(**raw_citation)
+            except Exception:
+                continue
+            if citation.url and citation.url in citation_urls:
+                continue
+            if citation.url:
+                citation_urls.add(citation.url)
+            citations.append(citation)
+        for raw_artifact in payload.get("artifacts") or []:
+            if not isinstance(raw_artifact, dict):
+                continue
+            try:
+                self._append_unique_artifact(artifacts, ChatArtifact(**raw_artifact))
+            except Exception:
+                continue
 
     def _drive_artifact_from_tool_result(
         self,
@@ -2692,14 +2895,14 @@ class AgentEngine:
         )
 
     def _agent_tool_target(self, tool_name: str) -> AgentInfo | None:
-        if tool_name not in TERMINAL_AGENT_TOOL_IDS:
+        if tool_name not in AGENT_TOOL_IDS:
             return None
         agent = get_agent(tool_name)
         if agent is None or not agent.enabled or agent.runtime != "self":
             return None
         return agent
 
-    async def _execute_agent_tool(
+    async def _execute_agent_tool_as_result(
         self,
         *,
         request: ChatRequest,
@@ -2710,45 +2913,15 @@ class AgentEngine:
         arguments: dict[str, Any],
         tool_started: float,
         workflow_context: dict[str, Any] | None = None,
-    ) -> ChatResponse:
+    ) -> SkillResult:
         target_agent = self._agent_tool_target(tool_name)
         if target_agent is None:
             error_msg = f"Unknown or unavailable agent tool: {tool_name}"
-            duration_ms = int((perf_counter() - tool_started) * 1000)
-            self.trace_store.append_event(
-                run_id,
-                type="tool.failed",
-                status="error",
-                title=f"Tool {tool_name} error",
-                step_id=tool_call_id,
-                payload={
-                    "name": tool_name,
-                    "arguments": arguments,
-                    "result_preview": error_msg,
-                },
-                duration_ms=duration_ms,
-            )
-            self.trace_store.fail_run(
-                run_id,
-                error_message=error_msg,
-                error_type="unknown_agent_tool",
-                output=error_msg,
-            )
-            latest_run = self.trace_store.get_run(run_id)
-            return ChatResponse(
-                conversation_id=request.conversation_id,
-                response=error_msg,
-                skills_used=[],
-                plan=None,
-                model_used="",
-                tokens_used={},
-                error_type="unknown_agent_tool",
-                agent_id=request.agent_id,
-                role_id=request.role_id,
-                runtime="self",
-                run_id=run_id,
-                events=latest_run.events if latest_run else [],
-                memory_context=role_context.records,
+            return SkillResult(
+                success=False,
+                error=error_msg,
+                data={"agent_id": tool_name, "error_type": "unknown_agent_tool"},
+                display_text=error_msg,
             )
 
         task = str(arguments.get("task") or request.message or "").strip() or request.message
@@ -2774,90 +2947,16 @@ class AgentEngine:
             if workflow_context
             else ""
         )
-        tool_completed_payload = {
-            "name": target_agent.id,
-            "arguments": arguments,
-            "target_agent_id": target_agent.id,
-            "terminal": True,
-            "result_preview": f"Delegated to {target_agent.id}: {reason}",
-        }
-        if workflow:
-            tool_completed_payload["workflow"] = workflow
-        if workflow_node:
-            tool_completed_payload["workflow_node"] = workflow_node
-
-        duration_ms = int((perf_counter() - tool_started) * 1000)
-        self.trace_store.append_event(
-            run_id,
-            type="tool.completed",
-            status="completed",
-            title=f"Tool {target_agent.id} completed",
-            step_id=tool_call_id,
-            payload=tool_completed_payload,
-            duration_ms=duration_ms,
+        parent_history = (
+            self.memory.get_context(self._conversation_memory_id(request)).messages
+            if request.memory_enabled
+            else []
         )
-        if workflow_context:
-            node = workflow_node
-            node_started = workflow_context.get("node_started")
-            workflow_started = workflow_context.get("workflow_started")
-            common_payload = {
-                key: value
-                for key, value in workflow_context.items()
-                if key not in {"workflow", "node", "workflow_node", "node_started", "workflow_started"}
-            }
-            common_payload.update(
-                {
-                    "result": common_payload.get("result") or "terminal_handoff",
-                    "terminal": True,
-                    "terminal_tool": target_agent.id,
-                    "target_agent_id": target_agent.id,
-                    "reason": reason,
-                }
-            )
-            if workflow and node:
-                self._append_workflow_event(
-                    run_id,
-                    event="workflow.node.completed",
-                    workflow=workflow,
-                    node=node,
-                    status="completed",
-                    title=f"Workflow node {node} completed",
-                    payload=common_payload,
-                    duration_ms=(
-                        int((perf_counter() - node_started) * 1000)
-                        if isinstance(node_started, (int, float))
-                        else None
-                    ),
-                )
-            if workflow:
-                self._append_workflow_event(
-                    run_id,
-                    event="workflow.completed",
-                    workflow=workflow,
-                    status="completed",
-                    title=f"Workflow {workflow} completed",
-                    payload=common_payload,
-                    duration_ms=(
-                        int((perf_counter() - workflow_started) * 1000)
-                        if isinstance(workflow_started, (int, float))
-                        else None
-                    ),
-                )
-
-        delegated_request = request.model_copy(
-            update={
-                "agent_id": target_agent.id,
-                "message": task,
-                "mode_ids": request.mode_ids,
-                "mode_prompts": request.mode_prompts,
-                "context_blocks": delegated_context_blocks,
-            }
-        )
-        response = await self._process_target_agent(
-            request=delegated_request,
-            target_agent=target_agent,
-            run_id=run_id,
-            source_role_context=role_context,
+        handoff_packet = self._build_agent_handoff_packet(
+            request=request.model_copy(update={"context_blocks": delegated_context_blocks}),
+            source_agent_id=request.agent_id or SUPER_CHAT_AGENT_ID,
+            target_agent_id=target_agent.id,
+            history=parent_history,
             delegation_trace={
                 "source_agent_id": request.agent_id or SUPER_CHAT_AGENT_ID,
                 "target_agent_id": target_agent.id,
@@ -2870,23 +2969,108 @@ class AgentEngine:
                 "task": task,
             },
         )
-        response.skills_used = list(dict.fromkeys([target_agent.id, *response.skills_used]))
-        response.plan = [
-            SkillCallInfo(
-                skill=target_agent.id,
-                action=json.dumps(
-                    {
-                        "task": task,
-                        "reason": reason,
-                    },
-                    ensure_ascii=False,
-                ),
-                status="completed" if not response.error_type else "error",
-                result_summary=response.response[:200],
-            ),
-            *(response.plan or []),
-        ]
-        return response
+        child_run = self.trace_store.start_run(
+            conversation_id=request.conversation_id,
+            user_id=self._user_id(request),
+            input_text=task,
+            agent_id=target_agent.id,
+            runtime=target_agent.runtime,
+        )
+        parent_delegation_payload = {
+            "source_run_id": run_id,
+            "child_run_id": child_run.run_id,
+            "tool_call_id": tool_call_id,
+            "name": target_agent.id,
+            "arguments": arguments,
+            "target_agent_id": target_agent.id,
+            "reason": reason,
+            "protocol_version": "agent_tool.v1",
+        }
+        if workflow:
+            parent_delegation_payload["workflow"] = workflow
+        if workflow_node:
+            parent_delegation_payload["workflow_node"] = workflow_node
+        self.trace_store.append_event(
+            run_id,
+            type="agent.tool.delegated",
+            status="completed",
+            title=f"Agent tool {target_agent.id} delegated",
+            step_id=tool_call_id,
+            payload=parent_delegation_payload,
+        )
+
+        delegated_request = request.model_copy(
+            update={
+                "agent_id": target_agent.id,
+                "message": task,
+                "mode_ids": request.mode_ids,
+                "mode_prompts": request.mode_prompts,
+                "context_blocks": delegated_context_blocks,
+                "agent_input": handoff_packet,
+                "handoff": handoff_packet,
+                "memory_enabled": False,
+            }
+        )
+        try:
+            response = await self._process_target_agent(
+                request=delegated_request,
+                target_agent=target_agent,
+                run_id=child_run.run_id,
+                source_role_context=role_context,
+                delegation_trace={
+                    "source_agent_id": request.agent_id or SUPER_CHAT_AGENT_ID,
+                    "source_run_id": run_id,
+                    "target_agent_id": target_agent.id,
+                    "reason": reason,
+                    "forced": False,
+                    "mode_ids": request.mode_ids,
+                    "protocol_version": "agent_tool.v1",
+                    "tool_name": target_agent.id,
+                    "tool_call_id": tool_call_id,
+                    "original_message": request.message,
+                    "task": task,
+                },
+            )
+        except Exception as exc:
+            logger.exception("Agent tool workflow failed")
+            error_msg = str(exc)
+            self.trace_store.fail_run(
+                child_run.run_id,
+                error_message=error_msg,
+                error_type="agent_tool_error",
+                output=error_msg,
+            )
+            return SkillResult(
+                success=False,
+                error=error_msg,
+                data={
+                    "agent_id": target_agent.id,
+                    "child_run_id": child_run.run_id,
+                    "error_type": "agent_tool_error",
+                },
+                display_text=error_msg,
+            )
+
+        payload = {
+            "agent_id": target_agent.id,
+            "child_run_id": child_run.run_id,
+            "task": task,
+            "reason": reason,
+            "response": response.response[:12000],
+            "skills_used": list(dict.fromkeys([target_agent.id, *response.skills_used])),
+            "citations": [citation.model_dump(mode="json") for citation in response.citations],
+            "artifacts": [artifact.model_dump(mode="json") for artifact in response.artifacts],
+            "plan": [item.model_dump(mode="json") for item in (response.plan or [])],
+            "model_used": response.model_used,
+            "tokens_used": response.tokens_used,
+            "error_type": response.error_type,
+        }
+        return SkillResult(
+            success=not bool(response.error_type),
+            error=response.error_type,
+            data=payload,
+            display_text=response.response[:2000],
+        )
 
     async def _process_target_agent(
         self,
@@ -3318,6 +3502,36 @@ class AgentEngine:
             lines.append(f"- 另有 {len(citations) - limit} 条来源已保留在 citations 中。")
         return "\n".join(lines) or "- 暂无可用来源。"
 
+    def _markdown_link_url(self, url: str) -> str:
+        return (
+            str(url or "")
+            .strip()
+            .replace(" ", "%20")
+            .replace("(", "%28")
+            .replace(")", "%29")
+        )
+
+    def _link_inline_citations(self, text: str, citations: list[Citation]) -> str:
+        citation_urls = {
+            int(citation.index): citation.url
+            for citation in citations
+            if citation.index and citation.url
+        }
+        if not citation_urls:
+            return str(text or "")
+
+        def replace_marker(match: re.Match[str]) -> str:
+            try:
+                index = int(match.group(1))
+            except (TypeError, ValueError):
+                return match.group(0)
+            url = citation_urls.get(index)
+            if not url:
+                return match.group(0)
+            return f"[{index}]({self._markdown_link_url(url)})"
+
+        return re.sub(r"\[(\d{1,4})\](?!\()", replace_marker, str(text or ""))
+
     def _fallback_deep_research_summary(
         self,
         *,
@@ -3369,6 +3583,291 @@ class AgentEngine:
             f"{source_catalog}"
         )
 
+    def _deep_research_report_filename(self, question: str) -> str:
+        title = " ".join(str(question or "").split()).strip()
+        title = re.sub(r"[<>:\"|?*\x00-\x1f/\\]+", " ", title)
+        title = " ".join(title.split()).strip(" .-_")
+        if len(title) > 80:
+            title = title[:80].rstrip(" .-_")
+        if not title:
+            title = "Deep Research 报告"
+        timestamp = datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y%m%d-%H%M%S")
+        return f"{timestamp} {title}.md"
+
+    async def _archive_deep_research_report_to_drive(
+        self,
+        *,
+        request: ChatRequest,
+        run_id: str,
+        question: str,
+        report: str,
+        skills_used: list[str],
+        plan_infos: list[SkillCallInfo],
+        artifacts: list[ChatArtifact],
+    ) -> str:
+        node_started = perf_counter()
+        folder_path = DEEP_RESEARCH_REPORT_FOLDER_PATH
+        file_name = self._deep_research_report_filename(question)
+        self._append_workflow_event(
+            run_id,
+            event="workflow.node.started",
+            workflow="deep_research",
+            node="archive_report",
+            status="running",
+            title="Workflow node archive_report started",
+            payload={
+                "folder_path": folder_path,
+                "file_name": file_name,
+            },
+        )
+        self.trace_store.append_event(
+            run_id,
+            type="research.report_archive.started",
+            status="running",
+            title="Deep research report archive started",
+            payload={
+                "folder_path": folder_path,
+                "file_name": file_name,
+            },
+        )
+
+        save_skill = self.skill_registry.get("save_drive")
+        if save_skill is None:
+            payload = {
+                "folder_path": folder_path,
+                "file_name": file_name,
+                "reason": "save_drive_unavailable",
+            }
+            duration_ms = int((perf_counter() - node_started) * 1000)
+            self.trace_store.append_event(
+                run_id,
+                type="research.report_archive.skipped",
+                status="partial",
+                title="Deep research report archive skipped",
+                payload=payload,
+                duration_ms=duration_ms,
+            )
+            self._append_workflow_event(
+                run_id,
+                event="workflow.node.completed",
+                workflow="deep_research",
+                node="archive_report",
+                status="partial",
+                title="Workflow node archive_report skipped",
+                payload={**payload, "result": "skipped"},
+                duration_ms=duration_ms,
+            )
+            return "skipped"
+
+        mkdir_skill = self.skill_registry.get("mkdir_drive")
+        if mkdir_skill is not None:
+            mkdir_arguments = {"path": folder_path}
+            mkdir_started = perf_counter()
+            self.trace_store.append_event(
+                run_id,
+                type="tool.started",
+                status="running",
+                title="Tool mkdir_drive",
+                step_id="deep_research_archive_mkdir",
+                payload={
+                    "name": "mkdir_drive",
+                    "arguments": mkdir_arguments,
+                    "engine_context": {"user_id": self._user_id(request)},
+                    "workflow": "deep_research",
+                    "workflow_node": "archive_report",
+                },
+            )
+            try:
+                mkdir_result = await mkdir_skill.execute(
+                    **self._tool_arguments_for_execution(request, "mkdir_drive", mkdir_arguments)
+                )
+                mkdir_status = "completed" if mkdir_result.success else "error"
+                mkdir_result_text = json.dumps(
+                    {
+                        "success": mkdir_result.success,
+                        "data": mkdir_result.data,
+                        "display_text": mkdir_result.display_text,
+                        "error": mkdir_result.error,
+                    },
+                    ensure_ascii=False,
+                )
+            except Exception as e:
+                logger.exception("Deep research report folder creation failed")
+                mkdir_status = "error"
+                mkdir_result_text = json.dumps({"error": str(e)}, ensure_ascii=False)
+
+            self.trace_store.append_event(
+                run_id,
+                type="tool.completed" if mkdir_status == "completed" else "tool.failed",
+                status=mkdir_status,
+                title=f"Tool mkdir_drive {mkdir_status}",
+                step_id="deep_research_archive_mkdir",
+                payload={
+                    "name": "mkdir_drive",
+                    "arguments": mkdir_arguments,
+                    "result_preview": mkdir_result_text[:500],
+                    "workflow": "deep_research",
+                    "workflow_node": "archive_report",
+                },
+                duration_ms=int((perf_counter() - mkdir_started) * 1000),
+            )
+            plan_infos.append(
+                SkillCallInfo(
+                    skill="mkdir_drive",
+                    action=str(mkdir_arguments),
+                    status=mkdir_status,
+                    result_summary=mkdir_result_text[:200],
+                )
+            )
+            if mkdir_status != "completed":
+                payload = {
+                    "folder_path": folder_path,
+                    "file_name": file_name,
+                    "error_message": mkdir_result_text[:500],
+                }
+                duration_ms = int((perf_counter() - node_started) * 1000)
+                self.trace_store.append_event(
+                    run_id,
+                    type="research.report_archive.failed",
+                    status="error",
+                    title="Deep research report archive failed",
+                    payload=payload,
+                    duration_ms=duration_ms,
+                )
+                self._append_workflow_event(
+                    run_id,
+                    event="workflow.node.completed",
+                    workflow="deep_research",
+                    node="archive_report",
+                    status="error",
+                    title="Workflow node archive_report failed",
+                    payload={**payload, "result": "folder_create_failed"},
+                    duration_ms=duration_ms,
+                )
+                return "failed"
+            skills_used.append("mkdir_drive")
+
+        save_arguments = {
+            "name": file_name,
+            "folder_path": folder_path,
+            "content": report,
+            "mime_type": "text/markdown; charset=utf-8",
+            "summary": f"Deep Research report: {question[:160]}",
+            "tags": "deep-research,研究报告",
+        }
+        save_started = perf_counter()
+        safe_save_arguments = {**save_arguments, "content": report[:500]}
+        self.trace_store.append_event(
+            run_id,
+            type="tool.started",
+            status="running",
+            title="Tool save_drive",
+            step_id="deep_research_archive_save",
+            payload={
+                "name": "save_drive",
+                "arguments": safe_save_arguments,
+                "engine_context": {"user_id": self._user_id(request)},
+                "workflow": "deep_research",
+                "workflow_node": "archive_report",
+            },
+        )
+        save_result = None
+        try:
+            save_result = await save_skill.execute(
+                **self._tool_arguments_for_execution(request, "save_drive", save_arguments)
+            )
+            save_status = "completed" if save_result.success else "error"
+            save_result_text = json.dumps(
+                {
+                    "success": save_result.success,
+                    "data": save_result.data,
+                    "display_text": save_result.display_text,
+                    "error": save_result.error,
+                },
+                ensure_ascii=False,
+            )
+        except Exception as e:
+            logger.exception("Deep research report save failed")
+            save_status = "error"
+            save_result_text = json.dumps({"error": str(e)}, ensure_ascii=False)
+
+        self.trace_store.append_event(
+            run_id,
+            type="tool.completed" if save_status == "completed" else "tool.failed",
+            status=save_status,
+            title=f"Tool save_drive {save_status}",
+            step_id="deep_research_archive_save",
+            payload={
+                "name": "save_drive",
+                "arguments": safe_save_arguments,
+                "result_preview": save_result_text[:500],
+                "workflow": "deep_research",
+                "workflow_node": "archive_report",
+            },
+            duration_ms=int((perf_counter() - save_started) * 1000),
+        )
+        plan_infos.append(
+            SkillCallInfo(
+                skill="save_drive",
+                action=str({key: value for key, value in save_arguments.items() if key != "content"}),
+                status=save_status,
+                result_summary=save_result_text[:200],
+            )
+        )
+
+        payload = {
+            "folder_path": folder_path,
+            "file_name": file_name,
+            "result_preview": save_result_text[:500],
+        }
+        duration_ms = int((perf_counter() - node_started) * 1000)
+        if save_status == "completed":
+            skills_used.append("save_drive")
+            if save_result is not None:
+                self._append_unique_artifact(
+                    artifacts,
+                    self._drive_artifact_from_tool_result("save_drive", save_result.data),
+                )
+            self.trace_store.append_event(
+                run_id,
+                type="research.report_archive.completed",
+                status="completed",
+                title="Deep research report archived",
+                payload=payload,
+                duration_ms=duration_ms,
+            )
+            self._append_workflow_event(
+                run_id,
+                event="workflow.node.completed",
+                workflow="deep_research",
+                node="archive_report",
+                status="completed",
+                title="Workflow node archive_report completed",
+                payload={**payload, "result": "saved"},
+                duration_ms=duration_ms,
+            )
+            return "completed"
+
+        self.trace_store.append_event(
+            run_id,
+            type="research.report_archive.failed",
+            status="error",
+            title="Deep research report archive failed",
+            payload=payload,
+            duration_ms=duration_ms,
+        )
+        self._append_workflow_event(
+            run_id,
+            event="workflow.node.completed",
+            workflow="deep_research",
+            node="archive_report",
+            status="error",
+            title="Workflow node archive_report failed",
+            payload={**payload, "result": "save_failed"},
+            duration_ms=duration_ms,
+        )
+        return "failed"
+
     def _build_deep_research_summary_messages(
         self,
         *,
@@ -3380,7 +3879,9 @@ class AgentEngine:
     ) -> list[LLMMessage]:
         system = (
             "你是研究资料分块总结器。基于给定搜索结果做证据摘要，不要编造来源未出现的信息。"
-            "输出中文 Markdown，保留来源编号，例如 [12]。"
+            "输出中文 Markdown，可以在关键事实后少量保留来源编号，例如 [12]。"
+            "不要在表格单元格里堆多个编号；表格应保持可读，依据可放在单独“依据/来源”列或表格下方说明。"
+            "最后必须列出“待补充缺口”，说明本批来源无法支撑的关键数据。"
         )
         user = (
             f"研究问题：\n{question}\n\n"
@@ -3401,19 +3902,29 @@ class AgentEngine:
         summaries: list[str],
         citations: list[Citation],
         search_count: int,
+        coverage_reviews: list[dict[str, Any]] | None = None,
     ) -> list[LLMMessage]:
         system = (
             "你是深度研究报告撰写器。基于已确认计划、分块摘要和来源目录输出正式研究报告。"
-            "必须使用中文 Markdown；引用事实时尽量用来源编号 [n]；不要编造来源没有支持的事实。"
+            "必须使用中文 Markdown；引用事实时使用少量来源编号 [n]，不要编造来源没有支持的事实。"
+            "表格以结论和可读性为先，不要在同一个表格单元格里堆叠多个来源编号；"
+            "如需列依据，优先放到单独“依据”列或表格后的“依据说明”。"
             "如果证据不足或搜索失败，要明确说明。"
         )
         source_catalog = self._source_digest(citations[:120])
+        coverage_review_text = (
+            json.dumps(coverage_reviews[-3:], ensure_ascii=False, indent=2)
+            if coverage_reviews
+            else "未执行覆盖度/缺口评审。"
+        )
         user = (
             f"研究问题：\n{question}\n\n"
             f"已确认计划：\n{plan_text[:5000]}\n\n"
             f"检索覆盖：共执行 {search_count} 组查询，去重后来源 {len(citations)} 条。\n\n"
             "分块摘要：\n"
             + "\n\n---\n\n".join(summaries or ["没有可用分块摘要。"])
+            + "\n\n覆盖度/缺口评审：\n"
+            + coverage_review_text
             + "\n\n参考来源目录（前 120 条，引用编号与完整 citations 保持一致）：\n"
             + source_catalog
             + "\n\n报告结构必须包含：执行摘要、研究范围与方法、关键发现、详细分析、风险与不确定性、结论与建议、参考来源。"
@@ -3422,6 +3933,124 @@ class AgentEngine:
             LLMMessage(role="system", content=system),
             LLMMessage(role="user", content=user[:30000]),
         ]
+
+    def _build_deep_research_gap_review_messages(
+        self,
+        *,
+        question: str,
+        plan_text: str,
+        summaries: list[str],
+        citations: list[Citation],
+        executed_queries: list[str],
+        round_index: int,
+    ) -> list[LLMMessage]:
+        system = (
+            "你是 Deep Research 覆盖度评审器。只返回 JSON 对象，不要 Markdown。"
+            "你的任务是汇总已有分块摘要，判断是否还有会显著影响最终报告质量的缺失数据；"
+            "如果有，给出少量不重复的补充检索 query。"
+            "不要为了凑数量而补搜；如果现有证据足够或继续搜索收益低，supplemental_queries 返回空数组。"
+        )
+        summary_text = "\n\n---\n\n".join(summary.strip() for summary in summaries if summary and summary.strip())
+        user = json.dumps(
+            {
+                "output_schema": {
+                    "coverage_status": "complete | needs_more | low_confidence",
+                    "summary": "一句话说明现有证据覆盖情况",
+                    "missing_data": [
+                        {
+                            "topic": "缺失主题",
+                            "why_it_matters": "为什么影响最终报告",
+                            "priority": "high | medium | low",
+                        }
+                    ],
+                    "supplemental_queries": ["query string"],
+                    "stop_reason": "无需补搜或补搜收益低时说明原因",
+                },
+                "limits": {
+                    "round_index": round_index,
+                    "max_rounds": DEEP_RESEARCH_SUPPLEMENTAL_MAX_ROUNDS,
+                    "max_supplemental_queries": DEEP_RESEARCH_SUPPLEMENTAL_MAX_QUERIES,
+                    "avoid_repeating_queries": executed_queries[-40:],
+                },
+                "question": question,
+                "approved_plan": plan_text[:5000],
+                "source_count": len(citations),
+                "source_catalog_sample": self._source_catalog_without_snippets(citations, limit=100),
+                "chunk_summaries": summary_text[:18000] or "没有可用分块摘要。",
+            },
+            ensure_ascii=False,
+        )
+        return [
+            LLMMessage(role="system", content=system),
+            LLMMessage(role="user", content=user[:26000]),
+        ]
+
+    def _coerce_deep_research_gap_review(
+        self,
+        raw: dict[str, Any] | None,
+        *,
+        executed_queries: list[str],
+    ) -> dict[str, Any]:
+        executed = {" ".join(query.lower().split()) for query in executed_queries if query}
+        review: dict[str, Any] = {
+            "coverage_status": "complete",
+            "summary": "",
+            "missing_data": [],
+            "supplemental_queries": [],
+            "stop_reason": "",
+        }
+        if not isinstance(raw, dict):
+            review["stop_reason"] = "coverage review returned no JSON object"
+            return review
+
+        status = str(raw.get("coverage_status") or raw.get("status") or "").strip().lower()
+        if status in {"needs_more", "low_confidence", "complete"}:
+            review["coverage_status"] = status
+        elif status:
+            review["coverage_status"] = "needs_more" if "need" in status or "缺" in status else "complete"
+        review["summary"] = str(raw.get("summary") or raw.get("reason") or "").strip()[:600]
+        review["stop_reason"] = str(raw.get("stop_reason") or "").strip()[:600]
+
+        missing_data: list[dict[str, Any]] = []
+        raw_missing = raw.get("missing_data") or raw.get("gaps") or []
+        if isinstance(raw_missing, list):
+            for item in raw_missing[:8]:
+                if isinstance(item, dict):
+                    topic = str(item.get("topic") or item.get("name") or "").strip()
+                    why = str(item.get("why_it_matters") or item.get("why") or item.get("reason") or "").strip()
+                    priority = str(item.get("priority") or "").strip()
+                    if topic or why:
+                        missing_data.append(
+                            {
+                                "topic": topic[:180],
+                                "why_it_matters": why[:260],
+                                "priority": priority[:40],
+                            }
+                        )
+                else:
+                    text = str(item or "").strip()
+                    if text:
+                        missing_data.append({"topic": text[:180], "why_it_matters": "", "priority": ""})
+        review["missing_data"] = missing_data
+
+        raw_queries = raw.get("supplemental_queries") or raw.get("queries") or raw.get("search_queries") or []
+        queries: list[str] = []
+        query_keys: set[str] = set()
+        if isinstance(raw_queries, list):
+            for item in raw_queries:
+                value = item.get("query") if isinstance(item, dict) else item
+                query = " ".join(str(value or "").split()).strip()
+                normalized = " ".join(query.lower().split())
+                if not query or normalized in executed or normalized in query_keys:
+                    continue
+                query_keys.add(normalized)
+                queries.append(query[:220])
+                if len(queries) >= DEEP_RESEARCH_SUPPLEMENTAL_MAX_QUERIES:
+                    break
+        review["supplemental_queries"] = queries
+        if queries and review["coverage_status"] == "complete":
+            review["coverage_status"] = "needs_more"
+        return review
 
     def _merge_usage(self, total: dict[str, int], usage: dict[str, int] | None) -> None:
         for key, value in (usage or {}).items():
@@ -3523,15 +4152,17 @@ class AgentEngine:
         system = (
             "你是 Super Chat 的 Thinking workflow 规划器。只返回 JSON 对象，不要 Markdown，不要写最终答案。"
             "目标是在 10 分钟内完成轻量规划、必要工具执行和最终汇总。"
-            f"可用的终止型 Agent tools：{AIGC_AGENT_ID}、{WEIGHT_LOSS_AGENT_ID}、{RESEARCH_AGENT_ID}。"
-            "如果用户请求明确属于某个专业 Agent，直接把第一步 type 设为对应 tool 名称，并填写 task/reason/context；"
-            "这类步骤会终止当前 Thinking workflow 并交给目标 Agent。"
+            f"可用的专业 Agent tools：{AIGC_AGENT_ID}、{WEIGHT_LOSS_AGENT_ID}。"
+            "如果用户请求明确属于某个专业 Agent，可把步骤 type 设为对应 tool 名称，并填写 task/reason/context；"
+            "这类步骤会在独立工作流中执行并返回 JSON 结果，Thinking workflow 仍应继续汇总最终答案。"
+            f"深度研究是长耗时 workflow，只能由 Super Chat 的 `{DEEP_RESEARCH_MODE_ID}` 模式启动，"
+            "不要把它写进 Thinking steps。"
             "如果用户请求涉及外部事实、公司、新闻、近期动态、员工评价、市场、产品、投资、数据或需要证据，"
             "计划中必须先包含 search 步骤，再包含 analyze/final 步骤。"
             "不要把历史回答中声称的搜索当成已执行搜索。\n\n"
             "JSON schema: {"
             '"goal":"一句话目标",'
-            '"steps":[{"id":"短id","type":"search|analyze|final|image_generation_v1|weight_loss_v1|deep_research_v1","title":"短标题","description":"要做什么","query":"search 步骤必填","task":"Agent tool 步骤必填","reason":"Agent tool 步骤必填","context":"可选"}]'
+            '"steps":[{"id":"短id","type":"search|analyze|final|image_generation_v1|weight_loss_v1","title":"短标题","description":"要做什么","query":"search 步骤必填","task":"Agent tool 步骤必填","reason":"Agent tool 步骤必填","context":"可选"}]'
             "}。最多 6 个步骤，search 步骤最多 4 个。"
             f"\n\n当前时间：{current_time.strftime('%Y-%m-%d %H:%M:%S')} Asia/Shanghai。"
         )
@@ -3639,7 +4270,7 @@ class AgentEngine:
                     step_type = "analyze"
                 if step_type in {"summary", "summarize", "final_summary"}:
                     step_type = "final"
-                if step_type not in {"search", "analyze", "final"} and step_type not in TERMINAL_AGENT_TOOL_IDS:
+                if step_type not in {"search", "analyze", "final"} and step_type not in AGENT_TOOL_IDS:
                     continue
                 if step_type == "search":
                     if search_count >= THINKING_MAX_SEARCH_STEPS:
@@ -3648,7 +4279,7 @@ class AgentEngine:
                     if not query:
                         continue
                     search_count += 1
-                elif step_type in TERMINAL_AGENT_TOOL_IDS:
+                elif step_type in AGENT_TOOL_IDS:
                     query = ""
                 else:
                     query = ""
@@ -3673,18 +4304,6 @@ class AgentEngine:
                 )
                 if len(steps) >= THINKING_MAX_PLAN_STEPS:
                     break
-
-        has_terminal_agent_step = any(step["type"] in TERMINAL_AGENT_TOOL_IDS for step in steps)
-        if has_terminal_agent_step:
-            first_terminal_index = next(
-                index for index, step in enumerate(steps) if step["type"] in TERMINAL_AGENT_TOOL_IDS
-            )
-            steps = steps[: first_terminal_index + 1]
-            return {
-                "goal": goal or "通过 Agent tool 交给专业 Agent 完成本轮请求。",
-                "steps": steps,
-                "fallback_used": not isinstance(raw, dict),
-            }
 
         requires_retrieval = self._thinking_retrieval_required(request)
         if requires_retrieval and not any(step["type"] == "search" for step in steps):
@@ -3801,10 +4420,14 @@ class AgentEngine:
         conversation_context = self.memory.get_context(self._conversation_memory_id(request))
         history = conversation_context.messages if request.memory_enabled else []
         short_term_summary = conversation_context.summary if request.memory_enabled else ""
+        context_blocks_for_model = self._context_blocks_for_model(
+            request.context_blocks,
+            history=history,
+        )
         prompt_sources = self._build_system_prompt_parts(
             role_context,
             request.mode_prompts,
-            request.context_blocks,
+            context_blocks_for_model,
             drive_context=request.drive_context,
             agent_id=agent_id,
             tool_names=tool_names,
@@ -3833,7 +4456,7 @@ class AgentEngine:
             tool_names=tool_names,
             mode_ids=request.mode_ids,
             mode_prompts=request.mode_prompts,
-            context_blocks=request.context_blocks,
+            context_blocks=context_blocks_for_model,
             short_term_summary=short_term_summary,
             tools=tools,
             prompt_sources=prompt_sources,
@@ -4080,7 +4703,7 @@ class AgentEngine:
                     "workflow_node": "execute",
                 },
             )
-            if step_type in TERMINAL_AGENT_TOOL_IDS:
+            if step_type in AGENT_TOOL_IDS:
                 if step_type not in allowed_tool_names:
                     plan_infos.append(
                         SkillCallInfo(
@@ -4123,10 +4746,9 @@ class AgentEngine:
                         "arguments": arguments,
                         "workflow": "thinking",
                         "workflow_node": "execute",
-                        "terminal": True,
                     },
                 )
-                return await self._execute_agent_tool(
+                result = await self._execute_agent_tool_as_result(
                     request=request,
                     role_context=role_context,
                     run_id=run_id,
@@ -4139,9 +4761,70 @@ class AgentEngine:
                         "node": "execute",
                         "node_started": execute_started,
                         "workflow_started": workflow_started,
-                        "result": "terminal_agent_handoff",
+                        "result": "agent_tool_result",
                     },
                 )
+                status = "completed" if result.success else "error"
+                result_text = json.dumps(
+                    {
+                        "success": result.success,
+                        "data": result.data,
+                        "display_text": result.display_text,
+                        "error": result.error,
+                    },
+                    ensure_ascii=False,
+                )
+                if result.success:
+                    self._merge_agent_tool_payload(
+                        payload=result.data,
+                        skills_used=skills_used,
+                        citations=citations,
+                        citation_urls=citation_urls,
+                        artifacts=artifacts,
+                    )
+                self.trace_store.append_event(
+                    run_id,
+                    type="tool.completed" if status == "completed" else "tool.failed",
+                    status=status,
+                    title=f"Tool {step_type} {status}",
+                    step_id=step_id,
+                    payload={
+                        "name": step_type,
+                        "arguments": arguments,
+                        "result_preview": result_text[:500],
+                        "workflow": "thinking",
+                        "workflow_node": "execute",
+                        "child_run_id": result.data.get("child_run_id") if isinstance(result.data, dict) else "",
+                    },
+                    duration_ms=int((perf_counter() - step_started) * 1000),
+                )
+                evidence_blocks.append(
+                    f"Step {index} / {step.get('title') or step_type}\nArguments: {json.dumps(arguments, ensure_ascii=False)}\nResult: {result_text[:4000]}"
+                )
+                plan_infos.append(
+                    SkillCallInfo(
+                        skill=step_type,
+                        action=str(arguments),
+                        status=status,
+                        result_summary=result_text[:200],
+                    )
+                )
+                self.trace_store.append_event(
+                    run_id,
+                    type="thinking.step.completed" if status == "completed" else "thinking.step.failed",
+                    status=status,
+                    title=f"Thinking step {index} {status}",
+                    step_id=step_id,
+                    payload={
+                        "step": step_id,
+                        "step_type": step_type,
+                        "arguments": arguments,
+                        "workflow": "thinking",
+                        "workflow_node": "execute",
+                    },
+                    duration_ms=int((perf_counter() - step_started) * 1000),
+                )
+                continue
 
             if step_type != "search":
                 plan_infos.append(
@@ -4466,6 +5149,7 @@ class AgentEngine:
         new_messages: list[LLMMessage],
         skills_used: list[str] | None = None,
         citations: list[Citation] | None = None,
+        artifacts: list[ChatArtifact] | None = None,
         plan: list[SkillCallInfo] | None = None,
         model_used: str = "",
         tokens_used: dict[str, int] | None = None,
@@ -4474,8 +5158,8 @@ class AgentEngine:
         self._add_conversation_memory(request, new_messages)
 
         unique_skills = list(dict.fromkeys(skills_used or []))
-        artifacts: list[ChatArtifact] = []
-        if review_memory and citations:
+        response_artifacts: list[ChatArtifact] = list(artifacts or [])
+        if review_memory and citations and agent_id != RESEARCH_AGENT_ID:
             try:
                 provider = self._get_provider(request.model_preference)
                 auto_plan: list[SkillCallInfo] = list(plan or [])
@@ -4489,7 +5173,7 @@ class AgentEngine:
                     final_content=response_text,
                     skills_used=mutable_skills,
                     citations=citations or [],
-                    artifacts=artifacts,
+                    artifacts=response_artifacts,
                     plan=auto_plan,
                 )
                 unique_skills = list(dict.fromkeys(mutable_skills))
@@ -4502,7 +5186,7 @@ class AgentEngine:
             model_used=model_used,
             tokens_used=tokens_used or {},
             skills_used=unique_skills,
-            artifacts=[artifact.model_dump(mode="json") for artifact in artifacts],
+            artifacts=[artifact.model_dump(mode="json") for artifact in response_artifacts],
         )
         events = self._snapshot_run_events(run_id)
         if review_memory:
@@ -4519,7 +5203,7 @@ class AgentEngine:
             response=response_text,
             skills_used=unique_skills,
             citations=citations or [],
-            artifacts=artifacts,
+            artifacts=response_artifacts,
             plan=plan,
             model_used=model_used,
             tokens_used=tokens_used or {},
@@ -4599,6 +5283,238 @@ class AgentEngine:
         )
         return plan_text, response.model, dict(response.usage)
 
+    async def _execute_deep_research_search_queries(
+        self,
+        *,
+        run_id: str,
+        search_skill: Any,
+        queries: list[str],
+        target_result_count: int | None,
+        citations: list[Citation],
+        citation_urls: set[str],
+        skills_used: list[str],
+        plan_infos: list[SkillCallInfo],
+        start_index: int,
+        phase: str,
+        supplemental_round: int = 0,
+    ) -> tuple[int, int]:
+        executed_count = 0
+        source_count_before = len(citations)
+        for offset, query in enumerate(queries):
+            if target_result_count is not None and len(citations) >= target_result_count:
+                break
+            query_index = start_index + offset
+            search_started = perf_counter()
+            arguments = {
+                "query": query,
+                "sources": "web",
+                "limit": DEEP_RESEARCH_SEARCH_LIMIT,
+            }
+            payload_context = {
+                "query": query,
+                "arguments": arguments,
+                "collected_count": len(citations),
+                "phase": phase,
+            }
+            if supplemental_round:
+                payload_context["supplemental_round"] = supplemental_round
+            self.trace_store.append_event(
+                run_id,
+                type="research.search.started",
+                status="running",
+                title=f"Deep research search {query_index}",
+                payload=payload_context,
+            )
+            try:
+                result = await search_skill.execute(**arguments)
+                executed_count += 1
+                status = "completed" if result.success else "error"
+                result_data = result.data if isinstance(result.data, dict) else {}
+                new_citations = (
+                    self._collect_search_citations(
+                        result_data=result_data,
+                        citations=citations,
+                        citation_urls=citation_urls,
+                    )
+                    if result.success
+                    else []
+                )
+                if result.success:
+                    skills_used.append("search")
+                result_summary = (
+                    result.display_text
+                    or result.error
+                    or json.dumps(result_data, ensure_ascii=False)
+                )
+                self.trace_store.append_event(
+                    run_id,
+                    type="research.search.completed" if result.success else "research.search.failed",
+                    status=status,
+                    title=f"Deep research search {query_index} {status}",
+                    payload={
+                        **payload_context,
+                        "success": result.success,
+                        "new_citation_count": len(new_citations),
+                        "total_citation_count": len(citations),
+                        "error": result.error,
+                        "result_preview": str(result_summary)[:500],
+                    },
+                    duration_ms=int((perf_counter() - search_started) * 1000),
+                )
+                if phase != "initial":
+                    self.trace_store.append_event(
+                        run_id,
+                        type="research.supplemental_search.completed" if result.success else "research.supplemental_search.failed",
+                        status=status,
+                        title=f"Deep research supplemental search {query_index} {status}",
+                        payload={
+                            "query": query,
+                            "supplemental_round": supplemental_round,
+                            "new_citation_count": len(new_citations),
+                            "total_citation_count": len(citations),
+                        },
+                        duration_ms=int((perf_counter() - search_started) * 1000),
+                    )
+                plan_infos.append(
+                    SkillCallInfo(
+                        skill="search",
+                        action=str(arguments),
+                        status=status,
+                        result_summary=str(result_summary)[:200],
+                    )
+                )
+            except Exception as e:
+                logger.exception("Deep research search failed")
+                executed_count += 1
+                self.trace_store.append_event(
+                    run_id,
+                    type="research.search.failed",
+                    status="error",
+                    title=f"Deep research search {query_index} failed",
+                    payload={
+                        **payload_context,
+                        "error_message": str(e),
+                    },
+                    duration_ms=int((perf_counter() - search_started) * 1000),
+                )
+                if phase != "initial":
+                    self.trace_store.append_event(
+                        run_id,
+                        type="research.supplemental_search.failed",
+                        status="error",
+                        title=f"Deep research supplemental search {query_index} failed",
+                        payload={
+                            "query": query,
+                            "supplemental_round": supplemental_round,
+                            "error_message": str(e)[:500],
+                        },
+                        duration_ms=int((perf_counter() - search_started) * 1000),
+                    )
+                plan_infos.append(
+                    SkillCallInfo(
+                        skill="search",
+                        action=str(arguments),
+                        status="error",
+                        result_summary=str(e)[:200],
+                    )
+                )
+        return executed_count, len(citations) - source_count_before
+
+    async def _summarize_deep_research_chunks(
+        self,
+        *,
+        provider: LLMProvider,
+        request: ChatRequest,
+        run_id: str,
+        question: str,
+        plan_text: str,
+        chunks: list[list[Citation]],
+        summaries: list[str],
+        total_usage: dict[str, int],
+        model_names: list[str],
+        start_index: int,
+        total_chunks: int,
+        phase: str,
+    ) -> None:
+        for offset, chunk in enumerate(chunks):
+            chunk_index = start_index + offset
+            summary_started = perf_counter()
+            self.trace_store.append_event(
+                run_id,
+                type="research.step_summary.started",
+                status="running",
+                title=f"Deep research source summary {chunk_index}",
+                payload={
+                    "chunk": chunk_index,
+                    "chunk_count": total_chunks,
+                    "source_count": len(chunk),
+                    "phase": phase,
+                },
+            )
+            try:
+                summary_response = await self._chat_with_retry(
+                    provider,
+                    request=request,
+                    run_id=run_id,
+                    messages=self._build_deep_research_summary_messages(
+                        question=question,
+                        plan_text=plan_text,
+                        chunk_index=chunk_index,
+                        chunk_count=total_chunks,
+                        citations=chunk,
+                    ),
+                    tools=None,
+                    temperature=0.2,
+                    retry_context={
+                        "scope": "deep_research_step_summary",
+                        "chunk": chunk_index,
+                        "chunk_count": total_chunks,
+                        "phase": phase,
+                    },
+                )
+                self._merge_usage(total_usage, summary_response.usage)
+                if summary_response.model:
+                    model_names.append(summary_response.model)
+                summaries.append(summary_response.content.strip())
+                self.trace_store.append_event(
+                    run_id,
+                    type="research.step_summary.completed",
+                    status="completed",
+                    title=f"Deep research source summary {chunk_index} completed",
+                    payload={
+                        "chunk": chunk_index,
+                        "model": summary_response.model,
+                        "usage": summary_response.usage,
+                        "summary_preview": summary_response.content[:500],
+                        "phase": phase,
+                    },
+                    duration_ms=int((perf_counter() - summary_started) * 1000),
+                )
+            except Exception as e:
+                logger.exception("Deep research source summary failed; fallback summary used")
+                fallback_summary = self._fallback_deep_research_summary(
+                    chunk_index=chunk_index,
+                    chunk_count=total_chunks,
+                    citations=chunk,
+                    error_message=str(e),
+                )
+                summaries.append(fallback_summary)
+                self.trace_store.append_event(
+                    run_id,
+                    type="research.step_summary.failed",
+                    status="error",
+                    title=f"Deep research source summary {chunk_index} failed; fallback used",
+                    payload={
+                        "chunk": chunk_index,
+                        "error_message": str(e)[:500],
+                        "source_count": len(chunk),
+                        "summary_preview": fallback_summary[:500],
+                        "fallback_used": True,
+                        "phase": phase,
+                    },
+                    duration_ms=int((perf_counter() - summary_started) * 1000),
+                )
+
     async def _execute_deep_research(
         self,
         *,
@@ -4614,6 +5530,7 @@ class AgentEngine:
         model_names: list[str] = []
         skills_used: list[str] = []
         plan_infos: list[SkillCallInfo] = []
+        artifacts: list[ChatArtifact] = []
         citations: list[Citation] = []
         citation_urls: set[str] = set()
 
@@ -4682,6 +5599,9 @@ class AgentEngine:
             )
 
         search_skill = self.skill_registry.get("search")
+        executed_queries: list[str] = []
+        executed_search_count = 0
+        next_search_index = 1
         if search_skill is None:
             self.trace_store.append_event(
                 run_id,
@@ -4691,166 +5611,185 @@ class AgentEngine:
                 payload={"error_message": "search skill is not registered"},
             )
         else:
-            for query_index, query in enumerate(queries, start=1):
-                if len(citations) >= target_result_count:
-                    break
-                search_started = perf_counter()
-                arguments = {
-                    "query": query,
-                    "sources": "web",
-                    "limit": DEEP_RESEARCH_SEARCH_LIMIT,
-                }
-                self.trace_store.append_event(
-                    run_id,
-                    type="research.search.started",
-                    status="running",
-                    title=f"Deep research search {query_index}",
-                    payload={
-                        "query": query,
-                        "arguments": arguments,
-                        "collected_count": len(citations),
-                    },
-                )
-                try:
-                    result = await search_skill.execute(**arguments)
-                    status = "completed" if result.success else "error"
-                    result_data = result.data if isinstance(result.data, dict) else {}
-                    new_citations = (
-                        self._collect_search_citations(
-                            result_data=result_data,
-                            citations=citations,
-                            citation_urls=citation_urls,
-                        )
-                        if result.success
-                        else []
-                    )
-                    if result.success:
-                        skills_used.append("search")
-                    result_summary = (
-                        result.display_text
-                        or result.error
-                        or json.dumps(result_data, ensure_ascii=False)
-                    )
-                    self.trace_store.append_event(
-                        run_id,
-                        type="research.search.completed" if result.success else "research.search.failed",
-                        status=status,
-                        title=f"Deep research search {query_index} {status}",
-                        payload={
-                            "query": query,
-                            "success": result.success,
-                            "new_citation_count": len(new_citations),
-                            "total_citation_count": len(citations),
-                            "error": result.error,
-                            "result_preview": str(result_summary)[:500],
-                        },
-                        duration_ms=int((perf_counter() - search_started) * 1000),
-                    )
-                    plan_infos.append(
-                        SkillCallInfo(
-                            skill="search",
-                            action=str(arguments),
-                            status=status,
-                            result_summary=str(result_summary)[:200],
-                        )
-                    )
-                except Exception as e:
-                    logger.exception("Deep research search failed")
-                    self.trace_store.append_event(
-                        run_id,
-                        type="research.search.failed",
-                        status="error",
-                        title=f"Deep research search {query_index} failed",
-                        payload={"query": query, "error_message": str(e)},
-                        duration_ms=int((perf_counter() - search_started) * 1000),
-                    )
-                    plan_infos.append(
-                        SkillCallInfo(
-                            skill="search",
-                            action=str(arguments),
-                            status="error",
-                            result_summary=str(e)[:200],
-                        )
-                    )
+            executed_count, _new_count = await self._execute_deep_research_search_queries(
+                run_id=run_id,
+                search_skill=search_skill,
+                queries=queries,
+                target_result_count=target_result_count,
+                citations=citations,
+                citation_urls=citation_urls,
+                skills_used=skills_used,
+                plan_infos=plan_infos,
+                start_index=next_search_index,
+                phase="initial",
+            )
+            executed_queries.extend(queries[:executed_count])
+            executed_search_count += executed_count
+            next_search_index += executed_count
 
         summaries: list[str] = []
         chunks = [
             citations[index:index + DEEP_RESEARCH_SUMMARY_CHUNK_SIZE]
             for index in range(0, len(citations), DEEP_RESEARCH_SUMMARY_CHUNK_SIZE)
         ]
-        for chunk_index, chunk in enumerate(chunks, start=1):
-            summary_started = perf_counter()
+        await self._summarize_deep_research_chunks(
+            provider=provider,
+            request=request,
+            run_id=run_id,
+            question=question,
+            plan_text=plan_text,
+            chunks=chunks,
+            summaries=summaries,
+            total_usage=total_usage,
+            model_names=model_names,
+            start_index=1,
+            total_chunks=len(chunks),
+            phase="initial",
+        )
+
+        coverage_reviews: list[dict[str, Any]] = []
+        for supplemental_round in range(1, DEEP_RESEARCH_SUPPLEMENTAL_MAX_ROUNDS + 1):
+            gap_started = perf_counter()
             self.trace_store.append_event(
                 run_id,
-                type="research.step_summary.started",
+                type="research.gap_review.started",
                 status="running",
-                title=f"Deep research source summary {chunk_index}",
+                title=f"Deep research gap review {supplemental_round}",
                 payload={
-                    "chunk": chunk_index,
-                    "chunk_count": len(chunks),
-                    "source_count": len(chunk),
+                    "round": supplemental_round,
+                    "source_count": len(citations),
+                    "summary_count": len(summaries),
+                    "executed_query_count": len(executed_queries),
                 },
             )
+            review: dict[str, Any]
             try:
-                summary_response = await self._chat_with_retry(
+                gap_response = await self._chat_with_retry(
                     provider,
                     request=request,
                     run_id=run_id,
-                    messages=self._build_deep_research_summary_messages(
+                    messages=self._build_deep_research_gap_review_messages(
                         question=question,
                         plan_text=plan_text,
-                        chunk_index=chunk_index,
-                        chunk_count=len(chunks),
-                        citations=chunk,
+                        summaries=summaries,
+                        citations=citations,
+                        executed_queries=executed_queries,
+                        round_index=supplemental_round,
                     ),
                     tools=None,
                     temperature=0.2,
                     retry_context={
-                        "scope": "deep_research_step_summary",
-                        "chunk": chunk_index,
-                        "chunk_count": len(chunks),
+                        "scope": "deep_research_gap_review",
+                        "round": supplemental_round,
                     },
                 )
-                self._merge_usage(total_usage, summary_response.usage)
-                if summary_response.model:
-                    model_names.append(summary_response.model)
-                summaries.append(summary_response.content.strip())
+                self._merge_usage(total_usage, gap_response.usage)
+                if gap_response.model:
+                    model_names.append(gap_response.model)
+                review = self._coerce_deep_research_gap_review(
+                    self._extract_json_object(gap_response.content),
+                    executed_queries=executed_queries,
+                )
+                coverage_reviews.append(review)
                 self.trace_store.append_event(
                     run_id,
-                    type="research.step_summary.completed",
+                    type="research.gap_review.completed",
                     status="completed",
-                    title=f"Deep research source summary {chunk_index} completed",
+                    title=f"Deep research gap review {supplemental_round} completed",
                     payload={
-                        "chunk": chunk_index,
-                        "model": summary_response.model,
-                        "usage": summary_response.usage,
-                        "summary_preview": summary_response.content[:500],
+                        "round": supplemental_round,
+                        "model": gap_response.model,
+                        "usage": gap_response.usage,
+                        "coverage_status": review.get("coverage_status"),
+                        "missing_data": review.get("missing_data"),
+                        "supplemental_queries": review.get("supplemental_queries"),
+                        "stop_reason": review.get("stop_reason"),
                     },
-                    duration_ms=int((perf_counter() - summary_started) * 1000),
+                    duration_ms=int((perf_counter() - gap_started) * 1000),
                 )
             except Exception as e:
-                logger.exception("Deep research source summary failed; fallback summary used")
-                fallback_summary = self._fallback_deep_research_summary(
-                    chunk_index=chunk_index,
-                    chunk_count=len(chunks),
-                    citations=chunk,
-                    error_message=str(e),
-                )
-                summaries.append(fallback_summary)
+                logger.exception("Deep research gap review failed; continuing with current evidence")
                 self.trace_store.append_event(
                     run_id,
-                    type="research.step_summary.failed",
+                    type="research.gap_review.failed",
                     status="error",
-                    title=f"Deep research source summary {chunk_index} failed; fallback used",
+                    title=f"Deep research gap review {supplemental_round} failed",
                     payload={
-                        "chunk": chunk_index,
                         "error_message": str(e)[:500],
-                        "source_count": len(chunk),
-                        "summary_preview": fallback_summary[:500],
-                        "fallback_used": True,
+                        "round": supplemental_round,
                     },
-                    duration_ms=int((perf_counter() - summary_started) * 1000),
+                    duration_ms=int((perf_counter() - gap_started) * 1000),
                 )
+                break
+
+            supplemental_queries = list(review.get("supplemental_queries") or [])
+            if not supplemental_queries:
+                break
+            if search_skill is None:
+                self.trace_store.append_event(
+                    run_id,
+                    type="research.supplemental_search.skipped",
+                    status="partial",
+                    title="Deep research supplemental search skipped",
+                    payload={
+                        "round": supplemental_round,
+                        "reason": "search skill is not registered",
+                        "supplemental_queries": supplemental_queries,
+                    },
+                )
+                break
+
+            before_supplemental_count = len(citations)
+            executed_count, new_count = await self._execute_deep_research_search_queries(
+                run_id=run_id,
+                search_skill=search_skill,
+                queries=supplemental_queries,
+                target_result_count=target_result_count,
+                citations=citations,
+                citation_urls=citation_urls,
+                skills_used=skills_used,
+                plan_infos=plan_infos,
+                start_index=next_search_index,
+                phase="supplemental",
+                supplemental_round=supplemental_round,
+            )
+            executed_queries.extend(supplemental_queries[:executed_count])
+            executed_search_count += executed_count
+            next_search_index += executed_count
+
+            new_citations = citations[before_supplemental_count:]
+            if new_citations:
+                supplemental_chunks = [
+                    new_citations[index:index + DEEP_RESEARCH_SUMMARY_CHUNK_SIZE]
+                    for index in range(0, len(new_citations), DEEP_RESEARCH_SUMMARY_CHUNK_SIZE)
+                ]
+                await self._summarize_deep_research_chunks(
+                    provider=provider,
+                    request=request,
+                    run_id=run_id,
+                    question=question,
+                    plan_text=plan_text,
+                    chunks=supplemental_chunks,
+                    summaries=summaries,
+                    total_usage=total_usage,
+                    model_names=model_names,
+                    start_index=len(summaries) + 1,
+                    total_chunks=len(summaries) + len(supplemental_chunks),
+                    phase="supplemental",
+                )
+            if new_count < DEEP_RESEARCH_SUPPLEMENTAL_MIN_NEW_SOURCES:
+                self.trace_store.append_event(
+                    run_id,
+                    type="research.gap_review.stopped",
+                    status="partial",
+                    title="Deep research supplementation stopped after low-yield search",
+                    payload={
+                        "round": supplemental_round,
+                        "new_citation_count": new_count,
+                        "min_new_sources": DEEP_RESEARCH_SUPPLEMENTAL_MIN_NEW_SOURCES,
+                    },
+                )
+                break
 
         report_started = perf_counter()
         self.trace_store.append_event(
@@ -4873,7 +5812,8 @@ class AgentEngine:
                     plan_text=plan_text,
                     summaries=summaries,
                     citations=citations,
-                    search_count=len(plan_infos),
+                    search_count=executed_search_count,
+                    coverage_reviews=coverage_reviews,
                 ),
                 tools=None,
                 temperature=0.2,
@@ -4892,7 +5832,9 @@ class AgentEngine:
                     "model": report_response.model,
                     "usage": report_response.usage,
                     "source_count": len(citations),
-                    "query_count": len(queries),
+                    "query_count": executed_search_count,
+                    "initial_query_count": len(queries),
+                    "gap_review_count": len(coverage_reviews),
                     "report_preview": report[:500],
                 },
                 duration_ms=int((perf_counter() - report_started) * 1000),
@@ -4904,7 +5846,7 @@ class AgentEngine:
                 plan_text=plan_text,
                 summaries=summaries,
                 citations=citations,
-                search_count=len(plan_infos),
+                search_count=executed_search_count,
                 error_message=str(e),
             )
             self.trace_store.append_event(
@@ -4915,23 +5857,15 @@ class AgentEngine:
                 payload={
                     "error_message": str(e)[:500],
                     "source_count": len(citations),
-                    "query_count": len(queries),
+                    "query_count": executed_search_count,
+                    "initial_query_count": len(queries),
+                    "gap_review_count": len(coverage_reviews),
                     "report_preview": report[:500],
                     "fallback_used": True,
                 },
                 duration_ms=int((perf_counter() - report_started) * 1000),
             )
-        self.trace_store.append_event(
-            run_id,
-            type="research.execution.completed",
-            status="completed",
-            title="Deep research execution completed",
-            payload={
-                "query_count": len(queries),
-                "source_count": len(citations),
-                "summary_count": len(summaries),
-            },
-        )
+        report = self._link_inline_citations(report, citations)
         plan_infos.append(
             SkillCallInfo(
                 skill="research_report",
@@ -4940,6 +5874,30 @@ class AgentEngine:
                 result_summary=report[:200],
             )
         )
+        archive_status = await self._archive_deep_research_report_to_drive(
+            request=request,
+            run_id=run_id,
+            question=question,
+            report=report,
+            skills_used=skills_used,
+            plan_infos=plan_infos,
+            artifacts=artifacts,
+        )
+        self.trace_store.append_event(
+            run_id,
+            type="research.execution.completed",
+            status="completed",
+            title="Deep research execution completed",
+            payload={
+                "query_count": executed_search_count,
+                "initial_query_count": len(queries),
+                "gap_review_count": len(coverage_reviews),
+                "source_count": len(citations),
+                "summary_count": len(summaries),
+                "archive_status": archive_status,
+                "artifact_count": len(artifacts),
+            },
+        )
         return {
             "report": report,
             "model_used": ", ".join(list(dict.fromkeys(model_names))),
@@ -4947,6 +5905,7 @@ class AgentEngine:
             "skills_used": skills_used,
             "citations": citations,
             "plan": plan_infos,
+            "artifacts": artifacts,
         }
 
     async def _process_deep_research(
@@ -4963,6 +5922,10 @@ class AgentEngine:
         conversation_context = self.memory.get_context(self._conversation_memory_id(request))
         history = conversation_context.messages if request.memory_enabled else []
         short_term_summary = conversation_context.summary if request.memory_enabled else ""
+        context_blocks_for_model = self._context_blocks_for_model(
+            request.context_blocks,
+            history=history,
+        )
         tools = self._tool_definitions_for_agent(agent_id, request.disabled_tools)
         drive_prompt_source = self._drive_context_prompt_source(request.drive_context)
         prompt_sources = [drive_prompt_source] if drive_prompt_source else []
@@ -4998,7 +5961,7 @@ class AgentEngine:
             tool_names=[tool.name for tool in tools],
             mode_ids=request.mode_ids,
             mode_prompts=request.mode_prompts,
-            context_blocks=request.context_blocks,
+            context_blocks=context_blocks_for_model,
             short_term_summary=short_term_summary,
             prompt_sources=prompt_sources,
         )
@@ -5070,6 +6033,7 @@ class AgentEngine:
                 ],
                 skills_used=execution["skills_used"],
                 citations=execution["citations"],
+                artifacts=execution.get("artifacts") or [],
                 plan=execution["plan"],
                 model_used=execution["model_used"],
                 tokens_used=execution["tokens_used"],
@@ -6069,6 +7033,53 @@ class AgentEngine:
                 if tc.name not in allowed_tool_names:
                     result_text = json.dumps({"error": f"Tool disabled or unavailable: {tc.name}"})
                     status = "error"
+                elif tc.name in AGENT_TOOL_IDS:
+                    try:
+                        result = await self._execute_agent_tool_as_result(
+                            request=request,
+                            role_context=role_context,
+                            run_id=run.run_id,
+                            tool_name=tc.name,
+                            tool_call_id=tc.id,
+                            arguments=tool_arguments,
+                            tool_started=tool_started,
+                            workflow_context=(
+                                {
+                                    "workflow": workflow_name,
+                                    "node": workflow_node,
+                                    "node_started": workflow_node_started,
+                                    "workflow_started": workflow_started,
+                                    "round": round_index + 1,
+                                    "result": "agent_tool_result",
+                                    "workflow_source": workflow_source,
+                                    "legacy_workflow": legacy_workflow,
+                                }
+                                if agent_loop_enabled
+                                else None
+                            ),
+                        )
+                        result_text = json.dumps(
+                            {
+                                "success": result.success,
+                                "data": result.data,
+                                "display_text": result.display_text,
+                                "error": result.error,
+                            },
+                            ensure_ascii=False,
+                        )
+                        status = "completed" if result.success else "error"
+                        if result.success:
+                            self._merge_agent_tool_payload(
+                                payload=result.data,
+                                skills_used=skills_used,
+                                citations=citations,
+                                citation_urls=citation_urls,
+                                artifacts=artifacts,
+                            )
+                    except Exception as e:
+                        logger.exception(f"Agent tool {tc.name} execution failed")
+                        result_text = json.dumps({"error": str(e)}, ensure_ascii=False)
+                        status = "error"
                 elif skill is None:
                     result_text = json.dumps({"error": f"Unknown skill: {tc.name}"})
                     status = "error"
@@ -6088,6 +7099,11 @@ class AgentEngine:
                         if result.success:
                             skills_used.append(tc.name)
                             if tc.name == "search":
+                                self._append_search_trace_nodes(
+                                    run_id,
+                                    tool_call_id=tc.id,
+                                    result_data=result.data,
+                                )
                                 new_citations = self._collect_search_citations(
                                     result_data=result.data,
                                     citations=citations,
@@ -6192,10 +7208,7 @@ class AgentEngine:
         return "没有历史会话。"
 
     def _has_persisted_conversation_context(self, context_blocks: list[str] | None) -> bool:
-        return any(
-            block.lstrip().startswith(("Persisted conversation history", "持久化会话历史"))
-            for block in context_blocks or []
-        )
+        return any(self._is_persisted_conversation_context(block) for block in context_blocks or [])
 
     def _format_aigc_attachments(self, attachments: list[ChatAttachment]) -> str:
         if not attachments:
@@ -6980,6 +7993,9 @@ class AgentEngine:
         short_term_summary: str = "",
     ) -> list[LLMMessage]:
         current_time = datetime.now(ZoneInfo("Asia/Shanghai"))
+        handoff_text = self._render_agent_handoff_packet(request.agent_input or request.handoff)
+        context_blocks = self._normalize_context_blocks(request.context_blocks)
+        context_text = "\n\n---\n\n".join(context_blocks) or "没有额外上下文。"
         system = (
             "你是减肥 Agent 的结构化分析器，负责从用户文字和食物图片中提取可入库的减脂数据。"
             "只返回 JSON，不要返回 Markdown 或额外解释。\n\n"
@@ -7032,7 +8048,9 @@ class AgentEngine:
             f"当前时间：{current_time.strftime('%Y-%m-%d %H:%M:%S')} Asia/Shanghai\n\n"
             f"角色上下文：\n{role_context.rendered[:1600]}\n\n"
             f"短期记忆摘要：\n{short_term_summary or '暂无压缩摘要。'}\n\n"
+            f"结构化 Agent/工具输入：\n{handoff_text}\n\n"
             f"近期对话：\n{self._format_weight_loss_history(history)}\n\n"
+            f"本轮额外上下文：\n{context_text}\n\n"
             f"数据库摘要：\n{self._render_weight_loss_summary_context(summary)}\n\n"
             f"用户本轮请求：\n{request.message or '用户没有输入文字。'}\n\n"
             f"附件摘要：\n{self._format_weight_loss_attachments(request.attachments)}"
@@ -9306,7 +10324,34 @@ class AgentEngine:
                 events=latest_run.events,
             )
 
-        if agent_id in TERMINAL_AGENT_TOOL_IDS and agent_id in disabled_tool_names:
+        if agent_id == RESEARCH_AGENT_ID:
+            error_msg = (
+                "Deep Research 只能在 Super Chat 勾选“深度研究”模式后启动。"
+                "请回到 Super Chat，打开深度研究模式，先发送研究问题生成计划，确认后再回复 `/start`。"
+            )
+            self.trace_store.fail_run(
+                run.run_id,
+                error_message=error_msg,
+                error_type="workflow_mode_required",
+                output=error_msg,
+            )
+            latest_run = self.trace_store.get_run(run.run_id) or run
+            return ChatResponse(
+                conversation_id=request.conversation_id,
+                response=error_msg,
+                skills_used=[],
+                plan=None,
+                model_used="",
+                tokens_used={},
+                error_type="workflow_mode_required",
+                agent_id=agent_id,
+                role_id=request.role_id,
+                runtime=runtime,
+                run_id=run.run_id,
+                events=latest_run.events,
+            )
+
+        if agent_id in AGENT_TOOL_IDS and agent_id in disabled_tool_names:
             error_msg = f"Feature '{agent_id}' is disabled for this user."
             self.trace_store.fail_run(
                 run.run_id,
@@ -9423,6 +10468,47 @@ class AgentEngine:
             agent_id=agent_id,
             history=entry_history,
         )
+
+        if self._is_deep_research_command_attempt(request, agent_id):
+            error_msg = (
+                "Deep Research 不再通过 `/agent` 命令或普通 Agent tool 启动。"
+                "请在 Super Chat 勾选“深度研究”模式后发送研究问题；生成计划后，再在同一模式下回复 `/start`。"
+            )
+            self.trace_store.append_event(
+                run.run_id,
+                type="agent.command.rejected",
+                status="error",
+                title="Deep Research command rejected",
+                payload={
+                    "target_agent_id": RESEARCH_AGENT_ID,
+                    "reason": "workflow_mode_required",
+                    "required_agent_id": SUPER_CHAT_AGENT_ID,
+                    "required_mode_id": DEEP_RESEARCH_MODE_ID,
+                    "original_message": request.message,
+                },
+            )
+            self.trace_store.fail_run(
+                run.run_id,
+                error_message=error_msg,
+                error_type="workflow_mode_required",
+                output=error_msg,
+            )
+            latest_run = self.trace_store.get_run(run.run_id) or run
+            return ChatResponse(
+                conversation_id=request.conversation_id,
+                response=error_msg,
+                skills_used=[],
+                plan=None,
+                model_used="",
+                tokens_used={},
+                error_type="workflow_mode_required",
+                agent_id=RESEARCH_AGENT_ID,
+                role_id=role_id,
+                runtime=runtime,
+                run_id=run.run_id,
+                events=latest_run.events,
+                memory_context=role_context.records,
+            )
 
         agent_command_route = self._parse_agent_command_protocol(request, agent_id)
         if agent_command_route:
@@ -9653,12 +10739,16 @@ class AgentEngine:
         conversation_context = self.memory.get_context(self._conversation_memory_id(request))
         history = conversation_context.messages if request.memory_enabled else []
         short_term_summary = conversation_context.summary if request.memory_enabled else ""
+        context_blocks_for_model = self._context_blocks_for_model(
+            request.context_blocks,
+            history=history,
+        )
         tool_names = [tool.name for tool in tools]
         allowed_tool_names = set(tool_names)
         prompt_sources = self._build_system_prompt_parts(
             role_context,
             request.mode_prompts,
-            request.context_blocks,
+            context_blocks_for_model,
             drive_context=request.drive_context,
             agent_id=agent_id,
             tool_names=tool_names,
@@ -9700,7 +10790,7 @@ class AgentEngine:
             tool_names=tool_names,
             mode_ids=request.mode_ids,
             mode_prompts=request.mode_prompts,
-            context_blocks=request.context_blocks,
+            context_blocks=context_blocks_for_model,
             short_term_summary=short_term_summary,
             tools=tools,
             prompt_sources=prompt_sources,
@@ -9939,7 +11029,7 @@ class AgentEngine:
                     duration_ms=duration_ms,
                 )
                 fallback_content = self._fallback_after_model_error_with_tool_results(
-                    messages,
+                    all_new_messages,
                     error_message=error_msg,
                 )
                 if fallback_content:
@@ -10180,60 +11270,6 @@ class AgentEngine:
             messages.append(assistant_msg)
             all_new_messages.append(assistant_msg)
 
-            if agent_id == SUPER_CHAT_AGENT_ID:
-                agent_tool_call = next(
-                    (
-                        tc
-                        for tc in response.tool_calls
-                        if tc.name in TERMINAL_AGENT_TOOL_IDS and tc.name in allowed_tool_names
-                    ),
-                    None,
-                )
-                if agent_tool_call:
-                    tool_started = perf_counter()
-                    arguments = agent_tool_call.arguments if isinstance(agent_tool_call.arguments, dict) else {}
-                    terminal_tool_payload = {"name": agent_tool_call.name, "arguments": arguments, "terminal": True}
-                    if agent_loop_enabled:
-                        terminal_tool_payload.update(
-                            {
-                                "workflow": workflow_name,
-                                "workflow_node": workflow_node,
-                                "workflow_source": workflow_source,
-                                "legacy_workflow": legacy_workflow,
-                            }
-                        )
-                    self.trace_store.append_event(
-                        run.run_id,
-                        type="tool.started",
-                        status="running",
-                        title=f"Tool {agent_tool_call.name}",
-                        step_id=agent_tool_call.id,
-                        payload=terminal_tool_payload,
-                    )
-                    return await self._execute_agent_tool(
-                        request=request,
-                        role_context=role_context,
-                        run_id=run.run_id,
-                        tool_name=agent_tool_call.name,
-                        tool_call_id=agent_tool_call.id,
-                        arguments=arguments,
-                        tool_started=tool_started,
-                        workflow_context=(
-                            {
-                                "workflow": workflow_name,
-                                "node": workflow_node,
-                                "node_started": workflow_node_started,
-                                "workflow_started": workflow_started,
-                                "round": round_index + 1,
-                                "result": "terminal_agent_handoff",
-                                "workflow_source": workflow_source,
-                                "legacy_workflow": legacy_workflow,
-                            }
-                            if agent_loop_enabled
-                            else None
-                        ),
-                    )
-
             # Execute each tool call
             for tc in response.tool_calls:
                 tool_arguments = self._tool_arguments_for_execution(request, tc.name, tc.arguments)
@@ -10262,6 +11298,54 @@ class AgentEngine:
                 if tc.name not in allowed_tool_names:
                     result_text = json.dumps({"error": f"Tool disabled or unavailable: {tc.name}"})
                     status = "error"
+                elif tc.name in AGENT_TOOL_IDS:
+                    try:
+                        result = await self._execute_agent_tool_as_result(
+                            request=request,
+                            role_context=role_context,
+                            run_id=run.run_id,
+                            tool_name=tc.name,
+                            tool_call_id=tc.id,
+                            arguments=tool_arguments,
+                            tool_started=tool_started,
+                            workflow_context=(
+                                {
+                                    "workflow": workflow_name,
+                                    "node": workflow_node,
+                                    "workflow_node": workflow_node,
+                                    "node_started": workflow_node_started,
+                                    "workflow_started": workflow_started,
+                                    "round": round_index + 1,
+                                    "result": "agent_tool_result",
+                                    "workflow_source": workflow_source,
+                                    "legacy_workflow": legacy_workflow,
+                                }
+                                if agent_loop_enabled
+                                else None
+                            ),
+                        )
+                        result_text = json.dumps(
+                            {
+                                "success": result.success,
+                                "data": result.data,
+                                "display_text": result.display_text,
+                                "error": result.error,
+                            },
+                            ensure_ascii=False,
+                        )
+                        status = "completed" if result.success else "error"
+                        if result.success:
+                            self._merge_agent_tool_payload(
+                                payload=result.data,
+                                skills_used=skills_used,
+                                citations=citations,
+                                citation_urls=citation_urls,
+                                artifacts=artifacts,
+                            )
+                    except Exception as e:
+                        logger.exception(f"Agent tool {tc.name} execution failed")
+                        result_text = json.dumps({"error": str(e)}, ensure_ascii=False)
+                        status = "error"
                 elif skill is None:
                     result_text = json.dumps({"error": f"Unknown skill: {tc.name}"})
                     status = "error"
@@ -10285,6 +11369,21 @@ class AgentEngine:
                                 self._drive_artifact_from_tool_result(tc.name, result.data),
                             )
                             if tc.name == "search":
+                                self._append_search_trace_nodes(
+                                    run.run_id,
+                                    tool_call_id=tc.id,
+                                    result_data=result.data,
+                                    workflow_context=(
+                                        {
+                                            "workflow": workflow_name,
+                                            "workflow_node": workflow_node,
+                                            "workflow_source": workflow_source,
+                                            "legacy_workflow": legacy_workflow,
+                                        }
+                                        if agent_loop_enabled
+                                        else None
+                                    ),
+                                )
                                 new_citations = self._collect_search_citations(
                                     result_data=result.data,
                                     citations=citations,

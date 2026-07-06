@@ -127,6 +127,12 @@ class RuntimeConfig:
             "search.min_provider_coverage": str(_search_broad_cfg.get("min_provider_coverage", 2)),
             "search.provider_limit_multiplier": str(_search_broad_cfg.get("provider_limit_multiplier", 2)),
             "search.recall.max_queries": str(_search_broad_cfg.get("recall_max_queries", 2)),
+            "search.recall.timeout_seconds": str(_search_broad_cfg.get("recall_timeout_seconds", 30)),
+            "search.rerank.enabled": str(_search_broad_cfg.get("rerank_enabled", True)).lower(),
+            "search.rerank.provider": str(_search_broad_cfg.get("rerank_provider", "")),
+            "search.rerank.max_candidates": str(_search_broad_cfg.get("rerank_max_candidates", 10)),
+            "search.rerank.timeout_seconds": str(_search_broad_cfg.get("rerank_timeout_seconds", 20)),
+            "search.rerank.min_score": str(_search_broad_cfg.get("rerank_min_score", 0.35)),
             "llm.ollama.base_url": settings.ollama_base_url,
             "llm.ollama.model": settings.ollama_model,
         }

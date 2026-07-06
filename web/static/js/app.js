@@ -87,6 +87,9 @@ const I18N = {
             chatWithPath: '去 Super Chat 问答',
             chatThisPath: '问答',
             previewDocument: '预览',
+            share: '分享',
+            copyLink: '复制链接',
+            openLink: '打开链接',
             createFromSelection: '清空选择',
             clearSelection: '清空选择',
             moveUp: '上移',
@@ -192,6 +195,20 @@ const I18N = {
             chatPathTitle: 'Super Chat 网盘路径：{path}',
             folderContents: '{folders} 个文件夹 · {files} 个文件',
             download: '下载',
+            shareTitle: '分享文档',
+            shareEnabled: '已开启分享',
+            shareDisabled: '分享未开启',
+            shareEnabledDetail: '任何拿到链接的人都可以查看文档内容。',
+            shareDisabledDetail: '开启后可复制公开链接；关闭后外部用户无法查看。',
+            shareOff: '关闭',
+            shareExternal: '分享给外部用户',
+            shareExternalDetail: '拥有链接的人可以直接查看文档内容。',
+            shareEnable: '开启分享',
+            shareDisable: '关闭分享',
+            shareCopied: '链接已复制',
+            shareCopyFailed: '复制失败，请手动复制链接',
+            shareUpdateFailed: '分享设置失败：{message}',
+            shareLinkLabel: '分享链接',
             expandPrompt: '请基于当前网盘上下文，帮我整理可以沉淀的新知识：\n1. 提炼关键结论。\n2. 标出缺失或薄弱的资料。\n3. 生成一篇可以直接保存到网盘的新知识文档草稿。',
             type: {
                 folder: '文件夹',
@@ -230,6 +247,7 @@ const I18N = {
             currentConversation: '当前会话',
             loadConversationFailed: '加载会话失败：{message}',
             createConversationFailed: '创建会话失败：{message}',
+            deleteConversationFailed: '删除会话失败：{message}',
             resumePending: 'AI 仍在生成，完成后会自动恢复到当前会话',
             citations: '引用来源',
             followUpAria: '推荐追问',
@@ -638,6 +656,9 @@ const I18N = {
             chatWithPath: 'Ask in Super Chat',
             chatThisPath: 'Ask',
             previewDocument: 'Preview',
+            share: 'Share',
+            copyLink: 'Copy link',
+            openLink: 'Open link',
             createFromSelection: 'New From Selection',
             clearSelection: 'Clear selection',
             moveUp: 'Move up',
@@ -743,6 +764,20 @@ const I18N = {
             chatPathTitle: 'Super Chat drive path: {path}',
             folderContents: '{folders} folders · {files} files',
             download: 'Download',
+            shareTitle: 'Share document',
+            shareEnabled: 'Sharing on',
+            shareDisabled: 'Sharing off',
+            shareEnabledDetail: 'Anyone with the link can view this document.',
+            shareDisabledDetail: 'Turn sharing on to copy a public link. Turn it off to block external access.',
+            shareOff: 'Off',
+            shareExternal: 'Share externally',
+            shareExternalDetail: 'Anyone with the link can view the document.',
+            shareEnable: 'Turn on sharing',
+            shareDisable: 'Turn off sharing',
+            shareCopied: 'Link copied',
+            shareCopyFailed: 'Copy failed. You can copy the link manually.',
+            shareUpdateFailed: 'Failed to update sharing: {message}',
+            shareLinkLabel: 'Share link',
             expandPrompt: 'Use the current drive context to organize durable knowledge:\n1. Extract the key conclusions.\n2. Identify missing or weak source material.\n3. Draft a new knowledge document that can be saved directly.',
             type: {
                 folder: 'Folder',
@@ -781,6 +816,7 @@ const I18N = {
             currentConversation: 'Current conversation',
             loadConversationFailed: 'Failed to load conversation: {message}',
             createConversationFailed: 'Failed to create conversation: {message}',
+            deleteConversationFailed: 'Failed to delete conversation: {message}',
             resumePending: 'AI is still generating. The answer will reappear here when it finishes.',
             citations: 'Sources',
             followUpAria: 'Suggested follow-up questions',
@@ -1149,8 +1185,8 @@ const SUPER_CHAT_MODES = [
     {
         id: DEEP_RESEARCH_MODE_ID,
         prompts: {
-            zh: '【深度研究】本轮交给 Deep Research Agent。必须先输出研究计划大纲给用户确认；用户确认后再按计划进行多轮外网检索、分步总结，并汇总为研究报告。',
-            en: '[Deep Research] Route this turn to the Deep Research Agent. First produce a research plan for user confirmation; after approval, run multi-round web research, summarize step by step, and produce a research report.',
+            zh: '【深度研究】本轮只能通过 Super Chat 的深度研究模式进入 Deep Research workflow；不要使用 agent tool 或 /agent 命令。先输出研究计划大纲给用户确认；用户确认后再按计划进行多轮外网检索、分步总结，汇总为研究报告，并将最终报告保存到网盘 /研究报告 目录。',
+            en: '[Deep Research] This turn may enter the Deep Research workflow only through Super Chat deep-research mode; do not use agent tools or /agent commands. First produce a research plan for user confirmation; after approval, run multi-round web research, summarize step by step, produce a research report, and save the final report to the drive folder /研究报告.',
         },
     },
 ];
@@ -1328,6 +1364,9 @@ let chatNavigationUpdateScheduled = false;
 let driveSaveDialogState = createEmptyDriveSaveDialogState();
 let drivePathDialogState = createEmptyDrivePathDialogState();
 let drivePreviewState = createEmptyDrivePreviewState();
+let driveSharePanelItemId = '';
+let driveShareBusyItemIds = new Set();
+let driveShareStatus = { itemId: '', text: '', type: 'muted' };
 
 const sidebar = document.getElementById('sidebar');
 const sidebarBackdrop = document.getElementById('sidebar-backdrop');
@@ -1569,6 +1608,74 @@ async function apiCall(method, path, body = null) {
         throw new Error(err.error || err.detail || 'Request failed');
     }
     return resp.json();
+}
+
+function confirmAction(message, options = {}) {
+    if (typeof confirmAction.currentCleanup === 'function') {
+        confirmAction.currentCleanup(false);
+    }
+
+    return new Promise((resolve) => {
+        const dialogId = `app-confirm-${Date.now()}`;
+        const confirmText = options.confirmText || t('actions.delete');
+        const cancelText = options.cancelText || t('actions.cancel');
+        const title = options.title || confirmText;
+        const dialog = document.createElement('div');
+        dialog.className = 'app-confirm-dialog';
+        dialog.setAttribute('role', 'dialog');
+        dialog.setAttribute('aria-modal', 'true');
+        dialog.setAttribute('aria-labelledby', `${dialogId}-title`);
+        dialog.innerHTML = `
+            <button class="app-confirm-backdrop" type="button" data-confirm-cancel aria-label="${escapeAttr(cancelText)}"></button>
+            <section class="app-confirm-panel">
+                <h2 id="${escapeAttr(dialogId)}-title">${escapeHtml(title)}</h2>
+                <p>${escapeHtml(message || '')}</p>
+                <div class="app-confirm-actions">
+                    <button class="btn-secondary" type="button" data-confirm-cancel>${escapeHtml(cancelText)}</button>
+                    <button class="btn-secondary app-confirm-primary ${options.danger ? 'danger' : ''}" type="button" data-confirm-accept>${escapeHtml(confirmText)}</button>
+                </div>
+            </section>
+        `;
+
+        let settled = false;
+        const finish = (value) => {
+            if (settled) return;
+            settled = true;
+            dialog.remove();
+            document.removeEventListener('keydown', onKeyDown, true);
+            confirmAction.currentCleanup = null;
+            resolve(value);
+        };
+        const onKeyDown = (event) => {
+            if (event.key === 'Escape') {
+                event.preventDefault();
+                finish(false);
+            }
+        };
+
+        dialog.addEventListener('click', (event) => {
+            const target = event.target instanceof Element ? event.target : event.target?.parentElement;
+            if (!target) return;
+            if (target.closest('[data-confirm-cancel]')) {
+                event.preventDefault();
+                event.stopPropagation();
+                finish(false);
+                return;
+            }
+            if (target.closest('[data-confirm-accept]')) {
+                event.preventDefault();
+                event.stopPropagation();
+                finish(true);
+            }
+        });
+
+        confirmAction.currentCleanup = finish;
+        document.addEventListener('keydown', onKeyDown, true);
+        document.body.appendChild(dialog);
+        requestAnimationFrame(() => {
+            dialog.querySelector('[data-confirm-cancel]')?.focus({ preventScroll: true });
+        });
+    });
 }
 
 function wait(ms) {
@@ -1978,6 +2085,9 @@ async function switchAccount(userId, options = {}) {
     projectSearchResults = [];
     projectInlineFileId = '';
     projectInlineFileDetail = { item: null, loading: false, error: '' };
+    driveSharePanelItemId = '';
+    driveShareBusyItemIds = new Set();
+    driveShareStatus = { itemId: '', text: '', type: 'muted' };
     projectError = '';
     projectStatusText = '';
     projectStatusType = 'muted';
@@ -2737,7 +2847,7 @@ async function loadConversation(id) {
 
 async function deleteConversation(id) {
     if (!id || pendingConversationDeletes.has(id)) return;
-    if (!window.confirm(t('actions.confirmDeleteConversation'))) return;
+    if (!await confirmAction(t('actions.confirmDeleteConversation'), { confirmText: t('actions.delete'), danger: true })) return;
 
     pendingConversationDeletes.add(id);
     renderConversationList();
@@ -2752,6 +2862,9 @@ async function deleteConversation(id) {
             showWelcome();
         }
         updateTopbar();
+    } catch (err) {
+        console.warn('Delete conversation failed', err);
+        window.alert(t('chat.deleteConversationFailed', { message: err.message || String(err) }));
     } finally {
         pendingConversationDeletes.delete(id);
         renderConversationList();
@@ -2782,6 +2895,10 @@ async function loadProjects() {
         if (projectInlineFileId && driveItemById(projectInlineFileId)?.type !== 'file') {
             projectInlineFileId = '';
             projectInlineFileDetail = { item: null, loading: false, error: '' };
+        }
+        if (driveSharePanelItemId && driveItemById(driveSharePanelItemId)?.type !== 'file') {
+            driveSharePanelItemId = '';
+            driveShareStatus = { itemId: '', text: '', type: 'muted' };
         }
         collapsedDriveFolderIds = new Set(Array.from(collapsedDriveFolderIds).filter((id) => driveItemIsFolder(id)));
         saveDriveCollapsedFolderIds();
@@ -2863,7 +2980,7 @@ async function createProject(name = '') {
 async function deleteProject(id) {
     if (!id || pendingProjectDeletes.has(id)) return;
     const item = driveItemById(id);
-    if (!window.confirm(t('actions.confirmDeleteProject', { name: driveDisplayName(item) || id }))) return;
+    if (!await confirmAction(t('actions.confirmDeleteProject', { name: driveDisplayName(item) || id }), { confirmText: t('actions.delete'), danger: true })) return;
 
     pendingProjectDeletes.add(id);
     renderProjectList();
@@ -2876,6 +2993,10 @@ async function deleteProject(id) {
         if (projectInlineFileId === id || driveHasAncestor(projectInlineFileId, id)) {
             projectInlineFileId = '';
             projectInlineFileDetail = { item: null, loading: false, error: '' };
+        }
+        if (driveSharePanelItemId === id || driveHasAncestor(driveSharePanelItemId, id)) {
+            driveSharePanelItemId = '';
+            driveShareStatus = { itemId: '', text: '', type: 'muted' };
         }
         if (currentProjectId === id || driveHasAncestor(currentProjectId, id)) {
             currentProjectId = item?.parent_id || '';
@@ -2954,7 +3075,7 @@ async function deleteProjectDocument(projectId, documentId) {
     void projectId;
     if (!documentId || pendingProjectDocumentDeletes.has(documentId)) return;
     const item = driveItemById(documentId);
-    if (!window.confirm(t('actions.confirmDeleteDocument', { name: driveDisplayName(item) || documentId }))) return;
+    if (!await confirmAction(t('actions.confirmDeleteDocument', { name: driveDisplayName(item) || documentId }), { confirmText: t('actions.delete'), danger: true })) return;
     pendingProjectDocumentDeletes.add(documentId);
     renderProjects();
     try {
@@ -2965,6 +3086,10 @@ async function deleteProjectDocument(projectId, documentId) {
         if (projectInlineFileId === documentId) {
             projectInlineFileId = '';
             projectInlineFileDetail = { item: null, loading: false, error: '' };
+        }
+        if (driveSharePanelItemId === documentId) {
+            driveSharePanelItemId = '';
+            driveShareStatus = { itemId: '', text: '', type: 'muted' };
         }
         if (currentProjectId === documentId || driveHasAncestor(currentProjectId, documentId)) {
             currentProjectId = item?.parent_id || '';
@@ -3822,6 +3947,10 @@ async function openDriveArtifact(itemId = '') {
 async function openDriveFileInline(itemId = '') {
     const cached = driveItemById(itemId);
     if (!cached || cached.type !== 'file') return;
+    if (driveSharePanelItemId && driveSharePanelItemId !== cached.id) {
+        driveSharePanelItemId = '';
+        driveShareStatus = { itemId: '', text: '', type: 'muted' };
+    }
     currentProjectId = cached.parent_id || currentProjectId || '';
     activeProjectDocumentId = cached.id;
     projectInlineFileId = cached.id;
@@ -3846,6 +3975,8 @@ function clearDriveFileInlineDetail() {
     if (!projectInlineFileId) return;
     projectInlineFileId = '';
     projectInlineFileDetail = { item: null, loading: false, error: '' };
+    driveSharePanelItemId = '';
+    driveShareStatus = { itemId: '', text: '', type: 'muted' };
     renderProjectList();
     renderProjects();
 }
@@ -3991,6 +4122,7 @@ function renderRoleMemoryList() {
                 </div>
                 <button class="role-memory-delete" type="button"
                         data-delete-role-memory="${escapeAttr(memory.id)}"
+                        onclick="event.preventDefault(); event.stopPropagation(); deleteRoleMemory(this.dataset.deleteRoleMemory)"
                         title="${escapeAttr(t('actions.delete'))}"
                         aria-label="${escapeAttr(t('actions.delete'))}"
                         ${deleting ? 'disabled aria-busy="true"' : ''}>
@@ -4343,7 +4475,7 @@ function renderDeveloperMemoryControls(totalCount = 0, visibleCount = 0, selecte
                 <button class="developer-memory-action" type="button" data-developer-memory-selection="clear" ${hasSelection ? '' : 'disabled'}>
                     ${escapeHtml(t('developer.clearSelection'))}
                 </button>
-                <button class="developer-memory-action danger" type="button" data-developer-memory-delete-selected ${hasSelection ? '' : 'disabled'}>
+                <button class="developer-memory-action danger" type="button" data-developer-memory-delete-selected onclick="event.preventDefault(); event.stopPropagation(); deleteSelectedDeveloperMemories()" ${hasSelection ? '' : 'disabled'}>
                     ${escapeHtml(t('developer.deleteSelected'))}
                 </button>
                 <button class="developer-memory-action" type="button" data-developer-memory-bulk="expand">
@@ -4468,7 +4600,7 @@ function renderDeveloperMemoryRecord(memory = {}, options = {}) {
                 <div class="developer-memory-actions">
                     <button class="developer-memory-action" type="button" data-developer-memory-edit="${escapeAttr(memory.id || '')}" data-developer-memory-role="${escapeAttr(memory.role_id || currentRoleId || '')}" ${busy ? 'disabled' : ''}>${escapeHtml(t('developer.edit'))}</button>
                     ${archiveAction}
-                    <button class="developer-memory-action danger" type="button" data-developer-memory-delete="${escapeAttr(memory.id || '')}" data-developer-memory-role="${escapeAttr(memory.role_id || currentRoleId || '')}" ${busy ? 'disabled' : ''}>${escapeHtml(t('developer.delete'))}</button>
+                    <button class="developer-memory-action danger" type="button" data-developer-memory-delete="${escapeAttr(memory.id || '')}" data-developer-memory-role="${escapeAttr(memory.role_id || currentRoleId || '')}" onclick="event.preventDefault(); event.stopPropagation(); deleteDeveloperMemory(this.dataset.developerMemoryRole, this.dataset.developerMemoryDelete)" ${busy ? 'disabled' : ''}>${escapeHtml(t('developer.delete'))}</button>
                 </div>
                 ${sourceTrace}
                 ${metadata}
@@ -4834,7 +4966,7 @@ async function editDeveloperMemory(roleId, memoryId) {
 
 async function deleteDeveloperMemory(roleId, memoryId) {
     if (!roleId || !memoryId || developerMemoryMutatingIds.has(memoryId)) return;
-    if (!window.confirm(t('developer.deleteConfirm'))) return;
+    if (!await confirmAction(t('developer.deleteConfirm'), { confirmText: t('developer.delete'), danger: true })) return;
     developerMemoryMutatingIds.add(memoryId);
     renderDeveloperView();
     try {
@@ -4860,7 +4992,7 @@ async function deleteSelectedDeveloperMemories() {
         renderDeveloperView();
         return;
     }
-    if (!window.confirm(t('developer.deleteSelectedConfirm', { count: memories.length }))) return;
+    if (!await confirmAction(t('developer.deleteSelectedConfirm', { count: memories.length }), { confirmText: t('developer.deleteSelected'), danger: true })) return;
 
     const mutatingIds = new Set(memories.map((memory) => memory.id).filter(Boolean));
     mutatingIds.forEach((id) => developerMemoryMutatingIds.add(id));
@@ -5030,7 +5162,7 @@ async function createPulseTopic(seed = null) {
 async function deletePulseTopic(id) {
     if (!id || pendingPulseTopicDeletes.has(id)) return;
     const topic = (Array.isArray(pulse.topics) ? pulse.topics : []).find((item) => item.id === id);
-    if (!window.confirm(t('actions.confirmDeleteTopic', { name: topic?.name || '' }))) return;
+    if (!await confirmAction(t('actions.confirmDeleteTopic', { name: topic?.name || '' }), { confirmText: t('actions.delete'), danger: true })) return;
 
     pendingPulseTopicDeletes.add(id);
     renderPulse();
@@ -5091,7 +5223,14 @@ function mergeRuns(nextRuns = []) {
         if (!run?.run_id) return;
         const index = runs.findIndex((item) => item.run_id === run.run_id);
         if (index >= 0) {
-            runs[index] = { ...runs[index], ...run };
+            const existing = runs[index];
+            const existingFullTrace = runHasPromptBuilderTrace(existing);
+            const incomingCompactTrace = Boolean(run.trace_compact);
+            runs[index] = { ...existing, ...run };
+            if (existingFullTrace && incomingCompactTrace) {
+                runs[index].events = existing.events;
+                runs[index].trace_compact = false;
+            }
         } else {
             runs.unshift(run);
         }
@@ -5102,11 +5241,24 @@ function mergeRuns(nextRuns = []) {
 async function ensureRunLoaded(runId) {
     if (!runId) return null;
     const existing = runs.find((run) => run.run_id === runId);
-    if (existing && Array.isArray(existing.events)) return existing;
+    if (existing && Array.isArray(existing.events) && !existing.trace_compact && runHasPromptBuilderTrace(existing)) {
+        return existing;
+    }
 
     const run = await apiCall('GET', `/api/runs/${encodeURIComponent(runId)}`);
+    run.trace_compact = false;
     mergeRuns([run]);
     return run;
+}
+
+function runHasPromptBuilderTrace(run = {}) {
+    return (run.events || []).some((event) => {
+        const payload = event?.payload || {};
+        return event?.type === 'context.built'
+            && (Array.isArray(payload.prompt_sources)
+                || Array.isArray(payload.context_nodes)
+                || payload.final_model_request);
+    });
 }
 
 async function openTraceRun(runId) {
@@ -5324,7 +5476,7 @@ function renderConversationList() {
         return `
             <div class="conversation-item ${isActive ? 'active' : ''}" data-conversation-id="${escapeAttr(conv.id)}">
                 <span class="title">${escapeHtml(displayConversationTitle(conv))}</span>
-                <button class="delete-btn" type="button" data-delete-conversation="${escapeAttr(conv.id)}" title="${escapeAttr(t('actions.delete') || 'Delete')}" ${deleting ? 'disabled aria-busy="true"' : ''}>&times;</button>
+                <button class="delete-btn" type="button" data-delete-conversation="${escapeAttr(conv.id)}" onclick="event.preventDefault(); event.stopPropagation(); deleteConversation(this.dataset.deleteConversation)" title="${escapeAttr(t('actions.delete') || 'Delete')}" ${deleting ? 'disabled aria-busy="true"' : ''}>&times;</button>
             </div>
         `;
     }).join('');
@@ -5750,6 +5902,8 @@ function enterDriveFolder(folderId = '') {
     activeProjectDocumentId = '';
     projectInlineFileId = '';
     projectInlineFileDetail = { item: null, loading: false, error: '' };
+    driveSharePanelItemId = '';
+    driveShareStatus = { itemId: '', text: '', type: 'muted' };
     saveCurrentProjectId(currentProjectId);
     rememberDrivePath(currentProjectId, { render: false });
     renderProjectList();
@@ -6167,6 +6321,102 @@ function driveItemMeta(item) {
     return [formatBytes(item.size || 0), updated].filter(Boolean).join(' · ');
 }
 
+function driveShareUrl(item) {
+    const token = String(item?.share_token || '').trim();
+    if (!token || !item?.share_enabled) return '';
+    return new URL(`/share/drive/${encodeURIComponent(token)}`, window.location.origin).href;
+}
+
+function driveShareItem(itemId = '') {
+    if (projectInlineFileDetail.item?.id === itemId) return projectInlineFileDetail.item;
+    if (drivePreviewState.item?.id === itemId) return drivePreviewState.item;
+    return driveItemById(itemId);
+}
+
+function syncDriveShareFields(updated) {
+    if (!updated?.id) return;
+    const patch = {
+        share_enabled: Boolean(updated.share_enabled),
+        share_token: updated.share_token || '',
+    };
+    if (updated.updated_at) patch.updated_at = updated.updated_at;
+    const patchItem = (item) => (item?.id === updated.id ? { ...item, ...patch } : item);
+    projects = projects.map(patchItem);
+    if (projectDetail?.flat_items) {
+        projectDetail.flat_items = projectDetail.flat_items.map(patchItem);
+    }
+    if (projectDetail?.items) {
+        const patchTree = (items) => items.map((item) => {
+            const next = patchItem(item);
+            if (Array.isArray(item.children)) {
+                next.children = patchTree(item.children);
+            }
+            return next;
+        });
+        projectDetail.items = patchTree(projectDetail.items);
+    }
+    if (projectInlineFileDetail.item?.id === updated.id) {
+        projectInlineFileDetail.item = { ...projectInlineFileDetail.item, ...updated };
+    }
+    if (drivePreviewState.item?.id === updated.id) {
+        drivePreviewState.item = { ...drivePreviewState.item, ...updated };
+    }
+}
+
+function setDriveShareStatus(itemId = '', text = '', type = 'muted') {
+    driveShareStatus = { itemId, text, type };
+    renderProjects();
+}
+
+function toggleDriveSharePanel(itemId = '') {
+    if (!itemId || driveShareItem(itemId)?.type !== 'file') return;
+    if (driveSharePanelItemId === itemId) {
+        driveSharePanelItemId = '';
+        driveShareStatus = { itemId: '', text: '', type: 'muted' };
+    } else {
+        driveSharePanelItemId = itemId;
+        driveShareStatus = { itemId: '', text: '', type: 'muted' };
+    }
+    renderProjects();
+}
+
+async function updateDriveSharePermission(itemId = '', enabled = false) {
+    if (!itemId || driveShareBusyItemIds.has(itemId)) return;
+    driveShareBusyItemIds.add(itemId);
+    driveSharePanelItemId = itemId;
+    driveShareStatus = { itemId: '', text: '', type: 'muted' };
+    renderProjects();
+    try {
+        const data = await apiCall('PUT', `/api/drive/items/${encodeURIComponent(itemId)}/share`, { enabled });
+        if (data.item) syncDriveShareFields(data.item);
+        driveShareStatus = {
+            itemId,
+            text: enabled ? t('projects.shareEnabled') : t('projects.shareDisabled'),
+            type: 'ok',
+        };
+    } catch (err) {
+        driveShareStatus = {
+            itemId,
+            text: t('projects.shareUpdateFailed', { message: err.message || String(err) }),
+            type: 'error',
+        };
+    } finally {
+        driveShareBusyItemIds.delete(itemId);
+        renderProjects();
+    }
+}
+
+async function copyDriveShareLink(itemId = '') {
+    const url = driveShareUrl(driveShareItem(itemId));
+    if (!url) return;
+    try {
+        await copyTextToClipboard(url);
+        setDriveShareStatus(itemId, t('projects.shareCopied'), 'ok');
+    } catch {
+        setDriveShareStatus(itemId, t('projects.shareCopyFailed'), 'error');
+    }
+}
+
 function drivePromptContext(agentId = selectedModeAgentId()) {
     if (agentId !== SUPER_CHAT_AGENT_ID) return null;
     const folder = chatDrivePathItem() || driveRootItem();
@@ -6541,6 +6791,13 @@ function renderProjectInlineFilePanel(item) {
                 <button class="btn-secondary" type="button" data-drive-back-to-folder title="${escapeAttr(t('actions.back'))}">
                     <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.3"><path d="m12 19-7-7 7-7"/><path d="M19 12H5"/></svg>
                 </button>
+                <div class="drive-share-menu-wrap">
+                    <button class="btn-secondary drive-share-trigger" type="button" data-drive-share-panel="${escapeAttr(item.id)}" aria-expanded="${driveSharePanelItemId === item.id ? 'true' : 'false'}" title="${escapeAttr(t('actions.share'))}">
+                        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.3"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="m8.6 10.7 6.8-4.4M8.6 13.3l6.8 4.4"/></svg>
+                        <span>${escapeHtml(t('actions.share'))}</span>
+                    </button>
+                    ${renderDriveSharePanel(item)}
+                </div>
                 <button class="btn-secondary" type="button" data-project-download-document="${escapeAttr(item.id)}" title="${escapeAttr(t('projects.download'))}">
                     <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.3"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>
                 </button>
@@ -6550,6 +6807,54 @@ function renderProjectInlineFilePanel(item) {
             ${renderProjectStatus()}
             ${renderInlineDriveFileContent(item)}
         </div>
+    `;
+}
+
+function renderDriveSharePanel(item) {
+    if (!item?.id || driveSharePanelItemId !== item.id) return '';
+    const busy = driveShareBusyItemIds.has(item.id);
+    const enabled = Boolean(item.share_enabled && item.share_token);
+    const url = driveShareUrl(item);
+    const status = driveShareStatus.itemId === item.id && driveShareStatus.text
+        ? `<div class="drive-share-status ${escapeAttr(driveShareStatus.type)}" role="status">${escapeHtml(driveShareStatus.text)}</div>`
+        : '';
+    return `
+        <section class="drive-share-menu" aria-label="${escapeAttr(t('projects.shareTitle'))}">
+            <button class="drive-share-option ${enabled ? '' : 'active'}" type="button"
+                    data-drive-share-set="${escapeAttr(item.id)}"
+                    data-drive-share-enabled="false"
+                    ${busy || !enabled ? 'disabled' : ''}>
+                <span class="drive-share-option-check">
+                    ${enabled ? '' : '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.6"><path d="M20 6 9 17l-5-5"/></svg>'}
+                </span>
+                <span class="drive-share-option-copy">
+                    <strong>${escapeHtml(t('projects.shareOff'))}</strong>
+                    <small>${escapeHtml(t('projects.shareDisabledDetail'))}</small>
+                </span>
+            </button>
+            <button class="drive-share-option ${enabled ? 'active' : ''}" type="button"
+                    data-drive-share-set="${escapeAttr(item.id)}"
+                    data-drive-share-enabled="true"
+                    ${busy || enabled ? 'disabled' : ''}>
+                <span class="drive-share-option-check">
+                    ${enabled ? '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.6"><path d="M20 6 9 17l-5-5"/></svg>' : ''}
+                </span>
+                <span class="drive-share-option-copy">
+                    <strong>${escapeHtml(t('projects.shareExternal'))}</strong>
+                    <small>${escapeHtml(t('projects.shareExternalDetail'))}</small>
+                </span>
+            </button>
+            ${enabled && url ? `
+                <div class="drive-share-link-row">
+                    <input type="text" readonly aria-label="${escapeAttr(t('projects.shareLinkLabel'))}" value="${escapeAttr(url)}">
+                    <button class="btn-secondary" type="button" data-drive-share-copy="${escapeAttr(item.id)}" ${busy ? 'disabled' : ''}>
+                        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.3"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                        <span>${escapeHtml(t('actions.copyLink'))}</span>
+                    </button>
+                </div>
+            ` : ''}
+            ${status}
+        </section>
     `;
 }
 
@@ -9778,8 +10083,9 @@ function renderConversationMessageListHtml(messages = []) {
         const skillsUsed = parseSkills(msg.skills_used);
         const citations = parseCitations(msg.citations);
         const artifacts = parseArtifacts(msg.artifacts);
+        const hasTraceSummary = Boolean(String(msg.trace_summary || '').trim());
         const savedTraceEvents = parseTraceEvents(msg.trace_summary || msg.trace_events);
-        const savedRun = runRecordFromMessage(msg, skillsUsed, savedTraceEvents);
+        const savedRun = runRecordFromMessage(msg, skillsUsed, savedTraceEvents, null, { compact: hasTraceSummary });
         if (savedRun) savedRuns.push(savedRun);
         const traceRun = savedRun;
         const messageHtml = renderMessageHtml(
@@ -10158,7 +10464,7 @@ function showConversationSwitchLoading() {
     `;
 }
 
-function runRecordFromMessage(msg = {}, skillsUsed = [], traceEvents = [], fallbackRun = null) {
+function runRecordFromMessage(msg = {}, skillsUsed = [], traceEvents = [], fallbackRun = null, options = {}) {
     const runId = msg.run_id || fallbackRun?.run_id || '';
     if (!runId || !traceEvents.length) return null;
 
@@ -10184,6 +10490,7 @@ function runRecordFromMessage(msg = {}, skillsUsed = [], traceEvents = [], fallb
         started_at: fallbackRun?.started_at || msg.created_at || '',
         completed_at: fallbackRun?.completed_at || msg.created_at || '',
         events: traceEvents,
+        trace_compact: Boolean(options.compact),
     };
 }
 
@@ -11255,7 +11562,7 @@ function renderRegenerateActionButton(query = '', enabled = true) {
 
 function renderTraceActionButton(events = [], runId = '', runtime = '', modelUsed = '') {
     const normalizedEvents = Array.isArray(events) ? events : [];
-    if (!normalizedEvents.length && !runId) return '';
+    if (!normalizedEvents.length) return '';
 
     const disabled = runId ? '' : 'disabled aria-disabled="true"';
     const title = traceActionTitle(normalizedEvents, runId, runtime, modelUsed);
@@ -12166,7 +12473,9 @@ function sanitizeFileName(value = '') {
 
 function renderSafeLink(url, label) {
     if (!isSafeContentUrl(url)) return escapeHtml(label || url);
-    return `<a href="${escapeAttr(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(label || url)}</a>`;
+    const text = String(label || url);
+    const citationClass = /^\d{1,4}$/.test(text.trim()) ? ' class="inline-citation-link"' : '';
+    return `<a${citationClass} href="${escapeAttr(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(text)}</a>`;
 }
 
 function isSafeContentUrl(url = '') {
@@ -12564,6 +12873,44 @@ document.addEventListener('click', async (event) => {
         return;
     }
 
+    const clickTarget = event.target instanceof Element ? event.target : event.target?.parentElement;
+    if (!clickTarget) return;
+
+    const earlyConversationDeleteButton = clickTarget.closest('[data-delete-conversation]');
+    if (earlyConversationDeleteButton && !earlyConversationDeleteButton.disabled) {
+        event.preventDefault();
+        event.stopPropagation();
+        await deleteConversation(earlyConversationDeleteButton.dataset.deleteConversation);
+        return;
+    }
+
+    const earlyRoleMemoryDeleteButton = clickTarget.closest('[data-delete-role-memory]');
+    if (earlyRoleMemoryDeleteButton && !earlyRoleMemoryDeleteButton.disabled) {
+        event.preventDefault();
+        event.stopPropagation();
+        await deleteRoleMemory(earlyRoleMemoryDeleteButton.dataset.deleteRoleMemory);
+        return;
+    }
+
+    const earlyDeveloperMemoryDeleteSelectedButton = clickTarget.closest('[data-developer-memory-delete-selected]');
+    if (earlyDeveloperMemoryDeleteSelectedButton && !earlyDeveloperMemoryDeleteSelectedButton.disabled) {
+        event.preventDefault();
+        event.stopPropagation();
+        await deleteSelectedDeveloperMemories();
+        return;
+    }
+
+    const earlyDeveloperMemoryDeleteButton = clickTarget.closest('[data-developer-memory-delete]');
+    if (earlyDeveloperMemoryDeleteButton && !earlyDeveloperMemoryDeleteButton.disabled) {
+        event.preventDefault();
+        event.stopPropagation();
+        await deleteDeveloperMemory(
+            earlyDeveloperMemoryDeleteButton.dataset.developerMemoryRole,
+            earlyDeveloperMemoryDeleteButton.dataset.developerMemoryDelete,
+        );
+        return;
+    }
+
     const driveSaveCancelButton = event.target.closest('[data-drive-save-cancel]');
     if (driveSaveCancelButton) {
         event.preventDefault();
@@ -12634,6 +12981,30 @@ document.addEventListener('click', async (event) => {
     if (driveBackToFolderButton && !driveBackToFolderButton.disabled) {
         event.preventDefault();
         clearDriveFileInlineDetail();
+        return;
+    }
+
+    const driveSharePanelButton = event.target.closest('[data-drive-share-panel]');
+    if (driveSharePanelButton && !driveSharePanelButton.disabled) {
+        event.preventDefault();
+        toggleDriveSharePanel(driveSharePanelButton.dataset.driveSharePanel);
+        return;
+    }
+
+    const driveShareSetButton = event.target.closest('[data-drive-share-set]');
+    if (driveShareSetButton && !driveShareSetButton.disabled) {
+        event.preventDefault();
+        await updateDriveSharePermission(
+            driveShareSetButton.dataset.driveShareSet,
+            driveShareSetButton.dataset.driveShareEnabled === 'true',
+        );
+        return;
+    }
+
+    const driveShareCopyButton = event.target.closest('[data-drive-share-copy]');
+    if (driveShareCopyButton && !driveShareCopyButton.disabled) {
+        event.preventDefault();
+        await copyDriveShareLink(driveShareCopyButton.dataset.driveShareCopy);
         return;
     }
 
@@ -13331,6 +13702,15 @@ document.addEventListener('click', async (event) => {
         selectedTraceNodeId = '';
         renderRuns();
     }
+});
+
+document.addEventListener('click', (event) => {
+    if (!driveSharePanelItemId) return;
+    const target = event.target instanceof Element ? event.target : event.target?.parentElement;
+    if (target?.closest('.drive-share-menu-wrap')) return;
+    driveSharePanelItemId = '';
+    driveShareStatus = { itemId: '', text: '', type: 'muted' };
+    renderProjects();
 });
 
 document.addEventListener('pointerdown', startDriveSelectionBox);

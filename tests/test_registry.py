@@ -79,7 +79,7 @@ class TestSkillRegistry:
         assert "datetime" in names
         assert "calculator" in names
         assert "image_generation_v1" in names
-        assert "deep_research_v1" in names
+        assert "deep_research_v1" not in names
         assert "weight_loss_v1" in names
 
     def test_auto_discover_invalid_package(self):

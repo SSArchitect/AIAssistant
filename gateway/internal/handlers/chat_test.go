@@ -93,6 +93,25 @@ func TestStoredRunStatusPreservesPartialRun(t *testing.T) {
 	if got := storedRunStatus(events, ""); got != "partial" {
 		t.Fatalf("expected partial status, got %q", got)
 	}
+	events = append(
+		events[:1],
+		append(
+			[]bridge.RunEvent{
+				{
+					ID:      "evt_model_failed",
+					RunID:   "run_partial",
+					Type:    "model.failed",
+					Status:  "error",
+					Title:   "Model call failed",
+					Payload: map[string]interface{}{"error_type": "model_error"},
+				},
+			},
+			events[1:]...,
+		)...,
+	)
+	if got := storedRunStatus(events, ""); got != "partial" {
+		t.Fatalf("expected terminal run.partial to win over model.failed, got %q", got)
+	}
 	if got := storedRunStatus(events, "model_error"); got != "failed" {
 		t.Fatalf("expected explicit error_type to win, got %q", got)
 	}
@@ -891,6 +910,34 @@ func TestGetRunFallsBackToStoredTraceEvents(t *testing.T) {
 	}
 	if len(run.SkillsUsed) != 1 || run.SkillsUsed[0] != "memory" {
 		t.Fatalf("expected stored skills, got %#v", run.SkillsUsed)
+	}
+}
+
+func TestGetRunReturnsNotFoundWhenAgentAndStoredRunMissing(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	if err := database.Init(filepath.Join(t.TempDir(), "assistant.db")); err != nil {
+		t.Fatalf("init database: %v", err)
+	}
+
+	agentServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/agent/runs/run_missing" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		http.NotFound(w, r)
+	}))
+	defer agentServer.Close()
+
+	router := gin.New()
+	handler := NewChatHandler(bridge.NewAgentClient(agentServer.URL, time.Second))
+	router.GET("/api/runs/:id", handler.GetRun)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/runs/run_missing", nil)
+	req.Header.Set("X-User-ID", "user-a")
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("unexpected status %d: %s", recorder.Code, recorder.Body.String())
 	}
 }
 

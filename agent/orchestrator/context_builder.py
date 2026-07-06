@@ -133,7 +133,7 @@ class ContextBuilder:
             sections.append(
                 {
                     "id": "agent_context",
-                    "label": "Agent Routing Context",
+                    "label": "Agent Context",
                     "content": agent_context,
                     "priority": 2,
                     "stability": "stable",
@@ -221,7 +221,6 @@ class ContextBuilder:
             ("base_system_prompt", self.base_system_prompt.splitlines()[0]),
             ("context_priority_rules", "上下文与记忆使用规则："),
             ("system_config", "系统级配置："),
-            ("agent_context", "可用的专业 Agent："),
             ("role_memory_context", "角色记忆 / Always-on Memory："),
             ("mode_context", "Super Chat 模式指令："),
             ("temporal_context", "时间上下文："),

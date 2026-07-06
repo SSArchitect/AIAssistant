@@ -3,6 +3,7 @@ import asyncio
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+import re
 import sqlite3
 import pytest
 from unittest.mock import AsyncMock, patch, MagicMock
@@ -63,6 +64,50 @@ def agent_tool_response(
         model="router-model",
         usage={"input": 12, "output": 3},
     )
+
+
+def tool_message_payloads(messages: list[LLMMessage]) -> list[dict]:
+    payloads: list[dict] = []
+    for message in messages:
+        if message.role != "tool" or not isinstance(message.content, str):
+            continue
+        try:
+            payload = json.loads(message.content)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict):
+            payloads.append(payload)
+    return payloads
+
+
+def deep_research_gap_response(
+    *,
+    supplemental_queries=None,
+    status: str = "complete",
+) -> LLMResponse:
+    return LLMResponse(
+        content=json.dumps(
+            {
+                "coverage_status": status,
+                "summary": "现有来源足够支撑报告。",
+                "missing_data": [],
+                "supplemental_queries": supplemental_queries or [],
+                "stop_reason": "no gaps",
+            },
+            ensure_ascii=False,
+        ),
+        tool_calls=[],
+        model="gap-model",
+        usage={"input": 4, "output": 4},
+    )
+
+
+def agent_tool_payload(messages: list[LLMMessage], agent_id: str) -> dict:
+    for payload in tool_message_payloads(messages):
+        data = payload.get("data")
+        if isinstance(data, dict) and data.get("agent_id") == agent_id:
+            return payload
+    raise AssertionError(f"No agent tool payload for {agent_id}")
 
 
 @pytest.mark.asyncio
@@ -528,6 +573,89 @@ async def test_model_error_after_read_drive_returns_tool_result_fallback_after_r
 
 
 @pytest.mark.asyncio
+async def test_model_error_does_not_fallback_to_historical_tool_result(engine):
+    request = ChatRequest(
+        conversation_id="conv-read-drive-history-fallback",
+        user_id="alice",
+        agent_id="super_chat",
+        message="继续按刚才的文件写。",
+    )
+    engine.memory.add_many(
+        engine._conversation_memory_id(request),
+        [
+            LLMMessage(
+                role="assistant",
+                content="",
+                tool_calls=[
+                    {
+                        "id": "call_previous_read_drive",
+                        "name": "read_drive",
+                        "arguments": {"item_id": "file-previous"},
+                    }
+                ],
+            ),
+            LLMMessage(
+                role="tool",
+                content=json.dumps(
+                    {
+                        "success": True,
+                        "data": {
+                            "item": {
+                                "id": "file-previous",
+                                "type": "file",
+                                "name": "previous.md",
+                                "path": "/knowledge/previous.md",
+                                "mime_type": "text/markdown",
+                            },
+                            "content": "# Previous\n\nHistorical drive content.",
+                            "truncated": False,
+                        },
+                        "display_text": "# Previous\n\nHistorical drive content.",
+                        "error": None,
+                    },
+                    ensure_ascii=False,
+                ),
+                tool_call_id="call_previous_read_drive",
+            ),
+        ],
+    )
+
+    with patch.object(engine, "_get_provider") as mock_provider:
+        provider = AsyncMock()
+        provider.model = "test-model"
+        provider.chat = AsyncMock(
+            side_effect=[
+                RuntimeError("Connection error."),
+                RuntimeError("Connection error."),
+                RuntimeError("Connection error."),
+            ]
+        )
+        mock_provider.return_value = provider
+
+        with patch("agent.orchestrator.engine.asyncio.sleep", new_callable=AsyncMock) as sleep_mock:
+            with pytest.raises(RuntimeError, match="Connection error"):
+                await engine.process(request)
+
+    assert provider.chat.await_count == 3
+    assert [call.args[0] for call in sleep_mock.await_args_list] == [0.5, 1.5]
+
+    runs = engine.trace_store.list_runs(
+        conversation_id=request.conversation_id,
+        user_id=request.user_id,
+    )
+    assert len(runs) == 1
+    run = runs[0]
+    assert run.status == "failed"
+    assert run.error_type == "model_error"
+    assert run.error_message == "Connection error."
+    assert "Historical drive content." not in run.output
+    event_types = [event.type for event in run.events]
+    assert "run.partial" not in event_types
+    assert "workflow.failed" in event_types
+    assert event_types[-1] == "run.failed"
+
+
+@pytest.mark.asyncio
 async def test_tool_call_calculator(engine):
     """LLM calls calculator tool, then returns final answer."""
     # First LLM call: wants to use calculator
@@ -566,6 +694,147 @@ async def test_tool_call_calculator(engine):
     event_types = [event.type for event in result.events]
     assert "tool.started" in event_types
     assert "tool.completed" in event_types
+
+
+@pytest.mark.asyncio
+async def test_search_tool_trace_nodes_are_appended(engine):
+    class FakeSearchSkill(Skill):
+        def metadata(self) -> SkillMetadata:
+            return SkillMetadata(
+                name="search",
+                description="Search test sources.",
+                parameters=[
+                    SkillParameter(
+                        name="query",
+                        type="string",
+                        description="Search query.",
+                        required=True,
+                    )
+                ],
+            )
+
+        async def execute(self, **kwargs) -> SkillResult:
+            query = str(kwargs.get("query") or "")
+            return SkillResult(
+                success=True,
+                data={
+                    "query": query,
+                    "query_rewrite": {
+                        "node": "query_rewrite",
+                        "strategy": "keyword_recall",
+                        "original_query": query,
+                        "queries": [query],
+                    },
+                    "search_trace": [
+                        {
+                            "node": "query_rewrite",
+                            "status": "completed",
+                            "strategy": "keyword_recall",
+                            "original_query": query,
+                            "queries": [query],
+                            "query_count": 1,
+                        },
+                        {
+                            "node": "recall",
+                            "status": "partial",
+                            "mode": "concurrent",
+                            "providers": ["web", "bing-rss"],
+                            "attempt_count": 2,
+                            "timed_out_count": 1,
+                            "error_count": 0,
+                            "result_count": 1,
+                            "attempts": [
+                                {
+                                    "provider": "web",
+                                    "query": query,
+                                    "status": "timed_out",
+                                    "result_count": 0,
+                                    "duration_ms": 30000,
+                                }
+                            ],
+                        },
+                        {
+                            "node": "ranking",
+                            "status": "completed",
+                            "input_count": 1,
+                            "ranked_count": 1,
+                            "output_count": 1,
+                            "duration_ms": 2,
+                            "top_results": [
+                                {
+                                    "rank": 1,
+                                    "title": "Search Trace Result",
+                                    "url": "https://example.com/search-trace",
+                                }
+                            ],
+                        },
+                        {
+                            "node": "llm_rerank",
+                            "status": "completed",
+                            "provider": "fake-llm",
+                            "input_count": 1,
+                            "output_count": 1,
+                            "threshold": 0.35,
+                            "top_results": [
+                                {
+                                    "rank": 1,
+                                    "title": "Search Trace Result",
+                                    "url": "https://example.com/search-trace",
+                                }
+                            ],
+                        },
+                    ],
+                    "results": [
+                        {
+                            "title": "Search Trace Result",
+                            "url": "https://example.com/search-trace",
+                            "snippet": "Traceable search result.",
+                            "source": "test-search",
+                        }
+                    ],
+                },
+                display_text="1. Search Trace Result",
+            )
+
+    engine.skill_registry.register(FakeSearchSkill())
+    tool_response = LLMResponse(
+        content="",
+        tool_calls=[
+            ToolCall(
+                id="call_search",
+                name="search",
+                arguments={"query": "trace search"},
+            )
+        ],
+        model="test-model",
+        usage={"input": 20, "output": 10},
+    )
+    final_response = LLMResponse(
+        content="Search done.",
+        tool_calls=[],
+        model="test-model",
+        usage={"input": 30, "output": 15},
+    )
+
+    with patch.object(engine, "_get_provider") as mock_provider:
+        provider = AsyncMock()
+        provider.chat = AsyncMock(side_effect=[tool_response, final_response])
+        mock_provider.return_value = provider
+
+        result = await engine.process(
+            ChatRequest(conversation_id="conv-search-trace", message="Search trace")
+        )
+
+    event_types = [event.type for event in result.events]
+    assert "search.query_rewrite.completed" in event_types
+    assert "search.recall.partial" in event_types
+    assert "search.ranking.completed" in event_types
+    assert "search.llm_rerank.completed" in event_types
+    assert event_types.index("search.ranking.completed") < event_types.index("tool.completed")
+    recall_event = next(event for event in result.events if event.type == "search.recall.partial")
+    assert recall_event.step_id == "call_search"
+    assert recall_event.payload["timed_out_count"] == 1
+    assert recall_event.payload["attempts"][0]["provider"] == "web"
 
 
 @pytest.mark.asyncio
@@ -1072,53 +1341,74 @@ async def test_multiple_tool_calls(engine):
 
 
 @pytest.mark.asyncio
-async def test_super_chat_agent_tool_is_terminal(engine):
-    """Agent tools should win the round instead of running sibling regular tools."""
+async def test_super_chat_agent_tool_returns_json_and_continues(engine):
+    """Agent tools should return JSON into the Super Chat loop like ordinary tools."""
     tool_response = LLMResponse(
         content="",
         tool_calls=[
             ToolCall(id="call_echo", name="echo", arguments={"text": "should not run"}),
             ToolCall(
-                id="call_deep_research",
-                name="deep_research_v1",
+                id="call_image_generation",
+                name="image_generation_v1",
                 arguments={
-                    "task": "AI Agent 商业化趋势",
-                    "reason": "用户需要深度研究计划",
+                    "task": "生成一张 AI Agent 商业化趋势海报",
+                    "reason": "用户需要生成图片",
                 },
             ),
         ],
         model="router-model",
         usage={},
     )
-    plan_response = LLMResponse(
-        content="## 研究计划大纲\n\n确认后回复 /start。",
+    review_response = LLMResponse(
+        content='{"should_generate": true, "final_prompt": "AI Agent commercialization poster", "aspect_ratio": "16:9"}',
         tool_calls=[],
-        model="research-planner",
+        model="review-model",
         usage={},
     )
+    final_response = LLMResponse(
+        content="echo: should not run\n\n已生成图片：\n![AI 生图 1](https://example.com/agent-tool.png)",
+        tool_calls=[],
+        model="final-model",
+        usage={"input": 30, "output": 8},
+    )
+    image_client = MagicMock()
+    image_client.image_model = "image-01"
+    image_client.generate_image = AsyncMock(
+        return_value={"id": "img_agent_tool", "data": {"image_urls": ["https://example.com/agent-tool.png"]}}
+    )
 
-    with patch.object(engine, "_get_provider") as mock_provider:
+    with patch.object(engine, "_get_provider") as mock_provider, patch(
+        "agent.orchestrator.engine.MiniMaxAIGCClient.from_runtime_config",
+        return_value=image_client,
+    ):
         provider = AsyncMock()
-        provider.chat = AsyncMock(side_effect=[tool_response, plan_response])
+        provider.chat = AsyncMock(side_effect=[tool_response, review_response, final_response])
         mock_provider.return_value = provider
 
         result = await engine.process(
             ChatRequest(
-                conversation_id="conv-delegate-terminal",
-                message="帮我深度研究 AI Agent 商业化趋势",
+                conversation_id="conv-delegate-agent-tool",
+                message="生成一张 AI Agent 商业化趋势海报，同时 echo 一下",
                 agent_id="super_chat",
             )
         )
 
-    assert result.agent_id == "deep_research_v1"
-    assert result.skills_used[0] == "deep_research_v1"
-    assert "echo" not in result.skills_used
-    assert "研究计划大纲" in result.response
+    assert result.agent_id == "super_chat"
+    assert result.skills_used == ["echo", "image_generation_v1", "prompt_refine", "image_generation"]
+    assert "echo: should not run" in result.response
+    assert "![AI 生图 1](https://example.com/agent-tool.png)" in result.response
+    image_client.generate_image.assert_awaited_once()
     tool_events = [event for event in result.events if event.type == "tool.started"]
-    assert [event.payload["name"] for event in tool_events] == ["deep_research_v1"]
-    delegation = next(event for event in result.events if event.type == "agent.delegated")
+    assert [event.payload["name"] for event in tool_events] == ["echo", "image_generation_v1"]
+    delegation = next(event for event in result.events if event.type == "agent.tool.delegated")
     assert delegation.payload["protocol_version"] == "agent_tool.v1"
-    assert delegation.payload["target_agent_id"] == "deep_research_v1"
+    assert delegation.payload["target_agent_id"] == "image_generation_v1"
+    assert delegation.payload["child_run_id"]
+    final_messages = provider.chat.await_args_list[-1].args[0]
+    payload = agent_tool_payload(final_messages, "image_generation_v1")
+    assert payload["success"] is True
+    assert "![AI 生图 1](https://example.com/agent-tool.png)" in payload["data"]["response"]
+    assert payload["data"]["child_run_id"] == delegation.payload["child_run_id"]
 
 
 @pytest.mark.asyncio
@@ -1386,11 +1676,10 @@ async def test_super_chat_agent_loop_mode_prompts_are_injected(engine):
     context_event = next(event for event in result.events if event.type == "context.built")
     system_prompt = context_event.payload["system_prompt"]
     assert "Super Chat 模式指令：" in system_prompt
-    assert "AI 生图 (image_generation_v1)" in system_prompt
-    assert "深度研究 (deep_research_v1)" in system_prompt
+    assert "专业能力路由：" not in system_prompt
+    assert "Agent-as-tool" not in system_prompt
     assert "search 是默认事实检索工具" in system_prompt
     assert "【Agent Loop】本轮使用主循环 + function calling。" in system_prompt
-    assert system_prompt.index("可用的专业 Agent：") < system_prompt.index("角色记忆 / Always-on Memory：")
     assert system_prompt.index("角色记忆 / Always-on Memory：") < system_prompt.index("Super Chat 模式指令：")
     assert system_prompt.index("Super Chat 模式指令：") < system_prompt.index("长期记忆参考事实：")
     assert context_event.payload["messages"][-1]["content"] == "用 agent loop 跑一下"
@@ -1406,13 +1695,15 @@ async def test_super_chat_agent_loop_mode_prompts_are_injected(engine):
         "base_system_prompt",
         "context_priority_rules",
         "system_config",
-        "agent_context",
         "role_memory_context",
         "mode_context",
         "temporal_context",
         "long_term_memory_context",
         "short_term_memory_context",
     ]
+    assert all(node["id"] != "prompt.section.agent_context" for node in context_event.payload["context_nodes"])
+    tool_names = {tool["name"] for tool in context_event.payload["final_model_request"]["tools"]}
+    assert {"image_generation_v1", "weight_loss_v1"}.issubset(tool_names)
     event_types = [event.type for event in result.events]
     assert "workflow.started" in event_types
     assert "workflow.completed" in event_types
@@ -1473,7 +1764,7 @@ async def test_removed_thinking_mode_is_ignored_by_super_chat(engine):
 
 @pytest.mark.asyncio
 async def test_deep_research_generates_plan_before_execution(engine):
-    """Deep Research should produce a confirmable plan before searching."""
+    """Deep Research mode should produce a confirmable plan before searching."""
     response = LLMResponse(
         content="## 研究计划大纲\n\n1. 明确问题。\n2. 检索来源。\n\n确认后回复 /start。",
         tool_calls=[],
@@ -1490,7 +1781,8 @@ async def test_deep_research_generates_plan_before_execution(engine):
             ChatRequest(
                 conversation_id="conv-deep-plan",
                 message="/plan AI Agent 商业化趋势",
-                agent_id="deep_research_v1",
+                agent_id="super_chat",
+                mode_ids=["deep_research"],
             )
         )
 
@@ -1503,6 +1795,51 @@ async def test_deep_research_generates_plan_before_execution(engine):
     assert "research.plan.started" in event_types
     assert "research.plan.completed" in event_types
     assert "research.search.started" not in event_types
+
+
+@pytest.mark.asyncio
+async def test_deep_research_direct_agent_requires_super_chat_mode(engine):
+    """Deep Research should not be directly callable as a normal agent."""
+    with patch.object(engine, "_get_provider", side_effect=AssertionError("direct deep research should not call model")):
+        result = await engine.process(
+            ChatRequest(
+                conversation_id="conv-deep-direct-rejected",
+                message="/plan AI Agent 商业化趋势",
+                agent_id="deep_research_v1",
+            )
+        )
+
+    assert result.error_type == "workflow_mode_required"
+    assert result.agent_id == "deep_research_v1"
+    assert "Super Chat" in result.response
+    event_types = [event.type for event in result.events]
+    assert "model.started" not in event_types
+    assert "research.plan.started" not in event_types
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("message", ["/agent deep_research_v1 /start", "/研究 /start"])
+async def test_super_chat_rejects_deep_research_agent_command(engine, message):
+    """Legacy agent commands should not enter the Deep Research workflow."""
+    with patch.object(engine, "_get_provider", side_effect=AssertionError("deep research command should not call model")):
+        result = await engine.process(
+            ChatRequest(
+                conversation_id="conv-deep-command-rejected",
+                message=message,
+                agent_id="super_chat",
+            )
+        )
+
+    assert result.error_type == "workflow_mode_required"
+    assert result.agent_id == "deep_research_v1"
+    assert "勾选“深度研究”模式" in result.response
+    event_types = [event.type for event in result.events]
+    assert "agent.command.rejected" in event_types
+    assert "model.started" not in event_types
+    assert "research.plan.started" not in event_types
+    rejected = next(event for event in result.events if event.type == "agent.command.rejected")
+    assert rejected.payload["target_agent_id"] == "deep_research_v1"
+    assert rejected.payload["required_mode_id"] == "deep_research"
 
 
 @pytest.mark.asyncio
@@ -1637,19 +1974,23 @@ async def test_deep_research_executes_approved_plan_with_search(engine):
 
     with patch.object(engine, "_get_provider") as mock_provider:
         provider = AsyncMock()
-        provider.chat = AsyncMock(side_effect=[query_response, summary_response, report_response])
+        provider.chat = AsyncMock(
+            side_effect=[query_response, summary_response, deep_research_gap_response(), report_response]
+        )
         mock_provider.return_value = provider
 
         result = await engine.process(
             ChatRequest(
                 conversation_id="conv-deep-exec",
                 message="/start",
-                agent_id="deep_research_v1",
+                agent_id="super_chat",
+                mode_ids=["deep_research"],
             )
         )
 
     assert result.response.startswith("# 研究报告")
     assert result.agent_id == "deep_research_v1"
+    assert "[1](https://example.com/source-1)" in result.response
     assert "search" in result.skills_used
     assert len(fake_search.calls) == 20
     assert len(result.citations) == 20
@@ -1657,7 +1998,311 @@ async def test_deep_research_executes_approved_plan_with_search(engine):
     event_types = [event.type for event in result.events]
     assert "research.queries.created" in event_types
     assert "research.step_summary.completed" in event_types
+    assert "research.gap_review.completed" in event_types
     assert "research.report.completed" in event_types
+
+
+@pytest.mark.asyncio
+async def test_deep_research_supplements_missing_data_before_report(engine):
+    """Deep Research should loop through gap review, supplemental search, and new-source summary."""
+
+    class FakeSearchSkill(Skill):
+        def __init__(self):
+            self.calls = []
+
+        def metadata(self) -> SkillMetadata:
+            return SkillMetadata(
+                name="search",
+                description="fake search",
+                parameters=[
+                    SkillParameter(name="query", type="string", description="query"),
+                    SkillParameter(name="sources", type="string", description="sources", required=False),
+                    SkillParameter(name="limit", type="integer", description="limit", required=False),
+                ],
+            )
+
+        async def execute(self, **kwargs) -> SkillResult:
+            self.calls.append(kwargs)
+            index = len(self.calls)
+            return SkillResult(
+                success=True,
+                data={
+                    "query": kwargs["query"],
+                    "results": [
+                        {
+                            "title": f"Source {index}",
+                            "url": f"https://example.com/supplement-{index}",
+                            "snippet": f"Evidence snippet {index}",
+                            "source": "web",
+                        }
+                    ],
+                },
+                display_text=f"Source {index}",
+            )
+
+    fake_search = FakeSearchSkill()
+    engine.skill_registry.register(fake_search)
+    engine.memory.add_many(
+        "user:0:conversation:conv-deep-supplement",
+        [
+            LLMMessage(role="user", content="/plan 日常饮茶选择"),
+            LLMMessage(
+                role="assistant",
+                content=f"{DEEP_RESEARCH_PLAN_MARKER}\n## 研究计划大纲\n\n覆盖茶类、咖啡因和价格。",
+            ),
+        ],
+    )
+
+    query_response = LLMResponse(
+        content=json.dumps({"queries": ["daily tea selection"]}),
+        tool_calls=[],
+        model="query-model",
+        usage={"input": 5, "output": 5},
+    )
+    initial_summary_response = LLMResponse(
+        content="初始摘要：茶类选择信息较多，但缺少咖啡因量化和价格来源。",
+        tool_calls=[],
+        model="summary-model",
+        usage={"input": 6, "output": 6},
+    )
+    supplemental_summary_response = LLMResponse(
+        content="补充摘要：新增来源补齐咖啡因和价格线索 [21][22]。",
+        tool_calls=[],
+        model="summary-model",
+        usage={"input": 6, "output": 6},
+    )
+    report_response = LLMResponse(
+        content="# 研究报告\n\n补搜后补齐了咖啡因和价格线索 [21][22]。",
+        tool_calls=[],
+        model="report-model",
+        usage={"input": 7, "output": 7},
+    )
+
+    with patch.object(engine, "_get_provider") as mock_provider:
+        provider = AsyncMock()
+        provider.chat = AsyncMock(
+            side_effect=[
+                query_response,
+                initial_summary_response,
+                deep_research_gap_response(
+                    supplemental_queries=[
+                        "tea caffeine mg per cup authoritative source",
+                        "China tea price range 2026 daily drinking",
+                    ],
+                    status="needs_more",
+                ),
+                supplemental_summary_response,
+                deep_research_gap_response(),
+                report_response,
+            ]
+        )
+        mock_provider.return_value = provider
+
+        result = await engine.process(
+            ChatRequest(
+                conversation_id="conv-deep-supplement",
+                message="/start",
+                agent_id="super_chat",
+                mode_ids=["deep_research"],
+            )
+        )
+
+    assert len(fake_search.calls) == 22
+    assert fake_search.calls[-2]["query"] == "tea caffeine mg per cup authoritative source"
+    assert fake_search.calls[-1]["query"] == "China tea price range 2026 daily drinking"
+    assert len(result.citations) == 22
+    assert "[21](https://example.com/supplement-21)" in result.response
+    assert "[22](https://example.com/supplement-22)" in result.response
+    event_types = [event.type for event in result.events]
+    assert event_types.count("research.gap_review.completed") == 2
+    assert "research.supplemental_search.completed" in event_types
+    execution_completed = next(event for event in result.events if event.type == "research.execution.completed")
+    assert execution_completed.payload["query_count"] == 22
+    assert execution_completed.payload["gap_review_count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_deep_research_archives_report_to_drive_folder(engine):
+    """Completed Deep Research reports should be saved under /研究报告."""
+
+    class FakeSearchSkill(Skill):
+        def __init__(self):
+            self.calls = []
+
+        def metadata(self) -> SkillMetadata:
+            return SkillMetadata(
+                name="search",
+                description="fake search",
+                parameters=[
+                    SkillParameter(name="query", type="string", description="query"),
+                    SkillParameter(name="sources", type="string", description="sources", required=False),
+                    SkillParameter(name="limit", type="integer", description="limit", required=False),
+                ],
+            )
+
+        async def execute(self, **kwargs) -> SkillResult:
+            self.calls.append(kwargs)
+            index = len(self.calls)
+            return SkillResult(
+                success=True,
+                data={
+                    "query": kwargs["query"],
+                    "results": [
+                        {
+                            "title": f"Source {index}",
+                            "url": f"https://example.com/archive-source-{index}",
+                            "snippet": f"Evidence snippet {index}",
+                            "source": "web",
+                        }
+                    ],
+                },
+                display_text=f"Source {index}",
+            )
+
+    captured: dict[str, dict] = {}
+
+    class FakeMkdirDriveSkill(Skill):
+        def metadata(self) -> SkillMetadata:
+            return SkillMetadata(
+                name="mkdir_drive",
+                description="fake mkdir",
+                parameters=[SkillParameter(name="path", type="string", description="path", required=True)],
+            )
+
+        async def execute(self, **kwargs) -> SkillResult:
+            captured["mkdir"] = kwargs
+            return SkillResult(
+                success=True,
+                data={
+                    "item": {
+                        "id": "folder-reports",
+                        "type": "folder",
+                        "name": "研究报告",
+                        "parent_id": "root",
+                    }
+                },
+                display_text="Folder already exists: 研究报告.",
+            )
+
+    class FakeSaveDriveSkill(Skill):
+        def metadata(self) -> SkillMetadata:
+            return SkillMetadata(
+                name="save_drive",
+                description="fake save",
+                parameters=[
+                    SkillParameter(name="name", type="string", description="name", required=True),
+                    SkillParameter(name="folder_path", type="string", description="folder", required=True),
+                    SkillParameter(name="content", type="string", description="content", required=True),
+                ],
+            )
+
+        async def execute(self, **kwargs) -> SkillResult:
+            captured["save"] = kwargs
+            return SkillResult(
+                success=True,
+                data={
+                    "item": {
+                        "id": "file-research-report",
+                        "type": "file",
+                        "name": kwargs["name"],
+                        "parent_id": "folder-reports",
+                        "mime_type": "text/markdown; charset=utf-8",
+                        "size": len(kwargs["content"]),
+                        "summary": kwargs["summary"],
+                        "path": f"/研究报告/{kwargs['name']}",
+                    }
+                },
+                display_text="Saved report.",
+            )
+
+    fake_search = FakeSearchSkill()
+    engine.skill_registry.register(fake_search)
+    engine.skill_registry.register(FakeMkdirDriveSkill())
+    engine.skill_registry.register(FakeSaveDriveSkill())
+    engine.memory.add_many(
+        "user:alice:conversation:conv-deep-archive",
+        [
+            LLMMessage(role="user", content="/plan AI Agent 商业化趋势"),
+            LLMMessage(
+                role="assistant",
+                content=(
+                    f"{DEEP_RESEARCH_PLAN_MARKER}\n"
+                    "## 研究计划大纲\n\n覆盖市场、技术、案例和风险。"
+                ),
+            ),
+        ],
+    )
+
+    report_text = "# 研究报告\n\nAI Agent 商业化趋势正在形成 [1]。"
+    with patch.object(engine, "_get_provider") as mock_provider:
+        provider = AsyncMock()
+        provider.chat = AsyncMock(
+            side_effect=[
+                LLMResponse(
+                    content=json.dumps({"queries": ["AI Agent commercialization trend"]}),
+                    tool_calls=[],
+                    model="query-model",
+                    usage={"input": 5, "output": 5},
+                ),
+                LLMResponse(
+                    content="分块摘要：来源显示商业化在增长 [1]。",
+                    tool_calls=[],
+                    model="summary-model",
+                    usage={"input": 6, "output": 6},
+                ),
+                deep_research_gap_response(),
+                LLMResponse(
+                    content=report_text,
+                    tool_calls=[],
+                    model="report-model",
+                    usage={"input": 7, "output": 7},
+                ),
+            ]
+        )
+        mock_provider.return_value = provider
+
+        result = await engine.process(
+            ChatRequest(
+                conversation_id="conv-deep-archive",
+                user_id="alice",
+                message="/start",
+                agent_id="super_chat",
+                mode_ids=["deep_research"],
+            )
+        )
+
+    expected_report = "# 研究报告\n\nAI Agent 商业化趋势正在形成 [1](https://example.com/archive-source-1)。"
+    assert result.response == expected_report
+    assert {"search", "mkdir_drive", "save_drive"}.issubset(set(result.skills_used))
+    assert len(result.artifacts) == 1
+    artifact = result.artifacts[0]
+    assert artifact.type == "drive_file"
+    assert artifact.item_id == "file-research-report"
+    assert artifact.metadata["path"].startswith("/研究报告/")
+
+    assert captured["mkdir"]["_user_id"] == "alice"
+    assert captured["mkdir"]["path"] == "/研究报告"
+    assert captured["save"]["_user_id"] == "alice"
+    assert captured["save"]["folder_path"] == "/研究报告"
+    assert captured["save"]["content"] == expected_report
+    assert captured["save"]["mime_type"] == "text/markdown; charset=utf-8"
+    assert captured["save"]["tags"] == "deep-research,研究报告"
+    assert re.match(r"^\d{8}-\d{6} AI Agent 商业化趋势\.md$", captured["save"]["name"])
+
+    event_types = [event.type for event in result.events]
+    assert "research.report_archive.started" in event_types
+    assert "research.report_archive.completed" in event_types
+    archive_node = next(
+        event
+        for event in result.events
+        if event.type == "workflow.node.completed" and event.payload.get("workflow_node") == "archive_report"
+    )
+    assert archive_node.status == "completed"
+    assert archive_node.payload["folder_path"] == "/研究报告"
+    execution_completed = next(event for event in result.events if event.type == "research.execution.completed")
+    assert execution_completed.payload["archive_status"] == "completed"
+    assert execution_completed.payload["artifact_count"] == 1
+    assert result.plan[-1].skill == "save_drive"
 
 
 @pytest.mark.asyncio
@@ -1738,6 +2383,7 @@ async def test_deep_research_continues_when_chunk_summary_is_rejected(engine):
                 query_response,
                 first_summary_response,
                 RuntimeError("input new_sensitive (1026)"),
+                deep_research_gap_response(),
                 report_response,
             ]
         )
@@ -1747,7 +2393,8 @@ async def test_deep_research_continues_when_chunk_summary_is_rejected(engine):
             ChatRequest(
                 conversation_id="conv-deep-summary-rejected",
                 message="/start",
-                agent_id="deep_research_v1",
+                agent_id="super_chat",
+                mode_ids=["deep_research"],
             )
         )
 
@@ -1826,19 +2473,22 @@ async def test_deep_research_returns_fallback_when_report_generation_fails(engin
 
     with patch.object(engine, "_get_provider") as mock_provider:
         provider = AsyncMock()
-        provider.chat = AsyncMock(side_effect=[query_response, summary_response, RuntimeError("report blocked")])
+        provider.chat = AsyncMock(
+            side_effect=[query_response, summary_response, deep_research_gap_response(), RuntimeError("report blocked")]
+        )
         mock_provider.return_value = provider
 
         result = await engine.process(
             ChatRequest(
                 conversation_id="conv-deep-report-failed",
                 message="/start",
-                agent_id="deep_research_v1",
+                agent_id="super_chat",
+                mode_ids=["deep_research"],
             )
         )
 
     assert result.response.startswith("# 研究报告（降级生成）")
-    assert "分块摘要：来源显示商业化在增长 [1]。" in result.response
+    assert "分块摘要：来源显示商业化在增长 [1](https://example.com/source-1)。" in result.response
     event_types = [event.type for event in result.events]
     assert "research.report.failed" in event_types
     assert event_types[-1] == "run.completed"
@@ -2172,6 +2822,12 @@ async def test_super_chat_auto_delegates_image_intent_to_image_agent(engine):
         model="review-model",
         usage={},
     )
+    final_response = LLMResponse(
+        content="已生成赛博朋克城市海报：\n![AI 生图 1](https://example.com/poster.png)",
+        tool_calls=[],
+        model="final-model",
+        usage={"input": 24, "output": 8},
+    )
     image_client = MagicMock()
     image_client.image_model = "image-01"
     image_client.generate_image = AsyncMock(
@@ -2183,7 +2839,7 @@ async def test_super_chat_auto_delegates_image_intent_to_image_agent(engine):
         return_value=image_client,
     ):
         provider = AsyncMock()
-        provider.chat = AsyncMock(side_effect=[delegate_response, review_response])
+        provider.chat = AsyncMock(side_effect=[delegate_response, review_response, final_response])
         mock_provider.return_value = provider
 
         result = await engine.process(
@@ -2194,20 +2850,22 @@ async def test_super_chat_auto_delegates_image_intent_to_image_agent(engine):
             )
         )
 
-    assert result.agent_id == "image_generation_v1"
+    assert result.agent_id == "super_chat"
     assert result.skills_used == ["image_generation_v1", "prompt_refine", "image_generation"]
     assert "![AI 生图 1](https://example.com/poster.png)" in result.response
     image_client.generate_image.assert_awaited_once()
     event_types = [event.type for event in result.events]
     assert "tool.started" in event_types
     assert "tool.completed" in event_types
-    assert "agent.delegated" in event_types
-    delegation = next(event for event in result.events if event.type == "agent.delegated")
-    assert delegation.payload["source_agent_id"] == "super_chat"
+    assert "agent.tool.delegated" in event_types
+    delegation = next(event for event in result.events if event.type == "agent.tool.delegated")
     assert delegation.payload["target_agent_id"] == "image_generation_v1"
     assert delegation.payload["reason"] == "用户明确要求生成图片"
-    assert delegation.payload["forced"] is False
     assert delegation.payload["protocol_version"] == "agent_tool.v1"
+    final_messages = provider.chat.await_args_list[-1].args[0]
+    payload = agent_tool_payload(final_messages, "image_generation_v1")
+    assert payload["success"] is True
+    assert "![AI 生图 1](https://example.com/poster.png)" in payload["data"]["response"]
 
 
 @pytest.mark.asyncio
@@ -2254,6 +2912,15 @@ async def test_super_chat_delegates_chinese_comparison_chart_to_image_agent(engi
         model="review-model",
         usage={"input": 10, "output": 5},
     )
+    final_response = LLMResponse(
+        content=(
+            "已生成对比图，并整理好学习资料摘要。\n"
+            "![AI 生图 1](https://example.com/compare.png)"
+        ),
+        tool_calls=[],
+        model="final-model",
+        usage={"input": 40, "output": 12},
+    )
     image_client = MagicMock()
     image_client.image_model = "image-01"
     image_client.generate_image = AsyncMock(
@@ -2265,7 +2932,9 @@ async def test_super_chat_delegates_chinese_comparison_chart_to_image_agent(engi
         return_value=image_client,
     ):
         provider = AsyncMock()
-        provider.chat = AsyncMock(side_effect=[delegate_response, planner_response, research_response, review_response])
+        provider.chat = AsyncMock(
+            side_effect=[delegate_response, planner_response, research_response, review_response, final_response]
+        )
         mock_provider.return_value = provider
 
         result = await engine.process(
@@ -2281,19 +2950,20 @@ async def test_super_chat_delegates_chinese_comparison_chart_to_image_agent(engi
             )
         )
 
-    assert result.agent_id == "image_generation_v1"
+    assert result.agent_id == "super_chat"
     assert "image_generation_v1" in result.skills_used
     assert "image_generation" in result.skills_used
     assert "![AI 生图 1](https://example.com/compare.png)" in result.response
     image_client.generate_image.assert_awaited_once()
     event_types = [event.type for event in result.events]
-    assert "agent.delegated" in event_types
-    assert "aigc.plan.created" in event_types
-    assert "aigc.research.completed" in event_types
-    delegation = next(event for event in result.events if event.type == "agent.delegated")
+    assert "agent.tool.delegated" in event_types
+    assert "aigc.plan.created" not in event_types
+    assert "aigc.research.completed" not in event_types
+    delegation = next(event for event in result.events if event.type == "agent.tool.delegated")
     assert delegation.payload["reason"] == "用户需要整理对比图和学习资料，包含视觉产出"
-    assert delegation.payload["forced"] is False
     assert delegation.payload["protocol_version"] == "agent_tool.v1"
+    payload = agent_tool_payload(provider.chat.await_args_list[-1].args[0], "image_generation_v1")
+    assert "Learning Materials" in payload["data"]["response"]
 
 
 @pytest.mark.asyncio
@@ -2428,6 +3098,16 @@ async def test_image_generation_reuses_existing_context_brief_without_research(e
         model="review-model",
         usage={"input": 10, "output": 5},
     )
+    final_response = LLMResponse(
+        content=(
+            "已复用已有上下文生成分享卡：\n"
+            "![AI 生图 1](/static/generated/aigc/reuse.svg)\n\n"
+            "核心结论：首推 巽寮湾。"
+        ),
+        tool_calls=[],
+        model="final-model",
+        usage={"input": 36, "output": 8},
+    )
     image_client = MagicMock()
     image_client.image_model = "image-01"
     image_client.generate_image = AsyncMock(
@@ -2464,7 +3144,7 @@ async def test_image_generation_reuses_existing_context_brief_without_research(e
         return_value=image_client,
     ), patch("agent.orchestrator.engine.render_share_card_svg", return_value=svg_result):
         provider = AsyncMock()
-        provider.chat = AsyncMock(side_effect=[delegate_response, planner_response, review_response])
+        provider.chat = AsyncMock(side_effect=[delegate_response, planner_response, review_response, final_response])
         mock_provider.return_value = provider
 
         result = await engine.process(
@@ -2481,7 +3161,7 @@ async def test_image_generation_reuses_existing_context_brief_without_research(e
             )
         )
 
-    assert provider.chat.await_count == 3
+    assert provider.chat.await_count == 4
     assert result.skills_used[0] == "image_generation_v1"
     planning_messages = provider.chat.await_args_list[1].args[0]
     assert "比较信息交接格式" in planning_messages[0].content
@@ -2492,14 +3172,14 @@ async def test_image_generation_reuses_existing_context_brief_without_research(e
     assert "本轮额外上下文" not in review_user_message
 
     event_types = [event.type for event in result.events]
-    assert "aigc.planning.completed" in event_types
-    assert "aigc.context_reuse.completed" in event_types
-    assert "aigc.research.started" not in event_types
-    plan_event = next(event for event in result.events if event.type == "aigc.plan.created")
-    assert plan_event.payload["information_strategy"] == "reuse_context"
-    assert plan_event.payload["brief_format"] == "structured"
-    assert plan_event.payload["reuse_context_brief"] is True
-    assert [step["id"] for step in plan_event.payload["steps"]] == [
+    assert "agent.tool.delegated" in event_types
+    assert "aigc.planning.completed" not in event_types
+    assert "aigc.context_reuse.completed" not in event_types
+    payload = agent_tool_payload(provider.chat.await_args_list[-1].args[0], "image_generation_v1")
+    assert "![AI 生图 1](/static/generated/aigc/reuse.svg)" in payload["data"]["response"]
+    child_plan = payload["data"]["plan"]
+    assert any(step["skill"] == "context_reuse" for step in child_plan)
+    assert [step["skill"] for step in child_plan] == [
         "task_decomposition",
         "context_reuse",
         "image_generation",
@@ -2562,6 +3242,12 @@ async def test_super_chat_image_mode_forces_delegation(engine):
         model="review-model",
         usage={},
     )
+    final_response = LLMResponse(
+        content="已按这个方向生成概念图：\n![AI 生图 1](https://example.com/concept.png)",
+        tool_calls=[],
+        model="final-model",
+        usage={"input": 22, "output": 8},
+    )
     image_client = MagicMock()
     image_client.image_model = "image-01"
     image_client.generate_image = AsyncMock(
@@ -2573,7 +3259,7 @@ async def test_super_chat_image_mode_forces_delegation(engine):
         return_value=image_client,
     ):
         provider = AsyncMock()
-        provider.chat = AsyncMock(side_effect=[delegate_response, review_response])
+        provider.chat = AsyncMock(side_effect=[delegate_response, review_response, final_response])
         mock_provider.return_value = provider
 
         result = await engine.process(
@@ -2586,14 +3272,15 @@ async def test_super_chat_image_mode_forces_delegation(engine):
             )
         )
 
-    assert result.agent_id == "image_generation_v1"
+    assert result.agent_id == "super_chat"
     assert "image_generation_v1" in result.skills_used
     assert "image_generation" in result.skills_used
     assert "![AI 生图 1](https://example.com/concept.png)" in result.response
-    delegation = next(event for event in result.events if event.type == "agent.delegated")
+    delegation = next(event for event in result.events if event.type == "agent.tool.delegated")
     assert delegation.payload["reason"] == "用户选择 AI 生图模式，需要交给图像生成 Agent"
-    assert delegation.payload["forced"] is False
     assert delegation.payload["protocol_version"] == "agent_tool.v1"
+    payload = agent_tool_payload(provider.chat.await_args_list[-1].args[0], "image_generation_v1")
+    assert payload["data"]["child_run_id"] == delegation.payload["child_run_id"]
 
 
 @pytest.mark.asyncio
@@ -2694,6 +3381,16 @@ async def test_super_chat_research_image_intent_prepares_brief_before_generation
     image_client.generate_image = AsyncMock(
         return_value={"id": "img_4", "data": {"image_urls": ["https://example.com/spacex.png"]}}
     )
+    final_response = LLMResponse(
+        content=(
+            "**图片结果**\n"
+            "![AI 生图 1](https://example.com/spacex.png)\n\n"
+            "**简要总结**\nSpaceX is private; estimates need caveats."
+        ),
+        tool_calls=[],
+        model="final-model",
+        usage={"input": 60, "output": 16},
+    )
 
     with patch.object(engine, "_get_provider") as mock_provider, patch(
         "agent.orchestrator.engine.MiniMaxAIGCClient.from_runtime_config",
@@ -2707,6 +3404,7 @@ async def test_super_chat_research_image_intent_prepares_brief_before_generation
                 research_tool_response,
                 research_final_response,
                 review_response,
+                final_response,
             ]
         )
         mock_provider.return_value = provider
@@ -2724,34 +3422,38 @@ async def test_super_chat_research_image_intent_prepares_brief_before_generation
             )
         )
 
-    assert result.agent_id == "image_generation_v1"
+    assert result.agent_id == "super_chat"
     assert result.skills_used == ["image_generation_v1", "search", "prompt_refine", "image_generation"]
     assert result.citations and result.citations[0].url == "https://example.com/spacex-investment"
     assert result.citations[0].metadata["image_url"] == "https://example.com/spacex.jpg"
     assert search_calls and search_calls[0]["limit"] == 12
     assert result.plan
     assert result.plan[0].skill == "image_generation_v1"
-    assert [step.skill for step in result.plan[1:]] == [
+    assert len(result.plan) == 1
+    assert result.response.startswith("**图片结果**")
+    assert "![AI 生图 1](https://example.com/spacex.png)" in result.response
+    assert "**简要总结**" in result.response
+    assert "**生图提示词**" not in result.response
+    assert "SpaceX investment infographic based on researched facts and caveats" not in result.response
+    image_client.generate_image.assert_awaited_once()
+
+    final_messages = provider.chat.call_args_list[-1][0][0]
+    payload = agent_tool_payload(final_messages, "image_generation_v1")
+    child_plan = payload["data"]["plan"]
+    assert [step["skill"] for step in child_plan] == [
         "task_decomposition",
         "retrieval",
         "image_generation",
         "final_summary",
     ]
-    assert [step.status for step in result.plan[1:]] == ["completed", "completed", "completed", "completed"]
-    assert "SpaceX is private" in result.plan[2].result_summary
-    assert result.response.startswith("**图片结果**")
-    assert "![AI 生图 1](https://example.com/spacex.png)" in result.response
-    assert "**简要总结**" in result.response
-    assert "**执行计划**" in result.response
-    assert "**生图提示词**" not in result.response
-    assert "SpaceX investment infographic based on researched facts and caveats" not in result.response
-    image_client.generate_image.assert_awaited_once()
+    assert [step["status"] for step in child_plan] == ["completed", "completed", "completed", "completed"]
+    assert "SpaceX is private" in child_plan[1]["result_summary"]
+    assert payload["data"]["citations"][0]["url"] == "https://example.com/spacex-investment"
 
     review_user_message = provider.chat.call_args_list[4][0][0][1].content
     assert "结构化 Agent 输入（agent_input.v1）" in review_user_message
-    assert "source_agent.routing" in review_user_message
-    assert "target_agent.execution_planning" in review_user_message
-    assert "target_agent.research_brief" in review_user_message
+    assert "来源：super_chat -> image_generation_v1" in review_user_message
+    assert "原因：用户需要先检索资料再生成投资主题图像" in review_user_message
     assert "生图简报：" in review_user_message
     assert "SpaceX is private" in review_user_message
     assert "近期会话：" not in review_user_message
@@ -2759,26 +3461,13 @@ async def test_super_chat_research_image_intent_prepares_brief_before_generation
     assert "I cannot generate images in this chat" not in review_user_message
 
     event_types = [event.type for event in result.events]
-    assert "agent.input_context.built" in event_types
-    assert "agent.handoff_context.built" in event_types
-    input_context_event = next(event for event in result.events if event.type == "agent.input_context.built")
-    assert input_context_event.payload["protocol_version"] == "agent_input.v1"
-    assert input_context_event.payload["stage_context_count"] == 1
-    updated_input_events = [event for event in result.events if event.type == "agent.input_context.updated"]
-    assert updated_input_events[-1].payload["stage_context_count"] >= 3
-    assert event_types.index("tool.completed") < event_types.index("agent.delegated")
-    assert event_types.index("aigc.planning.completed") < event_types.index("aigc.plan.created")
-    assert event_types.index("aigc.plan.created") < event_types.index("aigc.research.started")
-    assert event_types.index("agent.delegated") < event_types.index("aigc.research.started")
-    assert event_types.index("aigc.research.started") < event_types.index("aigc.prompt_review.started")
-    assert event_types.index("aigc.prompt_review.completed") < event_types.index("aigc.image.started")
-    assert event_types.index("aigc.image.completed") < event_types.index("aigc.summary.completed")
-    assert event_types.index("aigc.summary.completed") < event_types.index("aigc.plan.completed")
+    assert "agent.input_context.built" not in event_types
+    assert "agent.handoff_context.built" not in event_types
+    assert event_types.index("agent.tool.delegated") < event_types.index("tool.completed")
     assert "tool.completed" in event_types
-    assert "citations.collected" in event_types
+    assert "citations.collected" not in event_types
     context_events = [event for event in result.events if event.type == "context.built"]
     assert context_events[0].payload["context_block_count"] == 1
-    assert context_events[-1].payload["context_block_count"] == 0
 
 
 @pytest.mark.asyncio
@@ -3845,6 +4534,11 @@ async def test_super_chat_profile_update_is_shared_with_weight_loss_agent(regist
         side_effect=[
             delegate_response,
             LLMResponse(content="{}", model="profile-test-model", usage={}),
+            LLMResponse(
+                content="已把减脂档案设置好了：身高 168 cm，当前体重 116 kg，性别 男，年龄 26。",
+                model="final-model",
+                usage={"input": 24, "output": 8},
+            ),
         ]
     )
 
@@ -3857,8 +4551,8 @@ async def test_super_chat_profile_update_is_shared_with_weight_loss_agent(regist
             )
         )
 
-    profile = store.get_profile("conv-weight-loss-profile")
-    assert result.agent_id == "weight_loss_v1"
+    profile = store.get_profile("conv-super-profile")
+    assert result.agent_id == "super_chat"
     assert result.skills_used[0] == "weight_loss_v1"
     assert profile["height_cm"] == 168
     assert profile["current_weight_kg"] == 116
@@ -3867,7 +4561,7 @@ async def test_super_chat_profile_update_is_shared_with_weight_loss_agent(regist
 
     profile_result = await engine.process(
         ChatRequest(
-            conversation_id="conv-weight-loss-profile",
+            conversation_id="conv-super-profile",
             agent_id="weight_loss_v1",
             message="/profile",
         )
@@ -3879,8 +4573,11 @@ async def test_super_chat_profile_update_is_shared_with_weight_loss_agent(regist
     assert "年龄 26" in profile_result.response
     event_types = [event.type for event in result.events]
     assert "tool.completed" in event_types
-    assert "agent.delegated" in event_types
-    assert "weight_loss.profile.updated" in event_types
+    assert "agent.tool.delegated" in event_types
+    assert "weight_loss.profile.updated" not in event_types
+    payload = agent_tool_payload(provider.chat.await_args_list[-1].args[0], "weight_loss_v1")
+    assert payload["data"]["agent_id"] == "weight_loss_v1"
+    assert "身高 168" in payload["data"]["response"]
 
 
 @pytest.mark.asyncio

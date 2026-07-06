@@ -29,8 +29,10 @@ func setupDriveTest(t *testing.T) (*gin.Engine, *DriveHandler) {
 	router.POST("/api/drive/files", handler.CreateFile)
 	router.GET("/api/drive/items/:id", handler.Get)
 	router.PUT("/api/drive/items/:id", handler.Update)
+	router.PUT("/api/drive/items/:id/share", handler.Share)
 	router.DELETE("/api/drive/items/:id", handler.Delete)
 	router.GET("/api/drive/items/:id/download", handler.Download)
+	router.GET("/share/drive/:token", handler.PublicShare)
 	router.GET("/api/drive/search", handler.Search)
 	router.POST("/api/drive/context", handler.Context)
 	return router, handler
@@ -199,6 +201,67 @@ func TestDriveContextSearchIncludesFileContent(t *testing.T) {
 	}
 }
 
+func TestDriveShareCanBeEnabledAndDisabled(t *testing.T) {
+	router, _ := setupDriveTest(t)
+	file := createDriveFileViaAPI(t, router, "user-a", "", "Share.md", "public readable content")
+
+	enabled := updateDriveShareViaAPI(t, router, "user-a", file.ID, true)
+	if !enabled.ShareEnabled || enabled.ShareToken == "" {
+		t.Fatalf("expected enabled share with token, got %#v", enabled)
+	}
+
+	sharedReq := httptest.NewRequest(http.MethodGet, "/share/drive/"+enabled.ShareToken, nil)
+	sharedRecorder := httptest.NewRecorder()
+	router.ServeHTTP(sharedRecorder, sharedReq)
+	if sharedRecorder.Code != http.StatusOK {
+		t.Fatalf("unexpected public share status %d: %s", sharedRecorder.Code, sharedRecorder.Body.String())
+	}
+	if !strings.Contains(sharedRecorder.Body.String(), "public readable content") {
+		t.Fatalf("expected public share to include content, got %s", sharedRecorder.Body.String())
+	}
+
+	disabled := updateDriveShareViaAPI(t, router, "user-a", file.ID, false)
+	if disabled.ShareEnabled {
+		t.Fatalf("expected share to be disabled, got %#v", disabled)
+	}
+
+	blockedReq := httptest.NewRequest(http.MethodGet, "/share/drive/"+enabled.ShareToken, nil)
+	blockedRecorder := httptest.NewRecorder()
+	router.ServeHTTP(blockedRecorder, blockedReq)
+	if blockedRecorder.Code != http.StatusNotFound {
+		t.Fatalf("expected disabled share to be unavailable, got %d: %s", blockedRecorder.Code, blockedRecorder.Body.String())
+	}
+	if strings.Contains(blockedRecorder.Body.String(), "public readable content") {
+		t.Fatalf("disabled share leaked content: %s", blockedRecorder.Body.String())
+	}
+}
+
+func TestDrivePublicShareRendersMarkdown(t *testing.T) {
+	router, _ := setupDriveTest(t)
+	file := createDriveFileViaAPI(t, router, "user-a", "", "Markdown.md", "# 标题\n\n- **重点** and `code`\n\n| A | B |\n| --- | ---: |\n| 1 | 2 |\n\n<script>alert(1)</script>")
+	enabled := updateDriveShareViaAPI(t, router, "user-a", file.ID, true)
+
+	req := httptest.NewRequest(http.MethodGet, "/share/drive/"+enabled.ShareToken, nil)
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("unexpected public share status %d: %s", recorder.Code, recorder.Body.String())
+	}
+	body := recorder.Body.String()
+	if !strings.Contains(body, "<h1>标题</h1>") {
+		t.Fatalf("expected markdown heading to render, got %s", body)
+	}
+	if !strings.Contains(body, "<li><strong>重点</strong> and <code>code</code></li>") {
+		t.Fatalf("expected markdown list and inline formatting to render, got %s", body)
+	}
+	if !strings.Contains(body, `<div class="markdown-table-wrap"><table>`) || !strings.Contains(body, `<td style="text-align:right">2</td>`) {
+		t.Fatalf("expected markdown table to render, got %s", body)
+	}
+	if strings.Contains(body, "<script>alert(1)</script>") || !strings.Contains(body, "&lt;script&gt;alert(1)&lt;/script&gt;") {
+		t.Fatalf("expected raw html to be escaped, got %s", body)
+	}
+}
+
 func TestDriveDeleteRemovesDescendants(t *testing.T) {
 	router, _ := setupDriveTest(t)
 	folder := createDriveFolderViaAPI(t, router, "user-a", "", "Archive")
@@ -280,6 +343,27 @@ func createDriveFileWithTagsViaAPI(t *testing.T, router *gin.Engine, userID, par
 	}
 	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
 		t.Fatalf("decode file: %v", err)
+	}
+	return response.Item
+}
+
+func updateDriveShareViaAPI(t *testing.T, router *gin.Engine, userID, itemID string, enabled bool) driveItemResponse {
+	t.Helper()
+	payload := map[string]bool{"enabled": enabled}
+	body, _ := json.Marshal(payload)
+	req := httptest.NewRequest(http.MethodPut, "/api/drive/items/"+itemID+"/share", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-User-ID", userID)
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("unexpected share status %d: %s", recorder.Code, recorder.Body.String())
+	}
+	var response struct {
+		Item driveItemResponse `json:"item"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode share response: %v", err)
 	}
 	return response.Item
 }

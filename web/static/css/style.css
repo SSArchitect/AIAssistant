@@ -2007,6 +2007,37 @@ video {
     color: var(--text);
 }
 
+.inline-citation-link {
+    display: inline-flex;
+    align-items: center;
+    min-height: 17px;
+    margin: 0 1px;
+    padding: 0 5px;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    background: #eef6ff;
+    color: var(--primary);
+    font-size: 11px;
+    font-weight: 760;
+    line-height: 1.2;
+    text-decoration: none;
+    vertical-align: baseline;
+}
+
+.inline-citation-link::before {
+    content: "[";
+}
+
+.inline-citation-link::after {
+    content: "]";
+}
+
+.inline-citation-link:hover {
+    border-color: rgba(37, 99, 235, 0.38);
+    background: #dbeafe;
+    text-decoration: none;
+}
+
 .message.user .markdown-table-wrap {
     border-color: rgba(255, 255, 255, 0.24);
     background: rgba(255, 255, 255, 0.08);
@@ -5166,6 +5197,67 @@ body.pulse-post-open {
     display: none;
 }
 
+.app-confirm-dialog {
+    position: fixed;
+    inset: 0;
+    z-index: 130;
+    display: grid;
+    place-items: center;
+    padding: 18px;
+}
+
+.app-confirm-backdrop {
+    position: absolute;
+    inset: 0;
+    border: 0;
+    background: rgba(15, 23, 42, 0.5);
+    backdrop-filter: blur(5px);
+    cursor: pointer;
+}
+
+.app-confirm-panel {
+    position: relative;
+    width: min(420px, calc(100vw - 36px));
+    padding: 16px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    background: var(--surface);
+    box-shadow: 0 24px 80px rgba(15, 23, 42, 0.24);
+    display: grid;
+    gap: 12px;
+}
+
+.app-confirm-panel h2 {
+    color: var(--text);
+    font-size: 16px;
+    line-height: 1.25;
+}
+
+.app-confirm-panel p {
+    color: var(--text-muted);
+    font-size: 13px;
+    line-height: 1.6;
+    overflow-wrap: anywhere;
+}
+
+.app-confirm-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+}
+
+.app-confirm-primary.danger {
+    border-color: var(--red);
+    background: var(--red);
+    color: #ffffff;
+}
+
+.app-confirm-primary.danger:hover:not(:disabled) {
+    border-color: #b91c1c;
+    background: #b91c1c;
+    color: #ffffff;
+}
+
 .drive-save-backdrop {
     position: absolute;
     inset: 0;
@@ -6185,6 +6277,141 @@ body.drive-selecting {
 
 .project-doc-content {
     white-space: pre-wrap;
+}
+
+.drive-share-menu-wrap {
+    position: relative;
+    display: inline-flex;
+}
+
+.drive-share-trigger[aria-expanded="true"] {
+    border-color: var(--primary);
+    color: var(--primary);
+    background: var(--primary-soft);
+}
+
+.drive-share-menu {
+    position: absolute;
+    top: calc(100% + 8px);
+    right: 0;
+    z-index: 40;
+    width: min(390px, calc(100vw - 32px));
+    padding: 8px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+    box-shadow: 0 18px 50px rgba(15, 23, 42, 0.16);
+    display: grid;
+    gap: 6px;
+}
+
+.drive-share-menu::before {
+    content: "";
+    position: absolute;
+    top: -6px;
+    right: 22px;
+    width: 10px;
+    height: 10px;
+    border-top: 1px solid var(--line);
+    border-left: 1px solid var(--line);
+    background: var(--surface);
+    transform: rotate(45deg);
+}
+
+.drive-share-option {
+    min-width: 0;
+    width: 100%;
+    padding: 8px;
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--text);
+    cursor: pointer;
+    display: grid;
+    grid-template-columns: 22px minmax(0, 1fr);
+    gap: 8px;
+    text-align: left;
+}
+
+.drive-share-option:hover:not(:disabled) {
+    border-color: #c6d8ff;
+    background: #f8fbff;
+}
+
+.drive-share-option.active {
+    border-color: #c6d8ff;
+    background: var(--primary-soft);
+}
+
+.drive-share-option:disabled {
+    cursor: default;
+}
+
+.drive-share-option-check {
+    width: 22px;
+    height: 22px;
+    border-radius: 999px;
+    color: var(--primary);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.drive-share-option-copy {
+    min-width: 0;
+    display: grid;
+    gap: 2px;
+}
+
+.drive-share-option-copy strong {
+    color: var(--text);
+    font-size: 13px;
+    line-height: 1.35;
+}
+
+.drive-share-option-copy small {
+    color: var(--text-muted);
+    font-size: 11px;
+    line-height: 1.4;
+    overflow-wrap: anywhere;
+}
+
+.drive-share-link-row {
+    min-width: 0;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 8px;
+    padding: 8px;
+    border-top: 1px solid var(--line);
+}
+
+.drive-share-link-row input {
+    width: 100%;
+    min-width: 0;
+    height: 34px;
+    padding: 0 10px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+    color: var(--text);
+    font-size: 12px;
+    outline: none;
+}
+
+.drive-share-status {
+    min-height: 18px;
+    padding: 0 8px 2px;
+    color: var(--text-muted);
+    font-size: 11px;
+    line-height: 1.5;
+}
+
+.drive-share-status.ok {
+    color: var(--green);
+}
+
+.drive-share-status.error {
+    color: var(--red);
 }
 
 .project-file-detail-content {
@@ -7371,6 +7598,29 @@ body.drive-selecting {
     .drive-detail-head .project-path-jump,
     .drive-detail-head .btn-primary {
         flex-basis: 100%;
+    }
+
+    .drive-share-menu-wrap {
+        width: 100%;
+        display: grid;
+    }
+
+    .drive-share-trigger {
+        width: 100%;
+    }
+
+    .drive-share-menu {
+        position: static;
+        width: 100%;
+        margin-top: 8px;
+    }
+
+    .drive-share-menu::before {
+        display: none;
+    }
+
+    .drive-share-link-row {
+        grid-template-columns: minmax(0, 1fr);
     }
 
     .project-panel-actions .btn-secondary,

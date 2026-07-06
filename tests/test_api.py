@@ -89,12 +89,14 @@ async def test_list_agents(client):
     assert "减肥" in command_protocol["aliases"]
     assert agents["deep_research_v1"]["enabled"] is True
     assert "deep_research" in agents["deep_research_v1"]["capabilities"]
+    assert agents["deep_research_v1"]["metadata"]["execution_mode"] == "workflow_job"
+    assert agents["deep_research_v1"]["metadata"]["entrypoint"] == "super_chat_mode_only"
+    assert agents["deep_research_v1"]["metadata"]["super_chat_mode_id"] == "deep_research"
+    assert "command_protocol" not in agents["deep_research_v1"]["metadata"]
+    assert "quick_actions" not in agents["deep_research_v1"]["metadata"]
     research_policy = agents["deep_research_v1"]["metadata"]["research_policy"]
     assert research_policy["requires_plan_confirmation"] is True
     assert research_policy["target_result_count"] == 400
-    research_command_protocol = agents["deep_research_v1"]["metadata"]["command_protocol"]
-    assert research_command_protocol["version"] == "agent_command.v1"
-    assert "研究" in research_command_protocol["aliases"]
     assert "langgraph_research" in agents
     assert "knowledge_qa_self_v1" not in agents
     assert "knowledge_qa_langgraph_v1" not in agents

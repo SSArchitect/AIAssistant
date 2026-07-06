@@ -51,6 +51,58 @@ func TestConversationListIsScopedByUserID(t *testing.T) {
 	}
 }
 
+func TestConversationDeleteIsScopedAndReportsMissing(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	if err := database.Init(filepath.Join(t.TempDir(), "assistant.db")); err != nil {
+		t.Fatalf("init database: %v", err)
+	}
+
+	conv := models.Conversation{
+		ID:        "conv-delete-user-a",
+		UserID:    "user-a",
+		Title:     "Delete Me",
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+	if err := database.DB.Create(&conv).Error; err != nil {
+		t.Fatalf("create conversation: %v", err)
+	}
+	message := models.Message{
+		ConversationID: conv.ID,
+		UserID:         conv.UserID,
+		Role:           "user",
+		Content:        "hello",
+		CreatedAt:      time.Now(),
+	}
+	if err := database.DB.Create(&message).Error; err != nil {
+		t.Fatalf("create message: %v", err)
+	}
+
+	router := gin.New()
+	handler := NewConversationHandler()
+	router.DELETE("/api/conversations/:id", handler.Delete)
+
+	wrongUserReq := httptest.NewRequest(http.MethodDelete, "/api/conversations/"+conv.ID, nil)
+	wrongUserReq.Header.Set("X-User-ID", "user-b")
+	wrongUserRecorder := httptest.NewRecorder()
+	router.ServeHTTP(wrongUserRecorder, wrongUserReq)
+	if wrongUserRecorder.Code != http.StatusNotFound {
+		t.Fatalf("expected wrong user delete to 404, got %d: %s", wrongUserRecorder.Code, wrongUserRecorder.Body.String())
+	}
+	assertConversationRowCount(t, conv.ID, 1)
+	assertMessageRowCount(t, conv.ID, 1)
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/conversations/"+conv.ID, nil)
+	req.Header.Set("X-User-ID", conv.UserID)
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("unexpected status %d: %s", recorder.Code, recorder.Body.String())
+	}
+	assertConversationRowCount(t, conv.ID, 0)
+	assertMessageRowCount(t, conv.ID, 0)
+}
+
 func TestConversationGetOmitsTraceEventsByDefault(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	if err := database.Init(filepath.Join(t.TempDir(), "assistant.db")); err != nil {
@@ -246,5 +298,27 @@ func TestConversationCreateDefaultsAgentIDToSuperChat(t *testing.T) {
 	}
 	if conv.AgentID != "super_chat" {
 		t.Fatalf("expected default conversation agent super_chat, got %q", conv.AgentID)
+	}
+}
+
+func assertConversationRowCount(t *testing.T, conversationID string, expected int64) {
+	t.Helper()
+	var count int64
+	if err := database.DB.Model(&models.Conversation{}).Where("id = ?", conversationID).Count(&count).Error; err != nil {
+		t.Fatalf("count conversations: %v", err)
+	}
+	if count != expected {
+		t.Fatalf("expected %d conversation rows for %q, got %d", expected, conversationID, count)
+	}
+}
+
+func assertMessageRowCount(t *testing.T, conversationID string, expected int64) {
+	t.Helper()
+	var count int64
+	if err := database.DB.Model(&models.Message{}).Where("conversation_id = ?", conversationID).Count(&count).Error; err != nil {
+		t.Fatalf("count messages: %v", err)
+	}
+	if count != expected {
+		t.Fatalf("expected %d message rows for %q, got %d", expected, conversationID, count)
 	}
 }

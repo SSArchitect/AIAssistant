@@ -79,11 +79,11 @@ class TestAgentToolSkill:
         assert agent is not None
         self.skill = AgentToolSkill(agent)
 
-    def test_metadata_marks_terminal_routing_tool(self):
+    def test_metadata_marks_workflow_tool(self):
         meta = self.skill.metadata()
         assert meta.name == "weight_loss_v1"
         assert "agent" in meta.tags
-        assert "terminal" in meta.tags
+        assert "workflow" in meta.tags
         assert meta.source == "system"
         assert "do not call it merely because the user mentions meals" in meta.description
 
@@ -98,7 +98,7 @@ class TestAgentToolSkill:
     async def test_execute_is_reserved_for_engine(self):
         result = await self.skill.execute(task="记录午餐", reason="测试")
         assert result.success is False
-        assert result.data["terminal"] is True
+        assert result.data["agent_workflow"] is True
         assert result.data["agent_id"] == "weight_loss_v1"
         assert "agent engine" in result.error
 
@@ -584,6 +584,258 @@ class TestSearchSkill:
         assert all("电影" in result.title for result in results)
 
     @pytest.mark.asyncio
+    async def test_search_service_ranks_full_query_relevance_without_keyword_filtering(self):
+        class Provider:
+            name = "bing-rss"
+
+            async def search(self, query, *, limit=5):
+                return [
+                    SearchResult(
+                        title="chéngrén: 成人 - Adult, Grown-up [Contextual Chinese Dictionary]",
+                        snippet="成人 means adult or grown-up in Chinese.",
+                        url="https://contextualchinese.com/%E6%88%90%E4%BA%BA",
+                        source=self.name,
+                    ),
+                    SearchResult(
+                        title="成人用品-成人用品价格、图片、排行",
+                        snippet="成人用品排行和图片。",
+                        url="https://www.1688.com/market/adult-products.html",
+                        source=self.name,
+                    ),
+                    SearchResult(
+                        title="成人电影+",
+                        snippet="限制级大尺度影片片单。",
+                        url="https://www.example.com/adult-movies",
+                        source=self.name,
+                    ),
+                    SearchResult(
+                        title="成人钢琴入门教材推荐",
+                        snippet="成人零基础钢琴学习可从拜厄、车尔尼和哈农开始。",
+                        url="https://example.com/adult-piano-beginner",
+                        source=self.name,
+                    ),
+                    SearchResult(
+                        title="拜厄钢琴基础教程",
+                        snippet="适合零基础钢琴入门的教材和练习路径。",
+                        url="https://example.com/beyer-piano",
+                        source=self.name,
+                    ),
+                ]
+
+        service = SearchService(
+            providers=[Provider()],
+            retry_attempts=1,
+            retry_delay=0,
+        )
+
+        results = await service.search("成人钢琴入门 教材 推荐 拜厄 车尔尼 哈农", limit=6)
+        titles = [result.title for result in results]
+
+        assert titles[:2] == ["成人钢琴入门教材推荐", "拜厄钢琴基础教程"]
+        assert "成人用品-成人用品价格、图片、排行" in titles
+
+    @pytest.mark.asyncio
+    async def test_search_service_llm_rerank_filters_irrelevant_candidates(self):
+        class Provider:
+            name = "bing-rss"
+
+            async def search(self, query, *, limit=5):
+                return [
+                    SearchResult(
+                        title="Euro sign - Wikipedia",
+                        snippet="The euro sign is the currency symbol used for the euro.",
+                        url="https://en.wikipedia.org/wiki/Euro_sign",
+                        source=self.name,
+                    ),
+                    SearchResult(
+                        title="Euro Truck Simulator 2 DLC Page",
+                        snippet="Steam DLC page for Euro Truck Simulator 2.",
+                        url="https://store.steampowered.com/dlc/227300/Euro_Truck_Simulator_2/",
+                        source=self.name,
+                    ),
+                    SearchResult(
+                        title="ETS2 DLC buying guide",
+                        snippet="Map DLC recommendations for ETS2.",
+                        url="https://example.com/ets2-dlc-guide",
+                        source=self.name,
+                    ),
+                ]
+
+        class FakeReranker:
+            name = "fake-llm"
+            max_candidates = 5
+
+            async def rerank(self, query, results, *, limit):
+                selected = []
+                decisions = []
+                for index, result in enumerate(results, start=1):
+                    relevant = (
+                        "Euro Truck Simulator 2" in result.title
+                        or "ETS2" in result.title
+                    )
+                    decisions.append(
+                        {
+                            "index": index,
+                            "score": 0.92 if relevant else 0.05,
+                            "reason": "matches game DLC intent" if relevant else "different meaning",
+                            "title": result.title,
+                            "url": result.url,
+                        }
+                    )
+                    if relevant:
+                        selected.append(result)
+                return selected[:limit], {
+                    "status": "completed",
+                    "model": "fake-reranker",
+                    "threshold": 0.35,
+                    "candidate_count": len(results),
+                    "judged_count": len(decisions),
+                    "kept_count": len(selected[:limit]),
+                    "decisions": decisions,
+                }
+
+        service = SearchService(
+            providers=[Provider()],
+            reranker=FakeReranker(),
+            retry_attempts=1,
+            retry_delay=0,
+        )
+
+        results = await service.search("Euro Truck Simulator 2 DLC list", limit=5)
+        titles = [result.title for result in results]
+
+        assert "Euro sign - Wikipedia" not in titles
+        assert titles == ["Euro Truck Simulator 2 DLC Page", "ETS2 DLC buying guide"]
+        rerank_node = next(node for node in service.last_trace_nodes if node["node"] == "llm_rerank")
+        assert rerank_node["status"] == "completed"
+        assert rerank_node["provider"] == "fake-llm"
+        assert rerank_node["kept_count"] == 2
+
+    @pytest.mark.asyncio
+    async def test_search_service_llm_rerank_failure_falls_back_to_ranking(self):
+        class Provider:
+            name = "web"
+
+            async def search(self, query, *, limit=5):
+                return [
+                    SearchResult(
+                        title="Agent search ranking",
+                        snippet="Search ranking and recall details.",
+                        url="https://example.com/search-ranking",
+                        source=self.name,
+                    )
+                ]
+
+        class FailingReranker:
+            name = "fake-llm"
+            max_candidates = 5
+
+            async def rerank(self, query, results, *, limit):
+                raise RuntimeError("rerank unavailable")
+
+        service = SearchService(
+            providers=[Provider()],
+            reranker=FailingReranker(),
+            retry_attempts=1,
+            retry_delay=0,
+        )
+
+        results = await service.search("agent search ranking", limit=1)
+
+        assert [result.title for result in results] == ["Agent search ranking"]
+        rerank_node = next(node for node in service.last_trace_nodes if node["node"] == "llm_rerank")
+        assert rerank_node["status"] == "partial"
+        assert "rerank unavailable" in rerank_node["error"]
+
+    @pytest.mark.asyncio
+    async def test_search_service_llm_rerank_sees_raw_candidates_beyond_bm25(self):
+        class Provider:
+            name = "web"
+
+            async def search(self, query, *, limit=5):
+                return [
+                    SearchResult(
+                        title="Semiconductor foundry procurement landscape",
+                        snippet="Supplier concentration and manufacturing capacity analysis.",
+                        url="https://example.com/procurement-landscape",
+                        source=self.name,
+                    ),
+                    SearchResult(
+                        title="Enterprise vendor renewal calendar",
+                        snippet="Internal procurement dates and generic planning notes.",
+                        url="https://example.com/vendor-calendar",
+                        source=self.name,
+                    )
+                ]
+
+        class FakeReranker:
+            name = "fake-llm"
+            max_candidates = 5
+
+            async def rerank(self, query, results, *, limit):
+                return results[:limit], {
+                    "status": "completed",
+                    "model": "fake-reranker",
+                    "threshold": 0.35,
+                    "candidate_count": len(results),
+                    "judged_count": len(results),
+                    "kept_count": len(results[:limit]),
+                    "decisions": [
+                        {
+                            "index": index,
+                            "score": 0.9,
+                            "reason": "semantic match",
+                            "title": result.title,
+                            "url": result.url,
+                        }
+                        for index, result in enumerate(results, start=1)
+                    ],
+                }
+
+        service = SearchService(
+            providers=[Provider()],
+            reranker=FakeReranker(),
+            retry_attempts=1,
+            retry_delay=0,
+        )
+
+        results = await service.search("量子芯片供应链调研", limit=1)
+
+        assert [result.title for result in results] == [
+            "Semiconductor foundry procurement landscape"
+        ]
+        ranking_node = next(node for node in service.last_trace_nodes if node["node"] == "ranking")
+        assert ranking_node["output_count"] == 0
+        rerank_node = next(node for node in service.last_trace_nodes if node["node"] == "llm_rerank")
+        assert rerank_node["input_count"] == 2
+        assert rerank_node["output_count"] == 1
+
+    @pytest.mark.asyncio
+    async def test_search_service_preserves_specialized_market_query_results(self):
+        class Provider:
+            name = "web"
+
+            async def search(self, query, *, limit=5):
+                return [
+                    SearchResult(
+                        title="宠物用品行业市场报告",
+                        snippet="宠物用品市场规模和渠道分析。",
+                        url="https://example.com/pet-products-market",
+                        source=self.name,
+                    )
+                ]
+
+        service = SearchService(
+            providers=[Provider()],
+            retry_attempts=1,
+            retry_delay=0,
+        )
+
+        results = await service.search("宠物用品 行业市场报告", limit=3)
+
+        assert [result.title for result in results] == ["宠物用品行业市场报告"]
+
+    @pytest.mark.asyncio
     async def test_search_service_boosts_official_brand_domain(self):
         class Provider:
             name = "web"
@@ -925,12 +1177,28 @@ class TestSearchSkill:
         assert service.last_query_variants == provider.calls
 
     def test_search_query_variants_use_cjk_phrase_chunks(self):
-        from agent.search.recall import build_query_variants
+        from agent.search.recall import build_query_rewrite_plan, build_query_variants
 
         variants = build_query_variants("2026年最新上映的高口碑电影推荐", max_queries=2)
         brand_variants = build_query_variants(
             "Dunlop 6531 Fingerboard 01 Cleaner 指板清洁剂 用途",
             max_queries=2,
+        )
+        anchored_plan = build_query_rewrite_plan(
+            "成人钢琴入门 教材 拜厄 车尔尼 哈农",
+            max_queries=3,
+        )
+        product_plan = build_query_rewrite_plan(
+            "Euro Truck Simulator 2 DLC list complete Steam wiki",
+            max_queries=3,
+        )
+        site_plan = build_query_rewrite_plan(
+            "site:store.steampowered.com Euro Truck Simulator 2 DLC",
+            max_queries=3,
+        )
+        boolean_plan = build_query_rewrite_plan(
+            '"Euro Truck Simulator 2" "Greece" OR "West Balkans" review worth it',
+            max_queries=3,
         )
 
         assert variants == [
@@ -941,6 +1209,94 @@ class TestSearchSkill:
             "Dunlop 6531 Fingerboard 01 Cleaner 指板清洁剂 用途",
             "6531 01 dunlop fingerboard cleaner 指板清洁剂 用途",
         ]
+        assert anchored_plan["node"] == "query_rewrite"
+        assert anchored_plan["strategy"] == "anchor_rewrite"
+        assert anchored_plan["queries"][:2] == [
+            "拜厄钢琴教材 车尔尼 哈农",
+            "钢琴入门教材 拜厄 车尔尼 哈农",
+        ]
+        assert product_plan["strategy"] == "phrase_rewrite"
+        assert product_plan["queries"][:3] == [
+            '"Euro Truck Simulator 2" DLC list complete Steam wiki',
+            "Euro Truck Simulator 2 DLC list complete Steam wiki",
+            "ETS2 DLC list complete Steam wiki",
+        ]
+        assert site_plan["strategy"] == "syntax_preserving_rewrite"
+        assert site_plan["queries"] == [
+            'site:store.steampowered.com "Euro Truck Simulator 2" DLC',
+            "site:store.steampowered.com Euro Truck Simulator 2 DLC",
+        ]
+        assert all("site store" not in query for query in site_plan["queries"])
+        assert boolean_plan["queries"] == [
+            '"Euro Truck Simulator 2" "Greece" OR "West Balkans" review worth it'
+        ]
+
+    @pytest.mark.asyncio
+    async def test_search_service_uses_query_rewrite_anchors_before_ranking(self):
+        original_query = "成人钢琴入门 教材 拜厄 车尔尼 哈农"
+
+        class RewriteProvider:
+            name = "web"
+            recall_query_limit = 2
+
+            def __init__(self):
+                self.calls = []
+
+            async def search(self, query, *, limit=5):
+                self.calls.append(query)
+                if query.startswith("拜厄钢琴教材"):
+                    return [
+                        SearchResult(
+                            title="拜厄钢琴基本教程与车尔尼哈农搭配",
+                            snippet="适合钢琴入门教材选择，包含拜厄、车尔尼、哈农练习顺序。",
+                            url="https://example.com/beyer-piano-books",
+                            source=self.name,
+                        )
+                    ]
+                return [
+                    SearchResult(
+                        title="Unrelated result",
+                        snippet="Only one broad context word is present.",
+                        url="https://example.com/unrelated",
+                        source=self.name,
+                    )
+                ]
+
+        provider = RewriteProvider()
+        service = SearchService(
+            providers=[provider],
+            retry_attempts=1,
+            retry_delay=0,
+            recall_max_queries=2,
+        )
+
+        results = await service.search(original_query, limit=1)
+
+        assert provider.calls == [
+            "拜厄钢琴教材 车尔尼 哈农",
+            "钢琴入门教材 拜厄 车尔尼 哈农",
+        ]
+        assert service.last_query_rewrite["node"] == "query_rewrite"
+        assert service.last_query_rewrite["strategy"] == "anchor_rewrite"
+        assert service.last_query_variants == provider.calls
+        assert [result.title for result in results] == ["拜厄钢琴基本教程与车尔尼哈农搭配"]
+        assert [node["node"] for node in service.last_trace_nodes] == [
+            "query_rewrite",
+            "recall",
+            "ranking",
+            "llm_rerank",
+        ]
+        recall_node = service.last_trace_nodes[1]
+        assert recall_node["mode"] == "sequential"
+        assert recall_node["attempt_count"] == 2
+        assert recall_node["result_count"] == 2
+        ranking_node = service.last_trace_nodes[2]
+        assert ranking_node["input_count"] == 2
+        assert ranking_node["output_count"] == 1
+        assert ranking_node["top_results"][0]["retrieval_query"] == provider.calls[0]
+        rerank_node = service.last_trace_nodes[3]
+        assert rerank_node["status"] == "skipped"
+        assert rerank_node["reason"] == "disabled"
 
     @pytest.mark.asyncio
     async def test_search_service_respects_provider_recall_query_limit(self):
@@ -977,6 +1333,83 @@ class TestSearchSkill:
         assert len(web_provider.calls) == 2
         assert http_provider.calls[0] == web_provider.calls[0]
         assert web_provider.calls[1] != web_provider.calls[0]
+
+    @pytest.mark.asyncio
+    async def test_search_service_discards_concurrent_recall_timeout_as_empty_results(self):
+        class SlowProvider:
+            name = "web"
+
+            async def search(self, query, *, limit=5):
+                await asyncio.sleep(10)
+                return [
+                    SearchResult(
+                        title="Slow agent search result",
+                        snippet=query,
+                        url="https://example.com/slow",
+                        source=self.name,
+                    )
+                ]
+
+        class FastProvider:
+            name = "bing-rss"
+
+            async def search(self, query, *, limit=5):
+                return [
+                    SearchResult(
+                        title="Fast agent search result",
+                        snippet="Agent search ranking and recall.",
+                        url="https://example.com/fast",
+                        source=self.name,
+                    )
+                ]
+
+        service = SearchService(
+            providers=[SlowProvider(), FastProvider()],
+            retry_attempts=1,
+            retry_delay=0,
+            min_provider_coverage=2,
+            recall_timeout_seconds=0.01,
+        )
+
+        results = await service.search("agent search", limit=1)
+
+        assert [result.title for result in results] == ["Fast agent search result"]
+        assert service.last_provider_errors == []
+        recall_node = next(node for node in service.last_trace_nodes if node["node"] == "recall")
+        assert recall_node["status"] == "partial"
+        assert recall_node["timed_out_count"] == 1
+        assert any(attempt["status"] == "timed_out" for attempt in recall_node["attempts"])
+
+    @pytest.mark.asyncio
+    async def test_search_service_treats_sequential_recall_timeout_as_empty_results(self):
+        class SlowProvider:
+            name = "web"
+
+            async def search(self, query, *, limit=5):
+                await asyncio.sleep(10)
+                return [
+                    SearchResult(
+                        title="Slow agent search result",
+                        snippet=query,
+                        url="https://example.com/slow",
+                        source=self.name,
+                    )
+                ]
+
+        service = SearchService(
+            providers=[SlowProvider()],
+            retry_attempts=1,
+            retry_delay=0,
+            recall_timeout_seconds=0.01,
+        )
+
+        results = await service.search("agent search", limit=1)
+
+        assert results == []
+        assert service.last_provider_errors == []
+        recall_node = next(node for node in service.last_trace_nodes if node["node"] == "recall")
+        assert recall_node["status"] == "partial"
+        assert recall_node["timed_out_count"] == 1
 
     @pytest.mark.asyncio
     async def test_search_service_raises_when_multi_query_provider_fails(self):
@@ -1142,6 +1575,23 @@ class TestSearchSkill:
             provider_names = ["web"]
             last_provider_errors = []
             last_query_variants = ["agent search"]
+            last_trace_nodes = [
+                {
+                    "node": "query_rewrite",
+                    "status": "completed",
+                    "strategy": "keyword_recall",
+                    "original_query": "agent search",
+                    "queries": ["agent search"],
+                    "query_count": 1,
+                },
+                {
+                    "node": "recall",
+                    "status": "completed",
+                    "providers": ["web"],
+                    "attempt_count": 1,
+                    "result_count": 1,
+                },
+            ]
 
             async def search(
                 self,
@@ -1198,6 +1648,10 @@ class TestSearchSkill:
             "page_chars": 500,
         }
         assert result.data["query_variants"] == ["agent search"]
+        assert [node["node"] for node in result.data["search_trace"]] == [
+            "query_rewrite",
+            "recall",
+        ]
         assert result.data["opened_results"] == 1
 
     @pytest.mark.asyncio
@@ -1315,6 +1769,16 @@ class TestSearchSkill:
 
         assert results[0].metadata["page"]["title"] == "Opened"
         assert "Opened page body." in results[0].metadata["page"]["content"]
+        assert [node["node"] for node in service.last_trace_nodes] == [
+            "query_rewrite",
+            "recall",
+            "ranking",
+            "llm_rerank",
+            "open_results",
+        ]
+        open_node = service.last_trace_nodes[-1]
+        assert open_node["opened_count"] == 1
+        assert open_node["error_count"] == 0
 
     @pytest.mark.asyncio
     async def test_search_service_records_open_errors_and_skips_private_urls(self):
@@ -1436,6 +1900,12 @@ class TestSearchSkill:
             "search.min_provider_coverage",
             "search.provider_limit_multiplier",
             "search.recall.max_queries",
+            "search.recall.timeout_seconds",
+            "search.rerank.enabled",
+            "search.rerank.max_candidates",
+            "search.rerank.min_score",
+            "search.rerank.provider",
+            "search.rerank.timeout_seconds",
             "search.web.enabled",
         ]
         previous = {key: runtime_config.get(key) for key in keys}
@@ -1449,6 +1919,12 @@ class TestSearchSkill:
                     "search.min_provider_coverage": "4",
                     "search.provider_limit_multiplier": "3",
                     "search.recall.max_queries": "5",
+                    "search.recall.timeout_seconds": "12.5",
+                    "search.rerank.enabled": "false",
+                    "search.rerank.max_candidates": "7",
+                    "search.rerank.min_score": "0.42",
+                    "search.rerank.provider": "minimax",
+                    "search.rerank.timeout_seconds": "8",
                     "search.web.enabled": "false",
                 }
             )
@@ -1459,6 +1935,8 @@ class TestSearchSkill:
             assert service._min_provider_coverage == 4
             assert service._provider_limit_multiplier == 3
             assert service._recall_max_queries == 5
+            assert service._recall_timeout_seconds == 12.5
+            assert service._reranker is None
         finally:
             runtime_config.update(previous)
 
