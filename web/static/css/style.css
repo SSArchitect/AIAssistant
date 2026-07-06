@@ -5435,6 +5435,19 @@ body.pulse-post-open {
     white-space: normal;
 }
 
+.drive-preview-content.markdown,
+.project-file-detail-content.markdown {
+    background: var(--surface);
+    font-family: inherit;
+    font-size: 14px;
+    line-height: 1.72;
+    white-space: normal;
+}
+
+.drive-preview-content.markdown {
+    padding: 22px 24px;
+}
+
 .drive-preview-media {
     min-width: 0;
     min-height: 0;
@@ -5937,6 +5950,43 @@ body.pulse-post-open {
     gap: 6px;
 }
 
+.drive-detail-head {
+    min-height: auto;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    align-items: stretch;
+    justify-content: normal;
+    gap: 10px;
+}
+
+.drive-detail-title {
+    min-width: 0;
+}
+
+.drive-detail-title h2,
+.drive-detail-title p {
+    overflow-wrap: anywhere;
+}
+
+.drive-detail-head .project-panel-actions {
+    width: 100%;
+    flex-wrap: wrap;
+}
+
+.drive-detail-head .project-path-jump {
+    flex: 1 1 260px;
+    max-width: none;
+}
+
+.drive-detail-head .btn-primary {
+    flex: 1 1 260px;
+    justify-content: center;
+}
+
+.drive-detail-head .btn-secondary {
+    flex: 0 0 auto;
+}
+
 .project-path-jump {
     min-width: 190px;
     max-width: 300px;
@@ -6157,6 +6207,123 @@ body.drive-selecting {
 .project-file-detail-content.binary {
     font-family: inherit;
     white-space: normal;
+}
+
+.drive-markdown-content {
+    color: var(--text);
+}
+
+.drive-markdown-content > *:first-child {
+    margin-top: 0;
+}
+
+.drive-markdown-content > *:last-child {
+    margin-bottom: 0;
+}
+
+.drive-markdown-content h1,
+.drive-markdown-content h2,
+.drive-markdown-content h3,
+.drive-markdown-content h4,
+.drive-markdown-content h5,
+.drive-markdown-content h6 {
+    margin: 18px 0 10px;
+    color: var(--text);
+    font-weight: 820;
+    line-height: 1.25;
+}
+
+.drive-markdown-content h1 {
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--line);
+    font-size: 24px;
+}
+
+.drive-markdown-content h2 {
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--line);
+    font-size: 20px;
+}
+
+.drive-markdown-content h3 {
+    font-size: 17px;
+}
+
+.drive-markdown-content h4,
+.drive-markdown-content h5,
+.drive-markdown-content h6 {
+    font-size: 15px;
+}
+
+.drive-markdown-content p {
+    margin: 0 0 12px;
+}
+
+.drive-markdown-content ul,
+.drive-markdown-content ol {
+    margin: 0 0 14px 24px;
+    padding: 0;
+}
+
+.drive-markdown-content li {
+    margin: 5px 0;
+    padding-left: 2px;
+}
+
+.drive-markdown-content blockquote {
+    margin: 14px 0;
+    padding: 10px 13px;
+    border-left: 3px solid var(--primary);
+    border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+    background: var(--surface-muted);
+    color: var(--text-muted);
+}
+
+.drive-markdown-content hr {
+    height: 1px;
+    margin: 18px 0;
+    border: 0;
+    background: var(--line);
+}
+
+.drive-markdown-content a {
+    color: var(--primary);
+    text-decoration: none;
+    overflow-wrap: anywhere;
+}
+
+.drive-markdown-content a:hover {
+    text-decoration: underline;
+}
+
+.drive-markdown-content code {
+    padding: 2px 5px;
+    border-radius: 4px;
+    background: var(--code);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.88em;
+}
+
+.drive-markdown-content pre {
+    margin: 10px 0;
+    padding: 12px;
+    overflow-x: auto;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    background: var(--code);
+    font-size: 12px;
+    line-height: 1.55;
+}
+
+.drive-markdown-content pre code {
+    padding: 0;
+    background: transparent;
+    font-size: inherit;
+}
+
+.drive-markdown-content .code-block pre {
+    margin: 0;
+    padding-right: 48px;
 }
 
 .project-document-meta,
@@ -7199,6 +7366,11 @@ body.drive-selecting {
     .project-path-jump {
         flex: 1 1 100%;
         max-width: none;
+    }
+
+    .drive-detail-head .project-path-jump,
+    .drive-detail-head .btn-primary {
+        flex-basis: 100%;
     }
 
     .project-panel-actions .btn-secondary,

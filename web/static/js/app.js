@@ -6203,6 +6203,13 @@ function driveFileExtension(item) {
     return match ? match[1] : '';
 }
 
+function driveItemIsMarkdown(item) {
+    if (!item || item.type !== 'file') return false;
+    const mime = String(item.mime_type || '').toLowerCase();
+    const ext = driveFileExtension(item);
+    return mime.includes('markdown') || ['md', 'mdx', 'markdown'].includes(ext);
+}
+
 function driveItemIconKind(item) {
     if (item?.type === 'folder') return 'folder';
     const mime = String(item?.mime_type || '').toLowerCase();
@@ -6360,9 +6367,15 @@ function renderDriveDocumentPreview() {
         drivePreviewStatus.hidden = !drivePreviewState.loading && !drivePreviewState.error;
     }
     if (drivePreviewContent) {
-        drivePreviewContent.classList.toggle('binary', Boolean(item?.encoding === 'base64'));
-        if (item?.encoding === 'base64') {
+        const isBinary = item?.encoding === 'base64';
+        const isMarkdown = !isBinary && driveItemIsMarkdown(item);
+        drivePreviewContent.classList.toggle('binary', isBinary);
+        drivePreviewContent.classList.toggle('markdown', isMarkdown);
+        drivePreviewContent.classList.toggle('drive-markdown-content', isMarkdown);
+        if (isBinary) {
             drivePreviewContent.innerHTML = renderDriveBinaryPreview(item);
+        } else if (isMarkdown) {
+            drivePreviewContent.innerHTML = renderDriveMarkdownContent(item);
         } else {
             drivePreviewContent.textContent = item?.content || item?.summary || '';
         }
@@ -6396,6 +6409,10 @@ function renderDriveBinaryPreview(item) {
         return `<div class="drive-preview-media drive-preview-pdf"><iframe src="${escapeAttr(dataUrl)}" title="${escapeAttr(driveDisplayName(item))}"></iframe><p>${message}</p></div>`;
     }
     return `<div class="drive-preview-binary-message">${message}</div>`;
+}
+
+function renderDriveMarkdownContent(item) {
+    return formatContent(item?.content || item?.summary || '');
 }
 
 function renderDriveSidebarItem(item, depth = 0) {
@@ -6485,8 +6502,8 @@ function renderProjects() {
 
 function renderProjectFolderPanel(folder, counts, documents, isRootFolder) {
     return `
-        <div class="project-panel-head">
-            <div>
+        <div class="project-panel-head drive-detail-head">
+            <div class="drive-detail-title">
                 <h2>${escapeHtml(driveDisplayName(folder) || t('projects.rootName'))}</h2>
                 <p>${escapeHtml(`${driveBreadcrumbText()} · ${t('projects.folderContents', counts)}`)}</p>
             </div>
@@ -6514,8 +6531,8 @@ function renderProjectFolderPanel(folder, counts, documents, isRootFolder) {
 function renderProjectInlineFilePanel(item) {
     const parent = driveItemById(item.parent_id) || driveRootItem();
     return `
-        <div class="project-panel-head">
-            <div>
+        <div class="project-panel-head drive-detail-head">
+            <div class="drive-detail-title">
                 <h2>${escapeHtml(driveDisplayName(item) || t('projects.activeDocument'))}</h2>
                 <p>${escapeHtml([parent?.id ? driveBreadcrumbText(parent.id) : '', driveItemMeta(item)].filter(Boolean).join(' · '))}</p>
             </div>
@@ -6546,6 +6563,9 @@ function renderInlineDriveFileContent(item) {
     }
     if (detail.encoding === 'base64') {
         return `<div class="project-file-detail-content binary">${renderDriveBinaryPreview(detail)}</div>`;
+    }
+    if (driveItemIsMarkdown(detail)) {
+        return `<div class="project-file-detail-content markdown drive-markdown-content">${renderDriveMarkdownContent(detail)}</div>`;
     }
     return `<pre class="project-file-detail-content">${escapeHtml(detail.content || detail.summary || '')}</pre>`;
 }
