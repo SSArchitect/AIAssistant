@@ -1,0 +1,2530 @@
+{
+  "version": 1,
+  "generated_at": "2026-07-06T20:18:14.337748+00:00",
+  "description": "Trace-derived search eval cases collected from local/server search traces. These are broad regression fixtures with pseudo labels from historical LLM rerank decisions; keep curated hand-labeled cases in evals/search/cases.json for stricter checks.",
+  "case_count": 13,
+  "source_counts": {
+    "server": 11,
+    "local": 2
+  },
+  "skipped_counts": {
+    "unlabeled_or_incomplete": 315
+  },
+  "cases": [
+    {
+      "id": "trace_server_b5f73b4c_dunlop_65_fretboard_柠檬油_用途_使用部位_官方",
+      "category": "product",
+      "query": "Dunlop 65 Fretboard柠檬油 用途 使用部位 官方",
+      "notes": "Trace-derived pseudo-labeled case. Expected/negative labels come from historical search.llm_rerank decisions, not hand curation.",
+      "checks": {
+        "k": 5,
+        "min_recall_at_k": 0.5,
+        "min_precision_at_k": 0.2,
+        "min_mrr": 0.2,
+        "max_bad_at_k": 2,
+        "max_latency_ms": 15000
+      },
+      "offline_checks": {
+        "k": 5,
+        "min_recall_at_k": 0.5,
+        "min_precision_at_k": 0.2,
+        "min_mrr": 0.2,
+        "max_bad_at_k": 2,
+        "max_latency_ms": 15000
+      },
+      "expected": [
+        {
+          "label": "Dunlop Fretboard 65 Ultimate Lemon Oil for Guitars - 118ml (6554) for sale online eBay",
+          "url_contains": "https://www.ebay.com/p/1010373063?iid=363582979686"
+        },
+        {
+          "label": "DUNLOP 65 LEMON OIL FRETBOARD CONDITIONER 6554 eBay",
+          "url_contains": "https://www.ebay.com/itm/116086057655?itmmeta=01HQWD20K1V2ZYHQ2KP0GG8B46"
+        }
+      ],
+      "negative": [
+        {
+          "label": "Dunlop Tires | Premium Tires for Cars, SUVs & Trucks | Dunlop Tires",
+          "url_contains": "https://www.dunloptires.com/"
+        },
+        {
+          "label": "DUNLOP 登路普輪胎｜現今世界汽車領導級品牌製造商，所 ...",
+          "url_contains": "https://www.dunlop-taiwan.com.tw/"
+        },
+        {
+          "label": "邓禄普 (Dunlop)高性能轮胎系列-邓禄普轮胎中国官方网站",
+          "url_contains": "https://www.dunlop.com.cn/products_cartype_1.html"
+        }
+      ],
+      "fixture_recall_query_limit": 2,
+      "recall_max_queries": 2,
+      "fixture_results": [
+        {
+          "title": "香料库, 柠檬油(Lemon oil)-数据中心-盖德化工网",
+          "snippet": "rerank score 0.10: 食用柠檬油香料数据，与吉他指板护理用Dunlop 65柠檬油无关",
+          "url": "https://china.guidechem.com/datacenter/spice_material/349.html",
+          "source": "minimax-mcp",
+          "metadata": {
+            "trace_rank": 1,
+            "retrieval_query": "Dunlop 65 Fretboard柠檬油 用途 使用部位 官方",
+            "retrieval_query_index": 0,
+            "rerank_score": 0.1,
+            "rerank_reason": "食用柠檬油香料数据，与吉他指板护理用Dunlop 65柠檬油无关"
+          }
+        },
+        {
+          "title": "邓禄普轮胎DUNLOP官方网站 - 汽车轮胎品牌 - 轿车轮胎 ...",
+          "snippet": "rerank score 0.05: 邓禄普轮胎官网，与吉他柠檬油产品完全无关",
+          "url": "https://www.dunlop.com.cn/",
+          "source": "bing-rss",
+          "metadata": {
+            "trace_rank": 2,
+            "retrieval_query": "Dunlop 65 Fretboard柠檬油 用途 使用部位 官方",
+            "retrieval_query_index": 0,
+            "rerank_score": 0.05,
+            "rerank_reason": "邓禄普轮胎官网，与吉他柠檬油产品完全无关"
+          }
+        },
+        {
+          "title": "DUNLOP 65 LEMON OIL FRETBOARD CONDITIONER 6554 eBay",
+          "snippet": "retrieval query: Dunlop 65 Fretboard柠檬油 用途 使用部位 官方 | rerank score 0.55: eBay上的Dunlop 65柠檬油指板调理剂商品页，是正确产品，但缺官方用途说明 | original query: Dunlop 65 Fretboard柠檬油 用途 使用部位 官方",
+          "url": "https://www.ebay.com/itm/116086057655?itmmeta=01HQWD20K1V2ZYHQ2KP0GG8B46",
+          "source": "minimax-mcp",
+          "metadata": {
+            "trace_rank": 3,
+            "retrieval_query": "Dunlop 65 Fretboard柠檬油 用途 使用部位 官方",
+            "retrieval_query_index": 0,
+            "rerank_score": 0.55,
+            "rerank_reason": "eBay上的Dunlop 65柠檬油指板调理剂商品页，是正确产品，但缺官方用途说明"
+          }
+        },
+        {
+          "title": "邓禄普 (Dunlop)高性能轮胎系列-邓禄普轮胎中国官方网站",
+          "snippet": "rerank score 0.03: 邓禄普轮胎产品页，与吉他柠檬油无关",
+          "url": "https://www.dunlop.com.cn/products_cartype_1.html",
+          "source": "bing-rss",
+          "metadata": {
+            "trace_rank": 4,
+            "retrieval_query": "Dunlop 65 Fretboard柠檬油 用途 使用部位 官方",
+            "retrieval_query_index": 0,
+            "rerank_score": 0.03,
+            "rerank_reason": "邓禄普轮胎产品页，与吉他柠檬油无关"
+          }
+        },
+        {
+          "title": "柠檬油",
+          "snippet": "rerank score 0.12: 通用柠檬油百科，未涉及Dunlop品牌或吉他指板用途",
+          "url": "https://baike.sogou.com/v101276173.htm",
+          "source": "minimax-mcp",
+          "metadata": {
+            "trace_rank": 5,
+            "retrieval_query": "Dunlop 65 Fretboard柠檬油 用途 使用部位 官方",
+            "retrieval_query_index": 0,
+            "rerank_score": 0.12,
+            "rerank_reason": "通用柠檬油百科，未涉及Dunlop品牌或吉他指板用途"
+          }
+        },
+        {
+          "title": "Dunlop Fretboard 65 Ultimate Lemon Oil for Guitars - 118ml (6554) for sale online eBay",
+          "snippet": "rerank score 0.75: 明确提到Fretboard 65柠檬油用于吉他指板的清洁和保护，是相关产品信息，但非官方页面 | original query: Dunlop 65 Fretboard柠檬油 用途 使用部位 官方",
+          "url": "https://www.ebay.com/p/1010373063?iid=363582979686",
+          "source": "trace",
+          "metadata": {
+            "rerank_score": 0.75,
+            "rerank_reason": "明确提到Fretboard 65柠檬油用于吉他指板的清洁和保护，是相关产品信息，但非官方页面",
+            "trace_rank": 7
+          }
+        },
+        {
+          "title": "【柠檬油的作用有哪些】 - 大众医疗",
+          "snippet": "rerank score 0.08: 柠檬油护肤功效文章，与Dunlop吉他产品无关",
+          "url": "https://www.cndzys.com/xshcore/quanwei_ztart/0es_719777.html",
+          "source": "trace",
+          "metadata": {
+            "rerank_score": 0.08,
+            "rerank_reason": "柠檬油护肤功效文章，与Dunlop吉他产品无关",
+            "trace_rank": 9
+          }
+        },
+        {
+          "title": "邓禄普（英国轮胎品牌）_百度百科",
+          "snippet": "rerank score 0.05: 邓禄普轮胎百科条目，与吉他柠檬油无关",
+          "url": "https://baike.baidu.com/item/%E9%82%93%E7%A6%84%E6%99%AE/433226",
+          "source": "trace",
+          "metadata": {
+            "rerank_score": 0.05,
+            "rerank_reason": "邓禄普轮胎百科条目，与吉他柠檬油无关",
+            "trace_rank": 8
+          }
+        },
+        {
+          "title": "DUNLOP 登路普輪胎｜現今世界汽車領導級品牌製造商，所 ...",
+          "snippet": "rerank score 0.03: 邓禄普轮胎台湾官网，与查询无关",
+          "url": "https://www.dunlop-taiwan.com.tw/",
+          "source": "trace",
+          "metadata": {
+            "rerank_score": 0.03,
+            "rerank_reason": "邓禄普轮胎台湾官网，与查询无关",
+            "trace_rank": 6
+          }
+        },
+        {
+          "title": "Dunlop Tires | Premium Tires for Cars, SUVs & Trucks | Dunlop Tires",
+          "snippet": "rerank score 0.03: 邓禄普轮胎美国官网，与查询无关",
+          "url": "https://www.dunloptires.com/",
+          "source": "trace",
+          "metadata": {
+            "rerank_score": 0.03,
+            "rerank_reason": "邓禄普轮胎美国官网，与查询无关",
+            "trace_rank": 10
+          }
+        }
+      ],
+      "trace": {
+        "source": "server",
+        "run_id": "run_d947a1bee48f4c0b8afbf41468097921",
+        "conversation_id": "d1b8638c-c074-4c44-bc4c-05f522c5fc6f",
+        "message_id": "646",
+        "step_id": "call_jJOz7zFaCCCNTDkmMwm2MgJP",
+        "created_at": "2026-07-07T04:08:05.669870512+08:00",
+        "rewrite_strategy": "keyword_recall",
+        "rewrite_policy_id": "lexical_recall_no_inference_v1",
+        "rewrite_queries": [
+          "Dunlop 65 Fretboard柠檬油 用途 使用部位 官方",
+          "65 dunlop fretboard 柠檬油 用途 使用部位 官方"
+        ],
+        "providers": [
+          "web",
+          "minimax-mcp",
+          "bing-rss"
+        ],
+        "attempt_count": 5,
+        "timed_out_count": 2,
+        "rerank_threshold": 0.5,
+        "rerank_model": "MiniMax-M3",
+        "rerank_provider": "llm:minimax"
+      }
+    },
+    {
+      "id": "trace_server_374e97c0_dunlop_formula_65_no_1_no_2_polish",
+      "category": "product",
+      "query": "Dunlop Formula 65 No.1 No.2 polish cloth 区别 用途",
+      "notes": "Trace-derived pseudo-labeled case. Expected/negative labels come from historical search.llm_rerank decisions, not hand curation.",
+      "checks": {
+        "k": 5,
+        "min_recall_at_k": 0.5,
+        "min_precision_at_k": 0.2,
+        "min_mrr": 0.2,
+        "max_bad_at_k": 2,
+        "max_latency_ms": 15000
+      },
+      "offline_checks": {
+        "k": 5,
+        "min_recall_at_k": 0.5,
+        "min_precision_at_k": 0.2,
+        "min_mrr": 0.2,
+        "max_bad_at_k": 2,
+        "max_latency_ms": 15000
+      },
+      "expected": [
+        {
+          "label": "Dunlop Formula 65 Pflegemittel für Gitarren und Bässe – Musikhaus Thomann",
+          "url_contains": "https://www.thomann.de/de/dunlop_formula_65.htm"
+        },
+        {
+          "label": "JIM DUNLOP Formula 65 Polish & Cleaner 4oz 2-Pack for Guitars eBay",
+          "url_contains": "https://www.ebay.com/itm/405500020051?_ul=MX"
+        },
+        {
+          "label": "DUNLOP. SINCE 1965.",
+          "url_contains": "https://www.jimdunlop.com/"
+        }
+      ],
+      "negative": [
+        {
+          "label": "65 (2023) - IMDb",
+          "url_contains": "https://www.imdb.com/title/tt12261776/"
+        },
+        {
+          "label": "株式会社ダンロップタイヤ",
+          "url_contains": "https://corp.jp.dunlop-tyre.com/"
+        },
+        {
+          "label": "邓禄普轮胎DUNLOP官方网站 - 汽车轮胎品牌 - 轿车轮胎 ...",
+          "url_contains": "https://www.dunlop.com.cn/"
+        }
+      ],
+      "fixture_recall_query_limit": 2,
+      "recall_max_queries": 2,
+      "fixture_results": [
+        {
+          "title": "JIM DUNLOP Formula 65 Polish & Cleaner 4oz 2-Pack for Guitars eBay",
+          "snippet": "retrieval query: Dunlop Formula 65 No.1 No.2 polish cloth 区别 用途 | rerank score 0.55: eBay商品页面，售卖Formula 65 polish清洁剂套装，未说明No.1与No.2的区别和用途，但与查询实体相关 | original query: Dunlop Formula 65 No.1 No.2 polish cloth 区别 用途",
+          "url": "https://www.ebay.com/itm/405500020051?_ul=MX",
+          "source": "minimax-mcp",
+          "metadata": {
+            "trace_rank": 1,
+            "retrieval_query": "Dunlop Formula 65 No.1 No.2 polish cloth 区别 用途",
+            "retrieval_query_index": 0,
+            "rerank_score": 0.55,
+            "rerank_reason": "eBay商品页面，售卖Formula 65 polish清洁剂套装，未说明No.1与No.2的区别和用途，但与查询实体相关"
+          }
+        },
+        {
+          "title": "Dunlop Tires | Premium Tires for Cars, SUVs & Trucks | Dunlop Tires",
+          "snippet": "rerank score 0.05: Dunlop轮胎官网，与吉他抛光剂Formula 65完全无关，同名歧义",
+          "url": "https://www.dunloptires.com/",
+          "source": "bing-rss",
+          "metadata": {
+            "trace_rank": 2,
+            "retrieval_query": "Dunlop Formula 65 No.1 No.2 polish cloth 区别 用途",
+            "retrieval_query_index": 0,
+            "rerank_score": 0.05,
+            "rerank_reason": "Dunlop轮胎官网，与吉他抛光剂Formula 65完全无关，同名歧义"
+          }
+        },
+        {
+          "title": "NEW - Dunlop Formula No. 65 Guitar Polish & Cleaner, 1 Ounce eBay",
+          "snippet": "retrieval query: Dunlop Formula 65 No.1 No.2 polish cloth 区别 用途 | rerank score 0.45: eBay售卖Formula No.65抛光清洁剂单品页面，未涉及No.1与No.2区别用途 | original query: Dunlop Formula 65 No.1 No.2 polish cloth 区别 用途",
+          "url": "https://www.ebay.com/itm/363158989940?hash=item548df66c74%3Ag%3AMYoAAOSwz6tfmu40&LH_All=1",
+          "source": "minimax-mcp",
+          "metadata": {
+            "trace_rank": 3,
+            "retrieval_query": "Dunlop Formula 65 No.1 No.2 polish cloth 区别 用途",
+            "retrieval_query_index": 0,
+            "rerank_score": 0.45,
+            "rerank_reason": "eBay售卖Formula No.65抛光清洁剂单品页面，未涉及No.1与No.2区别用途"
+          }
+        },
+        {
+          "title": "DUNLOP GLOBAL SITE",
+          "snippet": "rerank score 0.03: Dunlop集团全球站，未涉及Formula 65吉他护理产品",
+          "url": "https://www.dunlop.com/",
+          "source": "bing-rss",
+          "metadata": {
+            "trace_rank": 4,
+            "retrieval_query": "Dunlop Formula 65 No.1 No.2 polish cloth 区别 用途",
+            "retrieval_query_index": 0,
+            "rerank_score": 0.03,
+            "rerank_reason": "Dunlop集团全球站，未涉及Formula 65吉他护理产品"
+          }
+        },
+        {
+          "title": "Dunlop Formula 65 Pflegemittel für Gitarren und Bässe – Musikhaus Thomann",
+          "snippet": "retrieval query: Dunlop Formula 65 No.1 No.2 polish cloth 区别 用途 | rerank score 0.70: Thomann乐器商城Dunlop Formula 65护理产品页面，可能包含产品说明和用途，但未明确区分No.1与No.2 | original query: Dunlop Formula 65 No.1 No.2 polish cloth 区别 用途",
+          "url": "https://www.thomann.de/de/dunlop_formula_65.htm",
+          "source": "minimax-mcp",
+          "metadata": {
+            "trace_rank": 5,
+            "retrieval_query": "Dunlop Formula 65 No.1 No.2 polish cloth 区别 用途",
+            "retrieval_query_index": 0,
+            "rerank_score": 0.7,
+            "rerank_reason": "Thomann乐器商城Dunlop Formula 65护理产品页面，可能包含产品说明和用途，但未明确区分No.1与No.2"
+          }
+        },
+        {
+          "title": "DUNLOP. SINCE 1965.",
+          "snippet": "rerank score 0.55: Jim Dunlop官方制造网站，是Formula 65品牌的权威来源，可能有产品详情但snippet未显示No.1/No.2区别信息 | original query: Dunlop Formula 65 No.1 No.2 polish cloth 区别 用途",
+          "url": "https://www.jimdunlop.com/",
+          "source": "trace",
+          "metadata": {
+            "rerank_score": 0.55,
+            "rerank_reason": "Jim Dunlop官方制造网站，是Formula 65品牌的权威来源，可能有产品详情但snippet未显示No.1/No.2区别信息",
+            "trace_rank": 7
+          }
+        },
+        {
+          "title": "Dunlop Tyres – Driving Experiences with Performance and Safety",
+          "snippet": "rerank score 0.05: Dunlop轮胎，与查询无关",
+          "url": "https://www.dunloptyres.com/en/",
+          "source": "trace",
+          "metadata": {
+            "rerank_score": 0.05,
+            "rerank_reason": "Dunlop轮胎，与查询无关",
+            "trace_rank": 6
+          }
+        },
+        {
+          "title": "邓禄普轮胎DUNLOP官方网站 - 汽车轮胎品牌 - 轿车轮胎 ...",
+          "snippet": "rerank score 0.03: 邓禄普中国轮胎官网，与吉他抛光剂无关",
+          "url": "https://www.dunlop.com.cn/",
+          "source": "trace",
+          "metadata": {
+            "rerank_score": 0.03,
+            "rerank_reason": "邓禄普中国轮胎官网，与吉他抛光剂无关",
+            "trace_rank": 9
+          }
+        },
+        {
+          "title": "株式会社ダンロップタイヤ",
+          "snippet": "rerank score 0.02: 日本Dunlop轮胎公司，与查询无关",
+          "url": "https://corp.jp.dunlop-tyre.com/",
+          "source": "trace",
+          "metadata": {
+            "rerank_score": 0.02,
+            "rerank_reason": "日本Dunlop轮胎公司，与查询无关",
+            "trace_rank": 10
+          }
+        },
+        {
+          "title": "65 (2023) - IMDb",
+          "snippet": "rerank score 0.00: IMDb电影《65》，完全无关",
+          "url": "https://www.imdb.com/title/tt12261776/",
+          "source": "trace",
+          "metadata": {
+            "rerank_score": 0.0,
+            "rerank_reason": "IMDb电影《65》，完全无关",
+            "trace_rank": 8
+          }
+        }
+      ],
+      "trace": {
+        "source": "server",
+        "run_id": "run_d947a1bee48f4c0b8afbf41468097921",
+        "conversation_id": "d1b8638c-c074-4c44-bc4c-05f522c5fc6f",
+        "message_id": "646",
+        "step_id": "call_9778UCTmugTLWnyaQl3w7LHp",
+        "created_at": "2026-07-07T04:08:05.669870512+08:00",
+        "rewrite_strategy": "keyword_recall",
+        "rewrite_policy_id": "lexical_recall_no_inference_v1",
+        "rewrite_queries": [
+          "Dunlop Formula 65 No.1 No.2 polish cloth 区别 用途",
+          "65 1 2 dunlop formula no.1 no.2 polish cloth 区别 用途"
+        ],
+        "providers": [
+          "web",
+          "minimax-mcp",
+          "bing-rss"
+        ],
+        "attempt_count": 5,
+        "timed_out_count": 2,
+        "rerank_threshold": 0.5,
+        "rerank_model": "MiniMax-M3",
+        "rerank_provider": "llm:minimax"
+      }
+    },
+    {
+      "id": "trace_server_7efe3d94_dunlop_65_01_02_guitar_care_polish_cleaner",
+      "category": "product",
+      "query": "Dunlop 65 01 02 guitar care polish cleaner difference usage",
+      "notes": "Trace-derived pseudo-labeled case. Expected/negative labels come from historical search.llm_rerank decisions, not hand curation.",
+      "checks": {
+        "k": 5,
+        "min_recall_at_k": 1.0,
+        "min_precision_at_k": 0.2,
+        "min_mrr": 0.2,
+        "max_bad_at_k": 2,
+        "max_latency_ms": 15000
+      },
+      "offline_checks": {
+        "k": 5,
+        "min_recall_at_k": 1.0,
+        "min_precision_at_k": 0.2,
+        "min_mrr": 0.2,
+        "max_bad_at_k": 2,
+        "max_latency_ms": 15000
+      },
+      "expected": [
+        {
+          "label": "2-PACK Dunlop 6502 System 65 Guitar/Bass Fretboard Kit w/ Cleaner & Conditioner eBay",
+          "url_contains": "https://www.ebay.com/itm/165150176838?_ul=BR"
+        }
+      ],
+      "negative": [
+        {
+          "label": "邓禄普轮胎DUNLOP官方网站 - 汽车轮胎品牌 - 轿车轮胎 ...",
+          "url_contains": "https://www.dunlop.com.cn/"
+        },
+        {
+          "label": "Dunlop Tyres – Driving Experiences with Performance and Safety",
+          "url_contains": "https://www.dunloptyres.com/en/"
+        },
+        {
+          "label": "DUNLOP GLOBAL SITE",
+          "url_contains": "https://www.dunlop.com/"
+        }
+      ],
+      "fixture_recall_query_limit": 2,
+      "recall_max_queries": 2,
+      "fixture_results": [
+        {
+          "title": "NEW - Dunlop Formula No. 65 Guitar Polish & Cleaner, 1 Ounce eBay",
+          "snippet": "rerank score 0.35: eBay listing for Formula No. 65 polish/cleaner, matches product but no comparison with 6501/6502 or usage difference info.",
+          "url": "https://www.ebay.com/itm/363158989940?hash=item548df66c74%3Ag%3AMYoAAOSwz6tfmu40&LH_All=1",
+          "source": "minimax-mcp",
+          "metadata": {
+            "trace_rank": 1,
+            "retrieval_query": "Dunlop 65 01 02 guitar care polish cleaner difference usage",
+            "retrieval_query_index": 0,
+            "rerank_score": 0.35,
+            "rerank_reason": "eBay listing for Formula No. 65 polish/cleaner, matches product but no comparison with 6501/6502 or usage difference info."
+          }
+        },
+        {
+          "title": "Dunlop Tires | Premium Tires for Cars, SUVs & Trucks | Dunlop Tires",
+          "snippet": "rerank score 0.02: Dunlop tire company site; completely unrelated to guitar care products.",
+          "url": "https://www.dunloptires.com/",
+          "source": "bing-rss",
+          "metadata": {
+            "trace_rank": 2,
+            "retrieval_query": "Dunlop 65 01 02 guitar care polish cleaner difference usage",
+            "retrieval_query_index": 0,
+            "rerank_score": 0.02,
+            "rerank_reason": "Dunlop tire company site; completely unrelated to guitar care products."
+          }
+        },
+        {
+          "title": "Jim Dunlop Formula 65 Guitar Polish & Cleaner 4oz Spray Bottle eBay",
+          "snippet": "rerank score 0.35: eBay listing for Formula 65 4oz spray, matches one product but lacks comparison or usage guidance.",
+          "url": "https://www.ebay.com/itm/353965931648?_ul=CR",
+          "source": "minimax-mcp",
+          "metadata": {
+            "trace_rank": 3,
+            "retrieval_query": "Dunlop 65 01 02 guitar care polish cleaner difference usage",
+            "retrieval_query_index": 0,
+            "rerank_score": 0.35,
+            "rerank_reason": "eBay listing for Formula 65 4oz spray, matches one product but lacks comparison or usage guidance."
+          }
+        },
+        {
+          "title": "DUNLOP GLOBAL SITE",
+          "snippet": "rerank score 0.02: Dunlop global corporate site for tires/sports; not about guitar care.",
+          "url": "https://www.dunlop.com/",
+          "source": "bing-rss",
+          "metadata": {
+            "trace_rank": 4,
+            "retrieval_query": "Dunlop 65 01 02 guitar care polish cleaner difference usage",
+            "retrieval_query_index": 0,
+            "rerank_score": 0.02,
+            "rerank_reason": "Dunlop global corporate site for tires/sports; not about guitar care."
+          }
+        },
+        {
+          "title": "Dunlop 6516 Formula 65 Guitar Polish & Cleaner 16oz. eBay",
+          "snippet": "rerank score 0.35: eBay listing for Formula 65 16oz, product match only, no 6501 vs 6502 comparison or usage details.",
+          "url": "https://www.ebay.com/itm/314589616204?_ul=CN",
+          "source": "minimax-mcp",
+          "metadata": {
+            "trace_rank": 5,
+            "retrieval_query": "Dunlop 65 01 02 guitar care polish cleaner difference usage",
+            "retrieval_query_index": 0,
+            "rerank_score": 0.35,
+            "rerank_reason": "eBay listing for Formula 65 16oz, product match only, no 6501 vs 6502 comparison or usage details."
+          }
+        },
+        {
+          "title": "2-PACK Dunlop 6502 System 65 Guitar/Bass Fretboard Kit w/ Cleaner & Conditioner eBay",
+          "snippet": "rerank score 0.72: eBay listing for 2-Pack Dunlop 6502 System 65 Fretboard Kit (Cleaner & Conditioner); directly mentions product 6502 relevant to the 65/01/02 comparison, though listing format, not a usage guide. | original query: Dunlop 65 01 02 guitar care polish cleaner difference usage",
+          "url": "https://www.ebay.com/itm/165150176838?_ul=BR",
+          "source": "trace",
+          "metadata": {
+            "rerank_score": 0.72,
+            "rerank_reason": "eBay listing for 2-Pack Dunlop 6502 System 65 Fretboard Kit (Cleaner & Conditioner); directly mentions product 6502 relevant to the 65/01/02 comparison, though listing format, not a usage guide.",
+            "trace_rank": 7
+          }
+        },
+        {
+          "title": "Dunlop Formula 65 Guitar Polish Kit eBay",
+          "snippet": "rerank score 0.35: eBay listing for Formula 65 Polish Kit; matches one product but no 6501/6502 difference or usage explanation.",
+          "url": "https://www.ebay.com/itm/304668056643",
+          "source": "trace",
+          "metadata": {
+            "rerank_score": 0.35,
+            "rerank_reason": "eBay listing for Formula 65 Polish Kit; matches one product but no 6501/6502 difference or usage explanation.",
+            "trace_rank": 9
+          }
+        },
+        {
+          "title": "DUNLOP. SINCE 1965.",
+          "snippet": "rerank score 0.25: Jim Dunlop Manufacturing official site (guitar accessories maker); authoritative brand source but no specific product comparison content shown.",
+          "url": "https://www.jimdunlop.com/",
+          "source": "trace",
+          "metadata": {
+            "rerank_score": 0.25,
+            "rerank_reason": "Jim Dunlop Manufacturing official site (guitar accessories maker); authoritative brand source but no specific product comparison content shown.",
+            "trace_rank": 8
+          }
+        },
+        {
+          "title": "Dunlop Tyres – Driving Experiences with Performance and Safety",
+          "snippet": "rerank score 0.02: Dunlop tyres site; irrelevant to guitar polish/cleaner query.",
+          "url": "https://www.dunloptyres.com/en/",
+          "source": "trace",
+          "metadata": {
+            "rerank_score": 0.02,
+            "rerank_reason": "Dunlop tyres site; irrelevant to guitar polish/cleaner query.",
+            "trace_rank": 6
+          }
+        },
+        {
+          "title": "邓禄普轮胎DUNLOP官方网站 - 汽车轮胎品牌 - 轿车轮胎 ...",
+          "snippet": "rerank score 0.02: Chinese Dunlop tire website; completely unrelated to guitar care products.",
+          "url": "https://www.dunlop.com.cn/",
+          "source": "trace",
+          "metadata": {
+            "rerank_score": 0.02,
+            "rerank_reason": "Chinese Dunlop tire website; completely unrelated to guitar care products.",
+            "trace_rank": 10
+          }
+        }
+      ],
+      "trace": {
+        "source": "server",
+        "run_id": "run_534f5185ae434c1ca4cf4137bb34d242",
+        "conversation_id": "fec99874-d440-486a-b5de-3e7ebbc244fc",
+        "message_id": "648",
+        "step_id": "call_019f390a5f0578c38cd9c85b",
+        "created_at": "2026-07-07T04:10:17.72210676+08:00",
+        "rewrite_strategy": "keyword_recall",
+        "rewrite_policy_id": "lexical_recall_no_inference_v1",
+        "rewrite_queries": [
+          "Dunlop 65 01 02 guitar care polish cleaner difference usage",
+          "65 01 02 dunlop guitar care polish cleaner difference usage"
+        ],
+        "providers": [
+          "web",
+          "minimax-mcp",
+          "bing-rss"
+        ],
+        "attempt_count": 5,
+        "timed_out_count": 2,
+        "rerank_threshold": 0.5,
+        "rerank_model": "MiniMax-M3",
+        "rerank_provider": "llm:minimax"
+      }
+    },
+    {
+      "id": "trace_server_48af9422_dunlop_6501_fretboard_conditioner_lemon_oil_",
+      "category": "product",
+      "query": "Dunlop 6501 fretboard conditioner lemon oil instructions",
+      "notes": "Trace-derived pseudo-labeled case. Expected/negative labels come from historical search.llm_rerank decisions, not hand curation.",
+      "checks": {
+        "k": 5,
+        "min_recall_at_k": 1.0,
+        "min_precision_at_k": 0.2,
+        "min_mrr": 0.2,
+        "max_bad_at_k": 2,
+        "max_latency_ms": 15000
+      },
+      "offline_checks": {
+        "k": 5,
+        "min_recall_at_k": 1.0,
+        "min_precision_at_k": 0.2,
+        "min_mrr": 0.2,
+        "max_bad_at_k": 2,
+        "max_latency_ms": 15000
+      },
+      "expected": [
+        {
+          "label": "DUNLOP. SINCE 1965.",
+          "url_contains": "https://www.jimdunlop.com/"
+        }
+      ],
+      "negative": [
+        {
+          "label": "净洗剂 6501、6502、6503，椰油酸单乙醇酰胺68140-00-1 ...",
+          "url_contains": "https://www.chemicalbook.com/SupplyInfo_2098482.htm"
+        },
+        {
+          "label": "脂肪酸二乙醇酰胺 (6501)_化工百科 - ChemBK",
+          "url_contains": "https://www.chembk.com/cn/chem/%E8%84%82%E8%82%AA%E9%85%B8%E4%BA%8C%E4%B9%99%E9%86%87%E9%85%B0%E8%83%BA(6501)"
+        },
+        {
+          "label": "DUNLOP GLOBAL SITE",
+          "url_contains": "https://www.dunlop.com/"
+        }
+      ],
+      "fixture_recall_query_limit": 2,
+      "recall_max_queries": 2,
+      "fixture_results": [
+        {
+          "title": "DUNLOP 65 LEMON OIL FRETBOARD CONDITIONER 6554 eBay",
+          "snippet": "rerank score 0.25: eBay listing for Dunlop 6554 lemon oil; mentions the product but provides no usage instructions, just a sales page.",
+          "url": "https://www.ebay.com/itm/116086057655?itmmeta=01HQWD20K1V2ZYHQ2KP0GG8B46",
+          "source": "minimax-mcp",
+          "metadata": {
+            "trace_rank": 1,
+            "retrieval_query": "Dunlop 6501 fretboard conditioner lemon oil instructions",
+            "retrieval_query_index": 0,
+            "rerank_score": 0.25,
+            "rerank_reason": "eBay listing for Dunlop 6554 lemon oil; mentions the product but provides no usage instructions, just a sales page."
+          }
+        },
+        {
+          "title": "脂肪酸二乙醇酰胺 (6501)_化工百科 - ChemBK",
+          "snippet": "rerank score 0.02: Completely unrelated chemical compound (Cocamide DEA 6501); shares the number 6501 but is not about Dunlop fretboard conditioner.",
+          "url": "https://www.chembk.com/cn/chem/%E8%84%82%E8%82%AA%E9%85%B8%E4%BA%8C%E4%B9%99%E9%86%87%E9%85%B0%E8%83%BA(6501)",
+          "source": "bing-rss",
+          "metadata": {
+            "trace_rank": 2,
+            "retrieval_query": "6501 dunlop fretboard conditioner lemon oil instructions",
+            "retrieval_query_index": 1,
+            "rerank_score": 0.02,
+            "rerank_reason": "Completely unrelated chemical compound (Cocamide DEA 6501); shares the number 6501 but is not about Dunlop fretboard conditioner."
+          }
+        },
+        {
+          "title": "Dunlop Fretboard 65 Ultimate Lemon Oil for Guitars - 118ml (6554) for sale online eBay",
+          "snippet": "rerank score 0.30: eBay product page for Dunlop Fretboard 65 lemon oil 6554; product listing without actual usage instructions.",
+          "url": "https://www.ebay.com/p/1010373063?iid=363582979686",
+          "source": "minimax-mcp",
+          "metadata": {
+            "trace_rank": 3,
+            "retrieval_query": "Dunlop 6501 fretboard conditioner lemon oil instructions",
+            "retrieval_query_index": 0,
+            "rerank_score": 0.3,
+            "rerank_reason": "eBay product page for Dunlop Fretboard 65 lemon oil 6554; product listing without actual usage instructions."
+          }
+        },
+        {
+          "title": "Dunlop Tires | Premium Tires for Cars, SUVs & Trucks | Dunlop Tires",
+          "snippet": "rerank score 0.05: Dunlop tires site; completely unrelated to fretboard conditioner.",
+          "url": "https://www.dunloptires.com/",
+          "source": "bing-rss",
+          "metadata": {
+            "trace_rank": 4,
+            "retrieval_query": "Dunlop 6501 fretboard conditioner lemon oil instructions",
+            "retrieval_query_index": 0,
+            "rerank_score": 0.05,
+            "rerank_reason": "Dunlop tires site; completely unrelated to fretboard conditioner."
+          }
+        },
+        {
+          "title": "2 X Dunlop Jd-6551j Fretboard 65 Ultimate Lemon Oil 1oz Spray Bottle for sale online eBay",
+          "snippet": "rerank score 0.20: eBay listing for Dunlop 6551 lemon oil spray; product page with no instructions.",
+          "url": "https://www.ebay.com/p/1305531721?iid=371694666445&rt=nc",
+          "source": "minimax-mcp",
+          "metadata": {
+            "trace_rank": 5,
+            "retrieval_query": "Dunlop 6501 fretboard conditioner lemon oil instructions",
+            "retrieval_query_index": 0,
+            "rerank_score": 0.2,
+            "rerank_reason": "eBay listing for Dunlop 6551 lemon oil spray; product page with no instructions."
+          }
+        },
+        {
+          "title": "DUNLOP. SINCE 1965.",
+          "snippet": "rerank score 0.50: Official Jim Dunlop manufacturing site; authoritative source for Dunlop music products including Fretboard 65 lemon oil, potentially contains product info/usage instructions though snippet doesn't confirm details. | original query: Dunlop 6501 fretboard conditioner lemon oil instructions",
+          "url": "https://www.jimdunlop.com/",
+          "source": "trace",
+          "metadata": {
+            "rerank_score": 0.5,
+            "rerank_reason": "Official Jim Dunlop manufacturing site; authoritative source for Dunlop music products including Fretboard 65 lemon oil, potentially contains product info/usage instructions though snippet doesn't confirm details.",
+            "trace_rank": 10
+          }
+        },
+        {
+          "title": "柠檬油",
+          "snippet": "rerank score 0.08: Generic lemon oil encyclopedia article; does not address Dunlop fretboard conditioner or instructions.",
+          "url": "https://baike.sogou.com/v101276173.htm",
+          "source": "trace",
+          "metadata": {
+            "rerank_score": 0.08,
+            "rerank_reason": "Generic lemon oil encyclopedia article; does not address Dunlop fretboard conditioner or instructions.",
+            "trace_rank": 7
+          }
+        },
+        {
+          "title": "Dunlop Tyres – Driving Experiences with Performance and Safety",
+          "snippet": "rerank score 0.04: Dunlop tyres site; unrelated to musical instrument care.",
+          "url": "https://www.dunloptyres.com/en/",
+          "source": "trace",
+          "metadata": {
+            "rerank_score": 0.04,
+            "rerank_reason": "Dunlop tyres site; unrelated to musical instrument care.",
+            "trace_rank": 9
+          }
+        },
+        {
+          "title": "DUNLOP GLOBAL SITE",
+          "snippet": "rerank score 0.03: Dunlop global site (sports/manufacturing); unrelated to fretboard care product instructions.",
+          "url": "https://www.dunlop.com/",
+          "source": "trace",
+          "metadata": {
+            "rerank_score": 0.03,
+            "rerank_reason": "Dunlop global site (sports/manufacturing); unrelated to fretboard care product instructions.",
+            "trace_rank": 6
+          }
+        },
+        {
+          "title": "净洗剂 6501、6502、6503，椰油酸单乙醇酰胺68140-00-1 ...",
+          "snippet": "rerank score 0.02: Chemical surfactant 6501; completely unrelated to Dunlop guitar product.",
+          "url": "https://www.chemicalbook.com/SupplyInfo_2098482.htm",
+          "source": "trace",
+          "metadata": {
+            "rerank_score": 0.02,
+            "rerank_reason": "Chemical surfactant 6501; completely unrelated to Dunlop guitar product.",
+            "trace_rank": 8
+          }
+        }
+      ],
+      "trace": {
+        "source": "server",
+        "run_id": "run_534f5185ae434c1ca4cf4137bb34d242",
+        "conversation_id": "fec99874-d440-486a-b5de-3e7ebbc244fc",
+        "message_id": "648",
+        "step_id": "call_019f390aa44470d2b25938e6",
+        "created_at": "2026-07-07T04:10:17.72210676+08:00",
+        "rewrite_strategy": "keyword_recall",
+        "rewrite_policy_id": "lexical_recall_no_inference_v1",
+        "rewrite_queries": [
+          "Dunlop 6501 fretboard conditioner lemon oil instructions",
+          "6501 dunlop fretboard conditioner lemon oil instructions"
+        ],
+        "providers": [
+          "web",
+          "minimax-mcp",
+          "bing-rss"
+        ],
+        "attempt_count": 5,
+        "timed_out_count": 2,
+        "rerank_threshold": 0.5,
+        "rerank_model": "MiniMax-M3",
+        "rerank_provider": "llm:minimax"
+      }
+    },
+    {
+      "id": "trace_server_6c29c84b_dunlop_6554_fretboard_65_lemon_oil_vs_654",
+      "category": "product",
+      "query": "Dunlop 6554 Fretboard 65 lemon oil vs 654 Formula 65 polish cleaner difference",
+      "notes": "Trace-derived pseudo-labeled case. Expected/negative labels come from historical search.llm_rerank decisions, not hand curation.",
+      "checks": {
+        "k": 5,
+        "min_recall_at_k": 1.0,
+        "min_precision_at_k": 0.2,
+        "min_mrr": 0.2,
+        "max_bad_at_k": 2,
+        "max_latency_ms": 15000
+      },
+      "offline_checks": {
+        "k": 5,
+        "min_recall_at_k": 1.0,
+        "min_precision_at_k": 0.2,
+        "min_mrr": 0.2,
+        "max_bad_at_k": 2,
+        "max_latency_ms": 15000
+      },
+      "expected": [
+        {
+          "label": "Amazon.com: Dunlop 654 Formula 65 Guitar Polish & Cleaner 4oz.",
+          "url_contains": "https://www.amazon.com/dp/B000EELB8W/${sign-in-url}"
+        }
+      ],
+      "negative": [
+        {
+          "label": "邓禄普轮胎DUNLOP官方网站 - 汽车轮胎品牌 - 轿车轮胎 ...",
+          "url_contains": "https://www.dunlop.com.cn/"
+        },
+        {
+          "label": "Dunlop Tyres – Driving Experiences with Performance and Safety",
+          "url_contains": "https://www.dunloptyres.com/en/"
+        },
+        {
+          "label": "DUNLOP GLOBAL SITE",
+          "url_contains": "https://www.dunlop.com/"
+        }
+      ],
+      "fixture_recall_query_limit": 2,
+      "recall_max_queries": 2,
+      "fixture_results": [
+        {
+          "title": "Amazon.com: Dunlop 654 Formula 65 Guitar Polish & Cleaner 4oz.",
+          "snippet": "retrieval query: Dunlop 6554 Fretboard 65 lemon oil vs 654 Formula 65 polish cleaner difference | rerank score 0.55: Product page for Dunlop 654 Formula 65 Polish, covers one of the two products in the comparison but provides no direct comparison with the 6554 lemon oil. | original query: Dunlop 6554 Fretboard 65 lemon oil vs 654 Formula 65 polish cleaner difference",
+          "url": "https://www.amazon.com/dp/B000EELB8W/${sign-in-url}",
+          "source": "minimax-mcp",
+          "metadata": {
+            "trace_rank": 1,
+            "retrieval_query": "Dunlop 6554 Fretboard 65 lemon oil vs 654 Formula 65 polish cleaner difference",
+            "retrieval_query_index": 0,
+            "rerank_score": 0.55,
+            "rerank_reason": "Product page for Dunlop 654 Formula 65 Polish, covers one of the two products in the comparison but provides no direct comparison with the 6554 lemon oil."
+          }
+        },
+        {
+          "title": "Dunlop Tires | Premium Tires for Cars, SUVs & Trucks | Dunlop Tires",
+          "snippet": "rerank score 0.03: Dunlop tires site, unrelated to guitar care products despite sharing the brand name.",
+          "url": "https://www.dunloptires.com/",
+          "source": "bing-rss",
+          "metadata": {
+            "trace_rank": 2,
+            "retrieval_query": "Dunlop 6554 Fretboard 65 lemon oil vs 654 Formula 65 polish cleaner difference",
+            "retrieval_query_index": 0,
+            "rerank_score": 0.03,
+            "rerank_reason": "Dunlop tires site, unrelated to guitar care products despite sharing the brand name."
+          }
+        },
+        {
+          "title": "Dunlop Fretboard 65 Ultimate Lemon Oil for Guitars - 118ml (6554) for sale online eBay",
+          "snippet": "retrieval query: Dunlop 6554 Fretboard 65 lemon oil vs 654 Formula 65 polish cleaner difference | rerank score 0.45: eBay listing for Dunlop 6554 Fretboard 65 lemon oil, covers the other product in the comparison but no comparison info. | original query: Dunlop 6554 Fretboard 65 lemon oil vs 654 Formula 65 polish cleaner difference",
+          "url": "https://www.ebay.com/p/1010373063?iid=363582979686",
+          "source": "minimax-mcp",
+          "metadata": {
+            "trace_rank": 3,
+            "retrieval_query": "Dunlop 6554 Fretboard 65 lemon oil vs 654 Formula 65 polish cleaner difference",
+            "retrieval_query_index": 0,
+            "rerank_score": 0.45,
+            "rerank_reason": "eBay listing for Dunlop 6554 Fretboard 65 lemon oil, covers the other product in the comparison but no comparison info."
+          }
+        },
+        {
+          "title": "DUNLOP GLOBAL SITE",
+          "snippet": "rerank score 0.02: Dunlop global corporate site (Japanese), not relevant to guitar maintenance products.",
+          "url": "https://www.dunlop.com/",
+          "source": "bing-rss",
+          "metadata": {
+            "trace_rank": 4,
+            "retrieval_query": "Dunlop 6554 Fretboard 65 lemon oil vs 654 Formula 65 polish cleaner difference",
+            "retrieval_query_index": 0,
+            "rerank_score": 0.02,
+            "rerank_reason": "Dunlop global corporate site (Japanese), not relevant to guitar maintenance products."
+          }
+        },
+        {
+          "title": "Dunlop 6554 Fretboard 65 Ultimate Lemon Oil, 4oz eBay",
+          "snippet": "rerank score 0.40: eBay listing for 6554 lemon oil with user reviews mentioning fretboard cleaning, only covers one product.",
+          "url": "https://www.ebay.com/itm/332569624104?_ul=VE",
+          "source": "minimax-mcp",
+          "metadata": {
+            "trace_rank": 5,
+            "retrieval_query": "Dunlop 6554 Fretboard 65 lemon oil vs 654 Formula 65 polish cleaner difference",
+            "retrieval_query_index": 0,
+            "rerank_score": 0.4,
+            "rerank_reason": "eBay listing for 6554 lemon oil with user reviews mentioning fretboard cleaning, only covers one product."
+          }
+        },
+        {
+          "title": "DUNLOP 65 LEMON OIL FRETBOARD CONDITIONER 6554 eBay",
+          "snippet": "rerank score 0.35: eBay listing for 6554 lemon oil conditioner, only one of the two products, no comparison.",
+          "url": "https://www.ebay.com/itm/116086057655?itmmeta=01HQWD20K1V2ZYHQ2KP0GG8B46",
+          "source": "trace",
+          "metadata": {
+            "rerank_score": 0.35,
+            "rerank_reason": "eBay listing for 6554 lemon oil conditioner, only one of the two products, no comparison.",
+            "trace_rank": 7
+          }
+        },
+        {
+          "title": "Dunlop 6554 Fretboard 65 Ultimate Lemon Oil 4oz Bottle eBay",
+          "snippet": "rerank score 0.35: eBay listing for 6554 lemon oil, covers one product only with no comparison to the polish.",
+          "url": "https://www.ebay.com/itm/165848901001?_ul=CN",
+          "source": "trace",
+          "metadata": {
+            "rerank_score": 0.35,
+            "rerank_reason": "eBay listing for 6554 lemon oil, covers one product only with no comparison to the polish.",
+            "trace_rank": 9
+          }
+        },
+        {
+          "title": "DUNLOP. SINCE 1965.",
+          "snippet": "rerank score 0.30: Official Jim Dunlop guitar accessories brand page, authoritative source for the products but does not directly address the difference between the two items.",
+          "url": "https://www.jimdunlop.com/",
+          "source": "trace",
+          "metadata": {
+            "rerank_score": 0.3,
+            "rerank_reason": "Official Jim Dunlop guitar accessories brand page, authoritative source for the products but does not directly address the difference between the two items.",
+            "trace_rank": 8
+          }
+        },
+        {
+          "title": "Dunlop Tyres – Driving Experiences with Performance and Safety",
+          "snippet": "rerank score 0.02: Dunlop tyres site, completely unrelated.",
+          "url": "https://www.dunloptyres.com/en/",
+          "source": "trace",
+          "metadata": {
+            "rerank_score": 0.02,
+            "rerank_reason": "Dunlop tyres site, completely unrelated.",
+            "trace_rank": 6
+          }
+        },
+        {
+          "title": "邓禄普轮胎DUNLOP官方网站 - 汽车轮胎品牌 - 轿车轮胎 ...",
+          "snippet": "rerank score 0.02: Chinese Dunlop tyres official site, unrelated to guitar care.",
+          "url": "https://www.dunlop.com.cn/",
+          "source": "trace",
+          "metadata": {
+            "rerank_score": 0.02,
+            "rerank_reason": "Chinese Dunlop tyres official site, unrelated to guitar care.",
+            "trace_rank": 10
+          }
+        }
+      ],
+      "trace": {
+        "source": "server",
+        "run_id": "run_534f5185ae434c1ca4cf4137bb34d242",
+        "conversation_id": "fec99874-d440-486a-b5de-3e7ebbc244fc",
+        "message_id": "648",
+        "step_id": "call_019f390b49727e3086473aab",
+        "created_at": "2026-07-07T04:10:17.72210676+08:00",
+        "rewrite_strategy": "keyword_recall",
+        "rewrite_policy_id": "lexical_recall_no_inference_v1",
+        "rewrite_queries": [
+          "Dunlop 6554 Fretboard 65 lemon oil vs 654 Formula 65 polish cleaner difference",
+          "6554 65 654 dunlop fretboard lemon oil vs formula polish cleaner difference"
+        ],
+        "providers": [
+          "web",
+          "minimax-mcp",
+          "bing-rss"
+        ],
+        "attempt_count": 5,
+        "timed_out_count": 2,
+        "rerank_threshold": 0.5,
+        "rerank_model": "MiniMax-M3",
+        "rerank_provider": "llm:minimax"
+      }
+    },
+    {
+      "id": "trace_server_d20a4449_邓禄普_dunlop_654_formula_65_琴体抛光清洁_用途_使用方法",
+      "category": "product",
+      "query": "邓禄普 Dunlop 654 Formula 65 琴体抛光清洁 用途 使用方法",
+      "notes": "Trace-derived pseudo-labeled case. Expected/negative labels come from historical search.llm_rerank decisions, not hand curation.",
+      "checks": {
+        "k": 5,
+        "min_recall_at_k": 1.0,
+        "min_precision_at_k": 0.2,
+        "min_mrr": 0.2,
+        "max_bad_at_k": 2,
+        "max_latency_ms": 15000
+      },
+      "offline_checks": {
+        "k": 5,
+        "min_recall_at_k": 1.0,
+        "min_precision_at_k": 0.2,
+        "min_mrr": 0.2,
+        "max_bad_at_k": 2,
+        "max_latency_ms": 15000
+      },
+      "expected": [
+        {
+          "label": "Dunlop升级款吉他、贝司琴体护理保养油套装新鲜上架!",
+          "url_contains": "https://www.sohu.com/a/192623764_376273"
+        }
+      ],
+      "negative": [
+        {
+          "label": "654俱乐部_百度百科",
+          "url_contains": "https://baike.baidu.com/item/654%E4%BF%B1%E4%B9%90%E9%83%A8/65003680"
+        },
+        {
+          "label": "654元大写怎么写、陆佰伍拾肆元整 - 金额大小写转换",
+          "url_contains": "https://daxie.100xgj.com/shuzi/654"
+        },
+        {
+          "label": "654俱乐部专业级魔术教学 #扑克牌魔术教学 #魔术教学 #654 ...",
+          "url_contains": "https://www.douyin.com/video/7426921315115732258"
+        }
+      ],
+      "fixture_recall_query_limit": 2,
+      "recall_max_queries": 2,
+      "fixture_results": [
+        {
+          "title": "Dunlop 651J Formula 65 Guitar Polish and Cleaner Spray Bottle, 1oz eBay",
+          "snippet": "retrieval query: 邓禄普 Dunlop 654 Formula 65 琴体抛光清洁 用途 使用方法 | rerank score 0.45: Dunlop Formula 65 同系列产品页(651J),与 654 不同型号,但属于同系列产品,有部分参考价值,但未涉及 654 型号及使用方法 | original query: 邓禄普 Dunlop 654 Formula 65 琴体抛光清洁 用途 使用方法",
+          "url": "https://www.ebay.com/itm/333349400229?epid=1200043616&hash=item4d9d2c2ea5%3Ag%3AiqEAAOSwdbRdlluR&LH_ItemCondition=3000%7C7000%7C1000",
+          "source": "minimax-mcp",
+          "metadata": {
+            "trace_rank": 1,
+            "retrieval_query": "邓禄普 Dunlop 654 Formula 65 琴体抛光清洁 用途 使用方法",
+            "retrieval_query_index": 0,
+            "rerank_score": 0.45,
+            "rerank_reason": "Dunlop Formula 65 同系列产品页(651J),与 654 不同型号,但属于同系列产品,有部分参考价值,但未涉及 654 型号及使用方法"
+          }
+        },
+        {
+          "title": "654-2为何叫“654-2”？ - 知乎",
+          "snippet": "rerank score 0.00: 关于药物 654-2,与邓禄普吉他清洁产品完全无关",
+          "url": "https://zhuanlan.zhihu.com/p/74654442",
+          "source": "bing-rss",
+          "metadata": {
+            "trace_rank": 2,
+            "retrieval_query": "654 65 dunlop formula 邓禄普 琴体抛光清洁 用途 使用方法",
+            "retrieval_query_index": 1,
+            "rerank_score": 0.0,
+            "rerank_reason": "关于药物 654-2,与邓禄普吉他清洁产品完全无关"
+          }
+        },
+        {
+          "title": "漆面抛光剂6516钢琴 Dunlop邓禄普电木吉他 贝斯清洁护理保养上光剂 - 家用电器大全",
+          "snippet": "rerank score 0.35: 提到邓禄普琴体抛光清洁产品(6516),但型号与 654 不同,仅为销售页面,无用途和详细使用方法",
+          "url": "http://jiadian.hot16.cn/jiadian_info/item/50036193/gPWP3yxMu5pkWVv9YI.html",
+          "source": "minimax-mcp",
+          "metadata": {
+            "trace_rank": 3,
+            "retrieval_query": "邓禄普 Dunlop 654 Formula 65 琴体抛光清洁 用途 使用方法",
+            "retrieval_query_index": 0,
+            "rerank_score": 0.35,
+            "rerank_reason": "提到邓禄普琴体抛光清洁产品(6516),但型号与 654 不同,仅为销售页面,无用途和详细使用方法"
+          }
+        },
+        {
+          "title": "Intel® Xeon® 654 Processor - 英特尔",
+          "snippet": "rerank score 0.00: Intel Xeon 654 处理器,与查询完全无关",
+          "url": "https://www.intel.cn/content/www/cn/zh/products/sku/244336/intel-xeon-654-processor-72m-cache-3-10-ghz/specifications.html",
+          "source": "bing-rss",
+          "metadata": {
+            "trace_rank": 4,
+            "retrieval_query": "654 65 dunlop formula 邓禄普 琴体抛光清洁 用途 使用方法",
+            "retrieval_query_index": 1,
+            "rerank_score": 0.0,
+            "rerank_reason": "Intel Xeon 654 处理器,与查询完全无关"
+          }
+        },
+        {
+          "title": "清洁剂琴体上光护理光亮剂钢琴 Dunlop邓禄普吉他 保养亮光剂654 - 家用电器大全",
+          "snippet": "retrieval query: 邓禄普 Dunlop 654 Formula 65 琴体抛光清洁 用途 使用方法 | rerank score 0.45: 明确提到 Dunlop 654 吉他琴体清洁光亮剂,但只是淘宝销售页面,未提供用途和使用方法细节 | original query: 邓禄普 Dunlop 654 Formula 65 琴体抛光清洁 用途 使用方法",
+          "url": "http://jiadian.hot16.cn/jiadian_info/item/50036193/6Xzq49xYHY5OQmMRU.html",
+          "source": "minimax-mcp",
+          "metadata": {
+            "trace_rank": 5,
+            "retrieval_query": "邓禄普 Dunlop 654 Formula 65 琴体抛光清洁 用途 使用方法",
+            "retrieval_query_index": 0,
+            "rerank_score": 0.45,
+            "rerank_reason": "明确提到 Dunlop 654 吉他琴体清洁光亮剂,但只是淘宝销售页面,未提供用途和使用方法细节"
+          }
+        },
+        {
+          "title": "Dunlop升级款吉他、贝司琴体护理保养油套装新鲜上架!",
+          "snippet": "rerank score 0.55: 邓禄普吉他琴体护理保养油套装介绍,涉及清洁抛光用途,但不是 Formula 65 654 型号,有一定参考价值 | original query: 邓禄普 Dunlop 654 Formula 65 琴体抛光清洁 用途 使用方法",
+          "url": "https://www.sohu.com/a/192623764_376273",
+          "source": "trace",
+          "metadata": {
+            "rerank_score": 0.55,
+            "rerank_reason": "邓禄普吉他琴体护理保养油套装介绍,涉及清洁抛光用途,但不是 Formula 65 654 型号,有一定参考价值",
+            "trace_rank": 9
+          }
+        },
+        {
+          "title": "清洁剂琴身上光剂6574 X9折Dunlop邓禄普6524 651J 6516 6500指板 - 家用电器大全",
+          "snippet": "rerank score 0.30: 提到 Dunlop 6524/651J/6516 等系列产品,但型号不匹配 654,仅为销售页面",
+          "url": "http://jiadian.hot16.cn/jiadian_info/item/50036193/WO97p2y7sN65OQmMRU.html",
+          "source": "trace",
+          "metadata": {
+            "rerank_score": 0.3,
+            "rerank_reason": "提到 Dunlop 6524/651J/6516 等系列产品,但型号不匹配 654,仅为销售页面",
+            "trace_rank": 7
+          }
+        },
+        {
+          "title": "654俱乐部专业级魔术教学 #扑克牌魔术教学 #魔术教学 #654 ...",
+          "snippet": "rerank score 0.00: 扑克牌魔术相关内容,与查询无关",
+          "url": "https://www.douyin.com/video/7426921315115732258",
+          "source": "trace",
+          "metadata": {
+            "rerank_score": 0.0,
+            "rerank_reason": "扑克牌魔术相关内容,与查询无关",
+            "trace_rank": 6
+          }
+        },
+        {
+          "title": "654元大写怎么写、陆佰伍拾肆元整 - 金额大小写转换",
+          "snippet": "rerank score 0.00: 金额大小写转换工具,与查询无关",
+          "url": "https://daxie.100xgj.com/shuzi/654",
+          "source": "trace",
+          "metadata": {
+            "rerank_score": 0.0,
+            "rerank_reason": "金额大小写转换工具,与查询无关",
+            "trace_rank": 8
+          }
+        },
+        {
+          "title": "654俱乐部_百度百科",
+          "snippet": "rerank score 0.00: 魔术 654 俱乐部,与查询完全无关",
+          "url": "https://baike.baidu.com/item/654%E4%BF%B1%E4%B9%90%E9%83%A8/65003680",
+          "source": "trace",
+          "metadata": {
+            "rerank_score": 0.0,
+            "rerank_reason": "魔术 654 俱乐部,与查询完全无关",
+            "trace_rank": 10
+          }
+        }
+      ],
+      "trace": {
+        "source": "server",
+        "run_id": "run_534f5185ae434c1ca4cf4137bb34d242",
+        "conversation_id": "fec99874-d440-486a-b5de-3e7ebbc244fc",
+        "message_id": "648",
+        "step_id": "call_019f390ca05c72c2a81d1b16",
+        "created_at": "2026-07-07T04:10:17.72210676+08:00",
+        "rewrite_strategy": "keyword_recall",
+        "rewrite_policy_id": "lexical_recall_no_inference_v1",
+        "rewrite_queries": [
+          "邓禄普 Dunlop 654 Formula 65 琴体抛光清洁 用途 使用方法",
+          "654 65 dunlop formula 邓禄普 琴体抛光清洁 用途 使用方法"
+        ],
+        "providers": [
+          "web",
+          "minimax-mcp",
+          "bing-rss"
+        ],
+        "attempt_count": 5,
+        "timed_out_count": 2,
+        "rerank_threshold": 0.5,
+        "rerank_model": "MiniMax-M3",
+        "rerank_provider": "llm:minimax"
+      }
+    },
+    {
+      "id": "trace_server_11c66dbe_dunlop_6554_6550_柠檬油_指板保养_使用方法_不要用在琴体",
+      "category": "product",
+      "query": "Dunlop 6554 6550 柠檬油 指板保养 使用方法 不要用在琴体",
+      "notes": "Trace-derived pseudo-labeled case. Expected/negative labels come from historical search.llm_rerank decisions, not hand curation.",
+      "checks": {
+        "k": 5,
+        "min_recall_at_k": 0.5,
+        "min_precision_at_k": 0.2,
+        "min_mrr": 0.2,
+        "max_bad_at_k": 2,
+        "max_latency_ms": 15000
+      },
+      "offline_checks": {
+        "k": 5,
+        "min_recall_at_k": 0.5,
+        "min_precision_at_k": 0.2,
+        "min_mrr": 0.2,
+        "max_bad_at_k": 2,
+        "max_latency_ms": 15000
+      },
+      "expected": [
+        {
+          "label": "了解电吉他保养得进-百度知道",
+          "url_contains": "https://zhidao.baidu.com/question/163584110"
+        },
+        {
+          "label": "吉他入门:怎样保养电吉他",
+          "url_contains": "https://www.yjbys.com/edu/yueqi/387028.html"
+        },
+        {
+          "label": "掌握6大技巧,轻松清洁和保养你的吉他指板!_柠檬油_产品_清洁剂",
+          "url_contains": "https://www.sohu.com/a/850176617_122066676"
+        }
+      ],
+      "negative": [
+        {
+          "label": "LMH6554 2.8GHz 超线性全差分放大器 datasheet (Rev ...",
+          "url_contains": "https://www.ti.com.cn/cn/lit/gpn/lmh6554"
+        },
+        {
+          "label": "LMH6554 数据表、产品信息和支持 | 德州仪器 TI.com.cn",
+          "url_contains": "https://www.ti.com.cn/product/cn/LMH6554"
+        },
+        {
+          "label": "Intel® Xeon® Gold 6554S 處理器",
+          "url_contains": "https://www.intel.com.tw/content/www/tw/zh/products/sku/237263/intel-xeon-gold-6554s-processor-180m-cache-2-20-ghz/specifications.html"
+        }
+      ],
+      "fixture_recall_query_limit": 2,
+      "recall_max_queries": 2,
+      "fixture_results": [
+        {
+          "title": "汇总:吉他保养油的使用方法及注意事项_www_com_影响",
+          "snippet": "retrieval query: Dunlop 6554 6550 柠檬油 指板保养 使用方法 不要用在琴体 | rerank score 0.45: Discusses guitar care oils including lemon oil and how to use them on guitar, but does not specifically mention Dunlop 6554/6550 or warn about not using on the body. Generic and partial coverage. | original query: Dunlop 6554 6550 柠檬油 指板保养 使用方法 不要用在琴体",
+          "url": "https://www.sohu.com/a/770494655_120456800",
+          "source": "minimax-mcp",
+          "metadata": {
+            "trace_rank": 1,
+            "retrieval_query": "Dunlop 6554 6550 柠檬油 指板保养 使用方法 不要用在琴体",
+            "retrieval_query_index": 0,
+            "rerank_score": 0.45,
+            "rerank_reason": "Discusses guitar care oils including lemon oil and how to use them on guitar, but does not specifically mention Dunlop 6554/6550 or warn about not using on the body. Generic and partial coverage."
+          }
+        },
+        {
+          "title": "【Intel Xeon Gold 6554S参数】Intel Xeon Gold 6554S服务 ...",
+          "snippet": "rerank score 0.00: Intel Xeon Gold 6554S processor page. Completely unrelated, only matches numeric '6554'.",
+          "url": "https://detail.zol.com.cn/2003/2002584/param.shtml",
+          "source": "bing-rss",
+          "metadata": {
+            "trace_rank": 2,
+            "retrieval_query": "6554 6550 dunlop 柠檬油 指板保养 使用方法 琴体",
+            "retrieval_query_index": 1,
+            "rerank_score": 0.0,
+            "rerank_reason": "Intel Xeon Gold 6554S processor page. Completely unrelated, only matches numeric '6554'."
+          }
+        },
+        {
+          "title": "掌握6大技巧,轻松清洁和保养你的吉他指板!_柠檬油_产品_清洁剂",
+          "snippet": "retrieval query: Dunlop 6554 6550 柠檬油 指板保养 使用方法 不要用在琴体 | rerank score 0.55: Discusses lemon oil for fretboard care, mentions Dunlop brand, and addresses some misconceptions about lemon oil on fretboards. Partial answer but doesn't specifically address 6554/6550 products or warn against using... | original query: Dunlop 6554 6550 柠檬油 指板保养 使用方法 不要用在琴体",
+          "url": "https://www.sohu.com/a/850176617_122066676",
+          "source": "minimax-mcp",
+          "metadata": {
+            "trace_rank": 3,
+            "retrieval_query": "Dunlop 6554 6550 柠檬油 指板保养 使用方法 不要用在琴体",
+            "retrieval_query_index": 0,
+            "rerank_score": 0.55,
+            "rerank_reason": "Discusses lemon oil for fretboard care, mentions Dunlop brand, and addresses some misconceptions about lemon oil on fretboards. Partial answer but doesn't specifically address 6554/6550 products or warn against using..."
+          }
+        },
+        {
+          "title": "英特尔® 至强® Gold 6554S 处理器",
+          "snippet": "rerank score 0.00: Intel Xeon Gold 6554S product page. Completely unrelated to guitar care.",
+          "url": "https://www.intel.cn/content/www/cn/zh/products/sku/237263/intel-xeon-gold-6554s-processor-180m-cache-2-20-ghz/ordering.html",
+          "source": "bing-rss",
+          "metadata": {
+            "trace_rank": 4,
+            "retrieval_query": "6554 6550 dunlop 柠檬油 指板保养 使用方法 琴体",
+            "retrieval_query_index": 1,
+            "rerank_score": 0.0,
+            "rerank_reason": "Intel Xeon Gold 6554S product page. Completely unrelated to guitar care."
+          }
+        },
+        {
+          "title": "了解电吉他保养得进-百度知道",
+          "snippet": "retrieval query: Dunlop 6554 6550 柠檬油 指板保养 使用方法 不要用在琴体 | rerank score 0.90: Directly addresses Dunlop products including 654 series, lemon oil for rosewood fretboard care, explicitly states 柠檬油 对琴体也无作用 (lemon oil has no effect on body), mentions Dunlop 65 series for body. Highly relevant to t... | original query: Dunlop 6554 6550 柠檬油 指板保养 使用方法 不要用在琴体",
+          "url": "https://zhidao.baidu.com/question/163584110",
+          "source": "minimax-mcp",
+          "metadata": {
+            "trace_rank": 5,
+            "retrieval_query": "Dunlop 6554 6550 柠檬油 指板保养 使用方法 不要用在琴体",
+            "retrieval_query_index": 0,
+            "rerank_score": 0.9,
+            "rerank_reason": "Directly addresses Dunlop products including 654 series, lemon oil for rosewood fretboard care, explicitly states 柠檬油 对琴体也无作用 (lemon oil has no effect on body), mentions Dunlop 65 series for body. Highly relevant to t..."
+          }
+        },
+        {
+          "title": "吉他入门:怎样保养电吉他",
+          "snippet": "rerank score 0.75: Specifically mentions Dunlop 654 polish, Dunlop 6574 wax for body, Dunlop 01 fretboard cleaner, and lemon oil for fretboard conditioning. Highly relevant to Dunlop product series and separation of body vs. fretboard c... | original query: Dunlop 6554 6550 柠檬油 指板保养 使用方法 不要用在琴体",
+          "url": "https://www.yjbys.com/edu/yueqi/387028.html",
+          "source": "trace",
+          "metadata": {
+            "rerank_score": 0.75,
+            "rerank_reason": "Specifically mentions Dunlop 654 polish, Dunlop 6574 wax for body, Dunlop 01 fretboard cleaner, and lemon oil for fretboard conditioning. Highly relevant to Dunlop product series and separation of body vs. fretboard c...",
+            "trace_rank": 9
+          }
+        },
+        {
+          "title": "吉他指板护理:关于如何清洁和保养吉他指板,你需要知道的6件事 - 今日头条",
+          "snippet": "rerank score 0.40: Detailed guide on fretboard care for various wood types, mentions lemon oil indirectly, but no specific mention of Dunlop 6554/6550 or the 'don't use on body' rule.",
+          "url": "https://www.toutiao.com/article/7460417559565845007/",
+          "source": "trace",
+          "metadata": {
+            "rerank_score": 0.4,
+            "rerank_reason": "Detailed guide on fretboard care for various wood types, mentions lemon oil indirectly, but no specific mention of Dunlop 6554/6550 or the 'don't use on body' rule.",
+            "trace_rank": 7
+          }
+        },
+        {
+          "title": "Intel® Xeon® Gold 6554S 處理器",
+          "snippet": "rerank score 0.00: Intel Xeon Gold 6554S page. Completely unrelated.",
+          "url": "https://www.intel.com.tw/content/www/tw/zh/products/sku/237263/intel-xeon-gold-6554s-processor-180m-cache-2-20-ghz/specifications.html",
+          "source": "trace",
+          "metadata": {
+            "rerank_score": 0.0,
+            "rerank_reason": "Intel Xeon Gold 6554S page. Completely unrelated.",
+            "trace_rank": 6
+          }
+        },
+        {
+          "title": "LMH6554 数据表、产品信息和支持 | 德州仪器 TI.com.cn",
+          "snippet": "rerank score 0.00: TI LMH6554 amplifier datasheet. Completely unrelated, only numeric match.",
+          "url": "https://www.ti.com.cn/product/cn/LMH6554",
+          "source": "trace",
+          "metadata": {
+            "rerank_score": 0.0,
+            "rerank_reason": "TI LMH6554 amplifier datasheet. Completely unrelated, only numeric match.",
+            "trace_rank": 8
+          }
+        },
+        {
+          "title": "LMH6554 2.8GHz 超线性全差分放大器 datasheet (Rev ...",
+          "snippet": "rerank score 0.00: TI LMH6554 datasheet. Completely unrelated.",
+          "url": "https://www.ti.com.cn/cn/lit/gpn/lmh6554",
+          "source": "trace",
+          "metadata": {
+            "rerank_score": 0.0,
+            "rerank_reason": "TI LMH6554 datasheet. Completely unrelated.",
+            "trace_rank": 10
+          }
+        }
+      ],
+      "trace": {
+        "source": "server",
+        "run_id": "run_534f5185ae434c1ca4cf4137bb34d242",
+        "conversation_id": "fec99874-d440-486a-b5de-3e7ebbc244fc",
+        "message_id": "648",
+        "step_id": "call_019f390ca05c72c2a81d1b2c",
+        "created_at": "2026-07-07T04:10:17.72210676+08:00",
+        "rewrite_strategy": "keyword_recall",
+        "rewrite_policy_id": "lexical_recall_no_inference_v1",
+        "rewrite_queries": [
+          "Dunlop 6554 6550 柠檬油 指板保养 使用方法 不要用在琴体",
+          "6554 6550 dunlop 柠檬油 指板保养 使用方法 琴体"
+        ],
+        "providers": [
+          "web",
+          "minimax-mcp",
+          "bing-rss"
+        ],
+        "attempt_count": 5,
+        "timed_out_count": 2,
+        "rerank_threshold": 0.5,
+        "rerank_model": "MiniMax-M3",
+        "rerank_provider": "llm:minimax"
+      }
+    },
+    {
+      "id": "trace_server_90107c99_dunlop_654_formula_65_polish_655_cleaner_pro",
+      "category": "product",
+      "query": "Dunlop 654 Formula 65 Polish 655 Cleaner product page",
+      "notes": "Trace-derived pseudo-labeled case. Expected/negative labels come from historical search.llm_rerank decisions, not hand curation.",
+      "checks": {
+        "k": 5,
+        "min_recall_at_k": 0.5,
+        "min_precision_at_k": 0.2,
+        "min_mrr": 0.2,
+        "max_bad_at_k": 2,
+        "max_latency_ms": 15000
+      },
+      "offline_checks": {
+        "k": 5,
+        "min_recall_at_k": 0.5,
+        "min_precision_at_k": 0.2,
+        "min_mrr": 0.2,
+        "max_bad_at_k": 2,
+        "max_latency_ms": 15000
+      },
+      "expected": [
+        {
+          "label": "Amazon.com: Dunlop 654 Formula 65 Guitar Polish & Cleaner 4oz.",
+          "url_contains": "https://www.amazon.com/dp/B000EELB8W/${sign-in-url}"
+        },
+        {
+          "label": "Dunlop Formula 65 Polish and Cleaner, 4 oz eBay",
+          "url_contains": "https://www.ebay.com/itm/233359150014?_ul=AR"
+        },
+        {
+          "label": "NEW - Dunlop Formula No. 65 Guitar Polish & Cleaner, 1 Ounce eBay",
+          "url_contains": "https://www.ebay.com/itm/363158989940?hash=item548df66c74%3Ag%3AMYoAAOSwz6tfmu40&LH_All=1"
+        }
+      ],
+      "negative": [
+        {
+          "label": "654俱乐部专业级魔术教学 #扑克牌魔术教学 #魔术教学 #654 ...",
+          "url_contains": "https://www.douyin.com/video/7426921315115732258"
+        },
+        {
+          "label": "Intel® Xeon® 654 Processor - 英特尔",
+          "url_contains": "https://www.intel.cn/content/www/cn/zh/products/sku/244336/intel-xeon-654-processor-72m-cache-3-10-ghz/specifications.html"
+        },
+        {
+          "label": "Dunlop Tyres – Driving Experiences with Performance and Safety",
+          "url_contains": "https://www.dunloptyres.com/en/"
+        }
+      ],
+      "fixture_recall_query_limit": 2,
+      "recall_max_queries": 2,
+      "fixture_results": [
+        {
+          "title": "Amazon.com: Dunlop 654 Formula 65 Guitar Polish & Cleaner 4oz.",
+          "snippet": "retrieval query: Dunlop 654 Formula 65 Polish 655 Cleaner product page | rerank score 0.92: Amazon product page for Dunlop 654 Formula 65 Guitar Polish & Cleaner, directly matches the product the user is searching for. | original query: Dunlop 654 Formula 65 Polish 655 Cleaner product page",
+          "url": "https://www.amazon.com/dp/B000EELB8W/${sign-in-url}",
+          "source": "minimax-mcp",
+          "metadata": {
+            "trace_rank": 1,
+            "retrieval_query": "Dunlop 654 Formula 65 Polish 655 Cleaner product page",
+            "retrieval_query_index": 0,
+            "rerank_score": 0.92,
+            "rerank_reason": "Amazon product page for Dunlop 654 Formula 65 Guitar Polish & Cleaner, directly matches the product the user is searching for."
+          }
+        },
+        {
+          "title": "Intel® Xeon® 654 Processor - 英特尔",
+          "snippet": "rerank score 0.02: Intel Xeon 654 processor page, completely unrelated to Dunlop polish/cleaner product.",
+          "url": "https://www.intel.cn/content/www/cn/zh/products/sku/244336/intel-xeon-654-processor-72m-cache-3-10-ghz/specifications.html",
+          "source": "bing-rss",
+          "metadata": {
+            "trace_rank": 2,
+            "retrieval_query": "654 65 655 dunlop formula polish cleaner product page",
+            "retrieval_query_index": 1,
+            "rerank_score": 0.02,
+            "rerank_reason": "Intel Xeon 654 processor page, completely unrelated to Dunlop polish/cleaner product."
+          }
+        },
+        {
+          "title": "Product rating of Dunlop Formula 65 Polish & Cleaner Gitarrenpolitur",
+          "snippet": "retrieval query: Dunlop 654 Formula 65 Polish 655 Cleaner product page | rerank score 0.55: Product review page for Dunlop Formula 65 Polish & Cleaner on a music retailer; relevant product but not the main product page. | original query: Dunlop 654 Formula 65 Polish 655 Cleaner product page",
+          "url": "https://www.musikhaus-korn.de/en/dunlop-formula-65-polish-cleaner-gitarrenpolitur/pd/17922/reviews",
+          "source": "minimax-mcp",
+          "metadata": {
+            "trace_rank": 3,
+            "retrieval_query": "Dunlop 654 Formula 65 Polish 655 Cleaner product page",
+            "retrieval_query_index": 0,
+            "rerank_score": 0.55,
+            "rerank_reason": "Product review page for Dunlop Formula 65 Polish & Cleaner on a music retailer; relevant product but not the main product page."
+          }
+        },
+        {
+          "title": "654俱乐部专业级魔术教学 #扑克牌魔术教学 #魔术教学 #654 ...",
+          "snippet": "rerank score 0.00: Chinese magic trick video about '654 Club'; unrelated to Dunlop product.",
+          "url": "https://www.douyin.com/video/7426921315115732258",
+          "source": "bing-rss",
+          "metadata": {
+            "trace_rank": 4,
+            "retrieval_query": "654 65 655 dunlop formula polish cleaner product page",
+            "retrieval_query_index": 1,
+            "rerank_score": 0.0,
+            "rerank_reason": "Chinese magic trick video about '654 Club'; unrelated to Dunlop product."
+          }
+        },
+        {
+          "title": "Dunlop Formula 65 Polish and Cleaner, 4 oz eBay",
+          "snippet": "retrieval query: Dunlop 654 Formula 65 Polish 655 Cleaner product page | rerank score 0.85: eBay listing for Dunlop Formula 65 Polish and Cleaner 4 oz; is a product page for the exact item. | original query: Dunlop 654 Formula 65 Polish 655 Cleaner product page",
+          "url": "https://www.ebay.com/itm/233359150014?_ul=AR",
+          "source": "minimax-mcp",
+          "metadata": {
+            "trace_rank": 5,
+            "retrieval_query": "Dunlop 654 Formula 65 Polish 655 Cleaner product page",
+            "retrieval_query_index": 0,
+            "rerank_score": 0.85,
+            "rerank_reason": "eBay listing for Dunlop Formula 65 Polish and Cleaner 4 oz; is a product page for the exact item."
+          }
+        },
+        {
+          "title": "NEW - Dunlop Formula No. 65 Guitar Polish & Cleaner, 1 Ounce eBay",
+          "snippet": "rerank score 0.80: eBay listing for Dunlop Formula No. 65 Guitar Polish & Cleaner 1 oz; a product page for the same product line. | original query: Dunlop 654 Formula 65 Polish 655 Cleaner product page",
+          "url": "https://www.ebay.com/itm/363158989940?hash=item548df66c74%3Ag%3AMYoAAOSwz6tfmu40&LH_All=1",
+          "source": "trace",
+          "metadata": {
+            "rerank_score": 0.8,
+            "rerank_reason": "eBay listing for Dunlop Formula No. 65 Guitar Polish & Cleaner 1 oz; a product page for the same product line.",
+            "trace_rank": 7
+          }
+        },
+        {
+          "title": "Dunlop Formula 65 Cymbal Polish & Cleaner, 4 Fluid Ounce Spray Bottle, MPN 6434 eBay",
+          "snippet": "rerank score 0.55: eBay listing for Dunlop Formula 65 Cymbal Polish & Cleaner (different SKU/variant); same brand and product family but not the guitar polish 654/655 the user asked for. | original query: Dunlop 654 Formula 65 Polish 655 Cleaner product page",
+          "url": "https://www.ebay.com/itm/274842501148?epid=1400002952&hash=item3ffde3c01c:g:D54AAOxy9nhSIn7Q",
+          "source": "trace",
+          "metadata": {
+            "rerank_score": 0.55,
+            "rerank_reason": "eBay listing for Dunlop Formula 65 Cymbal Polish & Cleaner (different SKU/variant); same brand and product family but not the guitar polish 654/655 the user asked for.",
+            "trace_rank": 9
+          }
+        },
+        {
+          "title": "Dunlop Tires | Premium Tires for Cars, SUVs & Trucks | Dunlop Tires",
+          "snippet": "rerank score 0.10: Dunlop tires brand homepage; wrong product category, cannot answer the query.",
+          "url": "https://www.dunloptires.com/",
+          "source": "trace",
+          "metadata": {
+            "rerank_score": 0.1,
+            "rerank_reason": "Dunlop tires brand homepage; wrong product category, cannot answer the query.",
+            "trace_rank": 6
+          }
+        },
+        {
+          "title": "DUNLOP GLOBAL SITE",
+          "snippet": "rerank score 0.08: Dunlop corporate global site; brand-level page, does not answer the specific product query.",
+          "url": "https://www.dunlop.com/",
+          "source": "trace",
+          "metadata": {
+            "rerank_score": 0.08,
+            "rerank_reason": "Dunlop corporate global site; brand-level page, does not answer the specific product query.",
+            "trace_rank": 8
+          }
+        },
+        {
+          "title": "Dunlop Tyres – Driving Experiences with Performance and Safety",
+          "snippet": "rerank score 0.08: Dunlop tyres site for cars/SUVs; wrong product category entirely.",
+          "url": "https://www.dunloptyres.com/en/",
+          "source": "trace",
+          "metadata": {
+            "rerank_score": 0.08,
+            "rerank_reason": "Dunlop tyres site for cars/SUVs; wrong product category entirely.",
+            "trace_rank": 10
+          }
+        }
+      ],
+      "trace": {
+        "source": "server",
+        "run_id": "run_6bef4de234d1492bb7ec98db75070e0c",
+        "conversation_id": "d1b8638c-c074-4c44-bc4c-05f522c5fc6f",
+        "message_id": "649",
+        "step_id": "call_019f390cb1867cd396987ae7",
+        "created_at": "2026-07-07T04:10:52.13048108+08:00",
+        "rewrite_strategy": "keyword_recall",
+        "rewrite_policy_id": "lexical_recall_no_inference_v1",
+        "rewrite_queries": [
+          "Dunlop 654 Formula 65 Polish 655 Cleaner product page",
+          "654 65 655 dunlop formula polish cleaner product page"
+        ],
+        "providers": [
+          "web",
+          "minimax-mcp",
+          "bing-rss"
+        ],
+        "attempt_count": 5,
+        "timed_out_count": 2,
+        "rerank_threshold": 0.5,
+        "rerank_model": "MiniMax-M3",
+        "rerank_provider": "llm:minimax"
+      }
+    },
+    {
+      "id": "trace_server_b8e9ac8d_formula_65_no_1_no_2_cleaner_polish",
+      "category": "product",
+      "query": "\"Formula 65\" \"No. 1\" \"No. 2\" cleaner polish two-step Dunlop",
+      "notes": "Trace-derived pseudo-labeled case. Expected/negative labels come from historical search.llm_rerank decisions, not hand curation.",
+      "checks": {
+        "k": 5,
+        "min_recall_at_k": 0.5,
+        "min_precision_at_k": 0.2,
+        "min_mrr": 0.2,
+        "max_bad_at_k": 2,
+        "max_latency_ms": 15000
+      },
+      "offline_checks": {
+        "k": 5,
+        "min_recall_at_k": 0.5,
+        "min_precision_at_k": 0.2,
+        "min_mrr": 0.2,
+        "max_bad_at_k": 2,
+        "max_latency_ms": 15000
+      },
+      "expected": [
+        {
+          "label": "JIM DUNLOP Formula 65 Polish & Cleaner 4oz 2-Pack for Guitars eBay",
+          "url_contains": "https://www.ebay.com/itm/405500020051?_ul=MX"
+        },
+        {
+          "label": "NEW - Dunlop Formula No. 65 Guitar Polish & Cleaner, 1 Ounce eBay",
+          "url_contains": "https://www.ebay.com/itm/363158989940?hash=item548df66c74%3Ag%3AMYoAAOSwz6tfmu40&LH_All=1"
+        },
+        {
+          "label": "Dunlop Formula 65 Polish and Cleaner, 4 oz eBay",
+          "url_contains": "https://www.ebay.com/itm/233359150014?_ul=AR"
+        }
+      ],
+      "negative": [
+        {
+          "label": "FORMULA中文 (简体)翻译：剑桥词典 - Cambridge Dictionary",
+          "url_contains": "https://dictionary.cambridge.org/zhs/%E8%AF%8D%E5%85%B8/%E8%8B%B1%E8%AF%AD-%E6%B1%89%E8%AF%AD-%E7%AE%80%E4%BD%93/formula"
+        },
+        {
+          "label": "formula是什么意思_formula的翻译_音标_读音_用法_例句_爱 ...",
+          "url_contains": "https://www.iciba.com/word?w=formula"
+        },
+        {
+          "label": "formulae和formula区别",
+          "url_contains": "https://cp.baidu.com/landing/tscp_doc/cd1c887a2835511e4881aa88c58b22dd"
+        }
+      ],
+      "fixture_recall_query_limit": 1,
+      "recall_max_queries": 1,
+      "fixture_results": [
+        {
+          "title": "JIM DUNLOP Formula 65 Polish & Cleaner 4oz 2-Pack for Guitars eBay",
+          "snippet": "retrieval query: \"Formula 65\" \"No. 1\" \"No. 2\" cleaner polish two-step Dunlop | rerank score 0.72: eBay listing for Jim Dunlop Formula 65 Polish & Cleaner 2-pack, directly relevant product but doesn't specifically describe the No. 1/No. 2 two-step system | original query: \"Formula 65\" \"No. 1\" \"No. 2\" cleaner polish two-step Dunlop",
+          "url": "https://www.ebay.com/itm/405500020051?_ul=MX",
+          "source": "minimax-mcp",
+          "metadata": {
+            "trace_rank": 1,
+            "retrieval_query": "\"Formula 65\" \"No. 1\" \"No. 2\" cleaner polish two-step Dunlop",
+            "retrieval_query_index": 0,
+            "rerank_score": 0.72,
+            "rerank_reason": "eBay listing for Jim Dunlop Formula 65 Polish & Cleaner 2-pack, directly relevant product but doesn't specifically describe the No. 1/No. 2 two-step system"
+          }
+        },
+        {
+          "title": "F1 - The Official Home of Formula 1® Racing",
+          "snippet": "rerank score 0.05: Official Formula 1 racing site, completely unrelated to Dunlop guitar cleaner",
+          "url": "https://www.formula1.com/",
+          "source": "bing-rss",
+          "metadata": {
+            "trace_rank": 2,
+            "retrieval_query": "\"Formula 65\" \"No. 1\" \"No. 2\" cleaner polish two-step Dunlop",
+            "retrieval_query_index": 0,
+            "rerank_score": 0.05,
+            "rerank_reason": "Official Formula 1 racing site, completely unrelated to Dunlop guitar cleaner"
+          }
+        },
+        {
+          "title": "Dunlop Formula 65 1oz Guitar / Bass / Instrument Polish and Cleaner eBay",
+          "snippet": "retrieval query: \"Formula 65\" \"No. 1\" \"No. 2\" cleaner polish two-step Dunlop | rerank score 0.55: eBay listing for Dunlop Formula 65 polish/cleaner, relevant product but single bottle, doesn't cover the two-step No.1/No.2 system | original query: \"Formula 65\" \"No. 1\" \"No. 2\" cleaner polish two-step Dunlop",
+          "url": "https://www.ebay.com/itm/Dunlop-Formula-65-1oz-Guitar-Bass-Instrument-Polish-and-Cleaner-/224240017044?_ul=PR",
+          "source": "minimax-mcp",
+          "metadata": {
+            "trace_rank": 3,
+            "retrieval_query": "\"Formula 65\" \"No. 1\" \"No. 2\" cleaner polish two-step Dunlop",
+            "retrieval_query_index": 0,
+            "rerank_score": 0.55,
+            "rerank_reason": "eBay listing for Dunlop Formula 65 polish/cleaner, relevant product but single bottle, doesn't cover the two-step No.1/No.2 system"
+          }
+        },
+        {
+          "title": "The Official Home of the ABB FIA Formula E World Championship",
+          "snippet": "rerank score 0.05: Formula E racing site, completely unrelated to Dunlop cleaner",
+          "url": "https://www.fiaformulae.com/",
+          "source": "bing-rss",
+          "metadata": {
+            "trace_rank": 4,
+            "retrieval_query": "\"Formula 65\" \"No. 1\" \"No. 2\" cleaner polish two-step Dunlop",
+            "retrieval_query_index": 0,
+            "rerank_score": 0.05,
+            "rerank_reason": "Formula E racing site, completely unrelated to Dunlop cleaner"
+          }
+        },
+        {
+          "title": "NEW - Dunlop Formula No. 65 Guitar Polish & Cleaner, 1 Ounce eBay",
+          "snippet": "retrieval query: \"Formula 65\" \"No. 1\" \"No. 2\" cleaner polish two-step Dunlop | rerank score 0.62: eBay listing for Dunlop Formula No. 65 polish & cleaner, relevant product listing but doesn't describe the two-step No.1/No.2 process | original query: \"Formula 65\" \"No. 1\" \"No. 2\" cleaner polish two-step Dunlop",
+          "url": "https://www.ebay.com/itm/363158989940?hash=item548df66c74%3Ag%3AMYoAAOSwz6tfmu40&LH_All=1",
+          "source": "minimax-mcp",
+          "metadata": {
+            "trace_rank": 5,
+            "retrieval_query": "\"Formula 65\" \"No. 1\" \"No. 2\" cleaner polish two-step Dunlop",
+            "retrieval_query_index": 0,
+            "rerank_score": 0.62,
+            "rerank_reason": "eBay listing for Dunlop Formula No. 65 polish & cleaner, relevant product listing but doesn't describe the two-step No.1/No.2 process"
+          }
+        },
+        {
+          "title": "Dunlop Formula 65 Polish and Cleaner, 4 oz eBay",
+          "snippet": "rerank score 0.58: eBay listing for Dunlop Formula 65 polish and cleaner 4oz, relevant product but doesn't describe the two-step No.1/No.2 system | original query: \"Formula 65\" \"No. 1\" \"No. 2\" cleaner polish two-step Dunlop",
+          "url": "https://www.ebay.com/itm/233359150014?_ul=AR",
+          "source": "trace",
+          "metadata": {
+            "rerank_score": 0.58,
+            "rerank_reason": "eBay listing for Dunlop Formula 65 polish and cleaner 4oz, relevant product but doesn't describe the two-step No.1/No.2 system",
+            "trace_rank": 7
+          }
+        },
+        {
+          "title": "Dunlop 6516 Formula 65 Guitar Polish & Cleaner 16oz. eBay",
+          "snippet": "rerank score 0.55: eBay listing for Dunlop Formula 65 guitar polish 16oz, relevant product but doesn't describe two-step No.1/No.2 system | original query: \"Formula 65\" \"No. 1\" \"No. 2\" cleaner polish two-step Dunlop",
+          "url": "https://www.ebay.com/itm/314589616204?_ul=CN",
+          "source": "trace",
+          "metadata": {
+            "rerank_score": 0.55,
+            "rerank_reason": "eBay listing for Dunlop Formula 65 guitar polish 16oz, relevant product but doesn't describe two-step No.1/No.2 system",
+            "trace_rank": 9
+          }
+        },
+        {
+          "title": "formulae和formula区别",
+          "snippet": "rerank score 0.02: Generic explanation of word 'formula', completely irrelevant",
+          "url": "https://cp.baidu.com/landing/tscp_doc/cd1c887a2835511e4881aa88c58b22dd",
+          "source": "trace",
+          "metadata": {
+            "rerank_score": 0.02,
+            "rerank_reason": "Generic explanation of word 'formula', completely irrelevant",
+            "trace_rank": 6
+          }
+        },
+        {
+          "title": "formula是什么意思_formula的翻译_音标_读音_用法_例句_爱 ...",
+          "snippet": "rerank score 0.02: Generic dictionary entry for 'formula', completely irrelevant",
+          "url": "https://www.iciba.com/word?w=formula",
+          "source": "trace",
+          "metadata": {
+            "rerank_score": 0.02,
+            "rerank_reason": "Generic dictionary entry for 'formula', completely irrelevant",
+            "trace_rank": 8
+          }
+        },
+        {
+          "title": "FORMULA中文 (简体)翻译：剑桥词典 - Cambridge Dictionary",
+          "snippet": "rerank score 0.02: Cambridge dictionary entry for 'formula', completely irrelevant",
+          "url": "https://dictionary.cambridge.org/zhs/%E8%AF%8D%E5%85%B8/%E8%8B%B1%E8%AF%AD-%E6%B1%89%E8%AF%AD-%E7%AE%80%E4%BD%93/formula",
+          "source": "trace",
+          "metadata": {
+            "rerank_score": 0.02,
+            "rerank_reason": "Cambridge dictionary entry for 'formula', completely irrelevant",
+            "trace_rank": 10
+          }
+        }
+      ],
+      "trace": {
+        "source": "server",
+        "run_id": "run_6bef4de234d1492bb7ec98db75070e0c",
+        "conversation_id": "d1b8638c-c074-4c44-bc4c-05f522c5fc6f",
+        "message_id": "649",
+        "step_id": "call_019f390d492f78c1958cb8c2",
+        "created_at": "2026-07-07T04:10:52.13048108+08:00",
+        "rewrite_strategy": "syntax_preserving_rewrite",
+        "rewrite_policy_id": "lexical_recall_no_inference_v1",
+        "rewrite_queries": [
+          "\"Formula 65\" \"No. 1\" \"No. 2\" cleaner polish two-step Dunlop"
+        ],
+        "providers": [
+          "web",
+          "minimax-mcp",
+          "bing-rss"
+        ],
+        "attempt_count": 2,
+        "timed_out_count": 0,
+        "rerank_threshold": 0.5,
+        "rerank_model": "MiniMax-M3",
+        "rerank_provider": "llm:minimax"
+      }
+    },
+    {
+      "id": "trace_server_5a8cc789_dunlop_formula_65_guitar_polish_cleaner_654_",
+      "category": "product",
+      "query": "Dunlop Formula 65 Guitar Polish Cleaner 654 official \"guitar body\" use",
+      "notes": "Trace-derived pseudo-labeled case. Expected/negative labels come from historical search.llm_rerank decisions, not hand curation.",
+      "checks": {
+        "k": 5,
+        "min_recall_at_k": 0.5,
+        "min_precision_at_k": 0.2,
+        "min_mrr": 0.2,
+        "max_bad_at_k": 2,
+        "max_latency_ms": 15000
+      },
+      "offline_checks": {
+        "k": 5,
+        "min_recall_at_k": 0.5,
+        "min_precision_at_k": 0.2,
+        "min_mrr": 0.2,
+        "max_bad_at_k": 2,
+        "max_latency_ms": 15000
+      },
+      "expected": [
+        {
+          "label": "Amazon.com: Dunlop 654 Formula 65 Guitar Polish & Cleaner 4oz.",
+          "url_contains": "https://www.amazon.com/dp/B000EELB8W/${sign-in-url}"
+        },
+        {
+          "label": "Polishes & Conditioners for Guitar & Bass Guitar Center",
+          "url_contains": "https://www.guitarcenter.com/Polishes-Conditioners-for-Guitar-Bass.gc"
+        },
+        {
+          "label": "DUNLOP. SINCE 1965.",
+          "url_contains": "https://www.jimdunlop.com/"
+        }
+      ],
+      "negative": [
+        {
+          "label": "株式会社ダンロップタイヤ",
+          "url_contains": "https://corp.jp.dunlop-tyre.com/"
+        },
+        {
+          "label": "Dunlop Tyres – Driving Experiences with Performance and Safety",
+          "url_contains": "https://www.dunloptyres.com/en/"
+        },
+        {
+          "label": "Dunlop Tires | Premium Tires for Cars, SUVs & Trucks | Dunlop Tires",
+          "url_contains": "https://www.dunloptires.com/"
+        }
+      ],
+      "fixture_recall_query_limit": 1,
+      "recall_max_queries": 1,
+      "fixture_results": [
+        {
+          "title": "Amazon.com: Dunlop 654 Formula 65 Guitar Polish & Cleaner 4oz.",
+          "snippet": "retrieval query: Dunlop Formula 65 Guitar Polish Cleaner 654 official \"guitar body\" use | rerank score 0.75: Amazon product page for the exact Dunlop 654 Formula 65 Polish & Cleaner 4oz; has product details and customer Q&A that may address use on guitar body, but snippet is mostly boilerplate and doesn't explicitly cover of... | original query: Dunlop Formula 65 Guitar Polish Cleaner 654 official \"guitar body\" use",
+          "url": "https://www.amazon.com/dp/B000EELB8W/${sign-in-url}",
+          "source": "minimax-mcp",
+          "metadata": {
+            "trace_rank": 1,
+            "retrieval_query": "Dunlop Formula 65 Guitar Polish Cleaner 654 official \"guitar body\" use",
+            "retrieval_query_index": 0,
+            "rerank_score": 0.75,
+            "rerank_reason": "Amazon product page for the exact Dunlop 654 Formula 65 Polish & Cleaner 4oz; has product details and customer Q&A that may address use on guitar body, but snippet is mostly boilerplate and doesn't explicitly cover of..."
+          }
+        },
+        {
+          "title": "DUNLOP GLOBAL SITE",
+          "snippet": "rerank score 0.20: Dunlop global corporate site covering tire brand; not related to guitar polish product or its official use instructions.",
+          "url": "https://www.dunlop.com/",
+          "source": "bing-rss",
+          "metadata": {
+            "trace_rank": 2,
+            "retrieval_query": "Dunlop Formula 65 Guitar Polish Cleaner 654 official \"guitar body\" use",
+            "retrieval_query_index": 0,
+            "rerank_score": 0.2,
+            "rerank_reason": "Dunlop global corporate site covering tire brand; not related to guitar polish product or its official use instructions."
+          }
+        },
+        {
+          "title": "Jim Dunlop Formula 65 Guitar Polish & Cleaner 4oz Spray Bottle eBay",
+          "snippet": "retrieval query: Dunlop Formula 65 Guitar Polish Cleaner 654 official \"guitar body\" use | rerank score 0.45: eBay listing for the exact product (4oz spray bottle) but page shows item unavailable and no usage or official information about guitar body use. | original query: Dunlop Formula 65 Guitar Polish Cleaner 654 official \"guitar body\" use",
+          "url": "https://www.ebay.com/itm/353965931648?_ul=CR",
+          "source": "minimax-mcp",
+          "metadata": {
+            "trace_rank": 3,
+            "retrieval_query": "Dunlop Formula 65 Guitar Polish Cleaner 654 official \"guitar body\" use",
+            "retrieval_query_index": 0,
+            "rerank_score": 0.45,
+            "rerank_reason": "eBay listing for the exact product (4oz spray bottle) but page shows item unavailable and no usage or official information about guitar body use."
+          }
+        },
+        {
+          "title": "Dunlop Tires | Premium Tires for Cars, SUVs & Trucks | Dunlop Tires",
+          "snippet": "rerank score 0.05: Dunlop tires site; completely unrelated to guitar polish product.",
+          "url": "https://www.dunloptires.com/",
+          "source": "bing-rss",
+          "metadata": {
+            "trace_rank": 4,
+            "retrieval_query": "Dunlop Formula 65 Guitar Polish Cleaner 654 official \"guitar body\" use",
+            "retrieval_query_index": 0,
+            "rerank_score": 0.05,
+            "rerank_reason": "Dunlop tires site; completely unrelated to guitar polish product."
+          }
+        },
+        {
+          "title": "Polishes & Conditioners for Guitar & Bass Guitar Center",
+          "snippet": "retrieval query: Dunlop Formula 65 Guitar Polish Cleaner 654 official \"guitar body\" use | rerank score 0.55: Guitar Center polishes & conditioners category page that lists the Dunlop Formula 65 product; relevant retailer context but does not provide official guidance on 'guitar body' use. | original query: Dunlop Formula 65 Guitar Polish Cleaner 654 official \"guitar body\" use",
+          "url": "https://www.guitarcenter.com/Polishes-Conditioners-for-Guitar-Bass.gc",
+          "source": "minimax-mcp",
+          "metadata": {
+            "trace_rank": 5,
+            "retrieval_query": "Dunlop Formula 65 Guitar Polish Cleaner 654 official \"guitar body\" use",
+            "retrieval_query_index": 0,
+            "rerank_score": 0.55,
+            "rerank_reason": "Guitar Center polishes & conditioners category page that lists the Dunlop Formula 65 product; relevant retailer context but does not provide official guidance on 'guitar body' use."
+          }
+        },
+        {
+          "title": "DUNLOP. SINCE 1965.",
+          "snippet": "rerank score 0.55: Official Jim Dunlop Manufacturing site (maker of the product); authoritative brand source that could contain official product/usage info, though snippet does not explicitly mention Formula 65 or guitar body use. | original query: Dunlop Formula 65 Guitar Polish Cleaner 654 official \"guitar body\" use",
+          "url": "https://www.jimdunlop.com/",
+          "source": "trace",
+          "metadata": {
+            "rerank_score": 0.55,
+            "rerank_reason": "Official Jim Dunlop Manufacturing site (maker of the product); authoritative brand source that could contain official product/usage info, though snippet does not explicitly mention Formula 65 or guitar body use.",
+            "trace_rank": 8
+          }
+        },
+        {
+          "title": "Dunlop 6516 Formula 65 Guitar Polish & Cleaner 16oz. eBay",
+          "snippet": "rerank score 0.45: eBay listing for 16oz size of the Formula 65 polish; product match but no official usage guidance shown. | original query: Dunlop Formula 65 Guitar Polish Cleaner 654 official \"guitar body\" use",
+          "url": "https://www.ebay.com/itm/314589616204?_ul=CN",
+          "source": "trace",
+          "metadata": {
+            "rerank_score": 0.45,
+            "rerank_reason": "eBay listing for 16oz size of the Formula 65 polish; product match but no official usage guidance shown.",
+            "trace_rank": 7
+          }
+        },
+        {
+          "title": "Dunlop Formula 65 Guitar Polish Kit eBay",
+          "snippet": "rerank score 0.40: eBay listing for Dunlop Formula 65 Guitar Polish Kit; matches product but no official usage content.",
+          "url": "https://www.ebay.com/itm/391039172912?hash=item5b0bc04130:g:AbwAAOSwc8BihZi~",
+          "source": "trace",
+          "metadata": {
+            "rerank_score": 0.4,
+            "rerank_reason": "eBay listing for Dunlop Formula 65 Guitar Polish Kit; matches product but no official usage content.",
+            "trace_rank": 9
+          }
+        },
+        {
+          "title": "Dunlop Tyres – Driving Experiences with Performance and Safety",
+          "snippet": "rerank score 0.05: Dunlop tyres site; unrelated to guitar care product.",
+          "url": "https://www.dunloptyres.com/en/",
+          "source": "trace",
+          "metadata": {
+            "rerank_score": 0.05,
+            "rerank_reason": "Dunlop tyres site; unrelated to guitar care product.",
+            "trace_rank": 6
+          }
+        },
+        {
+          "title": "株式会社ダンロップタイヤ",
+          "snippet": "rerank score 0.05: Japanese Dunlop tire company page; unrelated to guitar polish.",
+          "url": "https://corp.jp.dunlop-tyre.com/",
+          "source": "trace",
+          "metadata": {
+            "rerank_score": 0.05,
+            "rerank_reason": "Japanese Dunlop tire company page; unrelated to guitar polish.",
+            "trace_rank": 10
+          }
+        }
+      ],
+      "trace": {
+        "source": "server",
+        "run_id": "run_c0d66214263d4c0ca928705812b5fd62",
+        "conversation_id": "d1b8638c-c074-4c44-bc4c-05f522c5fc6f",
+        "message_id": "651",
+        "step_id": "call_019f39106b9c77e382d564f2",
+        "created_at": "2026-07-07T04:14:39.701772603+08:00",
+        "rewrite_strategy": "syntax_preserving_rewrite",
+        "rewrite_policy_id": "lexical_recall_no_inference_v1",
+        "rewrite_queries": [
+          "Dunlop Formula 65 Guitar Polish Cleaner 654 official \"guitar body\" use"
+        ],
+        "providers": [
+          "web",
+          "minimax-mcp",
+          "bing-rss"
+        ],
+        "attempt_count": 2,
+        "timed_out_count": 0,
+        "rerank_threshold": 0.5,
+        "rerank_model": "MiniMax-M3",
+        "rerank_provider": "llm:minimax"
+      }
+    },
+    {
+      "id": "trace_server_e4f3fdcc_dunlop_fingerboard_02_deep_conditioner_6532_",
+      "category": "product",
+      "query": "Dunlop Fingerboard 02 Deep Conditioner 6532 official how to use",
+      "notes": "Trace-derived pseudo-labeled case. Expected/negative labels come from historical search.llm_rerank decisions, not hand curation.",
+      "checks": {
+        "k": 5,
+        "min_recall_at_k": 1.0,
+        "min_precision_at_k": 0.2,
+        "min_mrr": 0.2,
+        "max_bad_at_k": 2,
+        "max_latency_ms": 15000
+      },
+      "offline_checks": {
+        "k": 5,
+        "min_recall_at_k": 1.0,
+        "min_precision_at_k": 0.2,
+        "min_mrr": 0.2,
+        "max_bad_at_k": 2,
+        "max_latency_ms": 15000
+      },
+      "expected": [
+        {
+          "label": "DUNLOP. SINCE 1965.",
+          "url_contains": "https://www.jimdunlop.com/"
+        }
+      ],
+      "negative": [
+        {
+          "label": "add keepers team to codeowners by infiloop2 · Pull Request #6562 · smartcontractkit/cha...",
+          "url_contains": "https://github.com/smartcontractkit/chainlink/pull/6562"
+        },
+        {
+          "label": "Bump qs from 6.5.2 to 6.5.3 in /call-router-2.0 by dependabot[bot] · Pull Request #42 ·...",
+          "url_contains": "https://github.com/FreeClimbAPI/Node-IVR-How-To-Guide/pull/42"
+        },
+        {
+          "label": "邓禄普轮胎DUNLOP官方网站 - 汽车轮胎品牌 - 轿车轮胎 ...",
+          "url_contains": "https://www.dunlop.com.cn/"
+        }
+      ],
+      "fixture_recall_query_limit": 2,
+      "recall_max_queries": 2,
+      "fixture_results": [
+        {
+          "title": "Jim Dunlop 6532 Fingerboard 02 Deep Conditioner 2oz. for GUITARS eBay",
+          "snippet": "rerank score 0.30: eBay listing for the exact product (Jim Dunlop 6532 Fingerboard 02 Deep Conditioner) but provides no official how-to-use instructions, only sales info.",
+          "url": "https://www.ebay.com/itm/Jim-Dunlop-6532-Fingerboard-02-Deep-Conditioner-2oz-for-GUITARS-/382016459957?_ul=PR",
+          "source": "minimax-mcp",
+          "metadata": {
+            "trace_rank": 1,
+            "retrieval_query": "Dunlop Fingerboard 02 Deep Conditioner 6532 official how to use",
+            "retrieval_query_index": 0,
+            "rerank_score": 0.3,
+            "rerank_reason": "eBay listing for the exact product (Jim Dunlop 6532 Fingerboard 02 Deep Conditioner) but provides no official how-to-use instructions, only sales info."
+          }
+        },
+        {
+          "title": "DUNLOP GLOBAL SITE",
+          "snippet": "rerank score 0.05: Dunlop global site (tennis/sports brand), not the Jim Dunlop music accessories manufacturer; no relevance to fingerboard conditioner or usage.",
+          "url": "https://www.dunlop.com/",
+          "source": "bing-rss",
+          "metadata": {
+            "trace_rank": 2,
+            "retrieval_query": "Dunlop Fingerboard 02 Deep Conditioner 6532 official how to use",
+            "retrieval_query_index": 0,
+            "rerank_score": 0.05,
+            "rerank_reason": "Dunlop global site (tennis/sports brand), not the Jim Dunlop music accessories manufacturer; no relevance to fingerboard conditioner or usage."
+          }
+        },
+        {
+          "title": "Jim Dunlop 02 Formula 65 Fingerboard Conditioner - 2oz eBay",
+          "snippet": "rerank score 0.25: eBay listing for a related Jim Dunlop 02 Formula 65 Fingerboard Conditioner; not the 6532 Deep Conditioner and no usage instructions.",
+          "url": "https://www.ebay.com/itm/234721225126?hash=item36a679a9a6:g:AIcAAOSwfp1jP-Zb",
+          "source": "minimax-mcp",
+          "metadata": {
+            "trace_rank": 3,
+            "retrieval_query": "Dunlop Fingerboard 02 Deep Conditioner 6532 official how to use",
+            "retrieval_query_index": 0,
+            "rerank_score": 0.25,
+            "rerank_reason": "eBay listing for a related Jim Dunlop 02 Formula 65 Fingerboard Conditioner; not the 6532 Deep Conditioner and no usage instructions."
+          }
+        },
+        {
+          "title": "Dunlop Tires | Premium Tires for Cars, SUVs & Trucks | Dunlop Tires",
+          "snippet": "rerank score 0.02: Dunlop tires website, completely unrelated to guitar fingerboard conditioner.",
+          "url": "https://www.dunloptires.com/",
+          "source": "bing-rss",
+          "metadata": {
+            "trace_rank": 4,
+            "retrieval_query": "Dunlop Fingerboard 02 Deep Conditioner 6532 official how to use",
+            "retrieval_query_index": 0,
+            "rerank_score": 0.02,
+            "rerank_reason": "Dunlop tires website, completely unrelated to guitar fingerboard conditioner."
+          }
+        },
+        {
+          "title": "Dunlop System 65 Guitar Fingerboard Care Kit 6502 for sale online eBay",
+          "snippet": "rerank score 0.15: Dunlop System 65 Fingerboard Care Kit (6502) listing, tangentially related Dunlop fingerboard product but not the 6532 and no usage guidance.",
+          "url": "https://www.ebay.com/p/1111634027?iid=154670367282",
+          "source": "minimax-mcp",
+          "metadata": {
+            "trace_rank": 5,
+            "retrieval_query": "Dunlop Fingerboard 02 Deep Conditioner 6532 official how to use",
+            "retrieval_query_index": 0,
+            "rerank_score": 0.15,
+            "rerank_reason": "Dunlop System 65 Fingerboard Care Kit (6502) listing, tangentially related Dunlop fingerboard product but not the 6532 and no usage guidance."
+          }
+        },
+        {
+          "title": "DUNLOP. SINCE 1965.",
+          "snippet": "rerank score 0.55: Official Jim Dunlop (manufacturer of the product) home page; authoritative source for the correct product, though the snippet only shows brand overview and not specific 6532 usage instructions. | original query: Dunlop Fingerboard 02 Deep Conditioner 6532 official how to use",
+          "url": "https://www.jimdunlop.com/",
+          "source": "trace",
+          "metadata": {
+            "rerank_score": 0.55,
+            "rerank_reason": "Official Jim Dunlop (manufacturer of the product) home page; authoritative source for the correct product, though the snippet only shows brand overview and not specific 6532 usage instructions.",
+            "trace_rank": 8
+          }
+        },
+        {
+          "title": "Dunlop Tyres – Driving Experiences with Performance and Safety",
+          "snippet": "rerank score 0.02: Dunlop tyres (European site), unrelated to guitar care products.",
+          "url": "https://www.dunloptyres.com/en/",
+          "source": "trace",
+          "metadata": {
+            "rerank_score": 0.02,
+            "rerank_reason": "Dunlop tyres (European site), unrelated to guitar care products.",
+            "trace_rank": 6
+          }
+        },
+        {
+          "title": "邓禄普轮胎DUNLOP官方网站 - 汽车轮胎品牌 - 轿车轮胎 ...",
+          "snippet": "rerank score 0.02: Chinese Dunlop tire official site, unrelated to music fingerboard conditioner.",
+          "url": "https://www.dunlop.com.cn/",
+          "source": "trace",
+          "metadata": {
+            "rerank_score": 0.02,
+            "rerank_reason": "Chinese Dunlop tire official site, unrelated to music fingerboard conditioner.",
+            "trace_rank": 10
+          }
+        },
+        {
+          "title": "Bump qs from 6.5.2 to 6.5.3 in /call-router-2.0 by dependabot[bot] · Pull Request #42 · FreeClimbAPI/Node-IVR-How-To-Guide ·",
+          "snippet": "rerank score 0.00: GitHub PR about version bump from 6.5.2 to 6.5.3; only numerical coincidence with '6532', entirely irrelevant.",
+          "url": "https://github.com/FreeClimbAPI/Node-IVR-How-To-Guide/pull/42",
+          "source": "trace",
+          "metadata": {
+            "rerank_score": 0.0,
+            "rerank_reason": "GitHub PR about version bump from 6.5.2 to 6.5.3; only numerical coincidence with '6532', entirely irrelevant.",
+            "trace_rank": 7
+          }
+        },
+        {
+          "title": "add keepers team to codeowners by infiloop2 · Pull Request #6562 · smartcontractkit/chainlink · GitHub",
+          "snippet": "rerank score 0.00: GitHub PR #6562 about codeowners, only shares the number '6562'; completely irrelevant.",
+          "url": "https://github.com/smartcontractkit/chainlink/pull/6562",
+          "source": "trace",
+          "metadata": {
+            "rerank_score": 0.0,
+            "rerank_reason": "GitHub PR #6562 about codeowners, only shares the number '6562'; completely irrelevant.",
+            "trace_rank": 9
+          }
+        }
+      ],
+      "trace": {
+        "source": "server",
+        "run_id": "run_c0d66214263d4c0ca928705812b5fd62",
+        "conversation_id": "d1b8638c-c074-4c44-bc4c-05f522c5fc6f",
+        "message_id": "651",
+        "step_id": "call_019f39106b9c77e382d56518",
+        "created_at": "2026-07-07T04:14:39.701772603+08:00",
+        "rewrite_strategy": "keyword_recall",
+        "rewrite_policy_id": "lexical_recall_no_inference_v1",
+        "rewrite_queries": [
+          "Dunlop Fingerboard 02 Deep Conditioner 6532 official how to use",
+          "02 6532 dunlop fingerboard deep conditioner official how to use"
+        ],
+        "providers": [
+          "web",
+          "minimax-mcp",
+          "bing-rss"
+        ],
+        "attempt_count": 5,
+        "timed_out_count": 2,
+        "rerank_threshold": 0.5,
+        "rerank_model": "MiniMax-M3",
+        "rerank_provider": "llm:minimax"
+      }
+    },
+    {
+      "id": "trace_local_8594b565_dunlop_65_01_02_guitar_care_products_polish",
+      "category": "product",
+      "query": "Dunlop 65 01 02 guitar care products polish cleaner usage",
+      "notes": "Trace-derived pseudo-labeled case. Expected/negative labels come from historical search.llm_rerank decisions, not hand curation.",
+      "checks": {
+        "k": 5,
+        "min_recall_at_k": 0.5,
+        "min_precision_at_k": 0.2,
+        "min_mrr": 0.2,
+        "max_bad_at_k": 2,
+        "max_latency_ms": 15000
+      },
+      "offline_checks": {
+        "k": 5,
+        "min_recall_at_k": 0.5,
+        "min_precision_at_k": 0.2,
+        "min_mrr": 0.2,
+        "max_bad_at_k": 2,
+        "max_latency_ms": 15000
+      },
+      "expected": [
+        {
+          "label": "Dunlop System 65 Guitar Fingerboard Care Kit 6502 for sale online eBay",
+          "url_contains": "https://www.ebay.com/p/1111634027?iid=155347761053"
+        },
+        {
+          "label": "弦油琴弦 护理指板 柠檬油 X9折DUNLOP邓禄普65 01 02 54 52贝斯吉他 - 家用电器大全",
+          "url_contains": "http://jiadian.hot16.cn/jiadian_info/item/50036193/O5RB2vm6hJex07Qbju.html"
+        }
+      ],
+      "negative": [
+        {
+          "label": "Dunlop Tires | Premium Tires for Cars, SUVs & Trucks | Dunlop Tires",
+          "url_contains": "https://www.dunloptires.com/"
+        },
+        {
+          "label": "DUNLOP GLOBAL SITE",
+          "url_contains": "https://www.dunlop.com/"
+        },
+        {
+          "label": "Dunlop Tyres Singapore - AL Tyres",
+          "url_contains": "https://www.altyres.com.sg/products/new-tyres/dunlop/"
+        }
+      ],
+      "fixture_recall_query_limit": 2,
+      "recall_max_queries": 2,
+      "fixture_results": [
+        {
+          "title": "Jim Dunlop Formula 65 Guitar Polish & Cleaner 4oz Spray Bottle eBay",
+          "snippet": "retrieval query: Dunlop 65 01 02 guitar care products polish cleaner usage | rerank score 0.45: eBay listing for Jim Dunlop Formula 65 polish/cleaner spray bottle — matches key entities (Dunlop, 65, guitar polish/cleaner) but is a product listing, not usage instructions. | original query: Dunlop 65 01 02 guitar care products polish cleaner usage",
+          "url": "https://www.ebay.com/itm/353965931648?_ul=CR",
+          "source": "minimax-mcp",
+          "metadata": {
+            "trace_rank": 1,
+            "retrieval_query": "Dunlop 65 01 02 guitar care products polish cleaner usage",
+            "retrieval_query_index": 0,
+            "rerank_score": 0.45,
+            "rerank_reason": "eBay listing for Jim Dunlop Formula 65 polish/cleaner spray bottle — matches key entities (Dunlop, 65, guitar polish/cleaner) but is a product listing, not usage instructions."
+          }
+        },
+        {
+          "title": "Buy Dunlop Products in Singapore | Sgcarmart",
+          "snippet": "rerank score 0.05: About Dunlop tyres in Singapore — completely unrelated to guitar care products.",
+          "url": "https://www.sgcarmart.com/shop/brands/Dunlop",
+          "source": "bing-rss",
+          "metadata": {
+            "trace_rank": 2,
+            "retrieval_query": "Dunlop 65 01 02 guitar care products polish cleaner usage",
+            "retrieval_query_index": 0,
+            "rerank_score": 0.05,
+            "rerank_reason": "About Dunlop tyres in Singapore — completely unrelated to guitar care products."
+          }
+        },
+        {
+          "title": "NEW - Dunlop Formula No. 65 Guitar Polish & Cleaner, 1 Ounce eBay",
+          "snippet": "retrieval query: Dunlop 65 01 02 guitar care products polish cleaner usage | rerank score 0.45: eBay listing for Dunlop Formula No. 65 Guitar Polish & Cleaner — matches product but no usage information. | original query: Dunlop 65 01 02 guitar care products polish cleaner usage",
+          "url": "https://www.ebay.com/itm/363158989940?hash=item548df66c74%3Ag%3AMYoAAOSwz6tfmu40&LH_All=1",
+          "source": "minimax-mcp",
+          "metadata": {
+            "trace_rank": 3,
+            "retrieval_query": "Dunlop 65 01 02 guitar care products polish cleaner usage",
+            "retrieval_query_index": 0,
+            "rerank_score": 0.45,
+            "rerank_reason": "eBay listing for Dunlop Formula No. 65 Guitar Polish & Cleaner — matches product but no usage information."
+          }
+        },
+        {
+          "title": "Dunlop Tyres Singapore - AL Tyres",
+          "snippet": "rerank score 0.05: Dunlop tyres retailer — irrelevant to guitar polish/cleaner usage.",
+          "url": "https://www.altyres.com.sg/products/new-tyres/dunlop/",
+          "source": "bing-rss",
+          "metadata": {
+            "trace_rank": 4,
+            "retrieval_query": "Dunlop 65 01 02 guitar care products polish cleaner usage",
+            "retrieval_query_index": 0,
+            "rerank_score": 0.05,
+            "rerank_reason": "Dunlop tyres retailer — irrelevant to guitar polish/cleaner usage."
+          }
+        },
+        {
+          "title": "弦油琴弦 护理指板 柠檬油 X9折DUNLOP邓禄普65 01 02 54 52贝斯吉他 - 家用电器大全",
+          "snippet": "retrieval query: Dunlop 65 01 02 guitar care products polish cleaner usage | rerank score 0.55: Lists Dunlop 65/01/02 guitar care products (string oil, fingerboard lemon oil) directly matching query entities, but focused on sales rather than detailed usage instructions. | original query: Dunlop 65 01 02 guitar care products polish cleaner usage",
+          "url": "http://jiadian.hot16.cn/jiadian_info/item/50036193/O5RB2vm6hJex07Qbju.html",
+          "source": "minimax-mcp",
+          "metadata": {
+            "trace_rank": 5,
+            "retrieval_query": "Dunlop 65 01 02 guitar care products polish cleaner usage",
+            "retrieval_query_index": 0,
+            "rerank_score": 0.55,
+            "rerank_reason": "Lists Dunlop 65/01/02 guitar care products (string oil, fingerboard lemon oil) directly matching query entities, but focused on sales rather than detailed usage instructions."
+          }
+        },
+        {
+          "title": "Dunlop System 65 Guitar Fingerboard Care Kit 6502 for sale online eBay",
+          "snippet": "rerank score 0.75: Dunlop System 65 Fingerboard Care Kit 6502 — highly relevant product directly matching query entities; provides product details though not full usage guide. | original query: Dunlop 65 01 02 guitar care products polish cleaner usage",
+          "url": "https://www.ebay.com/p/1111634027?iid=155347761053",
+          "source": "trace",
+          "metadata": {
+            "rerank_score": 0.75,
+            "rerank_reason": "Dunlop System 65 Fingerboard Care Kit 6502 — highly relevant product directly matching query entities; provides product details though not full usage guide.",
+            "trace_rank": 7
+          }
+        },
+        {
+          "title": "Dunlop Formula No. 65 Guitar Polish eBay",
+          "snippet": "rerank score 0.40: eBay listing for Dunlop Formula No. 65 Guitar Polish — matches key entities but is a sales listing, no usage details.",
+          "url": "https://www.ebay.com/itm/326424860467",
+          "source": "trace",
+          "metadata": {
+            "rerank_score": 0.4,
+            "rerank_reason": "eBay listing for Dunlop Formula No. 65 Guitar Polish — matches key entities but is a sales listing, no usage details.",
+            "trace_rank": 9
+          }
+        },
+        {
+          "title": "Dunlop (brands) - Wikipedia",
+          "snippet": "rerank score 0.10: Generic Wikipedia page about Dunlop brand across products — not specific to guitar care polish/cleaner usage.",
+          "url": "https://en.wikipedia.org/wiki/Dunlop_(brands)",
+          "source": "trace",
+          "metadata": {
+            "rerank_score": 0.1,
+            "rerank_reason": "Generic Wikipedia page about Dunlop brand across products — not specific to guitar care polish/cleaner usage.",
+            "trace_rank": 6
+          }
+        },
+        {
+          "title": "DUNLOP GLOBAL SITE",
+          "snippet": "rerank score 0.05: Dunlop corporate site about tyres/rackets — irrelevant to guitar polish/cleaner usage.",
+          "url": "https://www.dunlop.com/",
+          "source": "trace",
+          "metadata": {
+            "rerank_score": 0.05,
+            "rerank_reason": "Dunlop corporate site about tyres/rackets — irrelevant to guitar polish/cleaner usage.",
+            "trace_rank": 8
+          }
+        },
+        {
+          "title": "Dunlop Tires | Premium Tires for Cars, SUVs & Trucks | Dunlop Tires",
+          "snippet": "rerank score 0.05: Dunlop tyres site — irrelevant to guitar care products.",
+          "url": "https://www.dunloptires.com/",
+          "source": "trace",
+          "metadata": {
+            "rerank_score": 0.05,
+            "rerank_reason": "Dunlop tyres site — irrelevant to guitar care products.",
+            "trace_rank": 10
+          }
+        }
+      ],
+      "trace": {
+        "source": "local",
+        "run_id": "run_d15d1a51d26a4ae0b4e538b5aafb5209",
+        "conversation_id": "019007b0-1e29-4b1d-87b3-6da1043a783d",
+        "message_id": "626",
+        "step_id": "call_019f3903dfc97f4296600c9c",
+        "created_at": "2026-07-07 04:01:13.292177+08:00",
+        "rewrite_strategy": "keyword_recall",
+        "rewrite_policy_id": "lexical_recall_no_inference_v1",
+        "rewrite_queries": [
+          "Dunlop 65 01 02 guitar care products polish cleaner usage",
+          "65 01 02 dunlop guitar care products polish cleaner usage"
+        ],
+        "providers": [
+          "web",
+          "minimax-mcp",
+          "bing-rss"
+        ],
+        "attempt_count": 5,
+        "timed_out_count": 0,
+        "rerank_threshold": 0.5,
+        "rerank_model": "MiniMax-M3",
+        "rerank_provider": "llm:minimax"
+      }
+    },
+    {
+      "id": "trace_local_04361f12_jimdunlop_com_formula_65_polish_cleaner",
+      "category": "product",
+      "query": "\"jimdunlop.com\" \"Formula 65\" polish cleaner",
+      "notes": "Trace-derived pseudo-labeled case. Expected/negative labels come from historical search.llm_rerank decisions, not hand curation.",
+      "checks": {
+        "k": 5,
+        "min_recall_at_k": 0.5,
+        "min_precision_at_k": 0.2,
+        "min_mrr": 0.2,
+        "max_bad_at_k": 1,
+        "max_latency_ms": 15000
+      },
+      "offline_checks": {
+        "k": 5,
+        "min_recall_at_k": 0.5,
+        "min_precision_at_k": 0.2,
+        "min_mrr": 0.2,
+        "max_bad_at_k": 1,
+        "max_latency_ms": 15000
+      },
+      "expected": [
+        {
+          "label": "Dunlop Formula65 Stringcleaner – Musikhaus Thomann",
+          "url_contains": "https://www.thomann.de/de/dunlop_formula65.htm?"
+        },
+        {
+          "label": "Jim Dunlop Formula 65 Guitar Cleaner & Polish - 1oz eBay",
+          "url_contains": "https://www.ebay.com/itm/144460216496?_ul=CN"
+        },
+        {
+          "label": "Jim DUNLOP J6540 Formula 65 Guitar Polish and Cleaner for sale online eBay",
+          "url_contains": "https://www.ebay.com/itm/NEW-Dunlop-J6540-65-Polish-Cleaner-Guitar-/324293961134?_ul=PT"
+        }
+      ],
+      "negative": [
+        {
+          "label": "10.0.0.0.1 and 10.0.0.1 Router IP Addresses - NetSpot",
+          "url_contains": "https://www.netspotapp.com/blog/ip-addresses/10-0-0-0-1.html"
+        }
+      ],
+      "fixture_recall_query_limit": 1,
+      "recall_max_queries": 1,
+      "fixture_results": [
+        {
+          "title": "Jim Dunlop Formula 65 Guitar Cleaner & Polish - 1oz eBay",
+          "snippet": "retrieval query: \"jimdunlop.com\" \"Formula 65\" polish cleaner | rerank score 0.55: eBay listing for Jim Dunlop Formula 65 Guitar Cleaner & Polish, matches product but not from jimdunlop.com; useful purchase info | original query: \"jimdunlop.com\" \"Formula 65\" polish cleaner",
+          "url": "https://www.ebay.com/itm/144460216496?_ul=CN",
+          "source": "minimax-mcp",
+          "metadata": {
+            "trace_rank": 1,
+            "retrieval_query": "\"jimdunlop.com\" \"Formula 65\" polish cleaner",
+            "retrieval_query_index": 0,
+            "rerank_score": 0.55,
+            "rerank_reason": "eBay listing for Jim Dunlop Formula 65 Guitar Cleaner & Polish, matches product but not from jimdunlop.com; useful purchase info"
+          }
+        },
+        {
+          "title": "Jim DUNLOP J6540 Formula 65 Guitar Polish and Cleaner for sale online eBay",
+          "snippet": "retrieval query: \"jimdunlop.com\" \"Formula 65\" polish cleaner | rerank score 0.50: eBay listing for Dunlop J6540 Formula 65 Polish and Cleaner, matches product but not from jimdunlop.com | original query: \"jimdunlop.com\" \"Formula 65\" polish cleaner",
+          "url": "https://www.ebay.com/itm/NEW-Dunlop-J6540-65-Polish-Cleaner-Guitar-/324293961134?_ul=PT",
+          "source": "minimax-mcp",
+          "metadata": {
+            "trace_rank": 2,
+            "retrieval_query": "\"jimdunlop.com\" \"Formula 65\" polish cleaner",
+            "retrieval_query_index": 0,
+            "rerank_score": 0.5,
+            "rerank_reason": "eBay listing for Dunlop J6540 Formula 65 Polish and Cleaner, matches product but not from jimdunlop.com"
+          }
+        },
+        {
+          "title": "Jim Dunlop 654 Formula 65 Guitar Polish & Cleaner 4oz. for GUITARS eBay",
+          "snippet": "retrieval query: \"jimdunlop.com\" \"Formula 65\" polish cleaner | rerank score 0.45: eBay listing for Formula 65 polish/cleaner 4oz, matches product but out of stock and not from jimdunlop.com | original query: \"jimdunlop.com\" \"Formula 65\" polish cleaner",
+          "url": "https://www.ebay.nl/itm/371902464302",
+          "source": "minimax-mcp",
+          "metadata": {
+            "trace_rank": 3,
+            "retrieval_query": "\"jimdunlop.com\" \"Formula 65\" polish cleaner",
+            "retrieval_query_index": 0,
+            "rerank_score": 0.45,
+            "rerank_reason": "eBay listing for Formula 65 polish/cleaner 4oz, matches product but out of stock and not from jimdunlop.com"
+          }
+        },
+        {
+          "title": "NEW - Dunlop Formula No. 65 Guitar Polish & Cleaner, 1 Ounce eBay",
+          "snippet": "retrieval query: \"jimdunlop.com\" \"Formula 65\" polish cleaner | rerank score 0.50: eBay listing for Dunlop Formula No. 65 Guitar Polish & Cleaner 1oz, matches product but not from jimdunlop.com | original query: \"jimdunlop.com\" \"Formula 65\" polish cleaner",
+          "url": "https://www.ebay.com/itm/363158989940?hash=item548df66c74%3Ag%3AMYoAAOSwz6tfmu40&LH_All=1",
+          "source": "minimax-mcp",
+          "metadata": {
+            "trace_rank": 4,
+            "retrieval_query": "\"jimdunlop.com\" \"Formula 65\" polish cleaner",
+            "retrieval_query_index": 0,
+            "rerank_score": 0.5,
+            "rerank_reason": "eBay listing for Dunlop Formula No. 65 Guitar Polish & Cleaner 1oz, matches product but not from jimdunlop.com"
+          }
+        },
+        {
+          "title": "JIM DUNLOP Formula 65 Polish & Cleaner 4oz 2-Pack for Guitars eBay",
+          "snippet": "retrieval query: \"jimdunlop.com\" \"Formula 65\" polish cleaner | rerank score 0.48: eBay 2-pack listing for Formula 65 Polish & Cleaner, matches product but not from jimdunlop.com | original query: \"jimdunlop.com\" \"Formula 65\" polish cleaner",
+          "url": "https://www.ebay.com/itm/405500020051?_ul=MX",
+          "source": "minimax-mcp",
+          "metadata": {
+            "trace_rank": 5,
+            "retrieval_query": "\"jimdunlop.com\" \"Formula 65\" polish cleaner",
+            "retrieval_query_index": 0,
+            "rerank_score": 0.48,
+            "rerank_reason": "eBay 2-pack listing for Formula 65 Polish & Cleaner, matches product but not from jimdunlop.com"
+          }
+        },
+        {
+          "title": "Dunlop Formula65 Stringcleaner – Musikhaus Thomann",
+          "snippet": "rerank score 0.72: Thomann product page for Dunlop Formula 65 string cleaner with specs; reputable retailer, matches product well though it's string cleaner not polish | original query: \"jimdunlop.com\" \"Formula 65\" polish cleaner",
+          "url": "https://www.thomann.de/de/dunlop_formula65.htm?",
+          "source": "trace",
+          "metadata": {
+            "rerank_score": 0.72,
+            "rerank_reason": "Thomann product page for Dunlop Formula 65 string cleaner with specs; reputable retailer, matches product well though it's string cleaner not polish",
+            "trace_rank": 7
+          }
+        },
+        {
+          "title": "Jim Dunlop Formula 65 Guitar Polish & Cleaner 4oz Spray Bottle eBay",
+          "snippet": "rerank score 0.45: eBay listing for Formula 65 spray bottle, matches product but out of stock, not from jimdunlop.com | original query: \"jimdunlop.com\" \"Formula 65\" polish cleaner",
+          "url": "https://www.ebay.com/itm/353965931648?_ul=CR",
+          "source": "trace",
+          "metadata": {
+            "rerank_score": 0.45,
+            "rerank_reason": "eBay listing for Formula 65 spray bottle, matches product but out of stock, not from jimdunlop.com",
+            "trace_rank": 6
+          }
+        },
+        {
+          "title": "Jim Dunlop 01 Formula 65 Fingerboard Cleaner - 4oz eBay",
+          "snippet": "rerank score 0.45: eBay listing for Formula 65 Fingerboard Cleaner (related product line), matches brand but different specific product | original query: \"jimdunlop.com\" \"Formula 65\" polish cleaner",
+          "url": "https://www.ebay.com/itm/234721226632?hash=item36a679af88:g:DroAAOSwfaZjPFwL",
+          "source": "trace",
+          "metadata": {
+            "rerank_score": 0.45,
+            "rerank_reason": "eBay listing for Formula 65 Fingerboard Cleaner (related product line), matches brand but different specific product",
+            "trace_rank": 8
+          }
+        },
+        {
+          "title": "Jim Dunlop Body and Fingerboard Care Kit 4oz JD-6503 Guitar & Bass Cleaner eBay",
+          "snippet": "rerank score 0.40: eBay listing for Jim Dunlop Body and Fingerboard Care Kit, related Jim Dunlop product line but not Formula 65 polish specifically",
+          "url": "https://www.ebay.com/itm/234722285352",
+          "source": "trace",
+          "metadata": {
+            "rerank_score": 0.4,
+            "rerank_reason": "eBay listing for Jim Dunlop Body and Fingerboard Care Kit, related Jim Dunlop product line but not Formula 65 polish specifically",
+            "trace_rank": 9
+          }
+        },
+        {
+          "title": "10.0.0.0.1 and 10.0.0.1 Router IP Addresses - NetSpot",
+          "snippet": "rerank score 0.00: Completely unrelated article about router IP addresses",
+          "url": "https://www.netspotapp.com/blog/ip-addresses/10-0-0-0-1.html",
+          "source": "trace",
+          "metadata": {
+            "rerank_score": 0.0,
+            "rerank_reason": "Completely unrelated article about router IP addresses",
+            "trace_rank": 10
+          }
+        }
+      ],
+      "trace": {
+        "source": "local",
+        "run_id": "run_d15d1a51d26a4ae0b4e538b5aafb5209",
+        "conversation_id": "019007b0-1e29-4b1d-87b3-6da1043a783d",
+        "message_id": "626",
+        "step_id": "call_019f390451347c81a46e9d56",
+        "created_at": "2026-07-07 04:01:13.292177+08:00",
+        "rewrite_strategy": "syntax_preserving_rewrite",
+        "rewrite_policy_id": "lexical_recall_no_inference_v1",
+        "rewrite_queries": [
+          "\"jimdunlop.com\" \"Formula 65\" polish cleaner"
+        ],
+        "providers": [
+          "web",
+          "minimax-mcp",
+          "bing-rss"
+        ],
+        "attempt_count": 3,
+        "timed_out_count": 0,
+        "rerank_threshold": 0.5,
+        "rerank_model": "MiniMax-M3",
+        "rerank_provider": "llm:minimax"
+      }
+    }
+  ]
+}

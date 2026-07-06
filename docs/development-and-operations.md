@@ -304,6 +304,16 @@ python3 scripts/eval_search.py --mode offline --json
 python3 scripts/eval_search.py --mode offline --compare-original
 ```
 
+也可以从本地 SQLite 和服务器 conversation trace 里收集更大规模的 trace-derived 评测数据：
+
+```bash
+make collect-search-evals
+make eval-search-trace
+python3 scripts/eval_search.py --cases evals/search/trace_cases.json --mode offline --compare-original
+```
+
+`evals/search/trace_cases.json` 的期望/反例来自历史 `search.llm_rerank` 分数，适合作为量级回归和分布观察；`evals/search/query_bank.json` 收集未标注 query 分布，方便后续人工挑坏例补进精选集。严格语义金标仍优先维护 `evals/search/cases.json`。
+
 需要观察真实 provider 表现时运行 live 评测：
 
 ```bash

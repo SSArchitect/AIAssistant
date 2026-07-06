@@ -1,6 +1,7 @@
 from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
 import inspect
@@ -61,6 +62,8 @@ MAX_MODEL_ROUNDS = 12
 MAX_TOOL_ROUNDS = MAX_MODEL_ROUNDS
 MAX_TOOL_CALLS = 48
 MAX_FAILED_TOOL_CALLS = 12
+PARALLEL_READ_ONLY_TOOL_NAMES = {"search", "open_url"}
+MAX_PARALLEL_READ_ONLY_TOOL_CALLS = 4
 MODEL_RETRY_MAX_ATTEMPTS = 3
 MODEL_RETRY_DELAYS_SECONDS = (0.5, 1.5)
 CONVERSATION_COMPACTION_THRESHOLD = 40
@@ -122,6 +125,16 @@ def _trace_status_suffix(status: str) -> str:
     if normalized in {"partial", "timed_out", "timeout"}:
         return "partial"
     return "completed"
+
+
+@dataclass
+class _AgentLoopToolExecution:
+    tool_call: ToolCall
+    tool_arguments: dict[str, Any]
+    result_text: str
+    status: str
+    duration_ms: int
+    result_data: Any = None
 
 
 class AgentEngine:
@@ -3071,6 +3084,291 @@ class AgentEngine:
             data=payload,
             display_text=response.response[:2000],
         )
+
+    @staticmethod
+    def _skill_result_json(result: SkillResult) -> str:
+        return json.dumps(
+            {
+                "success": result.success,
+                "data": result.data,
+                "display_text": result.display_text,
+                "error": result.error,
+            },
+            ensure_ascii=False,
+        )
+
+    def _agent_loop_tool_workflow_payload(
+        self,
+        *,
+        agent_loop_enabled: bool,
+        workflow_name: str,
+        workflow_node: str,
+        workflow_source: str,
+        legacy_workflow: str,
+    ) -> dict[str, Any]:
+        if not agent_loop_enabled:
+            return {}
+        return {
+            "workflow": workflow_name,
+            "workflow_node": workflow_node,
+            "workflow_source": workflow_source,
+            "legacy_workflow": legacy_workflow,
+        }
+
+    def _agent_loop_tool_delegate_context(
+        self,
+        *,
+        agent_loop_enabled: bool,
+        workflow_name: str,
+        workflow_node: str,
+        workflow_node_started: float | None,
+        workflow_started: float | None,
+        workflow_source: str,
+        legacy_workflow: str,
+        round_index: int,
+    ) -> dict[str, Any] | None:
+        if not agent_loop_enabled:
+            return None
+        return {
+            "workflow": workflow_name,
+            "node": workflow_node,
+            "workflow_node": workflow_node,
+            "node_started": workflow_node_started,
+            "workflow_started": workflow_started,
+            "round": round_index + 1,
+            "result": "agent_tool_result",
+            "workflow_source": workflow_source,
+            "legacy_workflow": legacy_workflow,
+        }
+
+    @staticmethod
+    def _parallel_read_only_tool_batch(
+        tool_calls: list[ToolCall],
+        start_index: int,
+    ) -> list[ToolCall]:
+        first = tool_calls[start_index]
+        if first.name not in PARALLEL_READ_ONLY_TOOL_NAMES:
+            return [first]
+        batch: list[ToolCall] = []
+        for tc in tool_calls[start_index:]:
+            if tc.name not in PARALLEL_READ_ONLY_TOOL_NAMES:
+                break
+            if len(batch) >= MAX_PARALLEL_READ_ONLY_TOOL_CALLS:
+                break
+            batch.append(tc)
+        return batch or [first]
+
+    async def _execute_agent_loop_tool_call(
+        self,
+        *,
+        request: ChatRequest,
+        role_context: MemoryContext,
+        run_id: str,
+        tc: ToolCall,
+        allowed_tool_names: set[str],
+        agent_loop_enabled: bool,
+        workflow_name: str,
+        workflow_node: str,
+        workflow_node_started: float | None,
+        workflow_started: float | None,
+        workflow_source: str,
+        legacy_workflow: str,
+        round_index: int,
+    ) -> _AgentLoopToolExecution:
+        tool_arguments = self._tool_arguments_for_execution(request, tc.name, tc.arguments)
+        tool_started = perf_counter()
+        workflow_payload = self._agent_loop_tool_workflow_payload(
+            agent_loop_enabled=agent_loop_enabled,
+            workflow_name=workflow_name,
+            workflow_node=workflow_node,
+            workflow_source=workflow_source,
+            legacy_workflow=legacy_workflow,
+        )
+        tool_started_payload = {"name": tc.name, "arguments": tc.arguments}
+        if tc.name in DRIVE_TOOL_NAMES:
+            tool_started_payload["engine_context"] = {"user_id": self._user_id(request)}
+        tool_started_payload.update(workflow_payload)
+        self.trace_store.append_event(
+            run_id,
+            type="tool.started",
+            status="running",
+            title=f"Tool {tc.name}",
+            step_id=tc.id,
+            payload=tool_started_payload,
+        )
+
+        skill = self.skill_registry.get(tc.name)
+        result_text = ""
+        status = "error"
+        result_data: Any = None
+        if tc.name not in allowed_tool_names:
+            result_text = json.dumps({"error": f"Tool disabled or unavailable: {tc.name}"})
+        elif tc.name in AGENT_TOOL_IDS:
+            try:
+                result = await self._execute_agent_tool_as_result(
+                    request=request,
+                    role_context=role_context,
+                    run_id=run_id,
+                    tool_name=tc.name,
+                    tool_call_id=tc.id,
+                    arguments=tool_arguments,
+                    tool_started=tool_started,
+                    workflow_context=self._agent_loop_tool_delegate_context(
+                        agent_loop_enabled=agent_loop_enabled,
+                        workflow_name=workflow_name,
+                        workflow_node=workflow_node,
+                        workflow_node_started=workflow_node_started,
+                        workflow_started=workflow_started,
+                        workflow_source=workflow_source,
+                        legacy_workflow=legacy_workflow,
+                        round_index=round_index,
+                    ),
+                )
+                result_data = result.data
+                result_text = self._skill_result_json(result)
+                status = "completed" if result.success else "error"
+            except Exception as e:
+                logger.exception(f"Agent tool {tc.name} execution failed")
+                result_text = json.dumps({"error": str(e)}, ensure_ascii=False)
+        elif skill is None:
+            result_text = json.dumps({"error": f"Unknown skill: {tc.name}"})
+        else:
+            try:
+                result = await skill.execute(**tool_arguments)
+                result_data = result.data
+                result_text = self._skill_result_json(result)
+                status = "completed" if result.success else "error"
+            except Exception as e:
+                logger.exception(f"Skill {tc.name} execution failed")
+                result_text = json.dumps({"error": str(e)})
+
+        return _AgentLoopToolExecution(
+            tool_call=tc,
+            tool_arguments=tool_arguments,
+            result_text=result_text,
+            status=status,
+            result_data=result_data,
+            duration_ms=int((perf_counter() - tool_started) * 1000),
+        )
+
+    def _finalize_agent_loop_tool_execution(
+        self,
+        *,
+        run_id: str,
+        execution: _AgentLoopToolExecution,
+        agent_loop_enabled: bool,
+        workflow_name: str,
+        workflow_node: str,
+        workflow_source: str,
+        legacy_workflow: str,
+        skills_used: list[str],
+        citations: list[Citation],
+        citation_urls: set[str],
+        artifacts: list[ChatArtifact],
+        plan: list[SkillCallInfo],
+        messages: list[LLMMessage],
+        all_new_messages: list[LLMMessage],
+    ) -> None:
+        tc = execution.tool_call
+        workflow_payload = self._agent_loop_tool_workflow_payload(
+            agent_loop_enabled=agent_loop_enabled,
+            workflow_name=workflow_name,
+            workflow_node=workflow_node,
+            workflow_source=workflow_source,
+            legacy_workflow=legacy_workflow,
+        )
+
+        if execution.status == "completed":
+            if tc.name in AGENT_TOOL_IDS:
+                self._merge_agent_tool_payload(
+                    payload=execution.result_data,
+                    skills_used=skills_used,
+                    citations=citations,
+                    citation_urls=citation_urls,
+                    artifacts=artifacts,
+                )
+            else:
+                skills_used.append(tc.name)
+                self._append_unique_artifact(
+                    artifacts,
+                    self._drive_artifact_from_tool_result(tc.name, execution.result_data),
+                )
+                if tc.name == "search":
+                    self._append_search_trace_nodes(
+                        run_id,
+                        tool_call_id=tc.id,
+                        result_data=execution.result_data,
+                        workflow_context=workflow_payload or None,
+                    )
+                    new_citations = self._collect_search_citations(
+                        result_data=execution.result_data,
+                        citations=citations,
+                        citation_urls=citation_urls,
+                    )
+                    if new_citations:
+                        self.trace_store.append_event(
+                            run_id,
+                            type="citations.collected",
+                            status="completed",
+                            title="Search citations collected",
+                            step_id=tc.id,
+                            payload={
+                                "count": len(new_citations),
+                                "total": len(citations),
+                                "urls": [citation.url for citation in new_citations],
+                            },
+                        )
+                elif tc.name == "open_url":
+                    citation = self._collect_open_url_citation(
+                        result_data=execution.result_data,
+                        citations=citations,
+                        citation_urls=citation_urls,
+                    )
+                    if citation:
+                        self.trace_store.append_event(
+                            run_id,
+                            type="citations.collected",
+                            status="completed",
+                            title="Open URL citation collected",
+                            step_id=tc.id,
+                            payload={
+                                "count": 1,
+                                "total": len(citations),
+                                "urls": [citation.url],
+                            },
+                        )
+
+        tool_completed_payload = {
+            "name": tc.name,
+            "arguments": tc.arguments,
+            "result_preview": execution.result_text[:500],
+        }
+        tool_completed_payload.update(workflow_payload)
+        self.trace_store.append_event(
+            run_id,
+            type="tool.completed" if execution.status == "completed" else "tool.failed",
+            status=execution.status,
+            title=f"Tool {tc.name} {execution.status}",
+            step_id=tc.id,
+            payload=tool_completed_payload,
+            duration_ms=execution.duration_ms,
+        )
+
+        plan.append(
+            SkillCallInfo(
+                skill=tc.name,
+                action=str(tc.arguments),
+                status=execution.status,
+                result_summary=execution.result_text[:200],
+            )
+        )
+        tool_msg = LLMMessage(
+            role="tool",
+            content=execution.result_text,
+            tool_call_id=tc.id,
+        )
+        messages.append(tool_msg)
+        all_new_messages.append(tool_msg)
 
     async def _process_target_agent(
         self,
@@ -11270,203 +11568,71 @@ class AgentEngine:
             messages.append(assistant_msg)
             all_new_messages.append(assistant_msg)
 
-            # Execute each tool call
-            for tc in response.tool_calls:
-                tool_arguments = self._tool_arguments_for_execution(request, tc.name, tc.arguments)
-                tool_started = perf_counter()
-                tool_started_payload = {"name": tc.name, "arguments": tc.arguments}
-                if tc.name in DRIVE_TOOL_NAMES:
-                    tool_started_payload["engine_context"] = {"user_id": self._user_id(request)}
-                if agent_loop_enabled:
-                    tool_started_payload.update(
-                        {
-                            "workflow": workflow_name,
-                            "workflow_node": workflow_node,
-                            "workflow_source": workflow_source,
-                            "legacy_workflow": legacy_workflow,
-                        }
+            # Execute read-only web tools in bounded batches, then merge results in call order.
+            tool_call_index = 0
+            while tool_call_index < len(response.tool_calls):
+                batch = self._parallel_read_only_tool_batch(response.tool_calls, tool_call_index)
+                tool_call_index += len(batch)
+                if len(batch) > 1:
+                    executions = await asyncio.gather(
+                        *[
+                            self._execute_agent_loop_tool_call(
+                                request=request,
+                                role_context=role_context,
+                                run_id=run.run_id,
+                                tc=tc,
+                                allowed_tool_names=allowed_tool_names,
+                                agent_loop_enabled=agent_loop_enabled,
+                                workflow_name=workflow_name,
+                                workflow_node=workflow_node,
+                                workflow_node_started=workflow_node_started,
+                                workflow_started=workflow_started,
+                                workflow_source=workflow_source,
+                                legacy_workflow=legacy_workflow,
+                                round_index=round_index,
+                            )
+                            for tc in batch
+                        ]
                     )
-                self.trace_store.append_event(
-                    run.run_id,
-                    type="tool.started",
-                    status="running",
-                    title=f"Tool {tc.name}",
-                    step_id=tc.id,
-                    payload=tool_started_payload,
-                )
-                skill = self.skill_registry.get(tc.name)
-                if tc.name not in allowed_tool_names:
-                    result_text = json.dumps({"error": f"Tool disabled or unavailable: {tc.name}"})
-                    status = "error"
-                elif tc.name in AGENT_TOOL_IDS:
-                    try:
-                        result = await self._execute_agent_tool_as_result(
+                else:
+                    executions = [
+                        await self._execute_agent_loop_tool_call(
                             request=request,
                             role_context=role_context,
                             run_id=run.run_id,
-                            tool_name=tc.name,
-                            tool_call_id=tc.id,
-                            arguments=tool_arguments,
-                            tool_started=tool_started,
-                            workflow_context=(
-                                {
-                                    "workflow": workflow_name,
-                                    "node": workflow_node,
-                                    "workflow_node": workflow_node,
-                                    "node_started": workflow_node_started,
-                                    "workflow_started": workflow_started,
-                                    "round": round_index + 1,
-                                    "result": "agent_tool_result",
-                                    "workflow_source": workflow_source,
-                                    "legacy_workflow": legacy_workflow,
-                                }
-                                if agent_loop_enabled
-                                else None
-                            ),
+                            tc=batch[0],
+                            allowed_tool_names=allowed_tool_names,
+                            agent_loop_enabled=agent_loop_enabled,
+                            workflow_name=workflow_name,
+                            workflow_node=workflow_node,
+                            workflow_node_started=workflow_node_started,
+                            workflow_started=workflow_started,
+                            workflow_source=workflow_source,
+                            legacy_workflow=legacy_workflow,
+                            round_index=round_index,
                         )
-                        result_text = json.dumps(
-                            {
-                                "success": result.success,
-                                "data": result.data,
-                                "display_text": result.display_text,
-                                "error": result.error,
-                            },
-                            ensure_ascii=False,
-                        )
-                        status = "completed" if result.success else "error"
-                        if result.success:
-                            self._merge_agent_tool_payload(
-                                payload=result.data,
-                                skills_used=skills_used,
-                                citations=citations,
-                                citation_urls=citation_urls,
-                                artifacts=artifacts,
-                            )
-                    except Exception as e:
-                        logger.exception(f"Agent tool {tc.name} execution failed")
-                        result_text = json.dumps({"error": str(e)}, ensure_ascii=False)
-                        status = "error"
-                elif skill is None:
-                    result_text = json.dumps({"error": f"Unknown skill: {tc.name}"})
-                    status = "error"
-                else:
-                    try:
-                        result = await skill.execute(**tool_arguments)
-                        result_text = json.dumps(
-                            {
-                                "success": result.success,
-                                "data": result.data,
-                                "display_text": result.display_text,
-                                "error": result.error,
-                            },
-                            ensure_ascii=False,
-                        )
-                        status = "completed" if result.success else "error"
-                        if result.success:
-                            skills_used.append(tc.name)
-                            self._append_unique_artifact(
-                                artifacts,
-                                self._drive_artifact_from_tool_result(tc.name, result.data),
-                            )
-                            if tc.name == "search":
-                                self._append_search_trace_nodes(
-                                    run.run_id,
-                                    tool_call_id=tc.id,
-                                    result_data=result.data,
-                                    workflow_context=(
-                                        {
-                                            "workflow": workflow_name,
-                                            "workflow_node": workflow_node,
-                                            "workflow_source": workflow_source,
-                                            "legacy_workflow": legacy_workflow,
-                                        }
-                                        if agent_loop_enabled
-                                        else None
-                                    ),
-                                )
-                                new_citations = self._collect_search_citations(
-                                    result_data=result.data,
-                                    citations=citations,
-                                    citation_urls=citation_urls,
-                                )
-                                if new_citations:
-                                    self.trace_store.append_event(
-                                        run.run_id,
-                                        type="citations.collected",
-                                        status="completed",
-                                        title="Search citations collected",
-                                        step_id=tc.id,
-                                        payload={
-                                            "count": len(new_citations),
-                                            "total": len(citations),
-                                            "urls": [citation.url for citation in new_citations],
-                                        },
-                                    )
-                            elif tc.name == "open_url":
-                                citation = self._collect_open_url_citation(
-                                    result_data=result.data,
-                                    citations=citations,
-                                    citation_urls=citation_urls,
-                                )
-                                if citation:
-                                    self.trace_store.append_event(
-                                        run.run_id,
-                                        type="citations.collected",
-                                        status="completed",
-                                        title="Open URL citation collected",
-                                        step_id=tc.id,
-                                        payload={
-                                            "count": 1,
-                                            "total": len(citations),
-                                            "urls": [citation.url],
-                                        },
-                                    )
-                    except Exception as e:
-                        logger.exception(f"Skill {tc.name} execution failed")
-                        result_text = json.dumps({"error": str(e)})
-                        status = "error"
+                    ]
 
-                tool_call_count += 1
-                if status != "completed":
-                    failed_tool_call_count += 1
-
-                tool_duration_ms = int((perf_counter() - tool_started) * 1000)
-                tool_completed_payload = {
-                    "name": tc.name,
-                    "arguments": tc.arguments,
-                    "result_preview": result_text[:500],
-                }
-                if agent_loop_enabled:
-                    tool_completed_payload.update(
-                        {
-                            "workflow": workflow_name,
-                            "workflow_node": workflow_node,
-                            "workflow_source": workflow_source,
-                            "legacy_workflow": legacy_workflow,
-                        }
+                for execution in executions:
+                    tool_call_count += 1
+                    if execution.status != "completed":
+                        failed_tool_call_count += 1
+                    self._finalize_agent_loop_tool_execution(
+                        run_id=run.run_id,
+                        execution=execution,
+                        agent_loop_enabled=agent_loop_enabled,
+                        workflow_name=workflow_name,
+                        workflow_node=workflow_node,
+                        workflow_source=workflow_source,
+                        legacy_workflow=legacy_workflow,
+                        skills_used=skills_used,
+                        citations=citations,
+                        citation_urls=citation_urls,
+                        artifacts=artifacts,
+                        plan=plan,
+                        messages=messages,
+                        all_new_messages=all_new_messages,
                     )
-                self.trace_store.append_event(
-                    run.run_id,
-                    type="tool.completed" if status == "completed" else "tool.failed",
-                    status=status,
-                    title=f"Tool {tc.name} {status}",
-                    step_id=tc.id,
-                    payload=tool_completed_payload,
-                    duration_ms=tool_duration_ms,
-                )
-
-                plan.append(SkillCallInfo(
-                    skill=tc.name,
-                    action=str(tc.arguments),
-                    status=status,
-                    result_summary=result_text[:200],
-                ))
-
-                tool_msg = LLMMessage(
-                    role="tool", content=result_text, tool_call_id=tc.id
-                )
-                messages.append(tool_msg)
-                all_new_messages.append(tool_msg)
             if failed_tool_call_count >= MAX_FAILED_TOOL_CALLS:
                 budget_exhausted = True
                 budget_reason = "max_failed_tool_calls_reached"

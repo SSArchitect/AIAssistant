@@ -1341,6 +1341,110 @@ async def test_multiple_tool_calls(engine):
 
 
 @pytest.mark.asyncio
+async def test_read_only_tool_calls_run_in_parallel_and_preserve_message_order(engine):
+    active = 0
+    max_active = 0
+    completed: list[str] = []
+
+    class FakeReadOnlySkill(Skill):
+        def __init__(self, name: str, delay: float):
+            self.name = name
+            self.delay = delay
+
+        def metadata(self) -> SkillMetadata:
+            parameter_name = "url" if self.name == "open_url" else "query"
+            return SkillMetadata(
+                name=self.name,
+                description=f"Fake {self.name}",
+                parameters=[
+                    SkillParameter(
+                        name=parameter_name,
+                        type="string",
+                        description=parameter_name,
+                        required=True,
+                    )
+                ],
+            )
+
+        async def execute(self, **kwargs) -> SkillResult:
+            nonlocal active, max_active
+            active += 1
+            max_active = max(max_active, active)
+            try:
+                await asyncio.sleep(self.delay)
+                completed.append(self.name)
+                if self.name == "search":
+                    return SkillResult(
+                        success=True,
+                        data={
+                            "query": kwargs.get("query"),
+                            "results": [
+                                {
+                                    "title": "Search result",
+                                    "url": "https://example.com/search",
+                                    "snippet": "Search snippet.",
+                                    "source": "fake-search",
+                                }
+                            ],
+                        },
+                        display_text="search result",
+                    )
+                return SkillResult(
+                    success=True,
+                    data={
+                        "page": {
+                            "url": kwargs.get("url"),
+                            "final_url": kwargs.get("url"),
+                            "title": "Opened page",
+                            "description": "Opened description.",
+                            "content": "Opened content.",
+                            "content_type": "text/html",
+                            "status_code": 200,
+                        }
+                    },
+                    display_text="opened page",
+                )
+            finally:
+                active -= 1
+
+    engine.skill_registry.register(FakeReadOnlySkill("search", 0.05))
+    engine.skill_registry.register(FakeReadOnlySkill("open_url", 0.01))
+    tool_response = LLMResponse(
+        content="",
+        tool_calls=[
+            ToolCall(id="call_search", name="search", arguments={"query": "parallel search"}),
+            ToolCall(id="call_open", name="open_url", arguments={"url": "https://example.com/page"}),
+        ],
+        model="test-model",
+        usage={},
+    )
+    final_response = LLMResponse(
+        content="Parallel tools done.",
+        tool_calls=[],
+        model="test-model",
+        usage={},
+    )
+
+    with patch.object(engine, "_get_provider") as mock_provider:
+        provider = AsyncMock()
+        provider.chat = AsyncMock(side_effect=[tool_response, final_response])
+        mock_provider.return_value = provider
+
+        result = await engine.process(
+            ChatRequest(conversation_id="conv-parallel-read-only-tools", message="查两个资料")
+        )
+
+    assert max_active == 2
+    assert completed == ["open_url", "search"]
+    assert result.skills_used == ["search", "open_url"]
+    assert [item.skill for item in result.plan] == ["search", "open_url"]
+
+    final_messages = provider.chat.await_args_list[1].args[0]
+    tool_messages = [message for message in final_messages if message.role == "tool"]
+    assert [message.tool_call_id for message in tool_messages] == ["call_search", "call_open"]
+
+
+@pytest.mark.asyncio
 async def test_super_chat_agent_tool_returns_json_and_continues(engine):
     """Agent tools should return JSON into the Super Chat loop like ordinary tools."""
     tool_response = LLMResponse(

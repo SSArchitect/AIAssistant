@@ -1,4 +1,4 @@
-.PHONY: dev start stop restart status logs build clean install test test-py test-go eval-search eval-search-compare eval-search-live
+.PHONY: dev start stop restart status logs build clean install test test-py test-go collect-search-evals eval-search eval-search-compare eval-search-trace eval-search-live
 
 # ===== Production =====
 
@@ -64,9 +64,17 @@ test-go:
 eval-search:
 	python3 scripts/eval_search.py --mode offline
 
+# Collect trace-derived cases and query bank from local/server traces
+collect-search-evals:
+	python3 scripts/collect_search_eval_cases.py
+
 # Compare offline rewrite against original-query-only baseline
 eval-search-compare:
 	python3 scripts/eval_search.py --mode offline --compare-original
+
+# Run broader trace-derived offline search quality evals
+eval-search-trace:
+	python3 scripts/eval_search.py --cases evals/search/trace_cases.json --mode offline
 
 # Run live search quality evals against configured providers
 eval-search-live:

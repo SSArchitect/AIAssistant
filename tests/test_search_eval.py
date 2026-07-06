@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import pytest
@@ -12,6 +13,8 @@ from agent.search.evaluation import (
 
 
 SEARCH_EVAL_CASES = Path(__file__).resolve().parents[1] / "evals" / "search" / "cases.json"
+TRACE_SEARCH_EVAL_CASES = Path(__file__).resolve().parents[1] / "evals" / "search" / "trace_cases.json"
+SEARCH_QUERY_BANK = Path(__file__).resolve().parents[1] / "evals" / "search" / "query_bank.json"
 
 
 def test_search_eval_matcher_supports_text_and_field_constraints():
@@ -36,6 +39,16 @@ def test_search_eval_matcher_supports_text_and_field_constraints():
             "all_text_contains": ["Euro Truck Simulator 2", "exchange rate"],
         },
     )
+
+
+def test_trace_search_eval_cases_and_query_bank_are_loadable():
+    cases = load_search_eval_cases(TRACE_SEARCH_EVAL_CASES)
+    query_bank = json.loads(SEARCH_QUERY_BANK.read_text(encoding="utf-8"))
+
+    assert len(cases) >= 1
+    assert query_bank["query_count"] >= len(cases)
+    assert all(case.get("trace", {}).get("run_id") for case in cases)
+    assert all(case.get("fixture_results") for case in cases)
 
 
 def test_search_eval_scores_recall_precision_mrr_and_bad_matches():
