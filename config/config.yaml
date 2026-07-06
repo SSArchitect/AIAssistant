@@ -50,6 +50,9 @@ search:
     provider_limit_multiplier: 2
     recall_max_queries: 2
     recall_timeout_seconds: 10
+    rewrite_enabled: true
+    rewrite_max_queries: 4
+    rewrite_timeout_seconds: 12
     rerank_min_score: 0.5
   minimax:
     enabled: true

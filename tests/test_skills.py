@@ -23,6 +23,7 @@ from agent.search import (
     BingRSSSearchProvider,
     DuckDuckGoSearchProvider,
     HTTPSearchProvider,
+    LLMSearchQueryRewriter,
     MiniMaxMCPSearchProvider,
     SearchResult,
     SearchService,
@@ -874,10 +875,132 @@ class TestSearchSkill:
         assert "Dunlop 01 02 清洁保养剂" in prompt
         assert "Dunlop Formula 01 Fingerboard Cleaner" in prompt
         assert '"retrieval_query": "Dunlop Formula 01 Fingerboard Cleaner"' in prompt
+        assert "显式约束" in prompt
+        assert "文档形态" in prompt
         assert metadata["query_context"]["recall_queries"] == [
             "Dunlop 01 02 清洁保养剂",
             "Dunlop Formula 01 Fingerboard Cleaner",
         ]
+
+    @pytest.mark.asyncio
+    async def test_llm_query_rewriter_uses_model_knowledge_and_keeps_lexical_fallback(self):
+        from agent.llm.base import LLMResponse
+        from agent.search.recall import build_query_rewrite_plan
+
+        class Provider:
+            def __init__(self):
+                self.messages = []
+
+            async def chat(self, messages, tools=None, temperature=0.7, cache=None):
+                self.messages = messages
+                return LLMResponse(
+                    content=json.dumps(
+                        {
+                            "queries": [
+                                "ETS2 DLC complete list Steam",
+                                "欧洲卡车模拟2 DLC 列表 最新",
+                                "Euro Truck Simulator 2 downloadable content wiki",
+                            ],
+                            "reason": "add common acronym, Chinese title, and content synonym",
+                        }
+                    ),
+                    model="fake-model",
+                    usage={"input": 11, "output": 6},
+                )
+
+        provider = Provider()
+        rewriter = LLMSearchQueryRewriter(
+            provider,
+            name="llm:fake",
+            max_queries=4,
+        )
+        lexical_plan = build_query_rewrite_plan(
+            "Euro Truck Simulator 2 DLC list latest",
+            max_queries=4,
+        )
+
+        plan = await rewriter.rewrite(
+            "Euro Truck Simulator 2 DLC list latest",
+            max_queries=4,
+            lexical_plan=lexical_plan,
+        )
+
+        prompt = "\n".join(str(message.content) for message in provider.messages)
+        assert "可以使用模型的通用知识" in prompt
+        assert "同时出现中文 query 和英文 query" in prompt
+        assert "language_policy" in prompt
+        assert "不要把未被用户表达支持" in prompt
+        assert plan["strategy"] == "llm_semantic_rewrite"
+        assert plan["queries"][0] == lexical_plan["queries"][0]
+        assert plan["queries"][1] == "欧洲卡车模拟2 DLC 列表 最新"
+        assert "ETS2 DLC complete list Steam" in plan["queries"]
+        assert "Euro Truck Simulator 2 downloadable content wiki" in plan["queries"]
+        assert plan["lexical_queries"] == lexical_plan["queries"]
+        assert plan["language_policy"]["original_language"] == "latin"
+        assert plan["model"] == "fake-model"
+
+    @pytest.mark.asyncio
+    async def test_search_service_uses_llm_query_rewriter_variants_for_recall(self):
+        original_query = "Dify RAG Agent 工程实践 评测 benchmark"
+        rewrite_query = "Dify RAG evaluation benchmark engineering practice"
+
+        class Rewriter:
+            name = "fake-rewriter"
+            max_queries = 2
+
+            async def rewrite(self, query, *, max_queries, lexical_plan=None):
+                return {
+                    "node": "query_rewrite",
+                    "status": "completed",
+                    "policy_id": "fake",
+                    "policy": "fake policy",
+                    "strategy": "llm_semantic_rewrite",
+                    "original_query": query,
+                    "queries": [query, rewrite_query],
+                    "lexical_queries": (lexical_plan or {}).get("queries", []),
+                    "provider": self.name,
+                }
+
+        class Provider:
+            name = "web"
+            recall_query_limit = 2
+
+            def __init__(self):
+                self.calls = []
+
+            async def search(self, query, *, limit=5):
+                self.calls.append(query)
+                if query == rewrite_query:
+                    return [
+                        SearchResult(
+                            title="Dify RAG evaluation benchmark practice",
+                            snippet="Engineering practice for evaluating Dify RAG agent workflows.",
+                            url="https://example.com/dify-rag-eval",
+                            source=self.name,
+                        )
+                    ]
+                return []
+
+        provider = Provider()
+        service = SearchService(
+            providers=[provider],
+            query_rewriter=Rewriter(),
+            retry_attempts=1,
+            retry_delay=0,
+            recall_max_queries=2,
+        )
+
+        results = await service.search(original_query, limit=1)
+
+        assert provider.calls == [original_query, rewrite_query]
+        assert [result.title for result in results] == [
+            "Dify RAG evaluation benchmark practice"
+        ]
+        assert results[0].metadata["retrieval_query"] == rewrite_query
+        assert service.last_query_rewrite["strategy"] == "llm_semantic_rewrite"
+        rewrite_node = service.last_trace_nodes[0]
+        assert rewrite_node["provider"] == "fake-rewriter"
+        assert rewrite_node["queries"] == [original_query, rewrite_query]
 
     @pytest.mark.asyncio
     async def test_search_service_preserves_specialized_market_query_results(self):
@@ -2009,6 +2132,10 @@ class TestSearchSkill:
             "search.provider_limit_multiplier",
             "search.recall.max_queries",
             "search.recall.timeout_seconds",
+            "search.rewrite.enabled",
+            "search.rewrite.max_queries",
+            "search.rewrite.provider",
+            "search.rewrite.timeout_seconds",
             "search.rerank.enabled",
             "search.rerank.max_candidates",
             "search.rerank.min_score",
@@ -2028,6 +2155,10 @@ class TestSearchSkill:
                     "search.provider_limit_multiplier": "3",
                     "search.recall.max_queries": "5",
                     "search.recall.timeout_seconds": "12.5",
+                    "search.rewrite.enabled": "false",
+                    "search.rewrite.max_queries": "6",
+                    "search.rewrite.provider": "minimax",
+                    "search.rewrite.timeout_seconds": "9",
                     "search.rerank.enabled": "false",
                     "search.rerank.max_candidates": "7",
                     "search.rerank.min_score": "0.42",
@@ -2044,6 +2175,7 @@ class TestSearchSkill:
             assert service._provider_limit_multiplier == 3
             assert service._recall_max_queries == 5
             assert service._recall_timeout_seconds == 12.5
+            assert service._query_rewriter is None
             assert service._reranker is None
         finally:
             runtime_config.update(previous)

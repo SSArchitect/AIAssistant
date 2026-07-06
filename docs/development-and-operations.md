@@ -290,9 +290,18 @@ Search 已作为一个内置 skill 接入：
 - `search.min_provider_coverage`：通用 web 检索至少等待多少个 provider 完成后才允许提前收敛，默认 `2`；设为 `1` 可恢复更偏速度的首个相关结果策略。
 - `search.provider_limit_multiplier`：每个 provider 的候选召回倍数，默认 `2`，最终仍按调用方 `limit` 截断。
 - `search.recall.max_queries`：单个 provider 最多使用多少个 query variant 做召回，默认 `2`；HTTP/本地/MiniMax 源默认只请求一次，DuckDuckGo/Bing fallback 会使用原 query 加一个降噪关键词 query。
+- `search.rewrite.enabled`：启用 LLM query rewrite，默认 `true`；失败会退回词法 rewrite。
+- `search.rewrite.provider`：rewrite 使用的 LLM provider，默认使用 `llm.default_provider`。
+- `search.rewrite.max_queries`：LLM rewrite 最多生成多少条候选 query，默认 `4`；实际召回仍受 `search.recall.max_queries` 和 provider 的 `recall_query_limit` 限制。
+- `search.rewrite.timeout_seconds`：LLM rewrite 超时时间，默认 `12` 秒。
+- `search.rerank.enabled`：启用 LLM rerank，默认 `true`；失败会退回 BM25 ranking。
+- `search.rerank.provider`：rerank 使用的 LLM provider，默认使用 `llm.default_provider`。
+- `search.rerank.max_candidates`：送入 LLM rerank 的最大候选数，默认 `10`。
+- `search.rerank.timeout_seconds`：LLM rerank 超时时间，默认 `20` 秒。
+- `search.rerank.min_score`：LLM rerank 保留候选的最低分，默认 `0.5`。
 - `search.web.enabled`：是否启用 DuckDuckGo HTML fallback，默认 `true`。
 
-SearchService 会先按 provider 能力生成有限的 query variants 做召回，再汇总多个 provider 的候选，通过 `agent.search.ranking` 做 BM25 相关性排序、低相关过滤和来源多样性重排；结果仍按调用方 `limit` 截断。
+SearchService 会先生成词法 query variants；启用 LLM rewrite 时，会在保留词法兜底的基础上使用模型通用知识生成同义词、别名、缩写/全称、跨语言和型号拆分等多 query 扩召。LLM rewrite 会尽量同时覆盖中文和英文 query，并在 query 数有限时优先保留互补语种，避免中文搜索引擎只拿英文 query 召回。之后汇总多个 provider 的候选，通过 `agent.search.ranking` 做 BM25 相关性排序、低相关过滤和来源多样性重排，再由 LLM rerank 按原始 query 的实体、限定词、任务意图和文档形态做最终筛选；结果仍按调用方 `limit` 截断。
 
 `search` Skill 可通过 `open_results=true` 打开前几条搜索结果并把网页正文写入 `metadata.page`；已知 URL 也可直接调用 `open_url` Skill 读取公开 HTTP/HTTPS 页面正文。
 

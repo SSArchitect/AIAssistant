@@ -40,6 +40,10 @@ SEARCH_MIN_PROVIDER_COVERAGE = 2
 SEARCH_RANK_MIN_SCORE = DEFAULT_MIN_RANK_SCORE
 SEARCH_RECALL_MAX_QUERIES = DEFAULT_RECALL_MAX_QUERIES
 SEARCH_RECALL_QUERY_TIMEOUT_SECONDS = 10.0
+SEARCH_LLM_REWRITE_ENABLED = True
+SEARCH_LLM_REWRITE_MAX_QUERIES = 4
+SEARCH_LLM_REWRITE_TIMEOUT_SECONDS = 12.0
+SEARCH_LLM_REWRITE_MAX_QUERY_CHARS = 180
 SEARCH_LLM_RERANK_ENABLED = True
 SEARCH_LLM_RERANK_MAX_CANDIDATES = 10
 SEARCH_LLM_RERANK_TIMEOUT_SECONDS = 20.0
@@ -122,6 +126,20 @@ class SearchProvider(Protocol):
         ...
 
 
+class SearchQueryRewriter(Protocol):
+    name: str
+    max_queries: int
+
+    async def rewrite(
+        self,
+        query: str,
+        *,
+        max_queries: int,
+        lexical_plan: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        ...
+
+
 class SearchReranker(Protocol):
     name: str
     max_candidates: int
@@ -135,6 +153,122 @@ class SearchReranker(Protocol):
         query_context: dict[str, Any] | None = None,
     ) -> tuple[list[SearchResult], dict[str, Any]]:
         ...
+
+
+class LLMSearchQueryRewriter:
+    """Use an LLM to produce recall-oriented query variants with lexical fallback."""
+
+    def __init__(
+        self,
+        provider: Any,
+        *,
+        name: str,
+        max_queries: int = SEARCH_LLM_REWRITE_MAX_QUERIES,
+        timeout_seconds: float = SEARCH_LLM_REWRITE_TIMEOUT_SECONDS,
+    ):
+        self._provider = provider
+        self.name = name
+        self.max_queries = max(1, min(max_queries, SEARCH_PROVIDER_LIMIT_MAX))
+        self._timeout_seconds = max(0.1, timeout_seconds)
+
+    async def rewrite(
+        self,
+        query: str,
+        *,
+        max_queries: int,
+        lexical_plan: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        from agent.llm.base import LLMMessage
+
+        max_queries = max(1, min(max_queries, self.max_queries, SEARCH_PROVIDER_LIMIT_MAX))
+        lexical_plan = lexical_plan or build_query_rewrite_plan(
+            query,
+            max_queries=max_queries,
+        )
+        original_query = str(lexical_plan.get("original_query") or query or "").strip()
+        lexical_queries = _sanitize_rewrite_queries(
+            lexical_plan.get("queries"),
+            max_queries=SEARCH_PROVIDER_LIMIT_MAX,
+        )
+        query_context_payload = {
+            "original_query": original_query,
+            "lexical_strategy": lexical_plan.get("strategy") or "",
+            "lexical_queries": lexical_queries,
+            "max_queries": max_queries,
+            "language_policy": {
+                "target": "尽量同时覆盖原始语言、简体中文和英文",
+                "reason": "搜索 provider 可能偏中文或偏英文，双语 query 可降低单语召回漏失",
+                "original_language": _query_language_bucket(original_query),
+            },
+        }
+        messages = [
+            LLMMessage(
+                role="system",
+                content=(
+                    "你是搜索召回 query rewrite 节点。目标是提高候选召回覆盖，不回答问题，"
+                    "不做最终相关性判断。可以使用模型的通用知识生成多种搜索 query："
+                    "同义词、常见中英文名、缩写/全称、产品型号拆分、专有名词规范写法、"
+                    "跨语言翻译，以及用户已表达的任务或文档形态词。必须忠于原始查询，保留关键实体、"
+                    "数字、版本、型号、品牌、标题、时间和限定条件；不要把未被用户表达支持的"
+                    "结论、类别、用途或唯一解释写进 query。需要做双语覆盖：当原始查询主要是英文时，"
+                    "至少给出一条忠实的简体中文 query；当原始查询主要是中文时，至少给出一条英文或"
+                    "中英混合 query；当原始查询已中英混合时，尽量保留专有名词并给出中文侧和英文侧"
+                    "不同召回角度。输出 query 要彼此有召回角度差异，适合直接交给通用搜索引擎。"
+                    "只返回严格 JSON。"
+                ),
+            ),
+            LLMMessage(
+                role="user",
+                content=(
+                    "原始查询与词法兜底 JSON：\n"
+                    f"{json.dumps(query_context_payload, ensure_ascii=False)}\n\n"
+                    "请返回这个精确结构：\n"
+                    '{"queries":["query 1","query 2"],"reason":"short reason"}\n'
+                    "要求：queries 最多使用 max_queries 条；优先给出能互补召回的短 query；"
+                    "可以包含原始查询或词法 query，但不要只机械重复；如果可以安全翻译，"
+                    "结果里要同时出现中文 query 和英文 query。"
+                ),
+            ),
+        ]
+
+        response = await asyncio.wait_for(
+            self._provider.chat(messages, temperature=0),
+            timeout=self._timeout_seconds,
+        )
+        payload = _json_object_from_text(response.content)
+        llm_queries = _sanitize_rewrite_queries(
+            payload.get("queries"),
+            max_queries=max_queries,
+        )
+        if not llm_queries:
+            raise ValueError("LLM rewrite response missing queries")
+
+        queries = _merge_rewrite_queries(
+            original_query=original_query,
+            lexical_queries=lexical_queries,
+            llm_queries=llm_queries,
+            max_queries=max_queries,
+        )
+        return {
+            "node": "query_rewrite",
+            "status": "completed",
+            "policy_id": "llm_recall_rewrite_with_lexical_fallback_v1",
+            "policy": (
+                "LLM query_rewrite 是召回阶段的多 query 扩召节点；允许使用模型通用知识做"
+                "同义词、别名、缩写/全称、跨语言和型号拆分，但必须保留原始意图和显式约束，"
+                "不得生成未被用户查询支持的事实判断或单一路径解释。"
+            ),
+            "strategy": "llm_semantic_rewrite",
+            "original_query": original_query,
+            "queries": queries,
+            "lexical_strategy": lexical_plan.get("strategy") or "",
+            "lexical_queries": lexical_queries,
+            "language_policy": query_context_payload["language_policy"],
+            "provider": self.name,
+            "model": response.model,
+            "usage": response.usage,
+            "reason": _truncate_text(payload.get("reason"), 240),
+        }
 
 
 class LLMSearchReranker:
@@ -212,10 +346,11 @@ class LLMSearchReranker:
                 role="system",
                 content=(
                     "你是搜索结果相关性评审节点。只根据候选结果对原始用户查询的回答价值排序，"
-                    "不要只看它是否匹配某条改写后的召回 query。需要惩罚词面巧合、泛泛页面、"
-                    "同词异义、垃圾结果，以及不能回答查询的页面。权威页面如果确实覆盖了查询中的"
-                    "关键实体，即使只回答部分问题，也可以有价值。对于只是共享表面词、类别或相关实体，"
-                    "但不能回答原始查询的邻近候选，要降低分数。只返回严格 JSON。"
+                    "不要只看它是否匹配某条改写后的召回 query。先在内部拆出原始查询的显式约束："
+                    "核心实体、专有名词、数字/版本/型号、限定词、时间、任务意图和文档形态；"
+                    "再判断候选能否满足这些约束。需要惩罚词面巧合、同词异义、泛泛页面、"
+                    "邻近类别、格式不匹配、垃圾结果，以及不能回答查询的页面。权威页面如果确实覆盖了"
+                    "核心实体和部分关键约束，即使只回答部分问题，也可以有价值。只返回严格 JSON。"
                 ),
             ),
             LLMMessage(
@@ -228,12 +363,14 @@ class LLMSearchReranker:
                     "请按这个精确结构返回 JSON：\n"
                     '{"results":[{"index":1,"score":0.0,"reason":"short reason"}]}\n'
                     "分数范围是 0.0 到 1.0。尽量评审每个候选。"
-                    "0.80 以上表示能直接回答原始查询且命中关键实体；"
-                    "0.50-0.79 表示有用的部分答案，或关于关键实体的权威来源；"
+                    "0.80 以上表示能直接回答原始查询，且命中核心实体和多数显式约束；"
+                    "0.50-0.79 表示有用的部分答案，或关于核心实体的权威来源但覆盖约束不完整；"
                     "0.20-0.49 表示较弱、邻近但不充分的匹配；"
-                    "0.20 以下表示无关。"
+                    "0.20 以下表示同词异义、主题漂移或无关。"
                     "如果候选只匹配某条 rewrite query，却和原始查询冲突，或把原始查询收窄到"
                     "未被用户表达支持的方向，分数应低于 0.50。"
+                    "如果候选只共享品牌、单个英文词、泛类别、下载/购物/资讯等外壳，但缺少原始查询的"
+                    "任务意图或文档形态，通常应低于 0.40；如果明显是同词异义，通常应低于 0.20。"
                 ),
             ),
         ]
@@ -1020,6 +1157,7 @@ class SearchService:
         providers: list[SearchProvider] | None = None,
         *,
         page_reader: WebPageReader | None = None,
+        query_rewriter: SearchQueryRewriter | None = None,
         reranker: SearchReranker | None = None,
         retry_attempts: int = 3,
         retry_delay: float = 0.5,
@@ -1030,6 +1168,7 @@ class SearchService:
     ):
         self._providers = providers or []
         self._page_reader = page_reader or WebPageReader()
+        self._query_rewriter = query_rewriter
         self._reranker = reranker
         self._retry_attempts = max(1, retry_attempts)
         self._retry_delay = max(0.0, retry_delay)
@@ -1116,6 +1255,7 @@ class SearchService:
 
         return cls(
             providers,
+            query_rewriter=_search_query_rewriter_from_runtime_config(),
             reranker=_search_reranker_from_runtime_config(),
             retry_attempts=_parse_int(
                 runtime_config.get("search.retry.attempts", "3"),
@@ -1196,7 +1336,7 @@ class SearchService:
             SEARCH_PROVIDER_LIMIT_MAX,
             max(limit, limit * self._provider_limit_multiplier),
         )
-        query_rewrite = build_query_rewrite_plan(query, max_queries=self._recall_max_queries)
+        query_rewrite = await self._build_query_rewrite(query)
         query_variants = list(query_rewrite.get("queries") or [])
         self._last_query_variants = query_variants
         self._last_query_rewrite = query_rewrite
@@ -1289,6 +1429,31 @@ class SearchService:
                 )
             )
         return limited_results
+
+    async def _build_query_rewrite(self, query: str) -> dict[str, Any]:
+        lexical_plan = build_query_rewrite_plan(
+            query,
+            max_queries=self._recall_max_queries,
+        )
+        if self._query_rewriter is None:
+            return lexical_plan
+        try:
+            return await self._query_rewriter.rewrite(
+                query,
+                max_queries=self._recall_max_queries,
+                lexical_plan=lexical_plan,
+            )
+        except Exception as e:
+            logger.warning(
+                "Search LLM rewrite failed; falling back to lexical query variants",
+                extra={"provider": self._query_rewriter.name, "error": str(e)},
+            )
+            fallback = dict(lexical_plan)
+            fallback["status"] = "partial"
+            fallback["provider"] = self._query_rewriter.name
+            fallback["error"] = str(e)[:500]
+            fallback["fallback"] = "lexical"
+            return fallback
 
     def _rerank_candidate_limit(self, limit: int) -> int:
         if self._reranker is None:
@@ -1664,9 +1829,9 @@ class SearchService:
 
 def _query_rewrite_trace_node(query_rewrite: dict[str, Any]) -> dict[str, Any]:
     queries = query_rewrite.get("queries") if isinstance(query_rewrite.get("queries"), list) else []
-    return {
+    node = {
         "node": "query_rewrite",
-        "status": "completed",
+        "status": query_rewrite.get("status") or "completed",
         "policy_id": query_rewrite.get("policy_id"),
         "policy": query_rewrite.get("policy"),
         "strategy": query_rewrite.get("strategy"),
@@ -1674,6 +1839,20 @@ def _query_rewrite_trace_node(query_rewrite: dict[str, Any]) -> dict[str, Any]:
         "queries": queries,
         "query_count": len(queries),
     }
+    for key in (
+        "provider",
+        "model",
+        "usage",
+        "reason",
+        "lexical_strategy",
+        "lexical_queries",
+        "language_policy",
+        "fallback",
+        "error",
+    ):
+        if key in query_rewrite:
+            node[key] = query_rewrite[key]
+    return node
 
 
 def _recall_attempt(
@@ -1963,6 +2142,50 @@ def _search_query_terms(query: str) -> list[str]:
     return search_query_terms(query)
 
 
+def _search_query_rewriter_from_runtime_config() -> SearchQueryRewriter | None:
+    enabled = runtime_config.get(
+        "search.rewrite.enabled",
+        str(SEARCH_LLM_REWRITE_ENABLED).lower(),
+    ).lower()
+    if enabled in {"0", "false", "no", "off"}:
+        return None
+
+    provider_name = runtime_config.get("search.rewrite.provider") or runtime_config.default_provider
+    try:
+        from agent.llm.factory import create_provider
+
+        provider = create_provider(provider_name)
+    except Exception as e:
+        logger.warning(
+            "Search LLM rewrite disabled because provider creation failed",
+            extra={"provider": provider_name, "error": str(e)},
+        )
+        return None
+
+    max_queries = _bounded_int(
+        runtime_config.get(
+            "search.rewrite.max_queries",
+            str(SEARCH_LLM_REWRITE_MAX_QUERIES),
+        ),
+        default=SEARCH_LLM_REWRITE_MAX_QUERIES,
+        minimum=1,
+        maximum=SEARCH_PROVIDER_LIMIT_MAX,
+    )
+    timeout_seconds = _parse_float(
+        runtime_config.get(
+            "search.rewrite.timeout_seconds",
+            str(SEARCH_LLM_REWRITE_TIMEOUT_SECONDS),
+        ),
+        default=SEARCH_LLM_REWRITE_TIMEOUT_SECONDS,
+    )
+    return LLMSearchQueryRewriter(
+        provider,
+        name=f"llm:{provider_name}",
+        max_queries=max_queries,
+        timeout_seconds=timeout_seconds,
+    )
+
+
 def _search_reranker_from_runtime_config() -> SearchReranker | None:
     enabled = runtime_config.get(
         "search.rerank.enabled",
@@ -2013,6 +2236,89 @@ def _search_reranker_from_runtime_config() -> SearchReranker | None:
         timeout_seconds=timeout_seconds,
         min_score=min_score,
     )
+
+
+def _sanitize_rewrite_queries(
+    raw_queries: Any,
+    *,
+    max_queries: int,
+) -> list[str]:
+    if isinstance(raw_queries, str):
+        raw_items: list[Any] = [raw_queries]
+    elif isinstance(raw_queries, list):
+        raw_items = raw_queries
+    else:
+        return []
+    queries: list[str] = []
+    seen: set[str] = set()
+    for item in raw_items:
+        query = _truncate_text(item, SEARCH_LLM_REWRITE_MAX_QUERY_CHARS)
+        if not query:
+            continue
+        key = query.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        queries.append(query)
+        if len(queries) >= max_queries:
+            break
+    return queries
+
+
+def _merge_rewrite_queries(
+    *,
+    original_query: str,
+    lexical_queries: list[str],
+    llm_queries: list[str],
+    max_queries: int,
+) -> list[str]:
+    seed_queries = lexical_queries[:1] or [original_query]
+    candidates = _language_balanced_rewrite_candidates(
+        original_query=original_query,
+        candidates=[*llm_queries, *lexical_queries[1:], original_query],
+    )
+    return _sanitize_rewrite_queries(
+        [*seed_queries, *candidates, *lexical_queries, original_query],
+        max_queries=max_queries,
+    )
+
+
+def _language_balanced_rewrite_candidates(
+    *,
+    original_query: str,
+    candidates: list[str],
+) -> list[str]:
+    original_bucket = _query_language_bucket(original_query)
+    priority_buckets = {
+        "latin": ("zh", "mixed"),
+        "zh": ("latin", "mixed"),
+        "mixed": ("zh", "latin"),
+    }.get(original_bucket, ("zh", "latin", "mixed"))
+    return [
+        *[
+            candidate
+            for bucket in priority_buckets
+            for candidate in candidates
+            if _query_language_bucket(candidate) == bucket
+        ],
+        *[
+            candidate
+            for candidate in candidates
+            if _query_language_bucket(candidate) not in priority_buckets
+        ],
+    ]
+
+
+def _query_language_bucket(text: str) -> str:
+    has_cjk = any("\u4e00" <= char <= "\u9fff" for char in str(text or ""))
+    has_latin = bool(re.search(r"[A-Za-z]", str(text or "")))
+    if has_cjk and has_latin:
+        return "mixed"
+    if has_cjk:
+        return "zh"
+    if has_latin:
+        return "latin"
+    return "other"
 
 
 def _json_object_from_text(text: str) -> dict[str, Any]:
