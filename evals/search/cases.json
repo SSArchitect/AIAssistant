@@ -1,0 +1,411 @@
+{
+  "version": 1,
+  "description": "Search quality evals for query rewrite, broad recall, ranking, and rerank thresholds. Offline mode uses fixture_results; live mode uses configured providers.",
+  "cases": [
+    {
+      "id": "dunlop_product_labels",
+      "category": "product_identifier_ambiguity",
+      "query": "Dunlop65 01 02 三瓶 清洁 保养剂 电吉他 分别作用",
+      "notes": "Regression guard for product-number searches: keep bottle labels as labels and avoid drifting to tires or cloth-only products.",
+      "checks": {
+        "k": 5,
+        "min_recall_at_k": 0.67,
+        "min_precision_at_k": 0.6,
+        "min_mrr": 0.5,
+        "max_bad_at_k": 0,
+        "max_latency_ms": 15000
+      },
+      "offline_checks": {
+        "k": 5,
+        "min_recall_at_k": 1.0,
+        "min_precision_at_k": 0.6,
+        "min_mrr": 0.5,
+        "max_bad_at_k": 2
+      },
+      "expected": [
+        {
+          "label": "Dunlop care kit instructions",
+          "all_text_contains": ["dunlop"],
+          "any_text_contains": ["护养套装", "care kit", "cleaner & prep"]
+        },
+        {
+          "label": "Dunlop fingerboard care context",
+          "all_text_contains": ["dunlop"],
+          "any_text_contains": ["指板", "fingerboard"]
+        },
+        {
+          "label": "Dunlop guitar maintenance context",
+          "all_text_contains": ["dunlop"],
+          "any_text_contains": ["保养", "maintenance", "polish & cleaner"]
+        }
+      ],
+      "acceptable": [
+        {
+          "label": "System 65 official care kit page",
+          "all_text_contains": ["dunlop", "fingerboard", "01", "02"]
+        }
+      ],
+      "negative": [
+        {
+          "label": "Dunlop tire pollution",
+          "any_text_contains": ["dunlop tires", "dunlop tyres"]
+        },
+        {
+          "label": "cloth-only wrong product form",
+          "all_text_contains": ["polish cloth", "set"]
+        }
+      ],
+      "fixture_results": [
+        {
+          "title": "FORMULA 65 FINGERBOARD 01 CLEANER & PREP - Dunlop",
+          "snippet": "Dunlop Formula 65 Fingerboard 01 Cleaner & Prep cleans guitar fingerboards before conditioning.",
+          "url": "https://www.jimdunlop.com/formula-65-fingerboard-01-cleaner-prep/",
+          "source": "fixture"
+        },
+        {
+          "title": "FORMULA 65 FINGERBOARD 02 DEEP CONDITIONER - Dunlop",
+          "snippet": "Dunlop Formula 65 Fingerboard 02 Deep Conditioner conditions unfinished guitar fingerboards after 01 cleaner.",
+          "url": "https://www.jimdunlop.com/formula-65-fingerboard-02-deep-conditioner/",
+          "source": "fixture"
+        },
+        {
+          "title": "FORMULA 65 GUITAR POLISH & CLEANER - Dunlop",
+          "snippet": "Bottle of Formula 65 guitar polish and cleaner for electric guitar body finish care.",
+          "url": "https://www.jimdunlop.com/formula-65-guitar-polish-cleaner/",
+          "source": "fixture"
+        },
+        {
+          "title": "Dunlop Formula No. 65 Polish Cloth Set",
+          "snippet": "A cloth-only polishing set for guitar finish, not the 01 or 02 bottles.",
+          "url": "https://www.jimdunlop.com/formula-no-65-polish-cloth-set/",
+          "source": "fixture"
+        },
+        {
+          "title": "Dunlop Tires | Premium Tires for Cars, SUVs & Trucks",
+          "snippet": "Official Dunlop tires and tyres for passenger cars.",
+          "url": "https://www.dunloptires.com/",
+          "source": "fixture"
+        },
+        {
+          "title": "Guitar maintenance checklist",
+          "snippet": "General electric guitar cleaning, string changing, and fretboard care checklist.",
+          "url": "https://example.com/guitar-maintenance",
+          "source": "fixture"
+        }
+      ]
+    },
+    {
+      "id": "adult_piano_textbook",
+      "category": "cjk_ambiguity",
+      "query": "成人钢琴入门 教材 拜厄 车尔尼 哈农",
+      "notes": "Regression guard for ambiguous Chinese terms: 成人 should stay in the adult-learner piano context, not adult-content commerce.",
+      "checks": {
+        "k": 5,
+        "min_recall_at_k": 0.66,
+        "min_precision_at_k": 0.6,
+        "min_mrr": 0.5,
+        "max_bad_at_k": 0,
+        "max_latency_ms": 12000
+      },
+      "offline_checks": {
+        "k": 5,
+        "min_recall_at_k": 1.0,
+        "min_precision_at_k": 1.0,
+        "min_mrr": 0.5,
+        "max_bad_at_k": 0
+      },
+      "expected": [
+        {
+          "label": "adult beginner piano textbook overview",
+          "all_text_contains": ["成人", "钢琴", "教材"]
+        },
+        {
+          "label": "Beyer piano textbook",
+          "all_text_contains": ["拜厄", "钢琴"]
+        },
+        {
+          "label": "Czerny or Hanon piano textbook",
+          "any_text_contains": ["车尔尼钢琴", "哈农钢琴", "车尔尼", "哈农"]
+        }
+      ],
+      "negative": [
+        {
+          "label": "adult video pollution",
+          "any_text_contains": ["成人视频", "成人电影", "adult video", "porn"]
+        },
+        {
+          "label": "adult products pollution",
+          "any_text_contains": ["成人用品", "成人商城"]
+        }
+      ],
+      "fixture_results": [
+        {
+          "title": "成人钢琴入门教材推荐：拜厄、车尔尼、哈农怎么用",
+          "snippet": "面向成人钢琴学习者的入门教材路线，包含拜厄钢琴基本教程、车尔尼599和哈农练指法。",
+          "url": "https://example.com/adult-piano-textbooks",
+          "source": "fixture"
+        },
+        {
+          "title": "《拜厄钢琴基本教程》教材介绍",
+          "snippet": "拜厄钢琴教材适合零基础钢琴入门学习。",
+          "url": "https://example.com/beyer-piano-book",
+          "source": "fixture"
+        },
+        {
+          "title": "车尔尼599钢琴初步教程和哈农练习",
+          "snippet": "钢琴初学者常见练习教材：车尔尼、哈农与拜厄的区别。",
+          "url": "https://example.com/czerny-hanon-piano",
+          "source": "fixture"
+        },
+        {
+          "title": "成人用品商城",
+          "snippet": "成人用品、情趣用品在线购买。",
+          "url": "https://example.com/adult-products",
+          "source": "fixture"
+        },
+        {
+          "title": "成人视频下载站",
+          "snippet": "成人网站免费观看。",
+          "url": "https://example.com/adult-video",
+          "source": "fixture"
+        },
+        {
+          "title": "儿童钢琴启蒙玩具",
+          "snippet": "儿童音乐玩具和电子琴推荐。",
+          "url": "https://example.com/kids-piano-toy",
+          "source": "fixture"
+        }
+      ]
+    },
+    {
+      "id": "ets2_dlc_list",
+      "category": "latin_title_number",
+      "query": "Euro Truck Simulator 2 DLC list latest",
+      "notes": "Regression guard for English title plus number queries: avoid Euro currency pollution.",
+      "checks": {
+        "k": 5,
+        "min_recall_at_k": 0.66,
+        "min_precision_at_k": 0.6,
+        "min_mrr": 0.5,
+        "max_bad_at_k": 0,
+        "max_latency_ms": 12000
+      },
+      "offline_checks": {
+        "k": 5,
+        "min_recall_at_k": 1.0,
+        "min_precision_at_k": 0.6,
+        "min_mrr": 0.5,
+        "max_bad_at_k": 1
+      },
+      "expected": [
+        {
+          "label": "Steam ETS2 DLC page",
+          "all_text_contains": ["Euro Truck Simulator 2", "DLC", "Steam"]
+        },
+        {
+          "label": "SCS Software ETS2 DLC news",
+          "all_text_contains": ["Euro Truck Simulator 2", "SCS", "DLC"]
+        },
+        {
+          "label": "ETS2 DLC wiki/list",
+          "all_text_contains": ["Euro Truck Simulator 2", "DLC", "list"]
+        }
+      ],
+      "negative": [
+        {
+          "label": "Euro currency pollution",
+          "any_text_contains": ["EUR/USD", "exchange rate", "euro currency"]
+        }
+      ],
+      "fixture_results": [
+        {
+          "title": "Euro Truck Simulator 2 DLCs on Steam",
+          "snippet": "Browse the latest Euro Truck Simulator 2 DLC add-ons and expansions on Steam.",
+          "url": "https://store.steampowered.com/dlc/227300/Euro_Truck_Simulator_2/",
+          "source": "fixture"
+        },
+        {
+          "title": "SCS Software's blog: Euro Truck Simulator 2 DLC news",
+          "snippet": "Official SCS Software updates for Euro Truck Simulator 2 map DLC and cargo DLC releases.",
+          "url": "https://blog.scssoft.com/search/label/Euro%20Truck%20Simulator%202",
+          "source": "fixture"
+        },
+        {
+          "title": "Euro Truck Simulator 2 downloadable content list",
+          "snippet": "A list of Euro Truck Simulator 2 DLC packages, map expansions, cargo packs, and paint jobs.",
+          "url": "https://truck-simulator.fandom.com/wiki/Euro_Truck_Simulator_2_DLC",
+          "source": "fixture"
+        },
+        {
+          "title": "EUR/USD exchange rate latest euro currency news",
+          "snippet": "Euro currency exchange rate and foreign exchange market analysis.",
+          "url": "https://example.com/euro-currency",
+          "source": "fixture"
+        },
+        {
+          "title": "Truck simulator toys for kids",
+          "snippet": "Toy trucks and simulator steering wheel accessories.",
+          "url": "https://example.com/truck-toys",
+          "source": "fixture"
+        }
+      ]
+    },
+    {
+      "id": "pet_supplies_market_report",
+      "category": "market_research",
+      "query": "宠物用品 行业市场报告 2026 渠道规模",
+      "notes": "Regression guard for market-research queries: prefer reports/data over ecommerce listings.",
+      "checks": {
+        "k": 5,
+        "min_recall_at_k": 0.66,
+        "min_precision_at_k": 0.6,
+        "min_mrr": 0.5,
+        "max_bad_at_k": 0,
+        "max_latency_ms": 12000
+      },
+      "offline_checks": {
+        "k": 5,
+        "min_recall_at_k": 1.0,
+        "min_precision_at_k": 0.5,
+        "min_mrr": 0.5,
+        "max_bad_at_k": 2
+      },
+      "expected": [
+        {
+          "label": "pet supplies market report",
+          "all_text_contains": ["宠物用品", "市场", "报告"]
+        },
+        {
+          "label": "pet industry channel/scale data",
+          "all_text_contains": ["宠物", "渠道", "规模"]
+        },
+        {
+          "label": "pet care ecommerce market analysis",
+          "all_text_contains": ["pet", "market", "report"]
+        }
+      ],
+      "negative": [
+        {
+          "label": "wholesale listing pollution",
+          "any_text_contains": ["批发厂家", "货源批发"]
+        },
+        {
+          "label": "store recommendation pollution",
+          "any_text_contains": ["店铺推荐", "淘宝店铺"]
+        }
+      ],
+      "fixture_results": [
+        {
+          "title": "2026年中国宠物用品行业市场报告",
+          "snippet": "宠物用品市场规模、线上线下渠道、消费人群和竞争格局分析。",
+          "url": "https://example.com/pet-supplies-market-report-2026",
+          "source": "fixture"
+        },
+        {
+          "title": "宠物行业渠道规模与消费趋势研究",
+          "snippet": "覆盖宠物食品、宠物用品、电商渠道和线下门店规模。",
+          "url": "https://example.com/pet-industry-channel-scale",
+          "source": "fixture"
+        },
+        {
+          "title": "Pet care ecommerce market report",
+          "snippet": "Global pet supplies and pet care market report with channel analysis.",
+          "url": "https://example.com/pet-care-market-report",
+          "source": "fixture"
+        },
+        {
+          "title": "宠物用品批发厂家货源批发",
+          "snippet": "宠物玩具、宠物窝、牵引绳批发厂家。",
+          "url": "https://example.com/pet-wholesale",
+          "source": "fixture"
+        },
+        {
+          "title": "宠物用品淘宝店铺推荐",
+          "snippet": "热门宠物用品店铺推荐和优惠券。",
+          "url": "https://example.com/pet-store-recommendations",
+          "source": "fixture"
+        }
+      ]
+    },
+    {
+      "id": "dify_rag_agent_benchmark",
+      "category": "technical_research",
+      "query": "Dify RAG Agent 工程实践 评测 benchmark",
+      "notes": "Regression guard for technical research queries: prefer engineering/evaluation material over brand/logo or unrelated lexical matches.",
+      "checks": {
+        "k": 5,
+        "min_recall_at_k": 0.66,
+        "min_precision_at_k": 0.6,
+        "min_mrr": 0.5,
+        "max_bad_at_k": 0,
+        "max_latency_ms": 12000
+      },
+      "offline_checks": {
+        "k": 5,
+        "min_recall_at_k": 1.0,
+        "min_precision_at_k": 0.4,
+        "min_mrr": 0.5,
+        "max_bad_at_k": 2
+      },
+      "expected": [
+        {
+          "label": "Dify RAG evaluation practice",
+          "all_text_contains": ["Dify", "RAG"],
+          "any_text_contains": ["评估", "evaluation"]
+        },
+        {
+          "label": "Agent workflow RAG benchmark",
+          "all_text_contains": ["RAG"],
+          "any_text_contains": ["工作流", "workflow"]
+        },
+        {
+          "label": "Dify RAG benchmark or measured experiment",
+          "all_text_contains": ["RAG"],
+          "any_text_contains": ["benchmark", "实测", "召回率"]
+        }
+      ],
+      "negative": [
+        {
+          "label": "brand asset pollution",
+          "all_text_contains": ["Dify", "logo"]
+        },
+        {
+          "label": "unrelated rug lexical pollution",
+          "any_text_contains": ["rag rug", "area rug"]
+        }
+      ],
+      "fixture_results": [
+        {
+          "title": "Dify RAG evaluation best practices",
+          "snippet": "Engineering practices for evaluating Dify RAG applications, retrieval quality, and answer faithfulness.",
+          "url": "https://example.com/dify-rag-evaluation",
+          "source": "fixture"
+        },
+        {
+          "title": "RAG benchmark for Agent workflows",
+          "snippet": "Benchmark methods for agentic RAG workflows, retrieval, reranking, and answer evaluation.",
+          "url": "https://example.com/agent-rag-benchmark",
+          "source": "fixture"
+        },
+        {
+          "title": "Dify knowledge base retrieval docs",
+          "snippet": "Dify documentation for knowledge base retrieval, chunking, and reranking settings.",
+          "url": "https://docs.dify.ai/guides/knowledge-base/retrieval",
+          "source": "fixture"
+        },
+        {
+          "title": "Dify logo download",
+          "snippet": "Download Dify brand assets, logo files, and media kit.",
+          "url": "https://example.com/dify-logo",
+          "source": "fixture"
+        },
+        {
+          "title": "Rag rug shopping guide",
+          "snippet": "Area rug, wool rug, and rag rug shopping recommendations.",
+          "url": "https://example.com/rag-rug",
+          "source": "fixture"
+        }
+      ]
+    }
+  ]
+}

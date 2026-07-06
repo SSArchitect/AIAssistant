@@ -264,8 +264,8 @@ class TestSearchSkill:
         assert meta.name == "search"
         assert meta.source == "builtin"
         assert "必须先调用 search 再回答" in meta.description
-        assert "品牌、型号、产品编号" in meta.description
-        assert "药剂、清洁剂" in meta.description
+        assert "可核验实体或编号" in meta.description
+        assert "未验证的解释" in meta.description
         assert "医疗" in meta.description
         assert "法律" in meta.description
         assert "金融" in meta.description
@@ -665,7 +665,7 @@ class TestSearchSkill:
             name = "fake-llm"
             max_candidates = 5
 
-            async def rerank(self, query, results, *, limit):
+            async def rerank(self, query, results, *, limit, query_context=None):
                 selected = []
                 decisions = []
                 for index, result in enumerate(results, start=1):
@@ -730,7 +730,7 @@ class TestSearchSkill:
             name = "fake-llm"
             max_candidates = 5
 
-            async def rerank(self, query, results, *, limit):
+            async def rerank(self, query, results, *, limit, query_context=None):
                 raise RuntimeError("rerank unavailable")
 
         service = SearchService(
@@ -772,7 +772,7 @@ class TestSearchSkill:
             name = "fake-llm"
             max_candidates = 5
 
-            async def rerank(self, query, results, *, limit):
+            async def rerank(self, query, results, *, limit, query_context=None):
                 return results[:limit], {
                     "status": "completed",
                     "model": "fake-reranker",
@@ -809,6 +809,75 @@ class TestSearchSkill:
         rerank_node = next(node for node in service.last_trace_nodes if node["node"] == "llm_rerank")
         assert rerank_node["input_count"] == 2
         assert rerank_node["output_count"] == 1
+
+    @pytest.mark.asyncio
+    async def test_llm_reranker_prompt_includes_rewrite_and_retrieval_context(self):
+        from agent.llm.base import LLMResponse
+        from agent.search.service import LLMSearchReranker
+
+        class Provider:
+            def __init__(self):
+                self.messages = []
+
+            async def chat(self, messages, tools=None, temperature=0.7, cache=None):
+                self.messages = messages
+                return LLMResponse(
+                    content=json.dumps(
+                        {
+                            "results": [
+                                {
+                                    "index": 1,
+                                    "score": 0.86,
+                                    "reason": "exact product match",
+                                }
+                            ]
+                        }
+                    ),
+                    model="fake-model",
+                    usage={"input": 10, "output": 5},
+                )
+
+        provider = Provider()
+        reranker = LLMSearchReranker(
+            provider,
+            name="llm:fake",
+            min_score=0.5,
+        )
+        result = SearchResult(
+            title="Dunlop Fingerboard 01 Cleaner & Prep",
+            snippet="Formula 65 Fingerboard 01 Cleaner and Prep.",
+            url="https://example.com/fingerboard-01",
+            source="web",
+            metadata={
+                "retrieval_query": "Dunlop Formula 01 Fingerboard Cleaner",
+                "retrieval_query_index": 1,
+            },
+        )
+
+        selected, metadata = await reranker.rerank(
+            "Dunlop 01 02 清洁保养剂",
+            [result],
+            limit=1,
+            query_context={
+                "strategy": "keyword_recall",
+                "queries": [
+                    "Dunlop 01 02 清洁保养剂",
+                    "Dunlop Formula 01 Fingerboard Cleaner",
+                ],
+            },
+        )
+
+        prompt = "\n".join(str(message.content) for message in provider.messages)
+        assert selected == [result]
+        assert metadata["threshold"] == 0.5
+        assert "搜索查询上下文 JSON" in prompt
+        assert "Dunlop 01 02 清洁保养剂" in prompt
+        assert "Dunlop Formula 01 Fingerboard Cleaner" in prompt
+        assert '"retrieval_query": "Dunlop Formula 01 Fingerboard Cleaner"' in prompt
+        assert metadata["query_context"]["recall_queries"] == [
+            "Dunlop 01 02 清洁保养剂",
+            "Dunlop Formula 01 Fingerboard Cleaner",
+        ]
 
     @pytest.mark.asyncio
     async def test_search_service_preserves_specialized_market_query_results(self):
@@ -1200,6 +1269,10 @@ class TestSearchSkill:
             '"Euro Truck Simulator 2" "Greece" OR "West Balkans" review worth it',
             max_queries=3,
         )
+        compact_model_plan = build_query_rewrite_plan(
+            "Dunlop65 01 02 三瓶 清洁 保养剂 电吉他 分别作用",
+            max_queries=3,
+        )
 
         assert variants == [
             "2026年最新上映的高口碑电影推荐",
@@ -1210,16 +1283,23 @@ class TestSearchSkill:
             "6531 01 dunlop fingerboard cleaner 指板清洁剂 用途",
         ]
         assert anchored_plan["node"] == "query_rewrite"
+        assert anchored_plan["policy_id"] == "lexical_recall_no_inference_v1"
+        assert "召回阶段的词法改写节点" in anchored_plan["policy"]
         assert anchored_plan["strategy"] == "anchor_rewrite"
         assert anchored_plan["queries"][:2] == [
+            "成人钢琴入门 教材 拜厄 车尔尼 哈农",
             "拜厄钢琴教材 车尔尼 哈农",
-            "钢琴入门教材 拜厄 车尔尼 哈农",
         ]
         assert product_plan["strategy"] == "phrase_rewrite"
         assert product_plan["queries"][:3] == [
             '"Euro Truck Simulator 2" DLC list complete Steam wiki',
             "Euro Truck Simulator 2 DLC list complete Steam wiki",
             "ETS2 DLC list complete Steam wiki",
+        ]
+        assert compact_model_plan["strategy"] == "alnum_boundary_rewrite"
+        assert compact_model_plan["queries"][:2] == [
+            "Dunlop 65 01 02 三瓶 清洁 保养剂 电吉他 分别作用",
+            "Dunlop65 01 02 三瓶 清洁 保养剂 电吉他 分别作用",
         ]
         assert site_plan["strategy"] == "syntax_preserving_rewrite"
         assert site_plan["queries"] == [
@@ -1230,6 +1310,30 @@ class TestSearchSkill:
         assert boolean_plan["queries"] == [
             '"Euro Truck Simulator 2" "Greece" OR "West Balkans" review worth it'
         ]
+
+    def test_search_ranking_keeps_numeric_model_terms(self):
+        from agent.search.ranking import rank_search_results, search_query_terms
+
+        assert "4090" in search_query_terms("RTX4090 显卡 评测")
+
+        results = [
+            SearchResult(
+                title="RTX 4080 显卡评测",
+                snippet="NVIDIA RTX graphics card benchmark.",
+                url="https://example.com/rtx-4080",
+                source="fixture",
+            ),
+            SearchResult(
+                title="RTX 4090 显卡评测",
+                snippet="NVIDIA RTX 4090 graphics card benchmark.",
+                url="https://example.com/rtx-4090",
+                source="fixture",
+            ),
+        ]
+
+        ranked = rank_search_results("RTX4090 显卡 评测", results)
+
+        assert ranked[0].result.title == "RTX 4090 显卡评测"
 
     @pytest.mark.asyncio
     async def test_search_service_uses_query_rewrite_anchors_before_ranking(self):
@@ -1273,10 +1377,12 @@ class TestSearchSkill:
         results = await service.search(original_query, limit=1)
 
         assert provider.calls == [
+            "成人钢琴入门 教材 拜厄 车尔尼 哈农",
             "拜厄钢琴教材 车尔尼 哈农",
-            "钢琴入门教材 拜厄 车尔尼 哈农",
         ]
         assert service.last_query_rewrite["node"] == "query_rewrite"
+        assert service.last_query_rewrite["policy_id"] == "lexical_recall_no_inference_v1"
+        assert "召回阶段的词法改写节点" in service.last_query_rewrite["policy"]
         assert service.last_query_rewrite["strategy"] == "anchor_rewrite"
         assert service.last_query_variants == provider.calls
         assert [result.title for result in results] == ["拜厄钢琴基本教程与车尔尼哈农搭配"]
@@ -1286,6 +1392,8 @@ class TestSearchSkill:
             "ranking",
             "llm_rerank",
         ]
+        assert service.last_trace_nodes[0]["policy_id"] == "lexical_recall_no_inference_v1"
+        assert "召回阶段的词法改写节点" in service.last_trace_nodes[0]["policy"]
         recall_node = service.last_trace_nodes[1]
         assert recall_node["mode"] == "sequential"
         assert recall_node["attempt_count"] == 2
@@ -1293,7 +1401,7 @@ class TestSearchSkill:
         ranking_node = service.last_trace_nodes[2]
         assert ranking_node["input_count"] == 2
         assert ranking_node["output_count"] == 1
-        assert ranking_node["top_results"][0]["retrieval_query"] == provider.calls[0]
+        assert ranking_node["top_results"][0]["retrieval_query"] == provider.calls[1]
         rerank_node = service.last_trace_nodes[3]
         assert rerank_node["status"] == "skipped"
         assert rerank_node["reason"] == "disabled"

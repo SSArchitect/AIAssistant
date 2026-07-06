@@ -113,6 +113,7 @@ def _rank_score(
 def search_query_terms(query: str) -> list[str]:
     terms: list[str] = []
     seen: set[str] = set()
+    query = _split_latin_digit_boundaries(query or "")
 
     def add_term(term: str) -> None:
         term = term.strip().lower()
@@ -163,6 +164,7 @@ def _search_result_terms(result: SearchResultLike) -> list[str]:
 
 def _text_terms(text: str) -> list[str]:
     terms: list[str] = []
+    text = _split_latin_digit_boundaries(text or "")
     for raw in re.split(r"[\s,，;；/、|｜:：()（）\[\]【】\"'“”.!?！？#&+=<>]+", text or ""):
         term = raw.strip().lower()
         if not term:
@@ -261,7 +263,7 @@ def _is_useful_term(term: str) -> bool:
     if not term:
         return False
     if term.isdigit():
-        return False
+        return len(term) <= 6
     if len(term) <= 1:
         return False
     if len(term) <= 2 and not _has_cjk(term):
@@ -271,6 +273,14 @@ def _is_useful_term(term: str) -> bool:
 
 def _has_cjk(text: str) -> bool:
     return any("\u4e00" <= ch <= "\u9fff" for ch in text)
+
+
+def _split_latin_digit_boundaries(text: str) -> str:
+    return re.sub(
+        r"(?<=[A-Za-z])(?=\d)|(?<=\d)(?=[A-Za-z])",
+        " ",
+        text or "",
+    )
 
 
 _STOPWORDS = {

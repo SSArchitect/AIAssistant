@@ -39,11 +39,11 @@ SEARCH_PROVIDER_LIMIT_MAX = 20
 SEARCH_MIN_PROVIDER_COVERAGE = 2
 SEARCH_RANK_MIN_SCORE = DEFAULT_MIN_RANK_SCORE
 SEARCH_RECALL_MAX_QUERIES = DEFAULT_RECALL_MAX_QUERIES
-SEARCH_RECALL_QUERY_TIMEOUT_SECONDS = 30.0
+SEARCH_RECALL_QUERY_TIMEOUT_SECONDS = 10.0
 SEARCH_LLM_RERANK_ENABLED = True
 SEARCH_LLM_RERANK_MAX_CANDIDATES = 10
 SEARCH_LLM_RERANK_TIMEOUT_SECONDS = 20.0
-SEARCH_LLM_RERANK_MIN_SCORE = 0.35
+SEARCH_LLM_RERANK_MIN_SCORE = 0.5
 WEB_USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -132,6 +132,7 @@ class SearchReranker(Protocol):
         results: list[SearchResult],
         *,
         limit: int,
+        query_context: dict[str, Any] | None = None,
     ) -> tuple[list[SearchResult], dict[str, Any]]:
         ...
 
@@ -160,6 +161,7 @@ class LLMSearchReranker:
         results: list[SearchResult],
         *,
         limit: int,
+        query_context: dict[str, Any] | None = None,
     ) -> tuple[list[SearchResult], dict[str, Any]]:
         from agent.llm.base import LLMMessage
 
@@ -181,36 +183,57 @@ class LLMSearchReranker:
                 "snippet": _truncate_text(result.snippet, 700),
                 "url": _truncate_text(result.url, 500),
                 "source": result.source,
+                "retrieval_query": _truncate_text(
+                    _search_result_metadata_value(result, "retrieval_query"),
+                    300,
+                ),
+                "retrieval_query_index": _search_result_metadata_value(
+                    result,
+                    "retrieval_query_index",
+                ),
             }
             for index, result in enumerate(candidates, start=1)
         ]
+        query_context = query_context or {}
+        rewrite_queries = query_context.get("queries")
+        if not isinstance(rewrite_queries, list):
+            rewrite_queries = []
+        query_context_payload = {
+            "original_query": query,
+            "rewrite_strategy": query_context.get("strategy") or "",
+            "recall_queries": [
+                _truncate_text(item, 300)
+                for item in rewrite_queries
+                if str(item or "").strip()
+            ],
+        }
         messages = [
             LLMMessage(
                 role="system",
                 content=(
-                    "You are a search relevance judge. Rank candidates only by "
-                    "their usefulness for answering the original user query. "
-                    "Penalize lexical coincidences, generic pages, unrelated "
-                    "meanings of shared words, spam, and pages that do not answer "
-                    "the query. Authoritative pages about the exact entity can be "
-                    "useful even when they only answer part of the query. Return "
-                    "strict JSON only."
+                    "你是搜索结果相关性评审节点。只根据候选结果对原始用户查询的回答价值排序，"
+                    "不要只看它是否匹配某条改写后的召回 query。需要惩罚词面巧合、泛泛页面、"
+                    "同词异义、垃圾结果，以及不能回答查询的页面。权威页面如果确实覆盖了查询中的"
+                    "关键实体，即使只回答部分问题，也可以有价值。对于只是共享表面词、类别或相关实体，"
+                    "但不能回答原始查询的邻近候选，要降低分数。只返回严格 JSON。"
                 ),
             ),
             LLMMessage(
                 role="user",
                 content=(
-                    "Original query:\n"
-                    f"{query}\n\n"
-                    "Candidates JSON:\n"
+                    "搜索查询上下文 JSON：\n"
+                    f"{json.dumps(query_context_payload, ensure_ascii=False)}\n\n"
+                    "候选结果 JSON：\n"
                     f"{json.dumps(candidate_payload, ensure_ascii=False)}\n\n"
-                    "Return JSON in this exact shape:\n"
+                    "请按这个精确结构返回 JSON：\n"
                     '{"results":[{"index":1,"score":0.0,"reason":"short reason"}]}\n'
-                    "Use score 0.0 to 1.0. Include every candidate you can judge. "
-                    "Use 0.75+ for direct answers, 0.45-0.74 for useful partial or "
-                    "authoritative entity sources, 0.20-0.44 for weak matches, and "
-                    "below 0.20 for unrelated results. Scores below the threshold "
-                    "should mean the result is not useful enough."
+                    "分数范围是 0.0 到 1.0。尽量评审每个候选。"
+                    "0.80 以上表示能直接回答原始查询且命中关键实体；"
+                    "0.50-0.79 表示有用的部分答案，或关于关键实体的权威来源；"
+                    "0.20-0.49 表示较弱、邻近但不充分的匹配；"
+                    "0.20 以下表示无关。"
+                    "如果候选只匹配某条 rewrite query，却和原始查询冲突，或把原始查询收窄到"
+                    "未被用户表达支持的方向，分数应低于 0.50。"
                 ),
             ),
         ]
@@ -267,6 +290,7 @@ class LLMSearchReranker:
             "judged_count": len(decisions),
             "kept_count": len(selected),
             "decisions": decisions[:10],
+            "query_context": query_context_payload,
         }
 
 
@@ -1245,6 +1269,7 @@ class SearchService:
             query,
             rerank_candidates,
             limit=limit,
+            query_context=query_rewrite,
         )
         rerank_node["duration_ms"] = int((perf_counter() - rerank_started) * 1000)
         self._last_trace_nodes.append(rerank_node)
@@ -1276,6 +1301,7 @@ class SearchService:
         results: list[SearchResult],
         *,
         limit: int,
+        query_context: dict[str, Any] | None = None,
     ) -> tuple[list[SearchResult], dict[str, Any]]:
         if self._reranker is None:
             return results[:limit], _llm_rerank_trace_node(
@@ -1296,7 +1322,12 @@ class SearchService:
                 reason="no_candidates",
             )
         try:
-            reranked, metadata = await self._reranker.rerank(query, results, limit=limit)
+            reranked, metadata = await self._reranker.rerank(
+                query,
+                results,
+                limit=limit,
+                query_context=query_context,
+            )
         except Exception as e:
             logger.warning(
                 "Search LLM rerank failed; falling back to ranked results",
@@ -1636,6 +1667,8 @@ def _query_rewrite_trace_node(query_rewrite: dict[str, Any]) -> dict[str, Any]:
     return {
         "node": "query_rewrite",
         "status": "completed",
+        "policy_id": query_rewrite.get("policy_id"),
+        "policy": query_rewrite.get("policy"),
         "strategy": query_rewrite.get("strategy"),
         "original_query": query_rewrite.get("original_query"),
         "queries": queries,
@@ -1757,6 +1790,7 @@ def _llm_rerank_trace_node(
         "judged_count",
         "kept_count",
         "decisions",
+        "query_context",
     ):
         if key in metadata:
             node[key] = metadata[key]
@@ -1813,6 +1847,12 @@ def _search_result_trace_preview(
         "retrieval_query": metadata.get("retrieval_query"),
         "retrieval_query_index": metadata.get("retrieval_query_index"),
     }
+
+
+def _search_result_metadata_value(result: SearchResult, key: str) -> Any:
+    metadata = result.metadata if isinstance(result.metadata, dict) else {}
+    value = metadata.get(key)
+    return "" if value is None else value
 
 
 def _merge_provider_outputs(

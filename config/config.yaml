@@ -49,6 +49,8 @@ search:
     min_provider_coverage: 2
     provider_limit_multiplier: 2
     recall_max_queries: 2
+    recall_timeout_seconds: 10
+    rerank_min_score: 0.5
   minimax:
     enabled: true
     command: uvx

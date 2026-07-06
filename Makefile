@@ -1,4 +1,4 @@
-.PHONY: dev start stop restart status logs build clean install test test-py test-go
+.PHONY: dev start stop restart status logs build clean install test test-py test-go eval-search eval-search-compare eval-search-live
 
 # ===== Production =====
 
@@ -59,6 +59,18 @@ test-py:
 # Run Go checks only
 test-go:
 	cd gateway && go vet ./... && go test ./... && go build -o /dev/null ./cmd/server/
+
+# Run deterministic offline search quality evals
+eval-search:
+	python3 scripts/eval_search.py --mode offline
+
+# Compare offline rewrite against original-query-only baseline
+eval-search-compare:
+	python3 scripts/eval_search.py --mode offline --compare-original
+
+# Run live search quality evals against configured providers
+eval-search-live:
+	python3 scripts/eval_search.py --mode live --endpoint http://127.0.0.1:9090/agent/search
 
 # ===== Misc =====
 

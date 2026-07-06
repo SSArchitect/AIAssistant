@@ -76,6 +76,7 @@ class SearchResponse(BaseModel):
     sources: list[str] = []
     provider_errors: list[str] = []
     results: list[SearchResult] = []
+    trace_nodes: list[dict] = []
 
 
 def _memory_storage_path() -> Path:
@@ -422,6 +423,7 @@ async def search(request: SearchRequest):
             sources=["direct-url"],
             provider_errors=[],
             results=[search_result_from_page(page)],
+            trace_nodes=[],
         )
 
     service = SearchService.from_runtime_config()
@@ -446,6 +448,7 @@ async def search(request: SearchRequest):
         sources=service.provider_names,
         provider_errors=service.last_provider_errors,
         results=results,
+        trace_nodes=service.last_trace_nodes,
     )
 
 

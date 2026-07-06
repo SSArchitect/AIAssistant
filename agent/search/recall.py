@@ -4,6 +4,13 @@ import re
 from typing import Any
 
 DEFAULT_RECALL_MAX_QUERIES = 2
+QUERY_REWRITE_POLICY_ID = "lexical_recall_no_inference_v1"
+QUERY_REWRITE_POLICY = (
+    "query_rewrite 是召回阶段的词法改写节点，只做保守扩召，不做事实判断。"
+    "必须保留用户原始意图，不把未被用户文本或上下文支持的解释、分类、用途、"
+    "材质、结论写进 query。允许的操作仅包括：保留原句、空格/大小写等规范化、"
+    "字母数字边界拆分、精确短语加引号、可机械推出的缩写、以及对原词的重组。"
+)
 
 CJK_INTENT_TERMS = {
     "安装",
@@ -67,6 +74,8 @@ def build_query_rewrite_plan(
     if not original:
         return {
             "node": "query_rewrite",
+            "policy_id": QUERY_REWRITE_POLICY_ID,
+            "policy": QUERY_REWRITE_POLICY,
             "strategy": "empty",
             "original_query": "",
             "queries": [],
@@ -74,10 +83,20 @@ def build_query_rewrite_plan(
 
     has_search_syntax = _has_search_syntax(original)
     syntax_rewrites = _syntax_preserving_rewrite_queries(original) if has_search_syntax else []
+    alnum_rewrites = [] if has_search_syntax else _alnum_boundary_rewrite_queries(original)
     anchor_rewrites = [] if has_search_syntax else _anchor_rewrite_queries(original)
     phrase_rewrites = [] if has_search_syntax else _latin_phrase_rewrite_queries(original)
     acronym_rewrites = [] if has_search_syntax else _latin_acronym_rewrite_queries(original)
-    variants = [*syntax_rewrites, *anchor_rewrites, *phrase_rewrites, original, *acronym_rewrites]
+    if has_search_syntax:
+        variants = [*syntax_rewrites, original]
+    elif alnum_rewrites:
+        variants = [*alnum_rewrites, original, *anchor_rewrites, *phrase_rewrites, *acronym_rewrites]
+    elif phrase_rewrites:
+        variants = [*phrase_rewrites, original, *acronym_rewrites]
+    elif anchor_rewrites:
+        variants = [original, *anchor_rewrites]
+    else:
+        variants = [original]
     if not has_search_syntax:
         for candidate in [
             _keyword_query(original),
@@ -93,12 +112,16 @@ def build_query_rewrite_plan(
     strategy = "keyword_recall"
     if has_search_syntax:
         strategy = "syntax_preserving_rewrite"
+    elif alnum_rewrites:
+        strategy = "alnum_boundary_rewrite"
     elif anchor_rewrites:
         strategy = "anchor_rewrite"
     elif phrase_rewrites:
         strategy = "phrase_rewrite"
     return {
         "node": "query_rewrite",
+        "policy_id": QUERY_REWRITE_POLICY_ID,
+        "policy": QUERY_REWRITE_POLICY,
         "strategy": strategy,
         "original_query": original,
         "queries": variants,
@@ -137,6 +160,23 @@ def _latin_acronym_rewrite_queries(query: str) -> list[str]:
         if replaced != query:
             candidates.append(replaced)
     return _dedupe(candidates)
+
+
+def _alnum_boundary_rewrite_queries(query: str) -> list[str]:
+    split = _split_latin_digit_boundaries(query)
+    if split == query:
+        return []
+    return [split]
+
+
+def _split_latin_digit_boundaries(query: str) -> str:
+    return _normalize_query(
+        re.sub(
+            r"(?<=[A-Za-z])(?=\d)|(?<=\d)(?=[A-Za-z])",
+            " ",
+            query or "",
+        )
+    )
 
 
 def _quote_latin_title_phrases(query: str) -> str:
@@ -282,11 +322,13 @@ def _latin_focus_query(query: str) -> str:
 
 
 def _numeric_terms(query: str) -> list[str]:
-    return _dedupe(re.findall(r"(?<![a-zA-Z0-9])\d{1,6}(?![a-zA-Z0-9])", query or ""))
+    text = _split_latin_digit_boundaries(query)
+    return _dedupe(re.findall(r"(?<![a-zA-Z0-9])\d{1,6}(?![a-zA-Z0-9])", text or ""))
 
 
 def _latin_terms(query: str) -> list[str]:
-    terms = re.findall(r"[a-zA-Z][a-zA-Z0-9._+-]*", query or "")
+    text = _split_latin_digit_boundaries(query)
+    terms = re.findall(r"[a-zA-Z][a-zA-Z0-9._+-]*", text or "")
     return _dedupe(term.lower() for term in terms if len(term) > 1)
 
 
