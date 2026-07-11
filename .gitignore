@@ -4,6 +4,10 @@ logs/
 .pids/
 tmp/
 *.db
+evals/conversation/candidates.json
+evals/conversation/latest_report.json
+evals/conversation/run_history.json
+evals/conversation/runs/
 
 # Python
 __pycache__/

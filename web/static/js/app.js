@@ -19,24 +19,41 @@ const MOBILE_BREAKPOINT_QUERY = '(max-width: 720px)';
 const PROJECT_MAX_DOCUMENT_CHARS = 180000;
 const PROJECT_SEARCH_DEBOUNCE_MS = 260;
 const DRIVE_PROMPT_CONTEXT_ITEM_LIMIT = 16;
+const EVAL_PAGE_SIZES = {
+    candidates: 6,
+    cases: 5,
+    report: 8,
+};
+const EVAL_SCENARIO_PROFILES = ['all', 'default_qa', 'deep_research', 'tool_use', 'coding'];
+const EVAL_QUALITY_PROFILES = ['balanced', 'high_precision', 'high_recall'];
+const EVAL_LLM_MODELS = [
+    { value: 'minimax:MiniMax-M2.7-highspeed', labelKey: 'eval.modelMiniMaxM27Highspeed' },
+    { value: '', labelKey: 'eval.modelDefault' },
+    { value: 'minimax:MiniMax-M3', labelKey: 'eval.modelMiniMaxM3' },
+    { value: 'minimax:MiniMax-M2.5-highspeed', labelKey: 'eval.modelMiniMaxM25Highspeed' },
+    { value: 'doubao:doubao-seed-2-0-lite-260215', labelKey: 'eval.modelDoubaoLite' },
+];
 
 const VIEW_COPY = {
     chat: ['views.chat.title', 'views.chat.subtitle'],
     pulse: ['views.pulse.title', 'views.pulse.subtitle'],
+    todos: ['views.todos.title', 'views.todos.subtitle'],
     projects: ['views.projects.title', 'views.projects.subtitle'],
     agents: ['views.agents.title', 'views.agents.subtitle'],
     tools: ['views.tools.title', 'views.tools.subtitle'],
     trace: ['views.trace.title', 'views.trace.subtitle'],
     developer: ['views.developer.title', 'views.developer.subtitle'],
+    eval: ['views.eval.title', 'views.eval.subtitle'],
 };
 
 const I18N = {
     zh: {
         app: { name: '阿安的工作台' },
-        nav: { chat: 'Super Chat', pulse: 'Pulse', projects: '网盘', agents: 'Agents', tools: 'Tools', trace: 'Trace', runs: 'Runs', developer: 'Developer', memory: 'Memory' },
+        nav: { chat: 'Super Chat', pulse: 'Pulse', todos: 'Todo', projects: '网盘', agents: 'Agents', tools: 'Tools', trace: 'Trace', runs: 'Runs', developer: 'Developer', memory: 'Memory', eval: 'Eval' },
         sidebar: {
             navigation: '导航',
             pinned: '固定 Agent',
+            todos: '今日待办',
             projects: '网盘',
             recent: '最近会话',
             fullConfig: '完整配置',
@@ -44,6 +61,7 @@ const I18N = {
             defaultModel: '默认模型',
             emptyConversations: '暂无会话',
             emptyPinned: '在 Agents 中固定常用功能',
+            emptyTodos: '今日没有待办',
             emptyProjects: '网盘为空',
         },
         topbar: { agent: 'Agent', role: '角色' },
@@ -129,12 +147,68 @@ const I18N = {
         views: {
             chat: { title: 'Super Chat', subtitle: '意图识别、Agent 调用与汇总回答入口' },
             pulse: { title: 'Pulse', subtitle: 'Topic 推荐、信息簇阅读与下一跳学习入口' },
+            todos: { title: 'Todo', subtitle: '今日、待排期、月视图和高置信建议' },
             projects: { title: '网盘', subtitle: '每个帐号独立的文件树、上传下载与 Super Chat 上下文' },
             agents: { title: 'Agents', subtitle: 'Agent 功能入口、实现版本和能力状态' },
             tools: { title: 'Tools', subtitle: '内置工具、参数和调用状态' },
             runs: { title: 'Runs', subtitle: '执行轨迹、事件和调试信息' },
             trace: { title: 'Trace', subtitle: '层级事件、节点详情与调试定位' },
             developer: { title: 'Memory', subtitle: 'Memory 系统、持久化记录和最近一轮注入信息' },
+            eval: { title: 'Eval', subtitle: '从真实对话挖掘、审核并回归结构化用例集' },
+        },
+        todos: {
+            today: '今日',
+            inbox: '待排期',
+            month: '月视图',
+            addTitle: '新建待办',
+            titlePlaceholder: '输入一个待办',
+            notesPlaceholder: '备注',
+            inboxHint: '待排期是已经记录、但还没有安排具体日期的待办。',
+            todayHint: '今日包含今天到期、正在进行和逾期未完成的待办。',
+            monthHint: '月视图按日期展示本月待办，包含每天和每工作日重复任务。',
+            dateMode: '日期',
+            dateToday: '今天',
+            dateTomorrow: '明天',
+            dateDaily: '每天',
+            dateWorkdays: '每工作日',
+            dateCustom: '自选日期范围',
+            dateNone: '暂不排期',
+            startDate: '开始',
+            dueDate: '结束',
+            priority: '优先级',
+            low: '低',
+            normal: '普通',
+            high: '高',
+            add: '添加',
+            create: '新建待办',
+            hideCreate: '收起',
+            edit: '编辑',
+            saveEdit: '保存',
+            cancelEdit: '取消',
+            complete: '完成',
+            reopen: '设为未完成',
+            delete: '删除',
+            suggestions: '建议',
+            suggestionsHint: '从近期会话里提取明确的后续行动；接受后才会进入待办。',
+            refreshSuggestions: '重新生成',
+            accept: '接受',
+            dismiss: '忽略',
+            previousMonth: '上个月',
+            nextMonth: '下个月',
+            monthlyEmpty: '这个月还没有排期待办',
+            noItems: '暂无待办',
+            noSuggestions: '暂无高置信建议',
+            overdue: '逾期',
+            todayLabel: '今天',
+            tomorrow: '明天',
+            noDate: '待排期',
+            starts: '从 {date} 开始',
+            dateRange: '{start} - {end}',
+            loadFailed: '加载待办失败：{message}',
+            saveFailed: '保存待办失败：{message}',
+            movedAfterEdit: '已保存，并移动到「{scope}」。',
+            suggestionFailed: '生成建议失败：{message}',
+            sourceConversation: '会话建议',
         },
         projects: {
             emptyTitle: '网盘还没有内容',
@@ -360,6 +434,135 @@ const I18N = {
             collapse: '收起',
             noMatches: '没有符合筛选的记录',
             fullContent: '完整内容',
+        },
+        eval: {
+            title: 'Conversation Eval',
+            subtitle: '从真实对话生成候选用例，审核后进入回归集。',
+            collect: '采集候选',
+            collecting: '采集中...',
+            refresh: '刷新 Eval',
+            historicalRun: '历史检查',
+            replayRun: '隔离回放',
+            running: '运行中...',
+            approve: '批准',
+            approved: '已批准',
+            edit: '编辑',
+            editTitle: '编辑用例',
+            saving: '保存中...',
+            delete: '移除',
+            candidates: '候选用例',
+            approvedCases: '回归用例',
+            latestReport: '最近报告',
+            reportHistory: '历史报告',
+            reportDetail: '报告详情',
+            loadingReport: '正在加载报告详情...',
+            expandReportHint: '展开后加载完整报告、每个用例分数和运行详情。',
+            runHistory: '运行记录',
+            noRunHistory: '暂无运行记录。',
+            caseResults: '用例结果',
+            runDetails: '运行详情',
+            runId: '运行 ID',
+            completedAt: '完成时间',
+            response: '实际回答',
+            replayResponse: '隔离回答',
+            historicalResponse: '历史回答',
+            matched: '命中',
+            missing: '缺失',
+            evidence: '证据',
+            openTrace: '打开 Trace',
+            traceUnavailable: '没有可跳转的 Trace',
+            llmEnrichment: 'AI 填充',
+            llmRefinementIssue: 'AI 精修未生效：{count}/{total} 条候选使用兜底抽取。原因：{reason}',
+            llmRefinementFailed: 'AI 精修部分失败：{count}/{total} 条候选已回退兜底抽取。原因：{reason}',
+            llmRefinementPartial: 'AI 精修限量执行：{count}/{total} 条候选使用兜底抽取（达到精修上限）。',
+            llmRefinementUnknown: '模型未配置、调用失败或已达到精修上限',
+            model: '模型',
+            noCandidates: '暂无候选。先采集真实对话。',
+            noCases: '暂无 approved case。',
+            noReport: '还没有运行报告。',
+            loadFailed: '加载 Eval 失败：{message}',
+            collectFailed: '采集失败：{message}',
+            approveFailed: '批准失败：{message}',
+            deleteFailed: '移除失败：{message}',
+            runFailed: '运行失败：{message}',
+            candidateCount: '候选',
+            caseCount: '用例',
+            passRate: '通过率',
+            failedCount: '失败',
+            source: '来源',
+            behavior: '期望行为',
+            taskChain: '任务链',
+            edgeCases: '边界',
+            failureModes: '失败模式',
+            mustInclude: '应包含',
+            mustNotInclude: '不应包含',
+            include: '应包含',
+            toolCalls: '调用工具',
+            answerResult: '答案结果',
+            citations: '引用来源',
+            forbiddenTerms: '不应包含',
+            onePerLine: '每行一条',
+            addItem: '添加',
+            removeItem: '移除',
+            input: '输入',
+            pageRange: '{start}-{end} / {total}',
+            pageStatus: '第 {page}/{pages} 页',
+            previousPage: '上一页',
+            nextPage: '下一页',
+            historical: '历史回答',
+            tags: '标签',
+            priority: '优先级',
+            intent: '意图',
+            scenario: '场景',
+            scenarioProfile: '候选场景',
+            profileAll: '全部场景',
+            profileDefaultQa: '默认问答',
+            profileDeepResearch: '深度研究',
+            profileToolUse: '工具/检索',
+            profileCoding: '代码/调试',
+            qualityProfile: '抽取质量',
+            qualityBalanced: '平衡',
+            qualityHighPrecision: '高精度',
+            qualityHighRecall: '召回优先',
+            llmModel: '精修模型',
+            modelDefault: '系统默认',
+            modelMiniMaxM3: 'MiniMax M3',
+            modelMiniMaxM27Highspeed: 'MiniMax M2.7 高速',
+            modelMiniMaxM25Highspeed: 'MiniMax M2.5 高速',
+            modelDoubaoLite: '豆包 Lite',
+            candidateQuality: '质量',
+            collectDone: '已生成 {count} 条候选。',
+            approveDone: '已加入回归集。',
+            editDone: '用例已保存。',
+            editFailed: '保存失败：{message}',
+            deleteDone: '已移除用例。',
+            runDone: '回归完成：{passed}/{total} 通过。',
+            historicalMode: '历史响应',
+            replayMode: '隔离 Agent',
+            expectedTools: '期望工具',
+            accuracy: '准确性',
+            completeness: '完整性',
+            overallScore: '总分',
+            dimensions: '评分维度',
+            dimensionScores: '维度表现',
+            tagSlices: '场景/风险分组',
+            tagSliceHelp: '按意图、边界和失败风险自动分组，优先看失败多的分组。',
+            tagRaw: '原始标签',
+            scorecard: 'Scorecard',
+            score: '分数',
+            score1to5: '1-5 分',
+            passingScore: '通过分',
+            standard: '标准',
+            requirements: '标准要求',
+            pass: '通过',
+            fail: '失败',
+            toolUse: '工具使用',
+            constraints: '约束遵循',
+            requiredTools: '必用工具',
+            forbiddenTools: '禁用工具',
+            requiredPoints: '完整性要点',
+            replayIsolation: '隔离身份',
+            confirmDelete: '确定从回归集中移除这个 case？',
         },
         pulse: {
             topicsTitle: 'Topic 订阅',
@@ -602,10 +805,11 @@ const I18N = {
     },
     en: {
         app: { name: '阿安的工作台' },
-        nav: { chat: 'Super Chat', pulse: 'Pulse', projects: 'Drive', agents: 'Agents', tools: 'Tools', trace: 'Trace', runs: 'Runs', developer: 'Developer', memory: 'Memory' },
+        nav: { chat: 'Super Chat', pulse: 'Pulse', todos: 'Todo', projects: 'Drive', agents: 'Agents', tools: 'Tools', trace: 'Trace', runs: 'Runs', developer: 'Developer', memory: 'Memory', eval: 'Eval' },
         sidebar: {
             navigation: 'Navigation',
             pinned: 'Pinned Agents',
+            todos: "Today's Todos",
             projects: 'Drive',
             recent: 'Recent Chats',
             fullConfig: 'Full Settings',
@@ -613,6 +817,7 @@ const I18N = {
             defaultModel: 'Default Model',
             emptyConversations: 'No conversations',
             emptyPinned: 'Pin frequent agents from Agents',
+            emptyTodos: 'No todos today',
             emptyProjects: 'Empty drive',
         },
         topbar: { agent: 'Agent', role: 'Role' },
@@ -698,12 +903,68 @@ const I18N = {
         views: {
             chat: { title: 'Super Chat', subtitle: 'Intent routing, agent calls, and final answers' },
             pulse: { title: 'Pulse', subtitle: 'Topic seeds, information clusters, and next-step reading' },
+            todos: { title: 'Todo', subtitle: 'Today, unscheduled items, month view, and high-confidence suggestions' },
             projects: { title: 'Drive', subtitle: 'Per-account file tree, uploads, downloads, and Super Chat context' },
             agents: { title: 'Agents', subtitle: 'Agent entry points, runtimes, and capability status' },
             tools: { title: 'Tools', subtitle: 'Built-in tools, parameters, and execution status' },
             runs: { title: 'Runs', subtitle: 'Execution traces, events, and debugging details' },
             trace: { title: 'Trace', subtitle: 'Hierarchical events, node details, and debugging context' },
             developer: { title: 'Memory', subtitle: 'Memory system, persisted records, and latest run injection' },
+            eval: { title: 'Eval', subtitle: 'Mine, review, and regress structured cases from real conversations' },
+        },
+        todos: {
+            today: 'Today',
+            inbox: 'Unscheduled',
+            month: 'Month',
+            addTitle: 'Add todo',
+            titlePlaceholder: 'Enter a todo',
+            notesPlaceholder: 'Notes',
+            inboxHint: 'Unscheduled items are saved tasks that do not have a date yet.',
+            todayHint: 'Today includes due, active, and overdue open todos.',
+            monthHint: 'Month view lays out scheduled todos, including daily and workday repeats.',
+            dateMode: 'Date',
+            dateToday: 'Today',
+            dateTomorrow: 'Tomorrow',
+            dateDaily: 'Every day',
+            dateWorkdays: 'Every workday',
+            dateCustom: 'Custom range',
+            dateNone: 'Unscheduled',
+            startDate: 'Start',
+            dueDate: 'End',
+            priority: 'Priority',
+            low: 'Low',
+            normal: 'Normal',
+            high: 'High',
+            add: 'Add',
+            create: 'New todo',
+            hideCreate: 'Collapse',
+            edit: 'Edit',
+            saveEdit: 'Save',
+            cancelEdit: 'Cancel',
+            complete: 'Complete',
+            reopen: 'Mark open',
+            delete: 'Delete',
+            suggestions: 'Suggestions',
+            suggestionsHint: 'Extract clear next actions from recent conversations; accepted items become todos.',
+            refreshSuggestions: 'Regenerate',
+            accept: 'Accept',
+            dismiss: 'Dismiss',
+            previousMonth: 'Previous month',
+            nextMonth: 'Next month',
+            monthlyEmpty: 'No scheduled todos this month',
+            noItems: 'No todos',
+            noSuggestions: 'No high-confidence suggestions',
+            overdue: 'Overdue',
+            todayLabel: 'Today',
+            tomorrow: 'Tomorrow',
+            noDate: 'Unscheduled',
+            starts: 'Starts {date}',
+            dateRange: '{start} - {end}',
+            loadFailed: 'Failed to load todos: {message}',
+            saveFailed: 'Failed to save todo: {message}',
+            movedAfterEdit: 'Saved and moved to {scope}.',
+            suggestionFailed: 'Failed to generate suggestions: {message}',
+            sourceConversation: 'Conversation suggestion',
         },
         projects: {
             emptyTitle: 'Your drive is empty',
@@ -929,6 +1190,135 @@ const I18N = {
             collapse: 'Collapse',
             noMatches: 'No records match the filters',
             fullContent: 'Full content',
+        },
+        eval: {
+            title: 'Conversation Eval',
+            subtitle: 'Generate candidate cases from real conversations and approve them into regression sets.',
+            collect: 'Collect Candidates',
+            collecting: 'Collecting...',
+            refresh: 'Refresh Eval',
+            historicalRun: 'Historical Check',
+            replayRun: 'Isolated Replay',
+            running: 'Running...',
+            approve: 'Approve',
+            approved: 'Approved',
+            edit: 'Edit',
+            editTitle: 'Edit Case',
+            saving: 'Saving...',
+            delete: 'Remove',
+            candidates: 'Candidate Cases',
+            approvedCases: 'Regression Cases',
+            latestReport: 'Latest Report',
+            reportHistory: 'Report History',
+            reportDetail: 'Report Detail',
+            loadingReport: 'Loading report detail...',
+            expandReportHint: 'Expand to load the full report, per-case scores, and run details.',
+            runHistory: 'Run History',
+            noRunHistory: 'No run history yet.',
+            caseResults: 'Case Results',
+            runDetails: 'Run Details',
+            runId: 'Run ID',
+            completedAt: 'Completed',
+            response: 'Actual Response',
+            replayResponse: 'Replay Response',
+            historicalResponse: 'Historical Response',
+            matched: 'Matched',
+            missing: 'Missing',
+            evidence: 'Evidence',
+            openTrace: 'Open Trace',
+            traceUnavailable: 'No trace available',
+            llmEnrichment: 'AI Filled',
+            llmRefinementIssue: 'AI refinement is inactive: {count}/{total} candidates used fallback extraction. Reason: {reason}',
+            llmRefinementFailed: 'AI refinement partially failed: {count}/{total} candidates fell back to deterministic extraction. Reason: {reason}',
+            llmRefinementPartial: 'AI refinement was capped: {count}/{total} candidates used fallback extraction after reaching the refinement limit.',
+            llmRefinementUnknown: 'model is not configured, failed, or the refinement cap was reached',
+            model: 'Model',
+            noCandidates: 'No candidates yet. Collect from real conversations first.',
+            noCases: 'No approved cases yet.',
+            noReport: 'No report has been run yet.',
+            loadFailed: 'Failed to load eval: {message}',
+            collectFailed: 'Collection failed: {message}',
+            approveFailed: 'Approval failed: {message}',
+            deleteFailed: 'Remove failed: {message}',
+            runFailed: 'Run failed: {message}',
+            candidateCount: 'Candidates',
+            caseCount: 'Cases',
+            passRate: 'Pass Rate',
+            failedCount: 'Failed',
+            source: 'Source',
+            behavior: 'Expected Behavior',
+            taskChain: 'Task Chain',
+            edgeCases: 'Edges',
+            failureModes: 'Failure Modes',
+            mustInclude: 'Must Include',
+            mustNotInclude: 'Must Not Include',
+            include: 'Should Include',
+            toolCalls: 'Tool Calls',
+            answerResult: 'Answer Result',
+            citations: 'Citations',
+            forbiddenTerms: 'Must Not Include',
+            onePerLine: 'One per line',
+            addItem: 'Add',
+            removeItem: 'Remove',
+            input: 'Input',
+            pageRange: '{start}-{end} / {total}',
+            pageStatus: 'Page {page}/{pages}',
+            previousPage: 'Previous',
+            nextPage: 'Next',
+            historical: 'Historical Answer',
+            tags: 'Tags',
+            priority: 'Priority',
+            intent: 'Intent',
+            scenario: 'Scenario',
+            scenarioProfile: 'Candidate Scenario',
+            profileAll: 'All Scenarios',
+            profileDefaultQa: 'Default Q&A',
+            profileDeepResearch: 'Deep Research',
+            profileToolUse: 'Tool/Search',
+            profileCoding: 'Coding/Debugging',
+            qualityProfile: 'Extraction Quality',
+            qualityBalanced: 'Balanced',
+            qualityHighPrecision: 'High Precision',
+            qualityHighRecall: 'High Recall',
+            llmModel: 'Refine Model',
+            modelDefault: 'System Default',
+            modelMiniMaxM3: 'MiniMax M3',
+            modelMiniMaxM27Highspeed: 'MiniMax M2.7 Highspeed',
+            modelMiniMaxM25Highspeed: 'MiniMax M2.5 Highspeed',
+            modelDoubaoLite: 'Doubao Lite',
+            candidateQuality: 'Quality',
+            collectDone: 'Generated {count} candidates.',
+            approveDone: 'Added to regression set.',
+            editDone: 'Case saved.',
+            editFailed: 'Save failed: {message}',
+            deleteDone: 'Case removed.',
+            runDone: 'Regression finished: {passed}/{total} passed.',
+            historicalMode: 'Historical response',
+            replayMode: 'Isolated Agent',
+            expectedTools: 'Expected Tools',
+            accuracy: 'Accuracy',
+            completeness: 'Completeness',
+            overallScore: 'Overall Score',
+            dimensions: 'Dimensions',
+            dimensionScores: 'Dimension Scores',
+            tagSlices: 'Scenario/Risk Groups',
+            tagSliceHelp: 'Grouped by intent, edge cases, and failure risks; failed-heavy groups are shown first.',
+            tagRaw: 'Raw tag',
+            scorecard: 'Scorecard',
+            score: 'Score',
+            score1to5: '1-5 Score',
+            passingScore: 'Passing Score',
+            standard: 'Standard',
+            requirements: 'Requirements',
+            pass: 'Pass',
+            fail: 'Fail',
+            toolUse: 'Tool Use',
+            constraints: 'Constraints',
+            requiredTools: 'Required Tools',
+            forbiddenTools: 'Forbidden Tools',
+            requiredPoints: 'Completeness Points',
+            replayIsolation: 'Replay Identity',
+            confirmDelete: 'Remove this case from the regression set?',
         },
         pulse: {
             topicsTitle: 'Topic Subscriptions',
@@ -1259,6 +1649,25 @@ let runs = [];
 let settings = {};
 let health = null;
 let pulse = { date: '', generated_at: '', topics: [], suggested_topics: [], items: [] };
+let todoState = {
+    scope: 'today',
+    items: [],
+    todayItems: [],
+    suggestions: [],
+    counts: {},
+    date: '',
+    month: todoMonthKey(new Date()),
+    dateMode: 'today',
+    editingId: '',
+    editDateMode: 'custom',
+    editDraft: null,
+    loading: false,
+    saving: false,
+    addOpen: false,
+    suggestionRefreshing: false,
+    notice: '',
+    error: '',
+};
 let currentLanguage = localStorage.getItem(LANGUAGE_KEY) || 'zh';
 let currentUserId = loadCurrentUserId();
 let currentAccountToken = '';
@@ -1321,6 +1730,31 @@ let selectedDeveloperMemoryKeys = new Set();
 let developerMemoryHoverCard = null;
 let developerMemoryHoverHideTimer = null;
 let lastMemoryDebug = null;
+let conversationEvalState = {
+    candidatesPayload: null,
+    casesPayload: null,
+    latestReport: null,
+    runHistoryPayload: null,
+    scenarioProfile: 'all',
+    qualityProfile: 'balanced',
+    modelPreference: 'minimax:MiniMax-M2.7-highspeed',
+    reportDetailsByRunId: {},
+    reportLoadingIds: new Set(),
+    reportOpenIds: new Set(),
+    candidatesPage: 1,
+    casesPage: 1,
+    reportPage: 1,
+    loading: false,
+    collecting: false,
+    running: false,
+    runningMode: '',
+    error: '',
+    status: '',
+    statusType: 'muted',
+    approvingIds: new Set(),
+    deletingIds: new Set(),
+    savingIds: new Set(),
+};
 let selectedRunId = '';
 let selectedTraceNodeId = '';
 let selectedTraceRunId = '';
@@ -1412,6 +1846,7 @@ const viewTitle = document.getElementById('view-title');
 const viewSubtitle = document.getElementById('view-subtitle');
 const systemStatus = document.getElementById('system-status');
 const agentCount = document.getElementById('agent-count');
+const todoCount = document.getElementById('todo-count');
 const projectCount = document.getElementById('project-count');
 const toolCount = document.getElementById('tool-count');
 const runCount = document.getElementById('run-count');
@@ -1419,6 +1854,8 @@ const pinnedAgentList = document.getElementById('pinned-agent-list');
 const projectList = document.getElementById('project-list');
 const navSectionCount = document.getElementById('nav-section-count');
 const pinnedSectionCount = document.getElementById('pinned-section-count');
+const todoSectionCount = document.getElementById('todo-section-count');
+const todoSidebarList = document.getElementById('todo-sidebar-list');
 const projectSectionCount = document.getElementById('project-section-count');
 const conversationSectionCount = document.getElementById('conversation-section-count');
 const agentsGrid = document.getElementById('agents-grid');
@@ -1447,6 +1884,7 @@ const drivePreviewDownload = document.querySelector('[data-drive-preview-downloa
 const runList = document.getElementById('run-list');
 const runDetail = document.getElementById('run-detail');
 const developerWorkbench = document.getElementById('developer-workbench');
+const evalWorkbench = document.getElementById('eval-workbench');
 const settingsGrid = document.getElementById('settings-grid');
 const pulseTopicForm = document.getElementById('pulse-topic-form');
 const pulseTopicInput = document.getElementById('pulse-topic-input');
@@ -1462,6 +1900,7 @@ const pulsePostTitle = document.getElementById('pulse-post-title');
 const pulsePostNote = document.getElementById('pulse-post-note');
 const pulsePostBody = document.getElementById('pulse-post-body');
 const pulsePostFooter = document.getElementById('pulse-post-footer');
+const todoWorkbench = document.getElementById('todo-workbench');
 const languageToggle = document.getElementById('language-toggle');
 const agentCommandBar = document.getElementById('agent-command-bar');
 const modeMenu = document.getElementById('mode-menu');
@@ -1582,10 +2021,12 @@ function setLanguage(language) {
     renderDrivePathDialog();
     renderDriveDocumentPreview();
     renderPulse();
+    renderTodos();
     renderAccountControls();
     renderRoleSelect();
     renderRoleMemoryList();
     renderDeveloperView();
+    renderEvalView();
     renderModelSelect();
     updateTopbar();
     updateChatHistoryControls();
@@ -1711,7 +2152,7 @@ function saveCollapsedSidebarSections() {
 }
 
 function setSidebarSectionCollapsed(sectionId, collapsed) {
-    const allowed = ['nav', 'pinned', 'projects', 'conversations'];
+    const allowed = ['nav', 'pinned', 'todos', 'projects', 'conversations'];
     if (!allowed.includes(sectionId)) return;
 
     if (collapsed) {
@@ -2078,6 +2519,25 @@ async function switchAccount(userId, options = {}) {
     toolSettingsStatusType = 'muted';
     runs = [];
     pulse = { date: '', generated_at: '', topics: [], suggested_topics: [], items: [] };
+    todoState = {
+        scope: 'today',
+        items: [],
+        todayItems: [],
+        suggestions: [],
+        counts: {},
+        date: '',
+        month: todoMonthKey(new Date()),
+        dateMode: 'today',
+        editingId: '',
+        editDateMode: 'custom',
+        editDraft: null,
+        loading: false,
+        saving: false,
+        addOpen: false,
+        suggestionRefreshing: false,
+        notice: '',
+        error: '',
+    };
     projects = [];
     projectDetail = null;
     activeProjectDocumentId = '';
@@ -2128,6 +2588,7 @@ async function switchAccount(userId, options = {}) {
     renderProjectList();
     renderProjects();
     renderPulse();
+    renderTodos();
     renderRuns();
     showWelcome();
 
@@ -4207,6 +4668,1659 @@ async function deleteRoleMemory(memoryId) {
     }
 }
 
+function conversationEvalItems(payload, key) {
+    const items = payload?.[key];
+    return Array.isArray(items) ? items : [];
+}
+
+function conversationEvalCandidates() {
+    return conversationEvalItems(conversationEvalState.candidatesPayload, 'candidates');
+}
+
+function conversationEvalCases() {
+    return conversationEvalItems(conversationEvalState.casesPayload, 'cases');
+}
+
+function conversationEvalRuns() {
+    return conversationEvalItems(conversationEvalState.runHistoryPayload, 'runs');
+}
+
+function evalReportRunId(value = {}, fallback = '') {
+    return String(value?.run_id || fallback || '').trim();
+}
+
+function conversationEvalReportEntries() {
+    const latest = conversationEvalState.latestReport && Object.keys(conversationEvalState.latestReport).length
+        ? conversationEvalState.latestReport
+        : null;
+    const latestId = latest ? evalReportRunId(latest, 'latest') : '';
+    const entries = [];
+    const seen = new Set();
+    conversationEvalRuns().forEach((run) => {
+        const runId = evalReportRunId(run);
+        if (!runId || seen.has(runId)) return;
+        const report = latestId === runId
+            ? latest
+            : (conversationEvalState.reportDetailsByRunId?.[runId] || null);
+        entries.push({ run_id: runId, run, report, isLatest: latestId === runId });
+        seen.add(runId);
+    });
+    if (latest && latestId && !seen.has(latestId)) {
+        entries.unshift({ run_id: latestId, run: latest, report: latest, isLatest: true });
+    }
+    return entries;
+}
+
+function conversationEvalOpenReportCases() {
+    const openEntry = conversationEvalReportEntries().find((entry) => (
+        conversationEvalState.reportOpenIds.has(entry.run_id) && Array.isArray(entry.report?.cases)
+    ));
+    return openEntry?.report?.cases || conversationEvalState.latestReport?.cases || [];
+}
+
+function evalPageStateKey(kind = '') {
+    if (kind === 'cases') return 'casesPage';
+    if (kind === 'report') return 'reportPage';
+    return 'candidatesPage';
+}
+
+function evalPageSize(kind = '') {
+    return EVAL_PAGE_SIZES[kind] || EVAL_PAGE_SIZES.candidates;
+}
+
+function evalPaginationFor(items = [], kind = 'candidates') {
+    const total = Array.isArray(items) ? items.length : 0;
+    const pageSize = evalPageSize(kind);
+    const pageCount = Math.max(1, Math.ceil(total / pageSize));
+    const requested = Number(conversationEvalState[evalPageStateKey(kind)] || 1);
+    const page = Math.max(1, Math.min(pageCount, Number.isFinite(requested) ? requested : 1));
+    const startIndex = total ? (page - 1) * pageSize : 0;
+    const endIndex = total ? Math.min(total, startIndex + pageSize) : 0;
+    return {
+        kind,
+        page,
+        pageCount,
+        total,
+        start: total ? startIndex + 1 : 0,
+        end: endIndex,
+        items: total ? items.slice(startIndex, endIndex) : [],
+    };
+}
+
+function setConversationEvalPage(kind = 'candidates', page = 1) {
+    const stateKey = evalPageStateKey(kind);
+    const items = kind === 'cases'
+        ? conversationEvalCases()
+        : (kind === 'report' ? conversationEvalOpenReportCases() : conversationEvalCandidates());
+    const pageCount = Math.max(1, Math.ceil((Array.isArray(items) ? items.length : 0) / evalPageSize(kind)));
+    const nextPage = Math.max(1, Math.min(pageCount, Number(page) || 1));
+    if (conversationEvalState[stateKey] === nextPage) return;
+    conversationEvalState = { ...conversationEvalState, [stateKey]: nextPage };
+    renderEvalView();
+}
+
+function renderEvalPagination(pagination = {}) {
+    if (!pagination.total || pagination.pageCount <= 1) return '';
+    return `
+        <div class="eval-pagination">
+            <span>${escapeHtml(t('eval.pageRange', {
+                start: pagination.start,
+                end: pagination.end,
+                total: pagination.total,
+            }))}</span>
+            <div class="eval-page-actions">
+                <button class="developer-memory-action" type="button"
+                        data-eval-page-kind="${escapeAttr(pagination.kind)}"
+                        data-eval-page="${pagination.page - 1}"
+                        ${pagination.page <= 1 ? 'disabled' : ''}>
+                    ${escapeHtml(t('eval.previousPage'))}
+                </button>
+                <strong>${escapeHtml(t('eval.pageStatus', {
+                    page: pagination.page,
+                    pages: pagination.pageCount,
+                }))}</strong>
+                <button class="developer-memory-action" type="button"
+                        data-eval-page-kind="${escapeAttr(pagination.kind)}"
+                        data-eval-page="${pagination.page + 1}"
+                        ${pagination.page >= pagination.pageCount ? 'disabled' : ''}>
+                    ${escapeHtml(t('eval.nextPage'))}
+                </button>
+            </div>
+        </div>
+    `;
+}
+
+async function loadConversationEval() {
+    if (!evalWorkbench || !currentUserId) return;
+    conversationEvalState = {
+        ...conversationEvalState,
+        loading: true,
+        error: '',
+    };
+    renderEvalView();
+    try {
+        const data = await apiCall('GET', '/api/evals/conversation');
+        conversationEvalState = {
+            ...conversationEvalState,
+            candidatesPayload: data.candidates || null,
+            casesPayload: data.cases || null,
+            latestReport: data.latest_report && Object.keys(data.latest_report).length ? data.latest_report : null,
+            runHistoryPayload: data.run_history || null,
+            loading: false,
+            error: '',
+        };
+    } catch (err) {
+        conversationEvalState = {
+            ...conversationEvalState,
+            loading: false,
+            error: t('eval.loadFailed', { message: err.message }),
+        };
+    }
+    renderEvalView();
+}
+
+async function collectConversationEvalCandidates() {
+    if (conversationEvalState.collecting) return;
+    conversationEvalState = {
+        ...conversationEvalState,
+        collecting: true,
+        error: '',
+        status: '',
+    };
+    renderEvalView();
+    try {
+        const data = await apiCall('POST', '/api/evals/conversation/collect', {
+            limit: 40,
+            max_context_messages: 10,
+            scenario_profile: conversationEvalState.scenarioProfile || 'all',
+            quality_profile: conversationEvalState.qualityProfile || 'balanced',
+            model_preference: conversationEvalState.modelPreference || undefined,
+            llm_max_candidates: 4,
+        });
+        const candidatesPayload = data.candidates || null;
+        const count = Number(candidatesPayload?.candidate_count ?? conversationEvalItems(candidatesPayload, 'candidates').length ?? 0);
+        conversationEvalState = {
+            ...conversationEvalState,
+            candidatesPayload,
+            candidatesPage: 1,
+            collecting: false,
+            status: t('eval.collectDone', { count }),
+            statusType: 'ok',
+        };
+    } catch (err) {
+        conversationEvalState = {
+            ...conversationEvalState,
+            collecting: false,
+            error: t('eval.collectFailed', { message: err.message }),
+            statusType: 'error',
+        };
+    }
+    renderEvalView();
+}
+
+async function approveConversationEvalCase(caseId) {
+    const item = conversationEvalCandidates().find((candidate) => candidate.id === caseId);
+    if (!item || conversationEvalState.approvingIds.has(caseId)) return;
+    conversationEvalState.approvingIds.add(caseId);
+    conversationEvalState.error = '';
+    conversationEvalState.status = '';
+    renderEvalView();
+    try {
+        const approvedCase = JSON.parse(JSON.stringify(item));
+        const data = await apiCall('POST', '/api/evals/conversation/cases', { case: approvedCase });
+        conversationEvalState = {
+            ...conversationEvalState,
+            casesPayload: data,
+            casesPage: 1,
+            status: t('eval.approveDone'),
+            statusType: 'ok',
+        };
+    } catch (err) {
+        conversationEvalState = {
+            ...conversationEvalState,
+            error: t('eval.approveFailed', { message: err.message }),
+            statusType: 'error',
+        };
+    } finally {
+        conversationEvalState.approvingIds.delete(caseId);
+        renderEvalView();
+    }
+}
+
+async function deleteConversationEvalCase(caseId) {
+    if (!caseId || conversationEvalState.deletingIds.has(caseId)) return;
+    const confirmed = await confirmAction(t('eval.confirmDelete'), {
+        title: t('eval.delete'),
+        confirmText: t('eval.delete'),
+    });
+    if (!confirmed) return;
+    conversationEvalState.deletingIds.add(caseId);
+    conversationEvalState.error = '';
+    conversationEvalState.status = '';
+    renderEvalView();
+    try {
+        const data = await apiCall('DELETE', `/api/evals/conversation/cases/${encodeURIComponent(caseId)}`);
+        conversationEvalState = {
+            ...conversationEvalState,
+            casesPayload: data,
+            status: t('eval.deleteDone'),
+            statusType: 'ok',
+        };
+    } catch (err) {
+        conversationEvalState = {
+            ...conversationEvalState,
+            error: t('eval.deleteFailed', { message: err.message }),
+            statusType: 'error',
+        };
+    } finally {
+        conversationEvalState.deletingIds.delete(caseId);
+        renderEvalView();
+    }
+}
+
+async function editConversationEvalCase(kind, caseId) {
+    const item = conversationEvalItemByKind(kind, caseId);
+    if (!item) return;
+    const dialogId = `eval-edit-${Date.now()}`;
+    const normalizedExpected = normalizeEvalExpected(item.expected || {});
+    const normalizedInclude = normalizeEvalInclude(item, normalizedExpected);
+    const normalizedRubric = normalizeEvalRubric(item.rubric || {}, normalizedExpected);
+    const taxonomy = item.taxonomy || {};
+    const scenario = taxonomy.scenario || '';
+    const inputText = latestEvalUserInput(item);
+    const forbiddenTerms = normalizedExpected.accuracy.mustNotInclude;
+    const dialog = document.createElement('div');
+    dialog.className = 'app-confirm-dialog eval-edit-dialog';
+    dialog.setAttribute('role', 'dialog');
+    dialog.setAttribute('aria-modal', 'true');
+    dialog.setAttribute('aria-labelledby', `${dialogId}-title`);
+    dialog.innerHTML = `
+        <button class="app-confirm-backdrop" type="button" data-eval-edit-cancel aria-label="${escapeAttr(t('actions.cancel'))}"></button>
+        <form class="app-confirm-panel eval-edit-panel" data-eval-edit-form>
+            <div class="eval-edit-head">
+                <h2 id="${escapeAttr(dialogId)}-title">${escapeHtml(t('eval.editTitle'))}</h2>
+                <span>${escapeHtml(caseId)}</span>
+            </div>
+            <label class="eval-edit-field">
+                <span>${escapeHtml(t('eval.scenario'))}</span>
+                <input name="scenario" value="${escapeAttr(scenario)}">
+            </label>
+            <label class="eval-edit-field">
+                <span>${escapeHtml(t('eval.input'))}</span>
+                <textarea name="input" rows="3">${escapeHtml(inputText)}</textarea>
+            </label>
+            <section class="eval-edit-section">
+                <h3>${escapeHtml(t('eval.include'))}</h3>
+                <div class="eval-edit-grid">
+                    ${renderEvalEditList('tool_calls', t('eval.toolCalls'), normalizedInclude.toolCalls)}
+                    ${renderEvalEditList('answer_result', t('eval.answerResult'), normalizedInclude.answerResult)}
+                    ${renderEvalEditList('citations', t('eval.citations'), normalizedInclude.citations)}
+                </div>
+            </section>
+            <section class="eval-edit-section">
+                <h3>${escapeHtml(t('eval.dimensions'))}</h3>
+                <div class="eval-edit-dimensions">
+                    ${normalizedRubric.dimensions.map(renderEvalEditDimensionRow).join('')}
+                </div>
+                ${renderEvalEditList('must_not_include', t('eval.forbiddenTerms'), forbiddenTerms)}
+            </section>
+            <div class="app-confirm-actions">
+                <button class="btn-secondary" type="button" data-eval-edit-cancel>${escapeHtml(t('actions.cancel'))}</button>
+                <button class="btn-primary app-confirm-primary" type="submit">${escapeHtml(t('actions.save'))}</button>
+            </div>
+        </form>
+    `;
+
+    const close = () => dialog.remove();
+    dialog.addEventListener('click', (event) => {
+        const addButton = event.target.closest('[data-eval-list-add]');
+        if (addButton) {
+            event.preventDefault();
+            const listName = addButton.dataset.evalListAdd || '';
+            const list = addButton.closest('[data-eval-edit-list]')?.querySelector('[data-eval-list-items]');
+            if (!listName || !list) return;
+            list.insertAdjacentHTML('beforeend', renderEvalEditListRow(listName));
+            list.querySelector('[data-eval-list-row]:last-child input')?.focus({ preventScroll: true });
+            return;
+        }
+        const removeButton = event.target.closest('[data-eval-list-remove]');
+        if (removeButton) {
+            event.preventDefault();
+            const row = removeButton.closest('[data-eval-list-row]');
+            const list = removeButton.closest('[data-eval-list-items]');
+            if (!row || !list) return;
+            if (list.querySelectorAll('[data-eval-list-row]').length > 1) {
+                row.remove();
+            } else {
+                const input = row.querySelector('input');
+                if (input) {
+                    input.value = '';
+                    input.focus({ preventScroll: true });
+                }
+            }
+            return;
+        }
+        if (event.target.closest('[data-eval-edit-cancel]')) {
+            event.preventDefault();
+            close();
+        }
+    });
+    dialog.querySelector('[data-eval-edit-form]')?.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        const submitButton = dialog.querySelector('button[type="submit"]');
+        if (submitButton) {
+            submitButton.disabled = true;
+            submitButton.textContent = t('eval.saving');
+        }
+        try {
+            const nextCase = buildEditedConversationEvalCase(item, dialog.querySelector('[data-eval-edit-form]'));
+            await saveConversationEvalCase(kind, caseId, nextCase);
+            close();
+        } catch (err) {
+            conversationEvalState.error = t('eval.editFailed', { message: err.message });
+            renderEvalView();
+            close();
+        }
+    });
+    document.body.appendChild(dialog);
+    setTimeout(() => dialog.querySelector('input[name="scenario"]')?.focus({ preventScroll: true }), 0);
+}
+
+function renderEvalEditList(name, label, values = []) {
+    const items = Array.isArray(values) && values.length ? values : [''];
+    return `
+        <div class="eval-edit-list-field" data-eval-edit-list="${escapeAttr(name)}">
+            <div class="eval-edit-list-head">
+                <span>${escapeHtml(label)}</span>
+                <button class="eval-edit-list-add" type="button" data-eval-list-add="${escapeAttr(name)}">${escapeHtml(t('eval.addItem'))}</button>
+            </div>
+            <ul class="eval-edit-list" data-eval-list-items>
+                ${items.map((value) => renderEvalEditListRow(name, value)).join('')}
+            </ul>
+        </div>
+    `;
+}
+
+function renderEvalEditListRow(name, value = '') {
+    return `
+        <li class="eval-edit-list-row" data-eval-list-row>
+            <input data-eval-list-input="${escapeAttr(name)}" value="${escapeAttr(value)}">
+            <button class="eval-edit-list-remove" type="button" data-eval-list-remove aria-label="${escapeAttr(t('eval.removeItem'))}">&times;</button>
+        </li>
+    `;
+}
+
+function renderEvalEditDimensionRow(dimension = {}) {
+    const id = dimension.id || '';
+    const requirementName = evalDimensionRequirementsListName(id);
+    return `
+        <div class="eval-edit-dimension-row" data-eval-edit-dimension="${escapeAttr(id)}">
+            <div class="eval-edit-dimension-top">
+                <strong>${escapeHtml(evalDimensionLabel(id, dimension.label))}</strong>
+                <label>
+                    <span>${escapeHtml(t('eval.passingScore'))}</span>
+                    <select data-eval-dimension-passing-score>
+                        ${[1, 2, 3, 4, 5].map((score) => `
+                            <option value="${score}" ${score === evalClampRating(dimension.passingScore || 3) ? 'selected' : ''}>${score}/5</option>
+                        `).join('')}
+                    </select>
+                </label>
+            </div>
+            <label class="eval-edit-field eval-edit-dimension-standard">
+                <span>${escapeHtml(t('eval.standard'))}</span>
+                <textarea data-eval-dimension-standard rows="2">${escapeHtml(dimension.standard || '')}</textarea>
+            </label>
+            ${renderEvalEditList(requirementName, t('eval.requirements'), dimension.requirements || [])}
+        </div>
+    `;
+}
+
+function buildEditedConversationEvalCase(item, form) {
+    const formData = new FormData(form);
+    const next = JSON.parse(JSON.stringify(item));
+    const include = {
+        tool_calls: evalListInputsToList(form, 'tool_calls'),
+        answer_result: evalListInputsToList(form, 'answer_result'),
+        citations: evalListInputsToList(form, 'citations'),
+    };
+    const mustNotInclude = evalListInputsToList(form, 'must_not_include');
+    next.taxonomy = next.taxonomy && typeof next.taxonomy === 'object' ? next.taxonomy : {};
+    next.taxonomy.scenario = String(formData.get('scenario') || '').trim();
+    next.input = next.input && typeof next.input === 'object' ? next.input : {};
+    next.input.messages = updateEvalInputMessages(next.input.messages, String(formData.get('input') || '').trim());
+    next.expected = next.expected && typeof next.expected === 'object' ? next.expected : {};
+    next.expected.include = include;
+    next.expected.tools = {
+        ...(next.expected.tools || {}),
+        required: include.tool_calls,
+    };
+    next.expected.result = next.expected.result && typeof next.expected.result === 'object' ? next.expected.result : {};
+    next.expected.result.accuracy = {
+        ...(next.expected.result.accuracy || {}),
+        must_include: include.answer_result,
+        min_must_include: include.answer_result.length ? Math.min(include.answer_result.length, 2) : 0,
+        must_not_include: mustNotInclude,
+    };
+    next.expected.result.completeness = {
+        ...(next.expected.result.completeness || {}),
+        required_points: include.answer_result.map((text, index) => ({
+            label: `answer_result_${index + 1}`,
+            any_text_contains: [text],
+        })),
+        min_required_points: include.answer_result.length ? Math.min(include.answer_result.length, 2) : 0,
+        min_score: include.answer_result.length ? 0.6 : 0.0,
+    };
+    next.expected.must_include = include.answer_result;
+    next.expected.min_must_include = include.answer_result.length ? Math.min(include.answer_result.length, 2) : 0;
+    next.expected.must_not_include = mustNotInclude;
+    next.expected.tool_expectations = include.tool_calls.map((name) => ({ name, required: true }));
+    next.rubric = next.rubric && typeof next.rubric === 'object' ? next.rubric : {};
+    next.rubric.schema_version = 2;
+    next.rubric.gates = Array.isArray(next.rubric.gates) && next.rubric.gates.length
+        ? next.rubric.gates
+        : ['non_empty_response', 'no_forbidden_terms', 'no_forbidden_tools'];
+    next.rubric.dimensions = Array.from(form.querySelectorAll('[data-eval-edit-dimension]')).map((row) => {
+        const id = row.dataset.evalEditDimension || '';
+        const passingScore = evalClampRating(row.querySelector('[data-eval-dimension-passing-score]')?.value || 3);
+        return {
+            id,
+            label: evalDimensionLabel(id),
+            standard: String(row.querySelector('[data-eval-dimension-standard]')?.value || '').trim(),
+            requirements: evalListInputsToList(row, evalDimensionRequirementsListName(id)),
+            passing_score: passingScore,
+            score_scale: { min: 1, max: 5 },
+            threshold: evalRatingToThreshold(passingScore),
+            scorer: evalDimensionScorer(id),
+            checks: evalDimensionChecks(id, next.expected),
+        };
+    }).filter((dimension) => dimension.id);
+    const thresholds = next.rubric.dimensions.map((dimension) => Number(dimension.threshold || 0)).filter((value) => value > 0);
+    next.rubric.pass_threshold = thresholds.length
+        ? thresholds.reduce((sum, value) => sum + value, 0) / thresholds.length
+        : 0;
+    return next;
+}
+
+function updateEvalInputMessages(messages, inputText) {
+    const nextMessages = Array.isArray(messages) ? JSON.parse(JSON.stringify(messages)) : [];
+    for (let index = nextMessages.length - 1; index >= 0; index -= 1) {
+        if (nextMessages[index]?.role === 'user') {
+            nextMessages[index].content = inputText;
+            return nextMessages;
+        }
+    }
+    if (inputText) nextMessages.push({ role: 'user', content: inputText });
+    return nextMessages;
+}
+
+async function saveConversationEvalCase(kind, caseId, nextCase) {
+    const stateKey = `${kind}:${caseId}`;
+    conversationEvalState.savingIds.add(stateKey);
+    conversationEvalState.error = '';
+    conversationEvalState.status = '';
+    renderEvalView();
+    try {
+        const endpoint = kind === 'candidate'
+            ? `/api/evals/conversation/candidates/${encodeURIComponent(caseId)}`
+            : `/api/evals/conversation/cases/${encodeURIComponent(caseId)}`;
+        const data = await apiCall('PUT', endpoint, { case: nextCase });
+        conversationEvalState = {
+            ...conversationEvalState,
+            candidatesPayload: kind === 'candidate' ? data : conversationEvalState.candidatesPayload,
+            casesPayload: kind === 'case' ? data : conversationEvalState.casesPayload,
+            status: t('eval.editDone'),
+            statusType: 'ok',
+        };
+    } finally {
+        conversationEvalState.savingIds.delete(stateKey);
+        renderEvalView();
+    }
+}
+
+async function runConversationEval(mode = 'historical') {
+    if (conversationEvalState.running) return;
+    const normalizedMode = mode === 'agent' ? 'agent' : 'historical';
+    conversationEvalState = {
+        ...conversationEvalState,
+        running: true,
+        runningMode: normalizedMode,
+        error: '',
+        status: '',
+    };
+    renderEvalView();
+    try {
+        const report = await apiCall('POST', '/api/evals/conversation/run', { mode: normalizedMode });
+        const summary = report.summary || {};
+        conversationEvalState = {
+            ...conversationEvalState,
+            latestReport: report,
+            runHistoryPayload: report.run_history || conversationEvalState.runHistoryPayload,
+            reportOpenIds: new Set([evalReportRunId(report, 'latest')]),
+            reportPage: 1,
+            running: false,
+            runningMode: '',
+            status: t('eval.runDone', {
+                passed: summary.passed_count ?? 0,
+                total: summary.case_count ?? 0,
+            }),
+            statusType: 'ok',
+        };
+    } catch (err) {
+        conversationEvalState = {
+            ...conversationEvalState,
+            running: false,
+            runningMode: '',
+            error: t('eval.runFailed', { message: err.message }),
+            statusType: 'error',
+        };
+    }
+    renderEvalView();
+}
+
+async function loadConversationEvalRunReport(runId) {
+    const normalizedRunId = String(runId || '').trim();
+    if (!normalizedRunId || normalizedRunId === 'latest') return;
+    const latestId = evalReportRunId(conversationEvalState.latestReport, 'latest');
+    if (latestId === normalizedRunId && Array.isArray(conversationEvalState.latestReport?.cases)) return;
+    if (conversationEvalState.reportDetailsByRunId?.[normalizedRunId] || conversationEvalState.reportLoadingIds.has(normalizedRunId)) return;
+
+    const loadingIds = new Set(conversationEvalState.reportLoadingIds);
+    loadingIds.add(normalizedRunId);
+    conversationEvalState = {
+        ...conversationEvalState,
+        reportLoadingIds: loadingIds,
+        error: '',
+    };
+    renderEvalView();
+    try {
+        const report = await apiCall('GET', `/api/evals/conversation/runs/${encodeURIComponent(normalizedRunId)}`);
+        const nextLoadingIds = new Set(conversationEvalState.reportLoadingIds);
+        nextLoadingIds.delete(normalizedRunId);
+        conversationEvalState = {
+            ...conversationEvalState,
+            reportDetailsByRunId: {
+                ...(conversationEvalState.reportDetailsByRunId || {}),
+                [normalizedRunId]: report,
+            },
+            reportLoadingIds: nextLoadingIds,
+        };
+    } catch (err) {
+        const nextLoadingIds = new Set(conversationEvalState.reportLoadingIds);
+        nextLoadingIds.delete(normalizedRunId);
+        conversationEvalState = {
+            ...conversationEvalState,
+            reportLoadingIds: nextLoadingIds,
+            error: t('eval.loadFailed', { message: err.message }),
+            statusType: 'error',
+        };
+    }
+    renderEvalView();
+}
+
+async function toggleConversationEvalReport(runId, open) {
+    const normalizedRunId = String(runId || '').trim();
+    if (!normalizedRunId) return;
+    const openIds = new Set(conversationEvalState.reportOpenIds);
+    if (open) {
+        openIds.add(normalizedRunId);
+    } else {
+        openIds.delete(normalizedRunId);
+    }
+    conversationEvalState = {
+        ...conversationEvalState,
+        reportOpenIds: openIds,
+    };
+    renderEvalView();
+    if (open) {
+        await loadConversationEvalRunReport(normalizedRunId);
+    }
+}
+
+function renderEvalScenarioProfileControl() {
+    return `
+        <label class="eval-scenario-control">
+            <span>${escapeHtml(t('eval.scenarioProfile'))}</span>
+            <select data-eval-scenario-profile ${conversationEvalState.collecting ? 'disabled' : ''}>
+                ${EVAL_SCENARIO_PROFILES.map((profile) => `
+                    <option value="${escapeAttr(profile)}" ${profile === conversationEvalState.scenarioProfile ? 'selected' : ''}>
+                        ${escapeHtml(evalScenarioProfileLabel(profile))}
+                    </option>
+                `).join('')}
+            </select>
+        </label>
+    `;
+}
+
+function renderEvalQualityProfileControl() {
+    return `
+        <label class="eval-scenario-control">
+            <span>${escapeHtml(t('eval.qualityProfile'))}</span>
+            <select data-eval-quality-profile ${conversationEvalState.collecting ? 'disabled' : ''}>
+                ${EVAL_QUALITY_PROFILES.map((profile) => `
+                    <option value="${escapeAttr(profile)}" ${profile === conversationEvalState.qualityProfile ? 'selected' : ''}>
+                        ${escapeHtml(evalQualityProfileLabel(profile))}
+                    </option>
+                `).join('')}
+            </select>
+        </label>
+    `;
+}
+
+function renderEvalModelControl() {
+    return `
+        <label class="eval-scenario-control">
+            <span>${escapeHtml(t('eval.llmModel'))}</span>
+            <select data-eval-model-preference ${conversationEvalState.collecting ? 'disabled' : ''}>
+                ${EVAL_LLM_MODELS.map((model) => `
+                    <option value="${escapeAttr(model.value)}" ${model.value === conversationEvalState.modelPreference ? 'selected' : ''}>
+                        ${escapeHtml(t(model.labelKey))}
+                    </option>
+                `).join('')}
+            </select>
+        </label>
+    `;
+}
+
+function renderEvalReportHistory() {
+    const entries = conversationEvalReportEntries();
+    return `
+        <section class="developer-panel eval-report-panel eval-report-prominent">
+            <div class="developer-panel-head">
+                <div>
+                    <h2>${escapeHtml(t('eval.reportHistory'))}</h2>
+                    <p>${escapeHtml(entries.length ? `${entries.length} ${t('eval.runHistory')}` : t('eval.noReport'))}</p>
+                </div>
+            </div>
+            ${entries.length ? `
+                <div class="eval-report-history-list">
+                    ${entries.map((entry, index) => renderEvalReportHistoryEntry(entry, index)).join('')}
+                </div>
+            ` : `<div class="empty-inline">${escapeHtml(t('eval.noReport'))}</div>`}
+        </section>
+    `;
+}
+
+function renderEvalReportHistoryEntry(entry = {}, index = 0) {
+    const run = entry.run || {};
+    const report = entry.report || {};
+    const summary = report.summary || run.summary || {};
+    const runId = entry.run_id || evalReportRunId(run, index ? `history_${index}` : 'latest');
+    const open = conversationEvalState.reportOpenIds.has(runId);
+    const loading = conversationEvalState.reportLoadingIds.has(runId);
+    const hasDetail = Array.isArray(report.cases);
+    const failed = Number(summary.failed_count || 0);
+    const statusClass = failed ? 'error' : 'ok';
+    const score = summary.mean_overall_score_1_5 === null || summary.mean_overall_score_1_5 === undefined
+        ? formatEvalRatio(summary.mean_overall_score)
+        : formatEvalRating(summary.mean_overall_score_1_5);
+    const passText = `${summary.passed_count ?? 0}/${summary.case_count ?? 0} ${t('eval.pass')}`;
+    return `
+        <details class="eval-report-entry ${statusClass}" data-eval-report-run="${escapeAttr(runId)}" ${open ? 'open' : ''}>
+            <summary data-eval-report-summary>
+                <span class="status-dot ${statusClass}"></span>
+                <div class="eval-report-entry-main">
+                    <strong>${escapeHtml(`${evalModeLabel(run.mode || report.mode)} · ${formatEvalDateTime(run.completed_at || report.completed_at || run.generated_at || report.generated_at) || '-'}`)}</strong>
+                    <small>${escapeHtml(`${passText} · ${t('eval.overallScore')} ${score} · ${t('eval.failedCount')} ${summary.failed_count ?? 0}`)}</small>
+                    <small>${escapeHtml(runId)}</small>
+                </div>
+            </summary>
+            ${open ? `
+                <div class="eval-report-entry-body">
+                    ${loading
+                        ? `<div class="empty-inline">${escapeHtml(t('eval.loadingReport'))}</div>`
+                        : (hasDetail ? renderEvalReport(report) : `<div class="empty-inline">${escapeHtml(t('eval.expandReportHint'))}</div>`)}
+                </div>
+            ` : ''}
+        </details>
+    `;
+}
+
+function renderEvalView() {
+    if (!evalWorkbench) return;
+    const candidates = conversationEvalCandidates();
+    const cases = conversationEvalCases();
+    const approvedIds = new Set(cases.map((item) => item.id).filter(Boolean));
+    const candidatePagination = evalPaginationFor(candidates, 'candidates');
+    const casePagination = evalPaginationFor(cases, 'cases');
+    const report = conversationEvalState.latestReport || {};
+    const summary = report.summary || {};
+    const passRate = summary.case_count ? `${Math.round(Number(summary.pass_rate || 0) * 100)}%` : '-';
+    const overallScore = summary.mean_overall_score_1_5 === null || summary.mean_overall_score_1_5 === undefined
+        ? (summary.mean_overall_score === null || summary.mean_overall_score === undefined ? '-' : formatEvalRatio(summary.mean_overall_score))
+        : formatEvalRating(summary.mean_overall_score_1_5);
+    const statusHtml = conversationEvalState.error
+        ? `<div class="developer-banner error">${escapeHtml(conversationEvalState.error)}</div>`
+        : (conversationEvalState.status
+            ? `<div class="developer-banner ${conversationEvalState.statusType === 'ok' ? '' : conversationEvalState.statusType}">${escapeHtml(conversationEvalState.status)}</div>`
+            : '');
+    evalWorkbench.innerHTML = `
+        <div class="developer-toolbar eval-toolbar">
+            <div>
+                <h2>${escapeHtml(t('eval.title'))}</h2>
+                <p>${escapeHtml(t('eval.subtitle'))}</p>
+            </div>
+            <div class="eval-toolbar-actions">
+                ${renderEvalScenarioProfileControl()}
+                ${renderEvalQualityProfileControl()}
+                ${renderEvalModelControl()}
+                <button class="btn-secondary" type="button" data-eval-refresh ${conversationEvalState.loading ? 'disabled aria-busy="true"' : ''}>
+                    ${escapeHtml(t('eval.refresh'))}
+                </button>
+                <button class="btn-secondary" type="button" data-eval-collect ${conversationEvalState.collecting ? 'disabled aria-busy="true"' : ''}>
+                    ${escapeHtml(conversationEvalState.collecting ? t('eval.collecting') : t('eval.collect'))}
+                </button>
+                <button class="btn-secondary eval-run-button" type="button" data-eval-run="historical" ${conversationEvalState.running || !cases.length ? 'disabled' : ''}>
+                    ${escapeHtml(conversationEvalState.running && conversationEvalState.runningMode === 'historical' ? t('eval.running') : t('eval.historicalRun'))}
+                </button>
+                <button class="btn-primary eval-run-button" type="button" data-eval-run="agent" ${conversationEvalState.running || !cases.length ? 'disabled' : ''}>
+                    ${escapeHtml(conversationEvalState.running && conversationEvalState.runningMode === 'agent' ? t('eval.running') : t('eval.replayRun'))}
+                </button>
+            </div>
+        </div>
+        ${statusHtml}
+        ${renderEvalLlmIssueBanner(candidates)}
+        <div class="developer-summary-grid eval-summary-grid">
+            ${renderDeveloperSummaryCard(t('eval.candidateCount'), String(candidates.length), formatEvalGeneratedAt(conversationEvalState.candidatesPayload))}
+            ${renderDeveloperSummaryCard(t('eval.caseCount'), String(cases.length), formatEvalGeneratedAt(conversationEvalState.casesPayload))}
+            ${renderDeveloperSummaryCard(t('eval.passRate'), passRate, evalModeLabel(report.mode))}
+            ${renderDeveloperSummaryCard(t('eval.overallScore'), overallScore, t('eval.score1to5'))}
+            ${renderDeveloperSummaryCard(t('eval.failedCount'), String(summary.failed_count ?? '-'), formatEvalGeneratedAt(report))}
+        </div>
+        ${renderEvalReportHistory()}
+        <div class="eval-layout">
+            <section class="developer-panel eval-panel">
+                <div class="developer-panel-head eval-panel-head">
+                    <div>
+                        <h2>${escapeHtml(t('eval.candidates'))}</h2>
+                        <p>${escapeHtml(`${candidates.length} ${t('eval.candidateCount')}`)}</p>
+                    </div>
+                    ${renderEvalPagination(candidatePagination)}
+                </div>
+                <div class="eval-case-list">
+                    ${candidates.length
+                        ? candidatePagination.items.map((item) => renderEvalCaseCard(item, { candidate: true, approved: approvedIds.has(item.id) })).join('')
+                        : `<div class="empty-inline">${escapeHtml(t('eval.noCandidates'))}</div>`}
+                </div>
+                ${renderEvalPagination(candidatePagination)}
+            </section>
+            <section class="developer-panel eval-panel">
+                <div class="developer-panel-head eval-panel-head">
+                    <div>
+                        <h2>${escapeHtml(t('eval.approvedCases'))}</h2>
+                        <p>${escapeHtml(`${cases.length} ${t('eval.caseCount')}`)}</p>
+                    </div>
+                    ${renderEvalPagination(casePagination)}
+                </div>
+                <div class="eval-case-list approved">
+                    ${cases.length
+                        ? casePagination.items.map((item) => renderEvalCaseCard(item, { approvedCase: true })).join('')
+                        : `<div class="empty-inline">${escapeHtml(t('eval.noCases'))}</div>`}
+                </div>
+                ${renderEvalPagination(casePagination)}
+            </section>
+        </div>
+    `;
+}
+
+function renderEvalLlmIssueBanner(candidates = []) {
+    const summaries = evalLlmIssueSummaries(candidates);
+    if (!summaries.length) return '';
+    return summaries.map((summary) => `
+        <div class="developer-banner ${summary.severity === 'warn' ? 'warn' : ''}">
+            ${escapeHtml(t(summary.messageKey, summary))}
+        </div>
+    `).join('');
+}
+
+function evalLlmIssueSummaries(candidates = []) {
+    const items = Array.isArray(candidates) ? candidates : [];
+    if (!items.length) return [];
+    const issueInfos = items
+        .map((item) => item?.metadata?.llm_enrichment || null)
+        .filter((info) => info && ['skipped', 'failed'].includes(String(info.status || '').toLowerCase()));
+    if (!issueInfos.length) return [];
+    const plannedInfos = issueInfos.filter((info) => String(info.reason || '') === 'llm_max_candidates_reached');
+    const errorInfos = issueInfos.filter((info) => String(info.reason || '') !== 'llm_max_candidates_reached');
+    const summaries = [];
+    if (errorInfos.length) {
+        const inactive = errorInfos.length >= Math.ceil(items.length * 0.5);
+        summaries.push(evalLlmIssueSummaryFromInfos(
+            errorInfos,
+            items.length,
+            inactive ? 'warn' : 'info',
+            inactive ? 'eval.llmRefinementIssue' : 'eval.llmRefinementFailed',
+        ));
+    }
+    if (plannedInfos.length) {
+        summaries.push({
+            count: plannedInfos.length,
+            total: items.length,
+            reason: 'llm_max_candidates_reached',
+            severity: 'info',
+            messageKey: 'eval.llmRefinementPartial',
+        });
+    }
+    return summaries.filter(Boolean);
+}
+
+function evalLlmIssueSummaryFromInfos(issueInfos = [], total = 0, severity = 'warn', messageKey = 'eval.llmRefinementIssue') {
+    const reasonCounts = new Map();
+    issueInfos.forEach((info) => {
+        const reason = String(info.reason || '').trim() || t('eval.llmRefinementUnknown');
+        reasonCounts.set(reason, (reasonCounts.get(reason) || 0) + 1);
+    });
+    const [reason = t('eval.llmRefinementUnknown')] = [...reasonCounts.entries()]
+        .sort((a, b) => b[1] - a[1])[0] || [];
+    return {
+        count: issueInfos.length,
+        total,
+        reason,
+        severity,
+        messageKey,
+    };
+}
+
+function renderEvalCaseCard(item = {}, options = {}) {
+    const taxonomy = item.taxonomy || {};
+    const expected = item.expected || {};
+    const normalizedExpected = normalizeEvalExpected(expected);
+    const normalizedInclude = normalizeEvalInclude(item, normalizedExpected);
+    const normalizedRubric = normalizeEvalRubric(item.rubric || {}, normalizedExpected);
+    const metadata = item.metadata || {};
+    const source = item.source || {};
+    const historical = item.historical_response || {};
+    const scenario = taxonomy.scenario || item.id || '';
+    const intent = taxonomy.intent || '-';
+    const priority = metadata.priority || '-';
+    const llmInfo = metadata.llm_enrichment || {};
+    const llmStatus = llmInfo.status || '';
+    const llmTitle = [llmInfo.reason, llmInfo.model].filter(Boolean).join(' · ');
+    const qualityScore = Number(metadata.candidate_quality_score ?? metadata.auto_confidence);
+    const qualityReasons = Array.isArray(metadata.candidate_quality_reasons) ? metadata.candidate_quality_reasons : [];
+    const approved = options.approved;
+    const approving = conversationEvalState.approvingIds.has(item.id);
+    const deleting = conversationEvalState.deletingIds.has(item.id);
+    const kind = options.candidate ? 'candidate' : 'case';
+    const saving = conversationEvalState.savingIds.has(`${kind}:${item.id}`);
+    const actionHtml = options.candidate
+        ? `<button class="developer-memory-action" type="button" data-eval-edit-kind="candidate" data-eval-edit="${escapeAttr(item.id || '')}" ${saving ? 'disabled' : ''}>
+                ${escapeHtml(saving ? t('eval.saving') : t('eval.edit'))}
+           </button>
+           <button class="developer-memory-action" type="button" data-eval-approve="${escapeAttr(item.id || '')}" ${approved || approving || saving ? 'disabled' : ''}>
+                ${escapeHtml(approved ? t('eval.approved') : (approving ? t('eval.collecting') : t('eval.approve')))}
+           </button>`
+        : `<button class="developer-memory-action" type="button" data-eval-edit-kind="case" data-eval-edit="${escapeAttr(item.id || '')}" ${saving ? 'disabled' : ''}>
+                ${escapeHtml(saving ? t('eval.saving') : t('eval.edit'))}
+           </button>
+           <button class="developer-memory-action danger" type="button" data-eval-delete="${escapeAttr(item.id || '')}" ${deleting || saving ? 'disabled' : ''}>
+                ${escapeHtml(t('eval.delete'))}
+           </button>`;
+    return `
+        <article class="eval-case-card ${options.approvedCase ? 'approved' : ''}">
+            <div class="eval-case-head">
+                <div class="eval-case-title">
+                    <strong title="${escapeAttr(scenario)}">${escapeHtml(scenario)}</strong>
+                    <span>${escapeHtml(item.id || '')}</span>
+                </div>
+                <div class="developer-memory-actions">${actionHtml}</div>
+            </div>
+            <div class="eval-case-badges">
+                <span class="status-chip neutral">${escapeHtml(t('eval.intent'))}: ${escapeHtml(intent)}</span>
+                <span class="status-chip ${priority === 'p1' ? 'error' : (priority === 'p2' ? 'warn' : 'neutral')}">${escapeHtml(t('eval.priority'))}: ${escapeHtml(priority)}</span>
+                ${Number.isFinite(qualityScore) ? `<span class="status-chip ${qualityScore >= 0.68 ? 'ok' : (qualityScore >= 0.55 ? 'neutral' : 'warn')}" title="${escapeAttr(qualityReasons.join(' · '))}">${escapeHtml(t('eval.candidateQuality'))}: ${escapeHtml(formatEvalRatio(qualityScore))}</span>` : ''}
+                ${llmStatus ? `<span class="status-chip ${llmStatus === 'completed' ? 'ok' : 'warn'}" ${llmTitle ? `title="${escapeAttr(llmTitle)}"` : ''}>${escapeHtml(t('eval.llmEnrichment'))}: ${escapeHtml(llmStatus)}</span>` : ''}
+            </div>
+            ${renderEvalField(t('eval.input'), latestEvalUserInput(item))}
+            ${renderEvalIncludeSection(normalizedInclude)}
+            ${renderEvalDimensionSection(normalizedRubric)}
+            <details class="developer-memory-metadata">
+                <summary>${escapeHtml(t('developer.metadata'))}</summary>
+                <pre>${escapeHtml(JSON.stringify({
+                    source,
+                    historical: {
+                        run_id: historical.run_id || '',
+                        model_used: historical.model_used || '',
+                        skills_used: historical.skills_used || [],
+                        error_type: historical.error_type || '',
+                    },
+                    scoring: item.scoring || {},
+                    metadata,
+                }, null, 2))}</pre>
+            </details>
+        </article>
+    `;
+}
+
+function renderEvalIncludeSection(include = {}) {
+    return `
+        <section class="eval-case-section">
+            <h3>${escapeHtml(t('eval.include'))}</h3>
+            <div class="eval-case-grid">
+                ${renderEvalListBlock(t('eval.toolCalls'), include.toolCalls, { showEmpty: true })}
+                ${renderEvalListBlock(t('eval.answerResult'), include.answerResult, { showEmpty: true })}
+                ${renderEvalListBlock(t('eval.citations'), include.citations, { showEmpty: true })}
+            </div>
+        </section>
+    `;
+}
+
+function renderEvalDimensionSection(rubric = {}) {
+    const dimensions = Array.isArray(rubric.dimensions) ? rubric.dimensions : [];
+    return `
+        <section class="eval-case-section">
+            <h3>${escapeHtml(t('eval.dimensions'))}</h3>
+            <div class="eval-dimension-list">
+                ${dimensions.map((dimension) => `
+                    <div class="eval-dimension-line">
+                        <div>
+                            <strong>${escapeHtml(dimension.label)}</strong>
+                            ${dimension.standard ? `<p>${escapeHtml(dimension.standard)}</p>` : ''}
+                            ${renderEvalRequirementList(dimension.requirements || [])}
+                        </div>
+                        <span>${escapeHtml(`${t('eval.passingScore')} ${evalClampRating(dimension.passingScore || 3)}/5`)}</span>
+                    </div>
+                `).join('')}
+            </div>
+        </section>
+    `;
+}
+
+function renderEvalRequirementList(requirements = []) {
+    const values = uniqueTextList(requirements);
+    if (!values.length) return '';
+    return `
+        <ul>
+            ${values.map((item) => `<li>${escapeHtml(item)}</li>`).join('')}
+        </ul>
+    `;
+}
+
+function renderEvalReport(report = {}) {
+    const summary = report.summary || {};
+    const cases = Array.isArray(report.cases) ? report.cases : [];
+    const casePagination = evalPaginationFor(cases, 'report');
+    if (!Object.keys(report).length) {
+        return `<div class="empty-inline">${escapeHtml(t('eval.noReport'))}</div>`;
+    }
+    const meanScore = summary.mean_overall_score_1_5 === null || summary.mean_overall_score_1_5 === undefined
+        ? formatEvalRatio(summary.mean_overall_score)
+        : formatEvalRating(summary.mean_overall_score_1_5);
+    return `
+        <div class="eval-report-summary">
+            ${renderDeveloperSummaryCard(t('eval.caseCount'), String(summary.case_count ?? 0), evalModeLabel(report.mode))}
+            ${renderDeveloperSummaryCard(t('eval.passRate'), summary.case_count ? `${Math.round(Number(summary.pass_rate || 0) * 100)}%` : '-', '')}
+            ${renderDeveloperSummaryCard(t('eval.overallScore'), meanScore, t('eval.score1to5'))}
+            ${renderDeveloperSummaryCard(t('eval.failedCount'), String(summary.failed_count ?? 0), '')}
+            ${renderDeveloperSummaryCard(t('eval.accuracy'), formatEvalRatio(summary.mean_must_include_ratio), '')}
+            ${renderDeveloperSummaryCard(t('eval.completeness'), formatEvalRatio(summary.mean_completeness_score), '')}
+            ${renderDeveloperSummaryCard(t('eval.replayIsolation'), report.replay?.isolated_user_id || '-', report.replay?.kind || '')}
+        </div>
+        ${renderEvalReportMeta(report)}
+        ${renderEvalDimensionSummary(summary.dimension_scores || {})}
+        ${renderEvalTagSlices(summary.tag_slices || [])}
+        <section class="eval-scorecard-section">
+            <div class="eval-section-head eval-section-head-row">
+                <h3>${escapeHtml(t('eval.caseResults'))}</h3>
+                ${renderEvalPagination(casePagination)}
+            </div>
+            <div class="eval-result-list">
+                ${cases.length ? casePagination.items.map(renderEvalResultRow).join('') : `<div class="empty-inline">${escapeHtml(t('eval.noReport'))}</div>`}
+            </div>
+            ${renderEvalPagination(casePagination)}
+        </section>
+    `;
+}
+
+function renderEvalReportMeta(report = {}) {
+    const entries = [
+        [t('eval.runId'), report.run_id || '-'],
+        [t('eval.completedAt'), formatEvalDateTime(report.completed_at || report.generated_at)],
+        [t('eval.replayIsolation'), report.replay?.isolated_user_id || report.replay?.kind || '-'],
+    ];
+    return `
+        <div class="eval-report-meta">
+            ${entries.map(([label, value]) => `
+                <span><strong>${escapeHtml(label)}</strong>${escapeHtml(value || '-')}</span>
+            `).join('')}
+        </div>
+    `;
+}
+
+function renderEvalRunHistory(runs = []) {
+    const items = Array.isArray(runs) ? runs.slice(0, 10) : [];
+    return `
+        <section class="eval-scorecard-section">
+            <div class="eval-section-head">
+                <h3>${escapeHtml(t('eval.runHistory'))}</h3>
+            </div>
+            ${items.length ? `
+                <div class="eval-run-history-list">
+                    ${items.map((run) => {
+                        const summary = run.summary || {};
+                        const score = summary.mean_overall_score_1_5 === null || summary.mean_overall_score_1_5 === undefined
+                            ? formatEvalRatio(summary.mean_overall_score)
+                            : formatEvalRating(summary.mean_overall_score_1_5);
+                        return `
+                            <div class="eval-run-history-row">
+                                <strong>${escapeHtml(evalModeLabel(run.mode))}</strong>
+                                <span>${escapeHtml(formatEvalDateTime(run.completed_at || run.generated_at))}</span>
+                                <span>${escapeHtml(`${summary.passed_count ?? 0}/${summary.case_count ?? 0} ${t('eval.pass')}`)}</span>
+                                <span>${escapeHtml(score)}</span>
+                            </div>
+                        `;
+                    }).join('')}
+                </div>
+            ` : `<div class="empty-inline">${escapeHtml(t('eval.noRunHistory'))}</div>`}
+        </section>
+    `;
+}
+
+function renderEvalResultDetails(item = {}) {
+    const response = item.response || {};
+    const scorecard = item.scorecard || {};
+    const matched = item.matched || {};
+    const dimensions = Array.isArray(scorecard.dimensions) ? scorecard.dimensions : [];
+    const responseLabel = item.replay ? t('eval.replayResponse') : t('eval.historicalResponse');
+    const failures = Array.isArray(item.failures) ? item.failures : [];
+    const traceRunId = evalResultTraceRunId(item);
+    return `
+        <div class="eval-result-details">
+            ${failures.length ? renderEvalDetailBlock(t('eval.fail'), failures, { wide: true, limit: 12 }) : ''}
+            ${renderEvalDetailBlock(t('eval.runDetails'), [
+                `${t('eval.runId')}: ${traceRunId || item.run_id || response.run_id || '-'}`,
+                `${t('eval.model') || 'Model'}: ${item.model_used || response.model_used || '-'}`,
+                item.metrics?.latency_ms !== undefined ? `latency: ${item.metrics.latency_ms}ms` : '',
+            ].filter(Boolean))}
+            ${renderEvalTraceActionBlock(traceRunId)}
+            ${renderEvalDetailBlock(t('eval.evidence'), evalDimensionEvidenceLines(dimensions), { wide: true, limit: 12 })}
+            ${renderEvalDetailBlock(t('eval.matched'), evalMatchedLines(matched), { limit: 12 })}
+            ${renderEvalDetailBlock(t('eval.missing'), evalMissingLines(matched), { limit: 12 })}
+            ${renderEvalResponseBlock(responseLabel, response.content || '-')}
+        </div>
+    `;
+}
+
+function evalResultTraceRunId(item = {}) {
+    const response = item.response || {};
+    const source = item.source || {};
+    return String(item.run_id || response.run_id || source.run_id || '').trim();
+}
+
+function renderEvalTraceActionBlock(runId = '') {
+    return `
+        <div class="eval-detail-block">
+            <strong>Trace</strong>
+            ${runId
+                ? `<button class="developer-memory-action eval-trace-action" type="button" data-open-trace-run="${escapeAttr(runId)}">${escapeHtml(t('eval.openTrace'))}</button>`
+                : `<p>${escapeHtml(t('eval.traceUnavailable'))}</p>`}
+        </div>
+    `;
+}
+
+function evalMatchedLines(matched = {}) {
+    return [
+        ...(matched.included_terms || []).map((term) => `${t('eval.accuracy')}: ${term}`),
+        ...(matched.required_tools || []).map((tool) => `${t('eval.toolCalls')}: ${tool}`),
+        ...(matched.matched_points || []).map((point) => `${t('eval.completeness')}: ${point.label || point}`),
+    ];
+}
+
+function evalMissingLines(matched = {}) {
+    return [
+        ...(matched.missing_terms || []).map((term) => `${t('eval.accuracy')}: ${term}`),
+        ...(matched.missing_tools || []).map((tool) => `${t('eval.toolCalls')}: ${tool}`),
+        ...(matched.missing_points || []).map((point) => `${t('eval.completeness')}: ${point.label || point}`),
+        ...(matched.forbidden_terms || []).map((term) => `${t('eval.forbiddenTerms')}: ${term}`),
+        ...(matched.unexpected_tools || []).map((tool) => `${t('eval.forbiddenTools')}: ${tool}`),
+    ];
+}
+
+function evalDimensionEvidenceLines(dimensions = []) {
+    return dimensions.map((dimension) => {
+        const label = evalDimensionLabel(dimension.id, dimension.label);
+        const score = formatEvalRating(dimension.score_1_5 ?? evalThresholdToRating(dimension.score));
+        const passText = dimension.passed ? t('eval.pass') : t('eval.fail');
+        const evidence = dimension.evidence || {};
+        let detail = '';
+        if (dimension.id === 'tool_use') {
+            const used = evidence.required_tools || [];
+            const missing = evidence.missing_tools || [];
+            detail = missing.length ? `${t('eval.missing')}: ${missing.join(', ')}` : `${t('eval.matched')}: ${used.join(', ') || '-'}`;
+        } else if (dimension.id === 'accuracy') {
+            detail = `${t('eval.matched')} ${(evidence.included_terms || []).length} · ${t('eval.missing')} ${(evidence.missing_terms || []).length}`;
+        } else if (dimension.id === 'completeness') {
+            detail = `${t('eval.matched')} ${(evidence.matched_points || []).length} · ${t('eval.missing')} ${(evidence.missing_points || []).length}`;
+        } else if (dimension.id === 'constraints') {
+            detail = `chars ${evidence.response_chars ?? 0} · forbidden ${evidence.forbidden_present ?? 0}`;
+        }
+        return `${label}: ${score} (${passText})${detail ? ` · ${detail}` : ''}`;
+    });
+}
+
+function renderEvalResponseBlock(label, value = '') {
+    return `
+        <div class="eval-detail-block eval-detail-block-wide">
+            <strong>${escapeHtml(label)}</strong>
+            <p class="eval-response-preview">${escapeHtml(value || '-')}</p>
+        </div>
+    `;
+}
+
+function renderEvalDetailBlock(label, values = [], options = {}) {
+    const items = Array.isArray(values) ? values.filter((item) => String(item || '').trim()) : [];
+    const limit = Number(options.limit || 8);
+    return `
+        <div class="eval-detail-block ${options.wide ? 'eval-detail-block-wide' : ''}">
+            <strong>${escapeHtml(label)}</strong>
+            ${items.length ? `<ul>${items.slice(0, limit).map((item) => `<li>${escapeHtml(String(item))}</li>`).join('')}</ul>` : `<p>-</p>`}
+        </div>
+    `;
+}
+
+function renderEvalDimensionSummary(dimensionScores = {}) {
+    const dimensions = Object.values(dimensionScores || {});
+    if (!dimensions.length) return '';
+    return `
+        <section class="eval-scorecard-section">
+            <div class="eval-section-head">
+                <h3>${escapeHtml(t('eval.dimensionScores'))}</h3>
+            </div>
+            <div class="eval-dimension-grid">
+                ${dimensions.map((dimension) => {
+                    const meanScore = Number(dimension.mean_score_1_5 ?? evalThresholdToRating(dimension.mean_score));
+                    const passingScore = Number(dimension.mean_passing_score ?? evalThresholdToRating(dimension.mean_threshold));
+                    const meterWidth = evalRatingMeterPercent(meanScore);
+                    return `
+                    <div class="eval-dimension-card">
+                        <div>
+                            <strong>${escapeHtml(evalDimensionLabel(dimension.id, dimension.label))}</strong>
+                            <span>${escapeHtml(`${dimension.passed_count ?? 0}/${dimension.case_count ?? 0} ${t('eval.pass')}`)}</span>
+                        </div>
+                        <div class="eval-score-meter" aria-hidden="true">
+                            <span style="width: ${meterWidth}%"></span>
+                        </div>
+                        <small>${escapeHtml(`${t('eval.score')} ${formatEvalRating(meanScore)} · ${t('eval.passingScore')} ${formatEvalRating(passingScore)}`)}</small>
+                    </div>
+                `;
+                }).join('')}
+            </div>
+        </section>
+    `;
+}
+
+function renderEvalTagSlices(tagSlices = []) {
+    const slices = Array.isArray(tagSlices) ? tagSlices.slice(0, 12) : [];
+    if (!slices.length) return '';
+    return `
+        <section class="eval-scorecard-section">
+            <div class="eval-section-head">
+                <h3>${escapeHtml(t('eval.tagSlices'))}</h3>
+                <p>${escapeHtml(t('eval.tagSliceHelp'))}</p>
+            </div>
+            <div class="eval-tag-slice-list">
+                ${slices.map((slice) => {
+                    const tag = slice.tag || 'untagged';
+                    return `
+                    <div class="eval-tag-slice-row">
+                        <div class="eval-tag-slice-name">
+                            <strong>${escapeHtml(evalTagLabel(tag))}</strong>
+                            <small>${escapeHtml(evalTagDescription(tag))}</small>
+                        </div>
+                        <span>${escapeHtml(`${slice.passed_count ?? 0}/${slice.case_count ?? 0} ${t('eval.pass')}`)}</span>
+                        <span>${escapeHtml(formatEvalRatio(slice.pass_rate))}</span>
+                        <span>${escapeHtml(slice.mean_overall_score_1_5 === null || slice.mean_overall_score_1_5 === undefined
+                            ? formatEvalRatio(slice.mean_overall_score)
+                            : formatEvalRating(slice.mean_overall_score_1_5))}</span>
+                    </div>
+                `;
+                }).join('')}
+            </div>
+        </section>
+    `;
+}
+
+function renderEvalResultRow(item = {}) {
+    const statusClass = item.passed ? 'ok' : 'error';
+    const failures = Array.isArray(item.failures) ? item.failures : [];
+    const scorecard = item.scorecard || {};
+    const dimensions = Array.isArray(scorecard.dimensions) ? scorecard.dimensions.filter((dimension) => dimension.active) : [];
+    const overallScore = scorecard.overall_score_1_5 === null || scorecard.overall_score_1_5 === undefined
+        ? formatEvalRatio(scorecard.overall_score)
+        : formatEvalRating(scorecard.overall_score_1_5);
+    return `
+        <details class="eval-result-row ${statusClass}" ${!item.passed ? 'open' : ''}>
+            <summary>
+                <span class="status-dot ${statusClass}"></span>
+                <div>
+                    <strong>${escapeHtml(item.scenario || item.id || '')}</strong>
+                    <small>${escapeHtml(`${item.intent || ''} · ${item.id || ''} · ${t('eval.score')} ${overallScore}`)}</small>
+                    <small>${escapeHtml(evalResultMetricsLine(item.metrics || {}, scorecard))}</small>
+                    ${dimensions.length ? `
+                        <div class="eval-dimension-chips">
+                            ${dimensions.map((dimension) => `
+                                <span class="eval-dimension-chip ${dimension.passed ? 'pass' : 'fail'}">
+                                    ${escapeHtml(evalDimensionLabel(dimension.id, dimension.label))} ${escapeHtml(formatEvalRating(dimension.score_1_5 ?? evalThresholdToRating(dimension.score)))}
+                                </span>
+                            `).join('')}
+                        </div>
+                    ` : ''}
+                    ${failures.length ? `<p>${escapeHtml(failures.join('；'))}</p>` : ''}
+                </div>
+            </summary>
+            ${renderEvalResultDetails(item)}
+        </details>
+    `;
+}
+
+function normalizeEvalExpected(expected = {}) {
+    const include = expected.include || {};
+    const tools = expected.tools || {};
+    const result = expected.result || {};
+    const accuracy = result.accuracy || {};
+    const completeness = result.completeness || {};
+    const legacyRequiredTools = Array.isArray(expected.tool_expectations)
+        ? expected.tool_expectations
+            .filter((item) => item?.required && item?.name)
+            .map((item) => String(item.name))
+        : [];
+    const toolCalls = uniqueTextList([...(include.tool_calls || []), ...(tools.required || []), ...legacyRequiredTools]);
+    const answerResult = uniqueTextList([...(include.answer_result || []), ...(accuracy.must_include || []), ...(expected.must_include || [])]);
+    return {
+        include: {
+            toolCalls,
+            answerResult,
+            citations: uniqueTextList(include.citations || []),
+        },
+        tools: {
+            required: toolCalls,
+            forbidden: uniqueTextList(tools.forbidden || []),
+        },
+        accuracy: {
+            mustInclude: answerResult,
+            mustNotInclude: uniqueTextList([...(accuracy.must_not_include || []), ...(expected.must_not_include || [])]),
+        },
+        completeness: {
+            requiredPoints: normalizeEvalCompletenessPoints(completeness.required_points || []),
+        },
+    };
+}
+
+function normalizeEvalInclude(item = {}, normalizedExpected = {}) {
+    const include = normalizedExpected.include || {};
+    return {
+        toolCalls: include.toolCalls || [],
+        answerResult: include.answerResult || [],
+        citations: include.citations || [],
+    };
+}
+
+function normalizeEvalRubric(rubric = {}, normalizedExpected = {}) {
+    const rawDimensions = Array.isArray(rubric.dimensions) ? rubric.dimensions : [];
+    const defaults = evalDefaultRubricDimensions(normalizedExpected);
+    const defaultById = new Map(defaults.map((dimension) => [dimension.id, dimension]));
+    const dimensions = rawDimensions.length ? rawDimensions.map((dimension) => {
+        const id = String(dimension?.id || '');
+        const fallback = defaultById.get(id) || {
+            id,
+            label: evalDimensionLabel(id, dimension?.label),
+            standard: '',
+            requirements: [],
+            passingScore: 3,
+            threshold: 0.5,
+        };
+        const rawThreshold = Number(dimension?.threshold);
+        const threshold = Number.isFinite(rawThreshold) ? rawThreshold : fallback.threshold;
+        const passingScore = evalClampRating(dimension?.passing_score ?? dimension?.passingScore ?? evalThresholdToRating(threshold));
+        return {
+            id,
+            label: evalDimensionLabel(id, dimension?.label || fallback.label),
+            standard: String(dimension?.standard || fallback.standard || '').trim(),
+            requirements: uniqueTextList(dimension?.requirements?.length ? dimension.requirements : fallback.requirements),
+            passingScore,
+            scoreScale: dimension?.score_scale || { min: 1, max: 5 },
+            threshold,
+        };
+    }).filter((dimension) => dimension.id) : defaults;
+    return {
+        passThreshold: Number(rubric.pass_threshold ?? 0),
+        dimensions,
+    };
+}
+
+function normalizeEvalCompletenessPoints(points = []) {
+    if (!Array.isArray(points)) return [];
+    return points.map((point, index) => {
+        if (typeof point === 'string') return { label: point };
+        if (!point || typeof point !== 'object') return { label: `point_${index + 1}` };
+        return {
+            label: point.label || point.text || point.description || `point_${index + 1}`,
+        };
+    }).filter((point) => String(point.label || '').trim());
+}
+
+function conversationEvalItemByKind(kind, caseId) {
+    const items = kind === 'case' ? conversationEvalCases() : conversationEvalCandidates();
+    return items.find((item) => item.id === caseId) || null;
+}
+
+function evalDefaultRubricDimensions(normalizedExpected = {}) {
+    const expected = normalizedExpected || {};
+    const tools = expected.tools || {};
+    const accuracy = expected.accuracy || {};
+    const completeness = expected.completeness || {};
+    const toolThreshold = (tools.required?.length || tools.forbidden?.length) ? 1 : 0;
+    const accuracyThreshold = accuracy.mustInclude?.length
+        ? Math.min(2, accuracy.mustInclude.length) / accuracy.mustInclude.length
+        : 0;
+    const completenessThreshold = completeness.requiredPoints?.length ? 0.6 : 0;
+    return [
+        evalRubricDimensionDefault('tool_use', toolThreshold, normalizedExpected),
+        evalRubricDimensionDefault('accuracy', accuracyThreshold, normalizedExpected),
+        evalRubricDimensionDefault('completeness', completenessThreshold, normalizedExpected),
+        evalRubricDimensionDefault('constraints', 1, normalizedExpected),
+    ];
+}
+
+function evalRubricDimensionDefault(id, threshold, normalizedExpected = {}) {
+    const passingScore = evalThresholdToRating(threshold);
+    return {
+        id,
+        label: evalDimensionLabel(id),
+        standard: evalDimensionDefaultStandard(id),
+        requirements: evalDimensionDefaultRequirements(id, normalizedExpected),
+        passingScore,
+        scoreScale: { min: 1, max: 5 },
+        threshold,
+    };
+}
+
+function evalDimensionDefaultStandard(id = '') {
+    const zh = currentLanguage === 'zh';
+    const standards = {
+        tool_use: zh ? '按用例要求调用必要工具，并避免调用禁用工具。' : 'Use required tools for the case and avoid forbidden tools.',
+        accuracy: zh ? '答案结果覆盖应包含信息，且不出现禁用内容或明显偏题内容。' : 'Cover the required answer facts without forbidden or clearly off-topic content.',
+        completeness: zh ? '回答覆盖关键结果点，必要时说明步骤、限制、上下文和取舍。' : 'Cover key result points, including steps, limits, context, and tradeoffs when needed.',
+        constraints: zh ? '响应非空，并遵守禁用词、禁用工具和基础安全约束。' : 'Return a non-empty response and obey forbidden-term, forbidden-tool, and baseline safety constraints.',
+    };
+    return standards[id] || (zh ? '按该维度的标准要求完成任务。' : 'Satisfy the requirements for this dimension.');
+}
+
+function evalDimensionDefaultRequirements(id = '', normalizedExpected = {}) {
+    const zh = currentLanguage === 'zh';
+    const tools = normalizedExpected.tools || {};
+    const accuracy = normalizedExpected.accuracy || {};
+    const completeness = normalizedExpected.completeness || {};
+    if (id === 'tool_use') {
+        const requirements = [];
+        if (tools.required?.length) {
+            requirements.push(`${zh ? '必须调用工具' : 'Required tools'}: ${tools.required.join(', ')}`);
+        }
+        if (tools.forbidden?.length) {
+            requirements.push(`${zh ? '不得调用工具' : 'Forbidden tools'}: ${tools.forbidden.join(', ')}`);
+        }
+        return requirements.length ? requirements : [zh ? '无强制工具要求时，不因无工具调用扣分。' : 'Do not penalize missing tool use when no tool is required.'];
+    }
+    if (id === 'accuracy') {
+        const requirements = (accuracy.mustInclude || []).map((item) => `${zh ? '答案应包含' : 'Answer should include'}: ${item}`);
+        (accuracy.mustNotInclude || []).forEach((item) => requirements.push(`${zh ? '答案不得包含' : 'Answer must not include'}: ${item}`));
+        return requirements.length ? requirements : [zh ? '答案应直接回应用户问题，避免臆造未给出的事实。' : 'Directly answer the user and avoid unsupported claims.'];
+    }
+    if (id === 'completeness') {
+        const requirements = (completeness.requiredPoints || []).map((point) => `${zh ? '覆盖要点' : 'Cover point'}: ${point.label || ''}`.trim());
+        return requirements.length ? requirements : [zh ? '覆盖用户请求中的主要任务，不遗漏关键限制或输出要求。' : 'Cover the main task and do not omit key limits or output requirements.'];
+    }
+    if (id === 'constraints') {
+        return zh
+            ? ['响应不能为空。', '不得出现禁用词。', '不得调用禁用工具。']
+            : ['Response must be non-empty.', 'Forbidden terms must not appear.', 'Forbidden tools must not be used.'];
+    }
+    return [];
+}
+
+function evalDimensionRequirementsListName(id = '') {
+    return `dimension_requirements_${String(id || '').replace(/[^a-zA-Z0-9_-]/g, '_')}`;
+}
+
+function evalListInputsToList(root, name) {
+    return uniqueTextList(Array.from(root.querySelectorAll('[data-eval-list-input]'))
+        .filter((input) => input.dataset.evalListInput === name)
+        .map((input) => input.value));
+}
+
+function evalClampRating(value, fallback = 1) {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) return fallback;
+    return Math.max(1, Math.min(5, Math.round(parsed)));
+}
+
+function evalThresholdToRating(value) {
+    const score = Math.max(0, Math.min(1, Number(value) || 0));
+    if (score <= 0) return 1;
+    return evalClampRating(Math.ceil(1 + score * 4 - 1e-9));
+}
+
+function evalRatingToThreshold(value) {
+    return Math.max(0, Math.min(1, (evalClampRating(value) - 1) / 4));
+}
+
+function evalRatingMeterPercent(value) {
+    return Math.max(0, Math.min(100, ((Number(value) || 1) - 1) / 4 * 100));
+}
+
+function formatEvalRating(value) {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) return '-';
+    const rounded = Math.round(parsed * 10) / 10;
+    return `${Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1)}/5`;
+}
+
+function evalDimensionScorer(id = '') {
+    return {
+        tool_use: 'trace_assertion',
+        accuracy: 'keyword_coverage',
+        completeness: 'point_coverage',
+        constraints: 'hard_gates',
+    }[id] || 'deterministic';
+}
+
+function evalDimensionChecks(id = '', expected = {}) {
+    const tools = expected.tools || {};
+    const result = expected.result || {};
+    const accuracy = result.accuracy || {};
+    const completeness = result.completeness || {};
+    if (id === 'tool_use') {
+        return {
+            required_tools: tools.required || [],
+            forbidden_tools: tools.forbidden || [],
+        };
+    }
+    if (id === 'accuracy') {
+        return {
+            must_include: accuracy.must_include || [],
+            min_must_include: accuracy.min_must_include || 0,
+            must_not_include: accuracy.must_not_include || [],
+        };
+    }
+    if (id === 'completeness') {
+        return {
+            required_points: completeness.required_points || [],
+            min_required_points: completeness.min_required_points || 0,
+            min_score: completeness.min_score || 0,
+        };
+    }
+    if (id === 'constraints') {
+        return {
+            non_empty_response: true,
+            no_forbidden_terms: true,
+            no_forbidden_tools: true,
+        };
+    }
+    return {};
+}
+
+function uniqueTextList(values = []) {
+    const seen = new Set();
+    const result = [];
+    values.forEach((value) => {
+        const text = String(value || '').trim();
+        const key = text.toLowerCase();
+        if (!text || seen.has(key)) return;
+        seen.add(key);
+        result.push(text);
+    });
+    return result;
+}
+
+function evalModeLabel(mode = '') {
+    return mode === 'agent' ? t('eval.replayMode') : t('eval.historicalMode');
+}
+
+function evalScenarioProfileLabel(profile = '') {
+    const labels = {
+        all: t('eval.profileAll'),
+        default_qa: t('eval.profileDefaultQa'),
+        deep_research: t('eval.profileDeepResearch'),
+        tool_use: t('eval.profileToolUse'),
+        coding: t('eval.profileCoding'),
+    };
+    return labels[profile] || labels.all;
+}
+
+function evalQualityProfileLabel(profile = '') {
+    const labels = {
+        balanced: t('eval.qualityBalanced'),
+        high_precision: t('eval.qualityHighPrecision'),
+        high_recall: t('eval.qualityHighRecall'),
+    };
+    return labels[profile] || labels.balanced;
+}
+
+function evalDimensionLabel(id = '', label = '') {
+    const fallback = {
+        tool_use: t('eval.toolUse'),
+        accuracy: t('eval.accuracy'),
+        completeness: t('eval.completeness'),
+        constraints: t('eval.constraints'),
+    };
+    return label || fallback[id] || id || '-';
+}
+
+function evalTagLabel(tag = '') {
+    const zh = currentLanguage === 'zh';
+    const labels = {
+        information_lookup: zh ? '信息检索' : 'Information Lookup',
+        url_understanding: zh ? '链接理解' : 'URL Understanding',
+        image_generation: zh ? '图像生成' : 'Image Generation',
+        artifact_generation: zh ? '报告/产物生成' : 'Artifact Generation',
+        coding_or_debugging: zh ? '代码/调试' : 'Coding/Debugging',
+        content_transformation: zh ? '内容整理' : 'Content Transformation',
+        general_qa: zh ? '默认问答' : 'Default Q&A',
+        mixed_language: zh ? '中英混合输入' : 'Mixed Language',
+        url_input: zh ? '链接输入' : 'URL Input',
+        time_sensitive: zh ? '时效性要求' : 'Time-Sensitive',
+        identifier_or_model_number: zh ? '型号/编号' : 'Identifier or Model Number',
+        comparison_or_disambiguation: zh ? '对比/消歧' : 'Comparison or Disambiguation',
+        tool_search: zh ? '检索工具' : 'Search Tool',
+        error_response: zh ? '历史错误回答' : 'Historical Error Response',
+        assistant_error: zh ? '助手错误' : 'Assistant Error',
+        possible_stale_answer_without_search: zh ? '疑似未检索实时信息' : 'Possibly Stale Without Search',
+        tool_or_trace_error: zh ? '工具/链路异常' : 'Tool or Trace Error',
+        brand_ambiguity_pollution: zh ? '品牌歧义风险' : 'Brand Ambiguity Risk',
+        sensitive_term_pollution: zh ? '敏感词污染风险' : 'Sensitive-Term Pollution Risk',
+    };
+    return labels[tag] || tag || 'untagged';
+}
+
+function evalTagDescription(tag = '') {
+    const zh = currentLanguage === 'zh';
+    const descriptions = {
+        information_lookup: zh ? '需要检索、核验或处理时效信息。' : 'Requires retrieval, verification, or current information.',
+        artifact_generation: zh ? '目标是生成报告、文档或可保存产物。' : 'Generates a report, document, or saved artifact.',
+        general_qa: zh ? '不强制工具调用的日常回答。' : 'Everyday answer without required tool use.',
+        tool_search: zh ? '历史链路出现过搜索工具调用。' : 'The historical trace used search.',
+        time_sensitive: zh ? '包含今天、最新、今年等时间敏感线索。' : 'Contains current or recent-time signals.',
+        comparison_or_disambiguation: zh ? '需要对比选项或消除歧义。' : 'Needs comparison or disambiguation.',
+        identifier_or_model_number: zh ? '包含型号、编号、版本或产品名，容易错配。' : 'Contains model numbers, identifiers, versions, or product names.',
+        brand_ambiguity_pollution: zh ? '同名品牌或语义污染可能导致跑偏。' : 'Same-name brands or semantic pollution may derail the answer.',
+        possible_stale_answer_without_search: zh ? '原回答可能没有验证实时信息。' : 'The answer may not have verified current information.',
+        tool_or_trace_error: zh ? '工具链路里出现错误或失败事件。' : 'The tool trace contains failed or error events.',
+    };
+    if (descriptions[tag]) return descriptions[tag];
+    return `${t('eval.tagRaw')}: ${tag || 'untagged'}`;
+}
+
+function evalResultMetricsLine(metrics = {}, scorecard = {}) {
+    const overallScore = scorecard.overall_score_1_5 === null || scorecard.overall_score_1_5 === undefined
+        ? formatEvalRatio(scorecard.overall_score)
+        : formatEvalRating(scorecard.overall_score_1_5);
+    const parts = [
+        `${t('eval.overallScore')} ${overallScore}`,
+        `${t('eval.accuracy')} ${formatEvalRatio(metrics.must_include_ratio)}`,
+        `${t('eval.completeness')} ${formatEvalRatio(metrics.completeness_score)}`,
+    ];
+    if (metrics.required_tool_count || metrics.required_tool_missing) {
+        parts.push(`${t('eval.requiredTools')} ${metrics.required_tool_count - metrics.required_tool_missing}/${metrics.required_tool_count}`);
+    }
+    if (metrics.latency_ms !== undefined) {
+        parts.push(`latency ${metrics.latency_ms}ms`);
+    }
+    return parts.join(' · ');
+}
+
+function renderEvalField(label, value) {
+    const text = typeof value === 'string' ? value.trim() : '';
+    if (!text) return '';
+    return `
+        <div class="eval-field">
+            <span>${escapeHtml(label)}</span>
+            <p>${escapeHtml(truncateText(text, 360))}</p>
+        </div>
+    `;
+}
+
+function renderEvalListBlock(label, values = [], options = {}) {
+    const items = Array.isArray(values) ? values.filter(Boolean) : [];
+    if (!items.length && !options.showEmpty) return '';
+    return `
+        <div class="eval-list-block">
+            <span>${escapeHtml(label)}</span>
+            ${items.length
+                ? `<ul>${items.slice(0, 8).map((item) => `<li>${escapeHtml(String(item))}</li>`).join('')}</ul>`
+                : `<p>${escapeHtml('-')}</p>`}
+        </div>
+    `;
+}
+
+function renderEvalInlineChips(values = [], limit = 4) {
+    if (!Array.isArray(values)) return '';
+    return values.slice(0, limit).map((value) => (
+        `<span class="status-chip neutral">${escapeHtml(String(value))}</span>`
+    )).join('');
+}
+
+function latestEvalUserInput(item = {}) {
+    const messages = item.input?.messages;
+    if (!Array.isArray(messages)) return '';
+    const userMessages = messages.filter((message) => message?.role === 'user');
+    return userMessages[userMessages.length - 1]?.content || '';
+}
+
+function formatEvalGeneratedAt(payload = {}) {
+    const value = payload?.generated_at || payload?.updated_at || '';
+    return value ? formatFullTime(value) : '';
+}
+
+function formatEvalDateTime(value = '') {
+    return value ? formatFullTime(value) : '-';
+}
+
+function formatEvalRatio(value) {
+    const numberValue = Number(value);
+    return value === null || value === undefined || Number.isNaN(numberValue)
+        ? '-'
+        : `${Math.round(numberValue * 100)}%`;
+}
+
 function developerRoleScopes() {
     const selectable = selectableRoles();
     if (selectable.length) return selectable;
@@ -5120,6 +7234,898 @@ function syncPulseRefreshPolling(resetAttempts = false) {
     }, 5000);
 }
 
+async function loadTodos(scope = todoState.scope || 'today') {
+    if (!currentUserId) return;
+    const normalizedScope = normalizeTodoScope(scope);
+    todoState = { ...todoState, scope: normalizedScope, loading: true, error: '' };
+    renderTodos();
+    try {
+        const params = new URLSearchParams({
+            scope: normalizedScope,
+            date: todoTodayKey(),
+            include_completed: 'true',
+        });
+        if (normalizedScope === 'month') {
+            const range = todoMonthRange(todoState.month);
+            params.set('start', range.start);
+            params.set('end', range.end);
+        }
+        const data = await apiCall('GET', `/api/todos?${params.toString()}`);
+        todoState = {
+            ...todoState,
+            scope: data.scope || normalizedScope,
+            items: Array.isArray(data.items) ? data.items : [],
+            counts: data.counts || {},
+            date: data.date || todoTodayKey(),
+            loading: false,
+            error: '',
+        };
+        if (normalizedScope === 'today') {
+            todoState.todayItems = todoState.items.filter((item) => item.status !== 'done');
+        } else {
+            await loadTodoTodayItems({ render: false });
+        }
+    } catch (err) {
+        todoState = { ...todoState, items: [], loading: false, error: t('todos.loadFailed', { message: err.message }) };
+    }
+    renderTodos();
+    renderTodoSidebar();
+    updateCounts();
+}
+
+async function loadTodoTodayItems(options = {}) {
+    if (!currentUserId) return;
+    try {
+        const data = await apiCall('GET', `/api/todos?scope=today&date=${encodeURIComponent(todoTodayKey())}&include_completed=false`);
+        todoState = {
+            ...todoState,
+            todayItems: Array.isArray(data.items) ? data.items : [],
+            counts: data.counts || todoState.counts || {},
+            date: data.date || todoState.date || todoTodayKey(),
+        };
+    } catch (err) {
+        if (!todoState.error) todoState = { ...todoState, error: t('todos.loadFailed', { message: err.message }) };
+    }
+    if (options.render !== false) {
+        renderTodoSidebar();
+        renderTodos();
+        updateCounts();
+    }
+}
+
+async function loadTodoSuggestions() {
+    if (!currentUserId) return;
+    try {
+        const data = await apiCall('GET', '/api/todo-suggestions?state=pending');
+        todoState = { ...todoState, suggestions: Array.isArray(data.suggestions) ? data.suggestions : [] };
+    } catch (err) {
+        if (!todoState.error) todoState = { ...todoState, error: t('todos.loadFailed', { message: err.message }) };
+    }
+    renderTodos();
+    updateCounts();
+}
+
+async function refreshTodoSuggestions() {
+    if (todoState.suggestionRefreshing) return;
+    todoState = { ...todoState, suggestionRefreshing: true, error: '' };
+    renderTodos();
+    try {
+        const data = await apiCall('POST', '/api/todo-suggestions/refresh', { limit: 6 });
+        todoState = { ...todoState, suggestions: Array.isArray(data.suggestions) ? data.suggestions : [], suggestionRefreshing: false };
+        await loadTodoTodayItems({ render: false });
+    } catch (err) {
+        todoState = { ...todoState, suggestionRefreshing: false, error: t('todos.suggestionFailed', { message: err.message }) };
+    }
+    renderTodos();
+    renderTodoSidebar();
+    updateCounts();
+}
+
+async function createTodoFromForm() {
+    if (!todoWorkbench || todoState.saving) return;
+    const titleInput = todoWorkbench.querySelector('[data-todo-title]');
+    const title = String(titleInput?.value || '').trim();
+    if (!title) {
+        titleInput?.focus();
+        return;
+    }
+    const schedule = todoScheduleFromForm();
+    const priority = String(todoWorkbench.querySelector('[data-todo-priority]')?.value || 'normal');
+    const notes = String(todoWorkbench.querySelector('[data-todo-notes]')?.value || '').trim();
+    todoState = { ...todoState, saving: true, notice: '', error: '' };
+    renderTodos();
+    try {
+        await apiCall('POST', '/api/todos', {
+            title,
+            notes,
+            start_date: schedule.startDate,
+            due_date: schedule.endDate,
+            end_date: schedule.endDate,
+            repeat_rule: schedule.repeatRule,
+            priority,
+            timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Shanghai',
+        });
+        todoState = { ...todoState, addOpen: false, dateMode: 'today' };
+        await reloadTodosAndSuggestions();
+    } catch (err) {
+        todoState = { ...todoState, saving: false, error: t('todos.saveFailed', { message: err.message }) };
+        renderTodos();
+    }
+}
+
+async function setTodoCompleted(id, completed) {
+    if (!id) return;
+    try {
+        await apiCall('PUT', `/api/todos/${encodeURIComponent(id)}`, {
+            status: completed ? 'done' : 'open',
+        });
+        await reloadTodosAndSuggestions();
+    } catch (err) {
+        todoState = { ...todoState, error: t('todos.saveFailed', { message: err.message }) };
+        renderTodos();
+    }
+}
+
+function startEditTodo(id) {
+    const item = todoState.items.find((candidate) => candidate.id === id);
+    if (!item) return;
+    const dateMode = todoDateModeFromItem(item);
+    todoState = {
+        ...todoState,
+        editingId: id,
+        editDateMode: dateMode,
+        editDraft: todoEditDraftFromItem(item, dateMode),
+        addOpen: false,
+        notice: '',
+        error: '',
+    };
+    renderTodos();
+    requestAnimationFrame(() => {
+        todoWorkbench?.querySelector(`[data-todo-edit-id="${cssEscape(id)}"] [data-todo-edit-title]`)?.focus();
+    });
+}
+
+function cancelEditTodo() {
+    todoState = { ...todoState, editingId: '', editDateMode: 'custom', editDraft: null, error: '' };
+    renderTodos();
+}
+
+function setTodoEditDateMode(mode) {
+    const nextMode = normalizeTodoDateMode(mode);
+    const draft = collectTodoEditDraft(todoState.editingId) || todoState.editDraft;
+    todoState = {
+        ...todoState,
+        editDateMode: nextMode,
+        editDraft: draft ? { ...draft, dateMode: nextMode } : draft,
+    };
+    renderTodos();
+}
+
+function syncTodoEditDraft(id = todoState.editingId) {
+    const draft = collectTodoEditDraft(id);
+    if (!draft) return;
+    todoState = { ...todoState, editDraft: draft, editDateMode: draft.dateMode };
+}
+
+async function saveTodoEdit(id) {
+    if (!id || todoState.saving) return;
+    const editor = todoWorkbench?.querySelector(`[data-todo-edit-id="${cssEscape(id)}"]`);
+    if (!editor) return;
+    const titleInput = editor.querySelector('[data-todo-edit-title]');
+    const title = String(titleInput?.value || '').trim();
+    if (!title) {
+        titleInput?.focus();
+        return;
+    }
+    const schedule = todoScheduleFromContainer(editor, todoState.editDateMode);
+    const notes = String(editor.querySelector('[data-todo-edit-notes]')?.value || '').trim();
+    const priority = String(editor.querySelector('[data-todo-edit-priority]')?.value || 'normal');
+    const draft = collectTodoEditDraft(id);
+    todoState = { ...todoState, saving: true, notice: '', error: '', editDraft: draft || todoState.editDraft };
+    renderTodos();
+    try {
+        const data = await apiCall('PUT', `/api/todos/${encodeURIComponent(id)}`, {
+            title,
+            notes,
+            start_date: schedule.startDate,
+            due_date: schedule.endDate,
+            end_date: schedule.endDate,
+            repeat_rule: schedule.repeatRule,
+            priority,
+        });
+        const updatedTodo = data.todo || {};
+        const destination = todoDestinationForItem(updatedTodo);
+        const moved = todoDestinationMoved(destination);
+        todoState = {
+            ...todoState,
+            scope: destination.scope,
+            month: destination.month || todoState.month,
+            editingId: '',
+            editDateMode: 'custom',
+            editDraft: null,
+            saving: false,
+            notice: moved ? todoMovedNotice(destination.scope) : '',
+        };
+        await Promise.allSettled([
+            loadTodos(destination.scope),
+            loadTodoSuggestions(),
+        ]);
+    } catch (err) {
+        todoState = { ...todoState, saving: false, notice: '', error: t('todos.saveFailed', { message: err.message }) };
+        renderTodos();
+    }
+}
+
+async function deleteTodo(id) {
+    if (!id) return;
+    try {
+        await apiCall('DELETE', `/api/todos/${encodeURIComponent(id)}`);
+        await reloadTodosAndSuggestions();
+    } catch (err) {
+        todoState = { ...todoState, error: t('todos.saveFailed', { message: err.message }) };
+        renderTodos();
+    }
+}
+
+async function acceptTodoSuggestion(id) {
+    if (!id) return;
+    try {
+        await apiCall('POST', `/api/todo-suggestions/${encodeURIComponent(id)}/accept`, {});
+        await reloadTodosAndSuggestions();
+    } catch (err) {
+        todoState = { ...todoState, error: t('todos.saveFailed', { message: err.message }) };
+        renderTodos();
+    }
+}
+
+async function dismissTodoSuggestion(id) {
+    if (!id) return;
+    try {
+        await apiCall('POST', `/api/todo-suggestions/${encodeURIComponent(id)}/dismiss`, {});
+        await reloadTodosAndSuggestions();
+    } catch (err) {
+        todoState = { ...todoState, error: t('todos.saveFailed', { message: err.message }) };
+        renderTodos();
+    }
+}
+
+async function reloadTodosAndSuggestions() {
+    todoState = { ...todoState, saving: false };
+    await Promise.allSettled([
+        loadTodos(todoState.scope || 'today'),
+        loadTodoSuggestions(),
+    ]);
+}
+
+function setTodoScope(scope) {
+    const nextScope = normalizeTodoScope(scope);
+    if (todoState.scope === nextScope && todoState.items.length) {
+        todoState = { ...todoState, notice: '', editingId: '', editDateMode: 'custom', editDraft: null };
+        renderTodos();
+        return;
+    }
+    todoState = { ...todoState, notice: '', editingId: '', editDateMode: 'custom', editDraft: null };
+    void loadTodos(nextScope);
+}
+
+function toggleTodoCreatePanel() {
+    todoState = { ...todoState, addOpen: !todoState.addOpen, editingId: '', editDateMode: 'custom', editDraft: null, notice: '', error: '' };
+    renderTodos();
+    if (todoState.addOpen) {
+        requestAnimationFrame(() => {
+            todoWorkbench?.querySelector('[data-todo-title]')?.focus();
+        });
+    }
+}
+
+function setTodoDateMode(mode) {
+    todoState = { ...todoState, dateMode: normalizeTodoDateMode(mode) };
+    renderTodos();
+}
+
+function shiftTodoMonth(delta) {
+    const base = todoMonthDate(todoState.month);
+    base.setMonth(base.getMonth() + delta);
+    todoState = { ...todoState, month: todoMonthKey(base), scope: 'month' };
+    void loadTodos('month');
+}
+
+function todoScheduleFromForm() {
+    return todoScheduleFromContainer(todoWorkbench, todoState.dateMode);
+}
+
+function todoScheduleFromContainer(container, fallbackMode) {
+    const mode = normalizeTodoDateMode(container?.querySelector('[data-todo-date-mode], [data-todo-edit-date-mode]')?.value || fallbackMode);
+    const today = todoTodayKey();
+    const tomorrow = todoDateKey(new Date(Date.now() + 24 * 60 * 60 * 1000));
+    if (mode === 'tomorrow') {
+        return { startDate: '', endDate: tomorrow, repeatRule: 'once' };
+    }
+    if (mode === 'daily') {
+        const startDate = String(container?.querySelector('[data-todo-start-date]')?.value || today).trim() || today;
+        const endDate = String(container?.querySelector('[data-todo-due-date]')?.value || '').trim();
+        return { startDate, endDate, repeatRule: 'daily' };
+    }
+    if (mode === 'workdays') {
+        const startDate = String(container?.querySelector('[data-todo-start-date]')?.value || today).trim() || today;
+        const endDate = String(container?.querySelector('[data-todo-due-date]')?.value || '').trim();
+        return { startDate, endDate, repeatRule: 'workdays' };
+    }
+    if (mode === 'custom') {
+        const startDate = String(container?.querySelector('[data-todo-start-date]')?.value || today).trim() || today;
+        const endDate = String(container?.querySelector('[data-todo-due-date]')?.value || startDate).trim() || startDate;
+        return { startDate, endDate, repeatRule: 'once' };
+    }
+    if (mode === 'none') {
+        return { startDate: '', endDate: '', repeatRule: 'once' };
+    }
+    return { startDate: '', endDate: today, repeatRule: 'once' };
+}
+
+function renderTodoSidebar() {
+    if (!todoSidebarList) return;
+    const items = Array.isArray(todoState.todayItems) ? todoState.todayItems : [];
+    if (todoSectionCount) {
+        const count = Number(todoState.counts?.today || items.length || 0);
+        todoSectionCount.textContent = count ? String(count) : '';
+    }
+    if (!items.length) {
+        todoSidebarList.innerHTML = `<div class="empty-inline">${escapeHtml(t('sidebar.emptyTodos'))}</div>`;
+        return;
+    }
+    todoSidebarList.innerHTML = items.slice(0, 5).map((item) => `
+        <div class="todo-sidebar-item" data-todo-focus="${escapeAttr(item.id)}">
+            <button class="todo-check" type="button" data-todo-toggle-complete="${escapeAttr(item.id)}" data-todo-completed="true" title="${escapeAttr(t('todos.complete'))}" aria-label="${escapeAttr(t('todos.complete'))}">
+                <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.8"><path d="m5 12 4 4L19 6"/></svg>
+            </button>
+            <span>${escapeHtml(item.title || '')}</span>
+        </div>
+    `).join('');
+}
+
+function renderTodos() {
+    if (!todoWorkbench) return;
+    const scope = normalizeTodoScope(todoState.scope);
+    const counts = todoState.counts || {};
+    const items = Array.isArray(todoState.items) ? todoState.items : [];
+    const suggestions = Array.isArray(todoState.suggestions) ? todoState.suggestions : [];
+    todoWorkbench.innerHTML = `
+        <div class="todo-layout">
+            <section class="todo-main-panel">
+                <div class="todo-toolbar">
+                    <div class="todo-tabs">
+                        ${renderTodoScopeButton('today', counts.today)}
+                        ${renderTodoScopeButton('inbox', counts.inbox)}
+                        ${renderTodoScopeButton('month', '')}
+                    </div>
+                    <div class="todo-toolbar-actions">
+                        <button class="btn-primary todo-create-toggle" type="button" data-todo-toggle-create>
+                            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 5v14M5 12h14"/></svg>
+                            <span>${escapeHtml(todoState.addOpen ? t('todos.hideCreate') : t('todos.create'))}</span>
+                        </button>
+                    </div>
+                </div>
+                <div class="todo-scope-hint">${escapeHtml(todoScopeHint(scope))}</div>
+                ${todoState.addOpen ? `
+                    <div class="todo-create-panel">
+                        <input type="text" data-todo-title autocomplete="off" placeholder="${escapeAttr(t('todos.titlePlaceholder'))}" ${todoState.saving ? 'disabled' : ''}>
+                        <select data-todo-date-mode aria-label="${escapeAttr(t('todos.dateMode'))}" ${todoState.saving ? 'disabled' : ''}>
+                            ${renderTodoDateModeOption('today')}
+                            ${renderTodoDateModeOption('tomorrow')}
+                            ${renderTodoDateModeOption('daily')}
+                            ${renderTodoDateModeOption('workdays')}
+                            ${renderTodoDateModeOption('custom')}
+                            ${renderTodoDateModeOption('none')}
+                        </select>
+                        ${renderTodoDateDetailFields()}
+                        <select data-todo-priority aria-label="${escapeAttr(t('todos.priority'))}" ${todoState.saving ? 'disabled' : ''}>
+                            <option value="normal">${escapeHtml(t('todos.normal'))}</option>
+                            <option value="high">${escapeHtml(t('todos.high'))}</option>
+                            <option value="low">${escapeHtml(t('todos.low'))}</option>
+                        </select>
+                        <input class="todo-notes-input" type="text" data-todo-notes autocomplete="off" placeholder="${escapeAttr(t('todos.notesPlaceholder'))}" ${todoState.saving ? 'disabled' : ''}>
+                        <button class="btn-primary todo-add-button" type="button" data-todo-create ${todoState.saving ? 'disabled aria-busy="true"' : ''}>
+                        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 5v14M5 12h14"/></svg>
+                        <span>${escapeHtml(t('todos.add'))}</span>
+                        </button>
+                    </div>
+                ` : ''}
+                ${todoState.error ? `<div class="todo-banner error">${escapeHtml(todoState.error)}</div>` : ''}
+                ${todoState.notice ? `<div class="todo-banner notice">${escapeHtml(todoState.notice)}</div>` : ''}
+                <div class="todo-list">
+                    ${renderTodoContent(scope, items)}
+                </div>
+            </section>
+            <aside class="todo-suggestion-panel">
+                <div class="todo-suggestion-head">
+                    <div>
+                        <h2>${escapeHtml(t('todos.suggestions'))}</h2>
+                        <p>${escapeHtml(t('todos.suggestionsHint'))}</p>
+                    </div>
+                    <button class="btn-secondary" type="button" data-todo-refresh-suggestions ${todoState.suggestionRefreshing ? 'disabled aria-busy="true"' : ''}>
+                        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.3"><path d="M21 12a9 9 0 0 1-9 9 9.8 9.8 0 0 1-6.7-2.7"/><path d="M3 12a9 9 0 0 1 9-9 9.8 9.8 0 0 1 6.7 2.7"/><path d="M3 20v-5h5M21 4v5h-5"/></svg>
+                        <span>${escapeHtml(t('todos.refreshSuggestions'))}</span>
+                    </button>
+                </div>
+                <div class="todo-suggestion-list">
+                    ${suggestions.length ? suggestions.map(renderTodoSuggestion).join('') : `<div class="empty-inline">${escapeHtml(t('todos.noSuggestions'))}</div>`}
+                </div>
+            </aside>
+        </div>
+    `;
+    renderTodoSidebar();
+}
+
+function renderTodoContent(scope, items) {
+    if (todoState.loading) {
+        return emptyState(t('todos.today'), t('pulse.loading'));
+    }
+    if (scope === 'month') {
+        return renderTodoMonthView(items);
+    }
+    return items.length ? items.map(renderTodoItem).join('') : emptyState(t('todos.noItems'), '');
+}
+
+function todoScopeHint(scope) {
+    if (scope === 'inbox') return t('todos.inboxHint');
+    if (scope === 'month') return t('todos.monthHint');
+    return t('todos.todayHint');
+}
+
+function renderTodoDateModeOption(mode, selectedMode = todoState.dateMode) {
+    const selected = normalizeTodoDateMode(selectedMode) === mode ? 'selected' : '';
+    return `<option value="${escapeAttr(mode)}" ${selected}>${escapeHtml(t(`todos.date${mode[0].toUpperCase()}${mode.slice(1)}`))}</option>`;
+}
+
+function renderTodoDateDetailFields(modeValue = todoState.dateMode, item = null) {
+    const mode = normalizeTodoDateMode(modeValue);
+    const today = todoTodayKey();
+    const startValue = item?.start_date || item?.due_date || today;
+    const endValue = item?.due_date || item?.end_date || (mode === 'custom' ? startValue : '');
+    if (mode === 'daily' || mode === 'workdays') {
+        return `
+            <label class="todo-field">
+                <span>${escapeHtml(t('todos.startDate'))}</span>
+                <input type="date" data-todo-start-date value="${escapeAttr(startValue)}" ${todoState.saving ? 'disabled' : ''}>
+            </label>
+            <label class="todo-field">
+                <span>${escapeHtml(t('todos.dueDate'))}</span>
+                <input type="date" data-todo-due-date value="${escapeAttr(item?.due_date || '')}" ${todoState.saving ? 'disabled' : ''}>
+            </label>
+        `;
+    }
+    if (mode === 'custom') {
+        return `
+            <label class="todo-field">
+                <span>${escapeHtml(t('todos.startDate'))}</span>
+                <input type="date" data-todo-start-date value="${escapeAttr(startValue)}" ${todoState.saving ? 'disabled' : ''}>
+            </label>
+            <label class="todo-field">
+                <span>${escapeHtml(t('todos.dueDate'))}</span>
+                <input type="date" data-todo-due-date value="${escapeAttr(endValue || startValue)}" ${todoState.saving ? 'disabled' : ''}>
+            </label>
+        `;
+    }
+    return `<div class="todo-date-summary">${escapeHtml(todoDateModeSummary(mode))}</div>`;
+}
+
+function renderTodoMonthView(items) {
+    const monthDate = todoMonthDate(todoState.month);
+    const range = todoMonthRange(todoState.month);
+    const days = todoMonthDays(monthDate);
+    const byDate = mapTodoItemsByDate(items, range.start, range.end);
+    const weekdayLabels = currentLanguage === 'zh'
+        ? ['一', '二', '三', '四', '五', '六', '日']
+        : ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+    const visibleCount = Object.values(byDate).reduce((total, dayItems) => total + dayItems.length, 0);
+    return `
+        <div class="todo-month-view">
+            <div class="todo-month-head">
+                <button class="todo-mini-button" type="button" data-todo-month-shift="-1" title="${escapeAttr(t('todos.previousMonth'))}" aria-label="${escapeAttr(t('todos.previousMonth'))}">
+                    <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.5"><path d="m15 18-6-6 6-6"/></svg>
+                </button>
+                <strong>${escapeHtml(todoMonthLabel(monthDate))}</strong>
+                <button class="todo-mini-button" type="button" data-todo-month-shift="1" title="${escapeAttr(t('todos.nextMonth'))}" aria-label="${escapeAttr(t('todos.nextMonth'))}">
+                    <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.5"><path d="m9 18 6-6-6-6"/></svg>
+                </button>
+            </div>
+            <div class="todo-month-grid">
+                ${weekdayLabels.map((label) => `<div class="todo-month-weekday">${escapeHtml(label)}</div>`).join('')}
+                ${days.map((day) => renderTodoMonthDay(day, byDate[day.key] || [])).join('')}
+            </div>
+            ${visibleCount ? '' : `<div class="empty-inline">${escapeHtml(t('todos.monthlyEmpty'))}</div>`}
+        </div>
+    `;
+}
+
+function renderTodoMonthDay(day, items) {
+    const classes = ['todo-month-day'];
+    if (!day.inMonth) classes.push('muted');
+    if (day.key === todoTodayKey()) classes.push('today');
+    return `
+        <div class="${classes.join(' ')}">
+            <div class="todo-month-date">${escapeHtml(String(day.date.getDate()))}</div>
+            <div class="todo-month-items">
+                ${items.slice(0, 3).map((item) => `
+                    <button class="todo-month-item ${item.status === 'done' ? 'done' : ''}" type="button" data-todo-toggle-complete="${escapeAttr(item.id)}" data-todo-completed="${item.status === 'done' ? 'false' : 'true'}">
+                        ${escapeHtml(item.title || '')}
+                    </button>
+                `).join('')}
+                ${items.length > 3 ? `<span class="todo-month-more">+${escapeHtml(String(items.length - 3))}</span>` : ''}
+            </div>
+        </div>
+    `;
+}
+
+function renderTodoScopeButton(scope, count) {
+    const active = normalizeTodoScope(todoState.scope) === scope;
+    return `
+        <button class="todo-tab ${active ? 'active' : ''}" type="button" data-todo-scope="${escapeAttr(scope)}">
+            <span>${escapeHtml(t(`todos.${scope}`))}</span>
+            ${Number(count || 0) ? `<strong>${escapeHtml(String(count))}</strong>` : ''}
+        </button>
+    `;
+}
+
+function renderTodoItem(item) {
+    if (todoState.editingId === item.id) {
+        return renderTodoEditItem(item);
+    }
+    const done = item.status === 'done';
+    const dateLabel = formatTodoScheduleLabel(item);
+    const nextCompleted = done ? 'false' : 'true';
+    const completeLabel = done ? t('todos.reopen') : t('todos.complete');
+    return `
+        <article class="todo-item ${done ? 'done' : ''}">
+            <button class="todo-check ${done ? 'checked' : ''}" type="button" data-todo-toggle-complete="${escapeAttr(item.id)}" data-todo-completed="${escapeAttr(nextCompleted)}" title="${escapeAttr(completeLabel)}" aria-label="${escapeAttr(completeLabel)}" aria-pressed="${done ? 'true' : 'false'}">
+                <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.8"><path d="m5 12 4 4L19 6"/></svg>
+            </button>
+            <div class="todo-item-body">
+                <div class="todo-item-title">${escapeHtml(item.title || '')}</div>
+                ${item.notes ? `<div class="todo-item-notes">${escapeHtml(item.notes)}</div>` : ''}
+                <div class="todo-item-meta">
+                    <span class="todo-priority ${escapeAttr(item.priority || 'normal')}">${escapeHtml(t(`todos.${item.priority || 'normal'}`))}</span>
+                    <span>${escapeHtml(dateLabel)}</span>
+                    ${item.source === 'suggestion' ? `<span>${escapeHtml(t('todos.sourceConversation'))}</span>` : ''}
+                </div>
+            </div>
+            <div class="todo-item-actions">
+                <button class="todo-mini-button" type="button" data-todo-edit="${escapeAttr(item.id)}" title="${escapeAttr(t('todos.edit'))}" aria-label="${escapeAttr(t('todos.edit'))}">
+                    <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.3"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
+                </button>
+                <button class="todo-mini-button danger" type="button" data-todo-delete="${escapeAttr(item.id)}" title="${escapeAttr(t('todos.delete'))}" aria-label="${escapeAttr(t('todos.delete'))}">
+                    <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v5M14 11v5"/></svg>
+                </button>
+            </div>
+        </article>
+    `;
+}
+
+function renderTodoEditItem(item) {
+    const draft = todoState.editingId === item.id && todoState.editDraft
+        ? todoState.editDraft
+        : todoEditDraftFromItem(item);
+    const mode = normalizeTodoDateMode(draft.dateMode || todoState.editDateMode || todoDateModeFromItem(item));
+    const dateDraft = {
+        start_date: draft.start_date || '',
+        due_date: draft.due_date || '',
+        end_date: draft.end_date || draft.due_date || '',
+    };
+    const priority = draft.priority || 'normal';
+    return `
+        <article class="todo-item todo-edit-card" data-todo-edit-id="${escapeAttr(item.id)}">
+            <input class="todo-edit-title" type="text" data-todo-edit-title value="${escapeAttr(draft.title || '')}" ${todoState.saving ? 'disabled' : ''}>
+            <label class="todo-field">
+                <span>${escapeHtml(t('todos.dateMode'))}</span>
+                <select data-todo-edit-date-mode aria-label="${escapeAttr(t('todos.dateMode'))}" ${todoState.saving ? 'disabled' : ''}>
+                    ${renderTodoDateModeOption('today', mode)}
+                    ${renderTodoDateModeOption('tomorrow', mode)}
+                    ${renderTodoDateModeOption('daily', mode)}
+                    ${renderTodoDateModeOption('workdays', mode)}
+                    ${renderTodoDateModeOption('custom', mode)}
+                    ${renderTodoDateModeOption('none', mode)}
+                </select>
+            </label>
+            ${renderTodoDateDetailFields(mode, dateDraft)}
+            <label class="todo-field">
+                <span>${escapeHtml(t('todos.priority'))}</span>
+                <select data-todo-edit-priority aria-label="${escapeAttr(t('todos.priority'))}" ${todoState.saving ? 'disabled' : ''}>
+                    <option value="normal" ${priority === 'normal' ? 'selected' : ''}>${escapeHtml(t('todos.normal'))}</option>
+                    <option value="high" ${priority === 'high' ? 'selected' : ''}>${escapeHtml(t('todos.high'))}</option>
+                    <option value="low" ${priority === 'low' ? 'selected' : ''}>${escapeHtml(t('todos.low'))}</option>
+                </select>
+            </label>
+            <input class="todo-edit-notes" type="text" data-todo-edit-notes value="${escapeAttr(draft.notes || '')}" placeholder="${escapeAttr(t('todos.notesPlaceholder'))}" ${todoState.saving ? 'disabled' : ''}>
+            <div class="todo-edit-actions">
+                <button class="btn-secondary" type="button" data-todo-edit-cancel="${escapeAttr(item.id)}">${escapeHtml(t('todos.cancelEdit'))}</button>
+                <button class="btn-primary" type="button" data-todo-edit-save="${escapeAttr(item.id)}" ${todoState.saving ? 'disabled aria-busy="true"' : ''}>${escapeHtml(t('todos.saveEdit'))}</button>
+            </div>
+        </article>
+    `;
+}
+
+function todoEditDraftFromItem(item = {}, dateMode = todoDateModeFromItem(item)) {
+    const dueDate = item.due_date || item.end_date || '';
+    return {
+        id: item.id || '',
+        title: item.title || '',
+        notes: item.notes || '',
+        priority: item.priority || 'normal',
+        dateMode,
+        start_date: item.start_date || '',
+        due_date: dueDate,
+        end_date: item.end_date || dueDate,
+    };
+}
+
+function collectTodoEditDraft(id = todoState.editingId) {
+    if (!id) return null;
+    const editor = todoWorkbench?.querySelector(`[data-todo-edit-id="${cssEscape(id)}"]`);
+    if (!editor) return null;
+    const dueDate = String(editor.querySelector('[data-todo-due-date]')?.value || '').trim();
+    return {
+        id,
+        title: String(editor.querySelector('[data-todo-edit-title]')?.value || ''),
+        notes: String(editor.querySelector('[data-todo-edit-notes]')?.value || ''),
+        priority: String(editor.querySelector('[data-todo-edit-priority]')?.value || 'normal'),
+        dateMode: normalizeTodoDateMode(editor.querySelector('[data-todo-edit-date-mode]')?.value || todoState.editDateMode),
+        start_date: String(editor.querySelector('[data-todo-start-date]')?.value || '').trim(),
+        due_date: dueDate,
+        end_date: dueDate,
+    };
+}
+
+function todoDestinationForItem(item = {}) {
+    const repeatRule = item.repeat_rule || 'once';
+    const startDate = item.start_date || '';
+    const endDate = item.end_date || item.due_date || '';
+    if (repeatRule === 'once' && !startDate && !endDate) {
+        return { scope: 'inbox', month: todoState.month };
+    }
+    if (todoItemBelongsToToday(item)) {
+        return { scope: 'today', month: todoState.month };
+    }
+    const monthDate = todoParseDateKey(startDate || endDate || todoTodayKey());
+    return { scope: 'month', month: todoMonthKey(monthDate) };
+}
+
+function todoDestinationMoved(destination = {}) {
+    if (!destination.scope || destination.scope !== normalizeTodoScope(todoState.scope)) return true;
+    return destination.scope === 'month' && destination.month && destination.month !== todoState.month;
+}
+
+function todoMovedNotice(scope) {
+    return t('todos.movedAfterEdit', { scope: t(`todos.${normalizeTodoScope(scope)}`) });
+}
+
+function todoItemBelongsToToday(item = {}) {
+    const today = todoTodayKey();
+    const repeatRule = item.repeat_rule || 'once';
+    const startDate = item.start_date || '';
+    const endDate = item.end_date || item.due_date || '';
+    if (repeatRule === 'daily') {
+        return (!startDate || startDate <= today) && (!endDate || endDate >= today);
+    }
+    if (repeatRule === 'workdays') {
+        return (!startDate || startDate <= today) && (!endDate || endDate >= today) && todoDateIsWorkday(today);
+    }
+    if (startDate && endDate) {
+        return startDate <= today && endDate >= today;
+    }
+    if (endDate) {
+        return endDate <= today;
+    }
+    return Boolean(startDate && startDate <= today);
+}
+
+function renderTodoSuggestion(suggestion) {
+    const scheduleLabel = formatTodoScheduleLabel({
+        start_date: suggestion.proposed_start_date || '',
+        due_date: suggestion.proposed_due_date || '',
+        end_date: suggestion.proposed_due_date || '',
+    });
+    return `
+        <article class="todo-suggestion-card">
+            <div class="todo-suggestion-title">${escapeHtml(suggestion.title || '')}</div>
+            ${suggestion.notes ? `<div class="todo-suggestion-notes">${escapeHtml(suggestion.notes)}</div>` : ''}
+            <div class="todo-item-meta">
+                <span>${escapeHtml(scheduleLabel)}</span>
+                <span>${escapeHtml(t(`todos.${suggestion.priority || 'normal'}`))}</span>
+                ${suggestion.confidence ? `<span>${escapeHtml(String(suggestion.confidence))}</span>` : ''}
+            </div>
+            ${suggestion.reason ? `<p>${escapeHtml(suggestion.reason)}</p>` : ''}
+            <div class="todo-suggestion-actions">
+                <button class="btn-secondary" type="button" data-todo-dismiss-suggestion="${escapeAttr(suggestion.id)}">${escapeHtml(t('todos.dismiss'))}</button>
+                <button class="btn-secondary" type="button" data-todo-accept-suggestion="${escapeAttr(suggestion.id)}">${escapeHtml(t('todos.accept'))}</button>
+            </div>
+        </article>
+    `;
+}
+
+function normalizeTodoScope(scope = '') {
+    return ['today', 'inbox', 'month'].includes(scope) ? scope : 'today';
+}
+
+function normalizeTodoDateMode(mode = '') {
+    return ['today', 'tomorrow', 'daily', 'workdays', 'custom', 'none'].includes(mode) ? mode : 'today';
+}
+
+function todoDateModeFromItem(item = {}) {
+    if (item.repeat_rule === 'daily') return 'daily';
+    if (item.repeat_rule === 'workdays') return 'workdays';
+    const startDate = item.start_date || '';
+    const endDate = item.end_date || item.due_date || '';
+    if (!startDate && !endDate) return 'none';
+    if (!startDate && endDate === todoTodayKey()) return 'today';
+    if (!startDate && endDate === todoDateKey(new Date(Date.now() + 24 * 60 * 60 * 1000))) return 'tomorrow';
+    return 'custom';
+}
+
+function todoTodayKey() {
+    return todoDateKey(new Date());
+}
+
+function todoMonthKey(date) {
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    return `${year}-${month}`;
+}
+
+function todoMonthDate(monthKey = '') {
+    const match = /^(\d{4})-(\d{2})$/.exec(monthKey || '');
+    if (!match) {
+        const now = new Date();
+        return new Date(now.getFullYear(), now.getMonth(), 1);
+    }
+    return new Date(Number(match[1]), Number(match[2]) - 1, 1);
+}
+
+function todoMonthRange(monthKey = todoState.month) {
+    const startDate = todoMonthDate(monthKey);
+    const endDate = new Date(startDate.getFullYear(), startDate.getMonth() + 1, 0);
+    return {
+        start: todoDateKey(startDate),
+        end: todoDateKey(endDate),
+    };
+}
+
+function todoDateKey(date) {
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+}
+
+function todoMonthDays(monthDate) {
+    const first = new Date(monthDate.getFullYear(), monthDate.getMonth(), 1);
+    const mondayOffset = (first.getDay() + 6) % 7;
+    const gridStart = new Date(first);
+    gridStart.setDate(first.getDate() - mondayOffset);
+    const days = [];
+    for (let index = 0; index < 42; index += 1) {
+        const date = new Date(gridStart);
+        date.setDate(gridStart.getDate() + index);
+        days.push({
+            date,
+            key: todoDateKey(date),
+            inMonth: date.getMonth() === monthDate.getMonth(),
+        });
+    }
+    return days;
+}
+
+function todoMonthLabel(monthDate) {
+    const year = monthDate.getFullYear();
+    const month = monthDate.getMonth() + 1;
+    return currentLanguage === 'zh'
+        ? `${year}年${month}月`
+        : monthDate.toLocaleString('en', { month: 'long', year: 'numeric' });
+}
+
+function todoDateModeSummary(mode) {
+    if (mode === 'tomorrow') return t('todos.dateTomorrow');
+    if (mode === 'none') return t('todos.dateNone');
+    return t('todos.dateToday');
+}
+
+function mapTodoItemsByDate(items, startDate, endDate) {
+    const byDate = {};
+    for (const item of items) {
+        for (const dateKey of todoOccurrenceDates(item, startDate, endDate)) {
+            if (!byDate[dateKey]) byDate[dateKey] = [];
+            byDate[dateKey].push(item);
+        }
+    }
+    return byDate;
+}
+
+function todoOccurrenceDates(item, startDate, endDate) {
+    if (!startDate || !endDate) return [];
+    const repeatRule = item.repeat_rule || 'once';
+    if (repeatRule === 'daily' || repeatRule === 'workdays') {
+        return todoRepeatedOccurrenceDates(item, startDate, endDate, repeatRule);
+    }
+    const itemStart = item.start_date || item.due_date || '';
+    const itemEnd = item.due_date || item.start_date || '';
+    if (!itemStart && !itemEnd) return [];
+    const start = item.start_date && item.due_date ? maxTodoDateKey(item.start_date, startDate) : maxTodoDateKey(itemStart, startDate);
+    const end = item.start_date && item.due_date ? minTodoDateKey(item.due_date, endDate) : minTodoDateKey(itemEnd, endDate);
+    return todoDateKeysBetween(start, end);
+}
+
+function todoRepeatedOccurrenceDates(item, startDate, endDate, repeatRule) {
+    const start = maxTodoDateKey(item.start_date || startDate, startDate);
+    const end = minTodoDateKey(item.due_date || endDate, endDate);
+    return todoDateKeysBetween(start, end).filter((dateKey) => repeatRule !== 'workdays' || todoDateIsWorkday(dateKey));
+}
+
+function todoDateKeysBetween(startDate, endDate) {
+    if (!startDate || !endDate || startDate > endDate) return [];
+    const start = todoParseDateKey(startDate);
+    const end = todoParseDateKey(endDate);
+    const dates = [];
+    for (let day = start; day <= end; day.setDate(day.getDate() + 1)) {
+        dates.push(todoDateKey(day));
+    }
+    return dates;
+}
+
+function todoParseDateKey(dateKey) {
+    const [year, month, day] = String(dateKey || '').split('-').map(Number);
+    return new Date(year || 1970, (month || 1) - 1, day || 1);
+}
+
+function todoDateIsWorkday(dateKey) {
+    const weekday = todoParseDateKey(dateKey).getDay();
+    return weekday >= 1 && weekday <= 5;
+}
+
+function maxTodoDateKey(left, right) {
+    return left > right ? left : right;
+}
+
+function minTodoDateKey(left, right) {
+    return left < right ? left : right;
+}
+
+function formatTodoDateLabel(dateText = '') {
+    if (!dateText) return t('todos.noDate');
+    const today = todoTodayKey();
+    const tomorrow = todoDateKey(new Date(Date.now() + 24 * 60 * 60 * 1000));
+    if (dateText === today) return t('todos.todayLabel');
+    if (dateText === tomorrow) return t('todos.tomorrow');
+    if (dateText < today) return `${t('todos.overdue')} ${dateText}`;
+    return dateText;
+}
+
+function formatTodoScheduleLabel(item = {}) {
+    const startDate = item.start_date || '';
+    const endDate = item.end_date || item.due_date || '';
+    const repeatRule = item.repeat_rule || 'once';
+    const repeatPrefix = repeatRule === 'daily'
+        ? t('todos.dateDaily')
+        : repeatRule === 'workdays'
+            ? t('todos.dateWorkdays')
+            : '';
+    if (startDate && endDate) {
+        const label = startDate === endDate ? formatTodoDateLabel(endDate) : t('todos.dateRange', {
+            start: formatTodoDateLabel(startDate),
+            end: formatTodoDateLabel(endDate),
+        });
+        return repeatPrefix ? `${repeatPrefix} · ${label}` : label;
+    }
+    if (endDate) {
+        const label = formatTodoDateLabel(endDate);
+        return repeatPrefix ? `${repeatPrefix} · ${label}` : label;
+    }
+    if (startDate) {
+        const label = t('todos.starts', { date: formatTodoDateLabel(startDate) });
+        return repeatPrefix ? `${repeatPrefix} · ${label}` : label;
+    }
+    if (repeatPrefix) return repeatPrefix;
+    return t('todos.noDate');
+}
+
 async function createPulseTopic(seed = null) {
     if (!pulseTopicInput || pulseTopicSubmitting) return;
     const seeded = seed && typeof seed === 'object';
@@ -5302,8 +8308,11 @@ async function refreshAll() {
         loadRuns(),
         loadSettings(),
         loadPulse(),
+        loadTodos(todoState.scope || 'today'),
+        loadTodoSuggestions(),
     ]);
     if (activeView === 'developer') await loadDeveloperMemory();
+    if (activeView === 'eval') await loadConversationEval();
     renderModes();
     updateTopbar();
 }
@@ -5393,9 +8402,18 @@ function setView(view, options = {}) {
         renderDeveloperView();
         if (!options.skipLoad) loadDeveloperMemory();
     }
+    if (view === 'eval') {
+        renderEvalView();
+        if (!options.skipLoad) loadConversationEval();
+    }
     if (view === 'pulse') {
         renderPulse();
         if (!pulse.items.length && !pulseError) loadPulse();
+    }
+    if (view === 'todos') {
+        renderTodos();
+        if (!todoState.items.length && !todoState.error) loadTodos(todoState.scope || 'today');
+        if (!todoState.suggestions.length) loadTodoSuggestions();
     }
     if (view === 'chat' && options.restore !== false) ensureCurrentConversationVisible();
     if (options.closeSidebar !== false) closeMobileSidebar();
@@ -5423,6 +8441,10 @@ function updateTopbar() {
 
 function updateCounts() {
     agentCount.textContent = agents.length ? String(agents.length) : '';
+    if (todoCount) {
+        const count = Number(todoState.counts?.today || 0);
+        todoCount.textContent = count ? String(count) : '';
+    }
     if (projectCount) {
         const driveCount = driveContentItems().length;
         projectCount.textContent = driveCount ? String(driveCount) : '';
@@ -5439,6 +8461,10 @@ function updateCounts() {
         navSectionCount.textContent = navItems ? String(navItems) : '';
     }
     if (pinnedSectionCount) pinnedSectionCount.textContent = pinnedAgentIds.length ? String(pinnedAgentIds.length) : '';
+    if (todoSectionCount) {
+        const count = Number(todoState.counts?.today || 0);
+        todoSectionCount.textContent = count ? String(count) : '';
+    }
     if (projectSectionCount) {
         const driveCount = driveContentItems().length;
         projectSectionCount.textContent = driveCount ? String(driveCount) : '';
@@ -12866,6 +15892,11 @@ function escapeAttr(text) {
     return escapeHtml(text).replace(/"/g, '&quot;');
 }
 
+function cssEscape(text) {
+    if (window.CSS?.escape) return window.CSS.escape(String(text || ''));
+    return String(text || '').replace(/[^a-zA-Z0-9_-]/g, '\\$&');
+}
+
 document.addEventListener('click', async (event) => {
     if (event.target === sidebarBackdrop) {
         event.preventDefault();
@@ -13160,6 +16191,103 @@ document.addEventListener('click', async (event) => {
             return;
         }
         setView(viewTarget.dataset.view);
+        return;
+    }
+
+    const todoScopeButton = event.target.closest('[data-todo-scope]');
+    if (todoScopeButton) {
+        event.preventDefault();
+        setTodoScope(todoScopeButton.dataset.todoScope || 'today');
+        return;
+    }
+
+    const todoToggleCreateButton = event.target.closest('[data-todo-toggle-create]');
+    if (todoToggleCreateButton) {
+        event.preventDefault();
+        toggleTodoCreatePanel();
+        return;
+    }
+
+    const todoMonthShiftButton = event.target.closest('[data-todo-month-shift]');
+    if (todoMonthShiftButton) {
+        event.preventDefault();
+        shiftTodoMonth(Number(todoMonthShiftButton.dataset.todoMonthShift || 0));
+        return;
+    }
+
+    const todoEditButton = event.target.closest('[data-todo-edit]');
+    if (todoEditButton && !todoEditButton.disabled) {
+        event.preventDefault();
+        event.stopPropagation();
+        startEditTodo(todoEditButton.dataset.todoEdit);
+        return;
+    }
+
+    const todoEditSaveButton = event.target.closest('[data-todo-edit-save]');
+    if (todoEditSaveButton && !todoEditSaveButton.disabled) {
+        event.preventDefault();
+        event.stopPropagation();
+        await saveTodoEdit(todoEditSaveButton.dataset.todoEditSave);
+        return;
+    }
+
+    const todoEditCancelButton = event.target.closest('[data-todo-edit-cancel]');
+    if (todoEditCancelButton) {
+        event.preventDefault();
+        event.stopPropagation();
+        cancelEditTodo();
+        return;
+    }
+
+    const todoCreateButton = event.target.closest('[data-todo-create]');
+    if (todoCreateButton && !todoCreateButton.disabled) {
+        event.preventDefault();
+        await createTodoFromForm();
+        return;
+    }
+
+    const todoCompleteButton = event.target.closest('[data-todo-toggle-complete]');
+    if (todoCompleteButton && !todoCompleteButton.disabled) {
+        event.preventDefault();
+        event.stopPropagation();
+        await setTodoCompleted(todoCompleteButton.dataset.todoToggleComplete, todoCompleteButton.dataset.todoCompleted === 'true');
+        return;
+    }
+
+    const todoDeleteButton = event.target.closest('[data-todo-delete]');
+    if (todoDeleteButton && !todoDeleteButton.disabled) {
+        event.preventDefault();
+        event.stopPropagation();
+        await deleteTodo(todoDeleteButton.dataset.todoDelete);
+        return;
+    }
+
+    const todoRefreshSuggestionsButton = event.target.closest('[data-todo-refresh-suggestions]');
+    if (todoRefreshSuggestionsButton && !todoRefreshSuggestionsButton.disabled) {
+        event.preventDefault();
+        await refreshTodoSuggestions();
+        return;
+    }
+
+    const todoAcceptSuggestionButton = event.target.closest('[data-todo-accept-suggestion]');
+    if (todoAcceptSuggestionButton && !todoAcceptSuggestionButton.disabled) {
+        event.preventDefault();
+        await acceptTodoSuggestion(todoAcceptSuggestionButton.dataset.todoAcceptSuggestion);
+        return;
+    }
+
+    const todoDismissSuggestionButton = event.target.closest('[data-todo-dismiss-suggestion]');
+    if (todoDismissSuggestionButton && !todoDismissSuggestionButton.disabled) {
+        event.preventDefault();
+        await dismissTodoSuggestion(todoDismissSuggestionButton.dataset.todoDismissSuggestion);
+        return;
+    }
+
+    const todoFocusTarget = event.target.closest('[data-todo-focus]');
+    if (todoFocusTarget) {
+        event.preventDefault();
+        setView('todos');
+        setTodoScope('today');
         return;
     }
 
@@ -13663,6 +16791,59 @@ document.addEventListener('click', async (event) => {
         return;
     }
 
+    const evalPageButton = event.target.closest('[data-eval-page-kind]');
+    if (evalPageButton && !evalPageButton.disabled) {
+        event.preventDefault();
+        setConversationEvalPage(evalPageButton.dataset.evalPageKind || 'candidates', evalPageButton.dataset.evalPage || 1);
+        return;
+    }
+
+    const evalReportSummary = event.target.closest('[data-eval-report-summary]');
+    if (evalReportSummary) {
+        const reportEntry = evalReportSummary.closest('[data-eval-report-run]');
+        const runId = reportEntry?.dataset.evalReportRun || '';
+        setTimeout(() => {
+            void toggleConversationEvalReport(runId, Boolean(reportEntry?.open));
+        }, 0);
+        return;
+    }
+
+    const evalRefreshButton = event.target.closest('[data-eval-refresh]');
+    if (evalRefreshButton && !evalRefreshButton.disabled) {
+        await loadConversationEval();
+        return;
+    }
+
+    const evalCollectButton = event.target.closest('[data-eval-collect]');
+    if (evalCollectButton && !evalCollectButton.disabled) {
+        await collectConversationEvalCandidates();
+        return;
+    }
+
+    const evalRunButton = event.target.closest('[data-eval-run]');
+    if (evalRunButton && !evalRunButton.disabled) {
+        await runConversationEval(evalRunButton.dataset.evalRun);
+        return;
+    }
+
+    const evalApproveButton = event.target.closest('[data-eval-approve]');
+    if (evalApproveButton && !evalApproveButton.disabled) {
+        await approveConversationEvalCase(evalApproveButton.dataset.evalApprove);
+        return;
+    }
+
+    const evalEditButton = event.target.closest('[data-eval-edit]');
+    if (evalEditButton && !evalEditButton.disabled) {
+        await editConversationEvalCase(evalEditButton.dataset.evalEditKind || 'candidate', evalEditButton.dataset.evalEdit);
+        return;
+    }
+
+    const evalDeleteButton = event.target.closest('[data-eval-delete]');
+    if (evalDeleteButton && !evalDeleteButton.disabled) {
+        await deleteConversationEvalCase(evalDeleteButton.dataset.evalDelete);
+        return;
+    }
+
     const traceToggleButton = event.target.closest('[data-trace-toggle-id]');
     if (traceToggleButton) {
         event.stopPropagation();
@@ -13723,6 +16904,24 @@ document.addEventListener('drop', handleDriveDrop);
 document.addEventListener('dragend', clearDriveDragState);
 
 document.addEventListener('change', async (event) => {
+    const todoDateModeSelect = event.target.closest?.('[data-todo-date-mode]');
+    if (todoDateModeSelect) {
+        setTodoDateMode(todoDateModeSelect.value || 'today');
+        return;
+    }
+
+    const todoEditDateModeSelect = event.target.closest?.('[data-todo-edit-date-mode]');
+    if (todoEditDateModeSelect) {
+        setTodoEditDateMode(todoEditDateModeSelect.value || 'custom');
+        return;
+    }
+
+    const todoEditChangedField = event.target.closest?.('[data-todo-edit-priority], [data-todo-start-date], [data-todo-due-date]');
+    if (todoEditChangedField?.closest('[data-todo-edit-id]')) {
+        syncTodoEditDraft(todoEditChangedField.closest('[data-todo-edit-id]')?.dataset.todoEditId);
+        return;
+    }
+
     const drivePathJump = event.target.closest('[data-drive-path-jump]');
     if (drivePathJump) {
         enterDriveFolder(drivePathJump.value || driveRootItem()?.id || '');
@@ -13731,6 +16930,52 @@ document.addEventListener('change', async (event) => {
 
     if (event.target === projectUploadInput) {
         await handleProjectUpload(projectUploadInput.files);
+        return;
+    }
+
+    const evalScenarioProfile = event.target.closest('[data-eval-scenario-profile]');
+    if (evalScenarioProfile && !evalScenarioProfile.disabled) {
+        const nextProfile = EVAL_SCENARIO_PROFILES.includes(evalScenarioProfile.value)
+            ? evalScenarioProfile.value
+            : 'all';
+        conversationEvalState = {
+            ...conversationEvalState,
+            scenarioProfile: nextProfile,
+            status: '',
+            error: '',
+        };
+        renderEvalView();
+        return;
+    }
+
+    const evalQualityProfile = event.target.closest('[data-eval-quality-profile]');
+    if (evalQualityProfile && !evalQualityProfile.disabled) {
+        const nextProfile = EVAL_QUALITY_PROFILES.includes(evalQualityProfile.value)
+            ? evalQualityProfile.value
+            : 'balanced';
+        conversationEvalState = {
+            ...conversationEvalState,
+            qualityProfile: nextProfile,
+            status: '',
+            error: '',
+        };
+        renderEvalView();
+        return;
+    }
+
+    const evalModelPreference = event.target.closest('[data-eval-model-preference]');
+    if (evalModelPreference && !evalModelPreference.disabled) {
+        const allowed = new Set(EVAL_LLM_MODELS.map((model) => model.value));
+        const nextModel = allowed.has(evalModelPreference.value)
+            ? evalModelPreference.value
+            : 'minimax:MiniMax-M2.7-highspeed';
+        conversationEvalState = {
+            ...conversationEvalState,
+            modelPreference: nextModel,
+            status: '',
+            error: '',
+        };
+        renderEvalView();
         return;
     }
 
@@ -13781,6 +17026,12 @@ document.addEventListener('input', (event) => {
     const mcpServers = event.target.closest('[data-mcp-servers]');
     if (mcpServers) {
         toolMcpConfig = { ...toolMcpConfig, servers: mcpServers.value };
+        return;
+    }
+
+    const todoEditInput = event.target.closest?.('[data-todo-edit-title], [data-todo-edit-notes], [data-todo-start-date], [data-todo-due-date]');
+    if (todoEditInput?.closest('[data-todo-edit-id]')) {
+        syncTodoEditDraft(todoEditInput.closest('[data-todo-edit-id]')?.dataset.todoEditId);
     }
 });
 
@@ -13857,6 +17108,21 @@ document.addEventListener('keydown', (event) => {
         event.preventDefault();
         closePulsePost();
         return;
+    }
+
+    if (event.key === 'Enter' && event.target.closest?.('[data-todo-title], [data-todo-notes]')) {
+        event.preventDefault();
+        void createTodoFromForm();
+        return;
+    }
+
+    if (event.key === 'Enter' && event.target.closest?.('[data-todo-edit-title], [data-todo-edit-notes]')) {
+        const editor = event.target.closest('[data-todo-edit-id]');
+        if (editor?.dataset.todoEditId) {
+            event.preventDefault();
+            void saveTodoEdit(editor.dataset.todoEditId);
+            return;
+        }
     }
 
     if (!mediaPreviewIsOpen()) return;
@@ -14228,6 +17494,7 @@ applySidebarCollapseState();
 renderAgentCommandBar();
 renderModes();
 renderPulse();
+renderTodos();
 renderAccountControls();
 renderRoleSelect();
 renderRoleMemoryList();

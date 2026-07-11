@@ -39,6 +39,8 @@ func Init(dbPath string) error {
 		&models.PulseItem{},
 		&models.PulseModule{},
 		&models.PulseEvent{},
+		&models.TodoItem{},
+		&models.TodoSuggestion{},
 		&models.KnowledgeProject{},
 		&models.KnowledgeDocument{},
 		&models.KnowledgeLink{},

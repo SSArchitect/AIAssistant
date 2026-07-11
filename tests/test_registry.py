@@ -78,6 +78,9 @@ class TestSkillRegistry:
         assert "echo" in names
         assert "datetime" in names
         assert "calculator" in names
+        assert "create_todo" in names
+        assert "list_todos" in names
+        assert "update_todo" in names
         assert "image_generation_v1" in names
         assert "deep_research_v1" not in names
         assert "weight_loss_v1" in names

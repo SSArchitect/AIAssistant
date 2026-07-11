@@ -45,6 +45,7 @@ from agent.skills.base import SkillResult
 from agent.skills.registry import SkillRegistry
 from agent.skills.builtin.agent_tool import AgentToolSkill
 from agent.skills.builtin.drive import DRIVE_TOOL_NAMES
+from agent.skills.builtin.todo import TODO_TOOL_NAMES
 from agent.trace import TraceStore
 from agent.weight_loss import WeightLossStore
 
@@ -2582,6 +2583,7 @@ class AgentEngine:
             for tool in self.skill_registry.get_tool_definitions()
             if tool.name not in disabled
             if tool.name not in DRIVE_TOOL_NAMES or agent_id == SUPER_CHAT_AGENT_ID
+            if tool.name not in TODO_TOOL_NAMES or agent_id == SUPER_CHAT_AGENT_ID
             if tool.name not in AGENT_TOOL_IDS or agent_id == SUPER_CHAT_AGENT_ID
         ]
 
@@ -2592,8 +2594,12 @@ class AgentEngine:
         arguments: dict[str, Any] | None,
     ) -> dict[str, Any]:
         tool_arguments = dict(arguments) if isinstance(arguments, dict) else {}
-        if tool_name in DRIVE_TOOL_NAMES:
+        if tool_name in DRIVE_TOOL_NAMES or tool_name in TODO_TOOL_NAMES:
             tool_arguments["_user_id"] = self._user_id(request)
+        if tool_name in TODO_TOOL_NAMES:
+            tool_arguments["_conversation_id"] = request.conversation_id
+            if request.run_id:
+                tool_arguments["_run_id"] = request.run_id
         return tool_arguments
 
     def _append_unique_artifact(self, artifacts: list[ChatArtifact], artifact: ChatArtifact | None) -> None:
@@ -3185,7 +3191,7 @@ class AgentEngine:
             legacy_workflow=legacy_workflow,
         )
         tool_started_payload = {"name": tc.name, "arguments": tc.arguments}
-        if tc.name in DRIVE_TOOL_NAMES:
+        if tc.name in DRIVE_TOOL_NAMES or tc.name in TODO_TOOL_NAMES:
             tool_started_payload["engine_context"] = {"user_id": self._user_id(request)}
         tool_started_payload.update(workflow_payload)
         self.trace_store.append_event(

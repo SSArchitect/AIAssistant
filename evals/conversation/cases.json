@@ -1,0 +1,1821 @@
+{
+  "case_count": 1,
+  "cases": [
+    {
+      "expected": {
+        "behavior": "围绕「Dunlop 65/01/02 电吉他保养用品使用说明」完成用户任务；需要核对产品用途；避免把 Dunlop 吉他护理产品误判成轮胎或其他无关产品。",
+        "include": {
+          "answer_result": [
+            "区分 Formula 65、No.01、No.02 三瓶的用途",
+            "说明 65 用于琴体漆面清洁/抛光，不用于木质指板",
+            "说明 01 是指板清洁剂，用于去污",
+            "说明 02 是指板护理油/柠檬油，用于玫瑰木或乌木等未上漆指板补油",
+            "给出从指板清洁护理到琴体清洁的操作顺序",
+            "提醒不要把护理油用于枫木指板或漆面，并避免液体进入拾音器/电路"
+          ],
+          "citations": [
+            "必要时给出来源或说明依据"
+          ],
+          "tool_calls": [
+            "search"
+          ]
+        },
+        "min_must_include": 5,
+        "must_include": [
+          "Formula No. 65",
+          "01",
+          "02",
+          "指板",
+          "漆面",
+          "清洁剂",
+          "护理油",
+          "枫木"
+        ],
+        "must_not_include": [
+          "轮胎",
+          "tyres",
+          "tires",
+          "无法联网",
+          "我不能访问互联网"
+        ],
+        "result": {
+          "accuracy": {
+            "min_must_include": 5,
+            "must_include": [
+              "Formula No. 65",
+              "01",
+              "02",
+              "指板",
+              "漆面",
+              "清洁剂",
+              "护理油",
+              "枫木"
+            ],
+            "must_not_include": [
+              "轮胎",
+              "tyres",
+              "tires",
+              "无法联网",
+              "我不能访问互联网"
+            ]
+          },
+          "completeness": {
+            "min_required_points": 4,
+            "min_score": 0.66,
+            "required_points": [
+              {
+                "any_text_contains": [
+                  "三瓶身份",
+                  "Formula No. 65",
+                  "65（液瓶/喷瓶）"
+                ],
+                "label": "区分三瓶用途"
+              },
+              {
+                "all_text_contains": [
+                  "65",
+                  "漆面"
+                ],
+                "any_text_contains": [
+                  "抛光",
+                  "提亮",
+                  "琴体"
+                ],
+                "label": "65 用于琴体漆面清洁和抛光"
+              },
+              {
+                "all_text_contains": [
+                  "01",
+                  "指板"
+                ],
+                "any_text_contains": [
+                  "清洁剂",
+                  "去脏",
+                  "汗渍",
+                  "油泥"
+                ],
+                "label": "01 用于指板清洁去污"
+              },
+              {
+                "all_text_contains": [
+                  "02",
+                  "指板"
+                ],
+                "any_text_contains": [
+                  "护理油",
+                  "柠檬油",
+                  "补油",
+                  "防干裂"
+                ],
+                "label": "02 用于未上漆木质指板护理补油"
+              },
+              {
+                "any_text_contains": [
+                  "01 → 02",
+                  "推荐保养顺序",
+                  "步骤",
+                  "先",
+                  "然后"
+                ],
+                "label": "给出可执行保养顺序"
+              },
+              {
+                "any_text_contains": [
+                  "枫木",
+                  "不要直接喷",
+                  "拾音器",
+                  "电路",
+                  "不进电路"
+                ],
+                "label": "给出关键禁忌和安全提醒"
+              }
+            ]
+          }
+        },
+        "tool_expectations": [
+          {
+            "name": "search",
+            "required": true
+          }
+        ],
+        "tools": {
+          "required": [
+            "search"
+          ]
+        }
+      },
+      "historical_response": {
+        "content": "注意到一个有趣的事儿：**Dunlop Formula 65 String Cleaner**（带刷头的瓶）是另一款独立产品，主要针对琴弦——但用户手头没有琴弦刷头的版本，用户手里是 65 polish + 01 + 02。注意点：Thomann 上一位老用户的评价明确建议\"木质/漆面清洁剂纯属浪费钱，用玻璃水+布就行\"——这是他的个人意见，**不要**照搬，他评价的是日常擦拭；但对于一次性深度保养，咱该用还是得用。 老板，情况搞清楚了，给你一套**逐步保养流程**： ## 三瓶身份 | 瓶身 | 真实身份 | 干什么的 | |---|---|---| | **Formula No. 65（液瓶/喷瓶）** | 琴体漆面清洁+抛光剂 | 清洁 + 提亮吉他**漆面**（琴身、琴头、护板），对**木头指板无效** | | **No. 01（蓝/深色，Fingerboard Cleaner）** | 指板**清洁剂**（去脏） | 喷在指板上溶解汗渍、锈斑、油泥 | | **No. 02（浅色，Fingerboard Conditioner）** | 指板**护理油**（俗称\"柠檬油\"） | 01 清洁之后给**玫瑰木/乌木指板**补油、防干裂 | \u003e 三瓶关系：65 走\"漆面\"，01/02 走\"指板\"，**别搞串**——把 65 上指板等于给木头穿塑料雨衣，把 02 上漆面会留油斑、还可能腐蚀涂层。 --- ## 推荐保养顺序（每 3–6 个月一次深度保养） **① 先松弦、卸琴弦**（02 是油，必须在无弦状态下操作，不然油渗进品丝孔和琴头会留很久）。 **② 指板：01 → 02** 1. 喷少量 01 在干布/纸巾上，沿指板来回擦拭每个品位，把陈年污垢擦掉，黑乎乎的别慌，那都是老汗。 2. 等 1–2 分钟挥发干透。 3. 滴 2–3 滴 02 到另一块干净布上（**别直接往指板上倒**），薄薄涂匀整条指板，等 5–10 分钟让它吸进去。 4. 用干布把表面残留的油擦掉，**不要留油膜**。枫木（maple）指板**跳过 02**，枫木不上油。 **③ 琴体：65** 1. 把琴弦留松或卸下都行（卸了更好擦琴桥/拾音器周围）。 2. 把 65 喷在**擦琴布上**（不要直接喷琴，液体流进拾音器/电位器就麻烦了）。 3. 顺着漆面纹理擦，再用干净面抛一下提亮。 4. 擦琴头正面、背面侧板同理。 **④ 上回琴弦、调音，收工。** --- ## 几个雷区提醒 - **02 别多**：油多了指板发黏、还容易让品丝松动，\"薄、匀、干擦\"是核心。 - **65 别喷拾音器/电路/琴桥金属件**：会渗进电位器，久了接触不良、旋钮出杂音。 - **玫瑰木/乌木**两油都用；**枫木指板**只用 01，**不要用 02**；**烤枫木**也只擦 01，不上油。 - 频繁换弦、汗手老板：01 可以每次换弦都顺手擦；02 几个月一次足够，别上瘾。 --- 要不要我顺手把这份保养流程存到你的网盘（比如 `/知识` 文件夹）一份，方便以后翻？或者你有指板材质（玫瑰木/枫木/烤枫木）想确认，告诉我我再补细节。",
+        "error_type": "",
+        "model_used": "MiniMax-M3",
+        "run_id": "run_d15d1a51d26a4ae0b4e538b5aafb5209",
+        "runtime": "self",
+        "skills_used": [
+          "search",
+          "open_url"
+        ],
+        "trace_summary": [
+          {
+            "created_at": "2026-07-06T19:59:40.746887Z",
+            "id": "evt_58391b3f467e4c739c6e84a096231ac7",
+            "payload": {
+              "agent_id": "super_chat"
+            },
+            "run_id": "run_d15d1a51d26a4ae0b4e538b5aafb5209",
+            "status": "running",
+            "title": "Run started",
+            "type": "run.started"
+          },
+          {
+            "created_at": "2026-07-06T19:59:40.755651Z",
+            "id": "evt_d08e4384b3d04a8fa9c68b682091b425",
+            "payload": {
+              "message_count": 0,
+              "reason": "",
+              "source_agent_id": "client",
+              "target_agent_id": "super_chat"
+            },
+            "run_id": "run_d15d1a51d26a4ae0b4e538b5aafb5209",
+            "status": "completed",
+            "title": "Agent input context received",
+            "type": "agent.input_context.received"
+          },
+          {
+            "created_at": "2026-07-06T19:59:40.779330Z",
+            "id": "evt_9e714ae2264d402285afb1e82712f595",
+            "payload": {},
+            "run_id": "run_d15d1a51d26a4ae0b4e538b5aafb5209",
+            "status": "completed",
+            "title": "Role memory loaded",
+            "type": "memory.loaded"
+          },
+          {
+            "created_at": "2026-07-06T19:59:40.779658Z",
+            "id": "evt_59937bfadf8c4f658c91c6214ae240a3",
+            "payload": {
+              "message_count": 2,
+              "tools_count": 12
+            },
+            "run_id": "run_d15d1a51d26a4ae0b4e538b5aafb5209",
+            "status": "completed",
+            "title": "Prompt context built",
+            "type": "context.built"
+          },
+          {
+            "created_at": "2026-07-06T19:59:40.779685Z",
+            "id": "evt_152ee57ccd594afb98051787bc5ae8a7",
+            "payload": {
+              "max_failed_tool_calls": 12,
+              "max_model_rounds": 12,
+              "max_tool_calls": 48
+            },
+            "run_id": "run_d15d1a51d26a4ae0b4e538b5aafb5209",
+            "status": "running",
+            "title": "Workflow agent_loop started",
+            "type": "workflow.started"
+          },
+          {
+            "created_at": "2026-07-06T19:59:40.779701Z",
+            "id": "evt_0628c86c17dc4ddca1f20d3817e73d93",
+            "payload": {
+              "max_failed_tool_calls": 12,
+              "max_model_rounds": 12,
+              "max_tool_calls": 48,
+              "node": "main_loop",
+              "workflow_node": "main_loop"
+            },
+            "run_id": "run_d15d1a51d26a4ae0b4e538b5aafb5209",
+            "status": "running",
+            "title": "Workflow node main_loop started",
+            "type": "workflow.node.started"
+          },
+          {
+            "created_at": "2026-07-06T19:59:40.779733Z",
+            "id": "evt_df1e344ef8d04ba0abd9e89863b9ccd6",
+            "payload": {
+              "message_count": 2,
+              "round": 1,
+              "streaming": false,
+              "tools_count": 12,
+              "workflow_node": "main_loop"
+            },
+            "run_id": "run_d15d1a51d26a4ae0b4e538b5aafb5209",
+            "status": "running",
+            "title": "Model call 1",
+            "type": "model.started"
+          },
+          {
+            "created_at": "2026-07-06T19:59:43.221504Z",
+            "duration_ms": 2441,
+            "id": "evt_67ede2cb385d4cb8a144bed762b820bc",
+            "payload": {
+              "model": "MiniMax-M3",
+              "round": 1,
+              "tool_calls": [
+                {
+                  "id": "call_019f3903dfc97f4296600c9c",
+                  "name": "search"
+                }
+              ],
+              "usage": {
+                "input": 4197,
+                "output": 65
+              },
+              "workflow_node": "main_loop"
+            },
+            "run_id": "run_d15d1a51d26a4ae0b4e538b5aafb5209",
+            "status": "completed",
+            "title": "Model call 1 completed",
+            "type": "model.completed"
+          },
+          {
+            "created_at": "2026-07-06T19:59:43.221606Z",
+            "id": "evt_1851eb6f8a044b44b9a8b7c51f95147b",
+            "payload": {
+              "arguments": {
+                "query": "Dunlop 65 01 02 guitar care products polish cleaner usage"
+              },
+              "workflow_node": "main_loop"
+            },
+            "run_id": "run_d15d1a51d26a4ae0b4e538b5aafb5209",
+            "status": "running",
+            "step_id": "call_019f3903dfc97f4296600c9c",
+            "title": "Tool search",
+            "type": "tool.started"
+          },
+          {
+            "created_at": "2026-07-06T19:59:50.166526Z",
+            "id": "evt_31c85767ec40409d83fc5c3336d5694a",
+            "payload": {
+              "node": "query_rewrite",
+              "status": "completed",
+              "workflow_node": "main_loop"
+            },
+            "run_id": "run_d15d1a51d26a4ae0b4e538b5aafb5209",
+            "status": "completed",
+            "step_id": "call_019f3903dfc97f4296600c9c",
+            "title": "Search query_rewrite completed",
+            "type": "search.query_rewrite.completed"
+          },
+          {
+            "created_at": "2026-07-06T19:59:50.166641Z",
+            "id": "evt_103487b4e8864d73bde4791d6f0a7c61",
+            "payload": {
+              "node": "recall",
+              "status": "completed",
+              "workflow_node": "main_loop"
+            },
+            "run_id": "run_d15d1a51d26a4ae0b4e538b5aafb5209",
+            "status": "completed",
+            "step_id": "call_019f3903dfc97f4296600c9c",
+            "title": "Search recall completed",
+            "type": "search.recall.completed"
+          },
+          {
+            "created_at": "2026-07-06T19:59:50.166707Z",
+            "duration_ms": 29,
+            "id": "evt_44a7613cc7964625a23f1b43e4893af8",
+            "payload": {
+              "node": "ranking",
+              "status": "completed",
+              "workflow_node": "main_loop"
+            },
+            "run_id": "run_d15d1a51d26a4ae0b4e538b5aafb5209",
+            "status": "completed",
+            "step_id": "call_019f3903dfc97f4296600c9c",
+            "title": "Search ranking completed",
+            "type": "search.ranking.completed"
+          },
+          {
+            "created_at": "2026-07-06T19:59:50.166768Z",
+            "duration_ms": 4379,
+            "id": "evt_9a819ddbf5804e5c98b88ed774616837",
+            "payload": {
+              "model": "MiniMax-M3",
+              "node": "llm_rerank",
+              "provider": "llm:minimax",
+              "status": "completed",
+              "usage": {
+                "input": 2201,
+                "output": 381
+              },
+              "workflow_node": "main_loop"
+            },
+            "run_id": "run_d15d1a51d26a4ae0b4e538b5aafb5209",
+            "status": "completed",
+            "step_id": "call_019f3903dfc97f4296600c9c",
+            "title": "Search llm_rerank completed",
+            "type": "search.llm_rerank.completed"
+          },
+          {
+            "created_at": "2026-07-06T19:59:50.166947Z",
+            "id": "evt_1c9ed5a29dcc437388c344925ecd11f4",
+            "payload": {
+              "count": 2,
+              "total": 2,
+              "urls": [
+                "https://www.ebay.com/p/1111634027?iid=155347761053",
+                "http://jiadian.hot16.cn/jiadian_info/item/50036193/O5RB2vm6hJex07Qbju.html"
+              ]
+            },
+            "run_id": "run_d15d1a51d26a4ae0b4e538b5aafb5209",
+            "status": "completed",
+            "step_id": "call_019f3903dfc97f4296600c9c",
+            "title": "Search citations collected",
+            "type": "citations.collected"
+          },
+          {
+            "created_at": "2026-07-06T19:59:50.166998Z",
+            "duration_ms": 6945,
+            "id": "evt_2d46789d05ad4ab8affe4a3fc5c08090",
+            "payload": {
+              "arguments": {
+                "query": "Dunlop 65 01 02 guitar care products polish cleaner usage"
+              },
+              "result_preview": "{\"success\": true, \"data\": {\"query\": \"Dunlop 65 01 02 guitar care products polish cleaner usage\", \"query_rewrite\": {\"node\": \"query_rewrite\", \"policy_id\": \"lexical_recall_no_inference_v1\", \"policy\": \"query_rewrite 是召回阶段的词法改写节点，只做保守扩召，不做事实判断。必须保留用户原始意图，不把未被用户文本或上下文支持的解释、分类、用途、材质、结论写进 query。允许的操作仅包括：保留原句、空格/大小写等规范化、字母数字边界拆分、精确短语加引号、可机械推出的缩写、以及对原词的重组。\", \"strategy\": \"keyword_recall\", \"original_query\": \"Dunlop 65 01 02 guitar care products polish cleaner usage\", \"queries\": [\"Dunlop 65 01 02 guitar care",
+              "workflow_node": "main_loop"
+            },
+            "run_id": "run_d15d1a51d26a4ae0b4e538b5aafb5209",
+            "status": "completed",
+            "step_id": "call_019f3903dfc97f4296600c9c",
+            "title": "Tool search completed",
+            "type": "tool.completed"
+          },
+          {
+            "created_at": "2026-07-06T19:59:50.167190Z",
+            "id": "evt_86f5ee9defc943a3922e315c4ec4abe2",
+            "payload": {
+              "message_count": 4,
+              "round": 2,
+              "streaming": false,
+              "tools_count": 12,
+              "workflow_node": "main_loop"
+            },
+            "run_id": "run_d15d1a51d26a4ae0b4e538b5aafb5209",
+            "status": "running",
+            "title": "Model call 2",
+            "type": "model.started"
+          },
+          {
+            "created_at": "2026-07-06T19:59:53.511559Z",
+            "duration_ms": 3344,
+            "id": "evt_e6dc29aa10054839a9d3a10afcb93637",
+            "payload": {
+              "model": "MiniMax-M3",
+              "round": 2,
+              "tool_calls": [
+                {
+                  "id": "call_019f390407ce7430bd1b12d3",
+                  "name": "open_url"
+                },
+                {
+                  "id": "call_019f390407ce7430bd1b12e2",
+                  "name": "open_url"
+                }
+              ],
+              "usage": {
+                "input": 7730,
+                "output": 135
+              },
+              "workflow_node": "main_loop"
+            },
+            "run_id": "run_d15d1a51d26a4ae0b4e538b5aafb5209",
+            "status": "completed",
+            "title": "Model call 2 completed",
+            "type": "model.completed"
+          },
+          {
+            "created_at": "2026-07-06T19:59:53.511737Z",
+            "id": "evt_ccb56789a36e432394f870beae84a893",
+            "payload": {
+              "arguments": {
+                "url": "https://www.jimdunlop.com/products/maintenance-and-care/system-65-guitar-care-kit/"
+              },
+              "workflow_node": "main_loop"
+            },
+            "run_id": "run_d15d1a51d26a4ae0b4e538b5aafb5209",
+            "status": "running",
+            "step_id": "call_019f390407ce7430bd1b12d3",
+            "title": "Tool open_url",
+            "type": "tool.started"
+          },
+          {
+            "created_at": "2026-07-06T19:59:55.397917Z",
+            "duration_ms": 1886,
+            "id": "evt_9a236bec56c74c31a7068b26250542d6",
+            "payload": {
+              "arguments": {
+                "url": "https://www.jimdunlop.com/products/maintenance-and-care/system-65-guitar-care-kit/"
+              },
+              "result_preview": "{\"error\":\"Open URL failed: HTTPStatusError: Client error '404 Not Found' for url 'https://www.jimdunlop.com/products/maintenance-and-care/system-65-guitar-care-kit/'\\nFor more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/404\",\"success\":false}",
+              "workflow_node": "main_loop"
+            },
+            "run_id": "run_d15d1a51d26a4ae0b4e538b5aafb5209",
+            "status": "error",
+            "step_id": "call_019f390407ce7430bd1b12d3",
+            "title": "Tool open_url error",
+            "type": "tool.failed"
+          },
+          {
+            "created_at": "2026-07-06T19:59:55.398063Z",
+            "id": "evt_eb1dcbecd01e4ce9b0680463acba4035",
+            "payload": {
+              "arguments": {
+                "url": "https://www.jimdunlop.com/products/maintenance-and-care/formula-no-65-guitar-polish-cleaner/"
+              },
+              "workflow_node": "main_loop"
+            },
+            "run_id": "run_d15d1a51d26a4ae0b4e538b5aafb5209",
+            "status": "running",
+            "step_id": "call_019f390407ce7430bd1b12e2",
+            "title": "Tool open_url",
+            "type": "tool.started"
+          },
+          {
+            "created_at": "2026-07-06T19:59:56.463156Z",
+            "duration_ms": 1065,
+            "id": "evt_ee213e824ee84045be047967da9ec325",
+            "payload": {
+              "arguments": {
+                "url": "https://www.jimdunlop.com/products/maintenance-and-care/formula-no-65-guitar-polish-cleaner/"
+              },
+              "result_preview": "{\"error\":\"Open URL failed: HTTPStatusError: Client error '404 Not Found' for url 'https://www.jimdunlop.com/products/maintenance-and-care/formula-no-65-guitar-polish-cleaner/'\\nFor more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/404\",\"success\":false}",
+              "workflow_node": "main_loop"
+            },
+            "run_id": "run_d15d1a51d26a4ae0b4e538b5aafb5209",
+            "status": "error",
+            "step_id": "call_019f390407ce7430bd1b12e2",
+            "title": "Tool open_url error",
+            "type": "tool.failed"
+          },
+          {
+            "created_at": "2026-07-06T19:59:56.463337Z",
+            "id": "evt_cd7e793400d841b88fb976144c8419c5",
+            "payload": {
+              "message_count": 7,
+              "round": 3,
+              "streaming": false,
+              "tools_count": 12,
+              "workflow_node": "main_loop"
+            },
+            "run_id": "run_d15d1a51d26a4ae0b4e538b5aafb5209",
+            "status": "running",
+            "title": "Model call 3",
+            "type": "model.started"
+          },
+          {
+            "created_at": "2026-07-06T19:59:58.895040Z",
+            "duration_ms": 2431,
+            "id": "evt_0175bfbb36d64baea32d310fde75ef42",
+            "payload": {
+              "model": "MiniMax-M3",
+              "round": 3,
+              "tool_calls": [
+                {
+                  "id": "call_019f39041ce87e41bc5ab7b3",
+                  "name": "search"
+                },
+                {
+                  "id": "call_019f39041ce87e41bc5ab7c6",
+                  "name": "search"
+                }
+              ],
+              "usage": {
+                "input": 8111,
+                "output": 93
+              },
+              "workflow_node": "main_loop"
+            },
+            "run_id": "run_d15d1a51d26a4ae0b4e538b5aafb5209",
+            "status": "completed",
+            "title": "Model call 3 completed",
+            "type": "model.completed"
+          },
+          {
+            "created_at": "2026-07-06T19:59:58.895150Z",
+            "id": "evt_657a383eacc14b4a9ae96f5933cbacc6",
+            "payload": {
+              "arguments": {
+                "query": "Jim Dunlop \"Formula No. 65\" guitar polish cleaner official product page usage instructions"
+              },
+              "workflow_node": "main_loop"
+            },
+            "run_id": "run_d15d1a51d26a4ae0b4e538b5aafb5209",
+            "status": "running",
+            "step_id": "call_019f39041ce87e41bc5ab7b3",
+            "title": "Tool search",
+            "type": "tool.started"
+          },
+          {
+            "created_at": "2026-07-06T20:00:03.650834Z",
+            "id": "evt_714b501f0bda4348bb8cc5a6ddf2e75c",
+            "payload": {
+              "node": "query_rewrite",
+              "status": "completed",
+              "workflow_node": "main_loop"
+            },
+            "run_id": "run_d15d1a51d26a4ae0b4e538b5aafb5209",
+            "status": "completed",
+            "step_id": "call_019f39041ce87e41bc5ab7b3",
+            "title": "Search query_rewrite completed",
+            "type": "search.query_rewrite.completed"
+          },
+          {
+            "created_at": "2026-07-06T20:00:03.650996Z",
+            "id": "evt_1da0de187eb24d8aa036d732f112eb02",
+            "payload": {
+              "node": "recall",
+              "status": "completed",
+              "workflow_node": "main_loop"
+            },
+            "run_id": "run_d15d1a51d26a4ae0b4e538b5aafb5209",
+            "status": "completed",
+            "step_id": "call_019f39041ce87e41bc5ab7b3",
+            "title": "Search recall completed",
+            "type": "search.recall.completed"
+          },
+          {
+            "created_at": "2026-07-06T20:00:03.651069Z",
+            "duration_ms": 2,
+            "id": "evt_f26326c1a286456aa3650a92735e69a0",
+            "payload": {
+              "node": "ranking",
+              "status": "completed",
+              "workflow_node": "main_loop"
+            },
+            "run_id": "run_d15d1a51d26a4ae0b4e538b5aafb5209",
+            "status": "completed",
+            "step_id": "call_019f39041ce87e41bc5ab7b3",
+            "title": "Search ranking completed",
+            "type": "search.ranking.completed"
+          },
+          {
+            "created_at": "2026-07-06T20:00:03.651139Z",
+            "duration_ms": 3762,
+            "id": "evt_7157ea565455485e8365dd47375f32b8",
+            "payload": {
+              "model": "MiniMax-M3",
+              "node": "llm_rerank",
+              "provider": "llm:minimax",
+              "status": "completed",
+              "usage": {
+                "input": 1724,
+                "output": 250
+              },
+              "workflow_node": "main_loop"
+            },
+            "run_id": "run_d15d1a51d26a4ae0b4e538b5aafb5209",
+            "status": "completed",
+            "step_id": "call_019f39041ce87e41bc5ab7b3",
+            "title": "Search llm_rerank completed",
+            "type": "search.llm_rerank.completed"
+          },
+          {
+            "created_at": "2026-07-06T20:00:03.651213Z",
+            "duration_ms": 4756,
+            "id": "evt_2c3370f7274544488fdaeee7137c0ef9",
+            "payload": {
+              "arguments": {
+                "query": "Jim Dunlop \"Formula No. 65\" guitar polish cleaner official product page usage instructions"
+              },
+              "result_preview": "{\"success\": true, \"data\": {\"query\": \"Jim Dunlop \\\"Formula No. 65\\\" guitar polish cleaner official product page usage instructions\", \"query_rewrite\": {\"node\": \"query_rewrite\", \"policy_id\": \"lexical_recall_no_inference_v1\", \"policy\": \"query_rewrite 是召回阶段的词法改写节点，只做保守扩召，不做事实判断。必须保留用户原始意图，不把未被用户文本或上下文支持的解释、分类、用途、材质、结论写进 query。允许的操作仅包括：保留原句、空格/大小写等规范化、字母数字边界拆分、精确短语加引号、可机械推出的缩写、以及对原词的重组。\", \"strategy\": \"syntax_preserving_rewrite\", \"original_query\": \"Jim Dunlop \\\"Formula No. 65\\\" guitar polish cleaner of",
+              "workflow_node": "main_loop"
+            },
+            "run_id": "run_d15d1a51d26a4ae0b4e538b5aafb5209",
+            "status": "completed",
+            "step_id": "call_019f39041ce87e41bc5ab7b3",
+            "title": "Tool search completed",
+            "type": "tool.completed"
+          },
+          {
+            "created_at": "2026-07-06T20:00:03.651336Z",
+            "id": "evt_a155aeeb06f348c996d1bd4b29d9bd14",
+            "payload": {
+              "arguments": {
+                "query": "Dunlop \"System 65\" guitar fingerboard kit 6501 6502 lemon oil conditioner"
+              },
+              "workflow_node": "main_loop"
+            },
+            "run_id": "run_d15d1a51d26a4ae0b4e538b5aafb5209",
+            "status": "running",
+            "step_id": "call_019f39041ce87e41bc5ab7c6",
+            "title": "Tool search",
+            "type": "tool.started"
+          },
+          {
+            "created_at": "2026-07-06T20:00:08.817901Z",
+            "id": "evt_6bd051ce40e84cdda5f29827eb8cea76",
+            "payload": {
+              "node": "query_rewrite",
+              "status": "completed",
+              "workflow_node": "main_loop"
+            },
+            "run_id": "run_d15d1a51d26a4ae0b4e538b5aafb5209",
+            "status": "completed",
+            "step_id": "call_019f39041ce87e41bc5ab7c6",
+            "title": "Search query_rewrite completed",
+            "type": "search.query_rewrite.completed"
+          },
+          {
+            "created_at": "2026-07-06T20:00:08.818026Z",
+            "id": "evt_428bc793babb4cd394a23eeaebcc97e3",
+            "payload": {
+              "node": "recall",
+              "status": "completed",
+              "workflow_node": "main_loop"
+            },
+            "run_id": "run_d15d1a51d26a4ae0b4e538b5aafb5209",
+            "status": "completed",
+            "step_id": "call_019f39041ce87e41bc5ab7c6",
+            "title": "Search recall completed",
+            "type": "search.recall.completed"
+          },
+          {
+            "created_at": "2026-07-06T20:00:08.818092Z",
+            "duration_ms": 2,
+            "id": "evt_6a754ce0f5dd475ea2a7f7879f46e840",
+            "payload": {
+              "node": "ranking",
+              "status": "completed",
+              "workflow_node": "main_loop"
+            },
+            "run_id": "run_d15d1a51d26a4ae0b4e538b5aafb5209",
+            "status": "completed",
+            "step_id": "call_019f39041ce87e41bc5ab7c6",
+            "title": "Search ranking completed",
+            "type": "search.ranking.completed"
+          },
+          {
+            "created_at": "2026-07-06T20:00:08.818151Z",
+            "duration_ms": 4221,
+            "id": "evt_14d8adf0a32c4354b42cc58bda6d5bc5",
+            "payload": {
+              "model": "MiniMax-M3",
+              "node": "llm_rerank",
+              "provider": "llm:minimax",
+              "status": "completed",
+              "usage": {
+                "input": 1782,
+                "output": 306
+              },
+              "workflow_node": "main_loop"
+            },
+            "run_id": "run_d15d1a51d26a4ae0b4e538b5aafb5209",
+            "status": "completed",
+            "step_id": "call_019f39041ce87e41bc5ab7c6",
+            "title": "Search llm_rerank completed",
+            "type": "search.llm_rerank.completed"
+          },
+          {
+            "created_at": "2026-07-06T20:00:08.818218Z",
+            "duration_ms": 5166,
+            "id": "evt_e55311cc65044819aa950439b667d4ab",
+            "payload": {
+              "arguments": {
+                "query": "Dunlop \"System 65\" guitar fingerboard kit 6501 6502 lemon oil conditioner"
+              },
+              "result_preview": "{\"success\": true, \"data\": {\"query\": \"Dunlop \\\"System 65\\\" guitar fingerboard kit 6501 6502 lemon oil conditioner\", \"query_rewrite\": {\"node\": \"query_rewrite\", \"policy_id\": \"lexical_recall_no_inference_v1\", \"policy\": \"query_rewrite 是召回阶段的词法改写节点，只做保守扩召，不做事实判断。必须保留用户原始意图，不把未被用户文本或上下文支持的解释、分类、用途、材质、结论写进 query。允许的操作仅包括：保留原句、空格/大小写等规范化、字母数字边界拆分、精确短语加引号、可机械推出的缩写、以及对原词的重组。\", \"strategy\": \"syntax_preserving_rewrite\", \"original_query\": \"Dunlop \\\"System 65\\\" guitar fingerboard kit 6501 6502 lemon oil conditi",
+              "workflow_node": "main_loop"
+            },
+            "run_id": "run_d15d1a51d26a4ae0b4e538b5aafb5209",
+            "status": "completed",
+            "step_id": "call_019f39041ce87e41bc5ab7c6",
+            "title": "Tool search completed",
+            "type": "tool.completed"
+          },
+          {
+            "created_at": "2026-07-06T20:00:08.818414Z",
+            "id": "evt_5bde7941dfce42968819f529f39889e5",
+            "payload": {
+              "message_count": 10,
+              "round": 4,
+              "streaming": false,
+              "tools_count": 12,
+              "workflow_node": "main_loop"
+            },
+            "run_id": "run_d15d1a51d26a4ae0b4e538b5aafb5209",
+            "status": "running",
+            "title": "Model call 4",
+            "type": "model.started"
+          },
+          {
+            "created_at": "2026-07-06T20:00:12.208316Z",
+            "duration_ms": 3389,
+            "id": "evt_f891e36cd47c4bb3b2db5c18d02b8b66",
+            "payload": {
+              "model": "MiniMax-M3",
+              "round": 4,
+              "tool_calls": [
+                {
+                  "id": "call_019f390451347c81a46e9d42",
+                  "name": "search"
+                },
+                {
+                  "id": "call_019f390451347c81a46e9d56",
+                  "name": "search"
+                }
+              ],
+              "usage": {
+                "input": 12303,
+                "output": 121
+              },
+              "workflow_node": "main_loop"
+            },
+            "run_id": "run_d15d1a51d26a4ae0b4e538b5aafb5209",
+            "status": "completed",
+            "title": "Model call 4 completed",
+            "type": "model.completed"
+          },
+          {
+            "created_at": "2026-07-06T20:00:12.208460Z",
+            "id": "evt_63b4a381e96e4d8f87f73821968cc4e0",
+            "payload": {
+              "arguments": {
+                "query": "\"jimdunlop.com\" \"System 65\" fingerboard kit"
+              },
+              "workflow_node": "main_loop"
+            },
+            "run_id": "run_d15d1a51d26a4ae0b4e538b5aafb5209",
+            "status": "running",
+            "step_id": "call_019f390451347c81a46e9d42",
+            "title": "Tool search",
+            "type": "tool.started"
+          },
+          {
+            "created_at": "2026-07-06T20:00:18.679830Z",
+            "id": "evt_2ad3a9c919e94f889845f0fbed409249",
+            "payload": {
+              "node": "query_rewrite",
+              "status": "completed",
+              "workflow_node": "main_loop"
+            },
+            "run_id": "run_d15d1a51d26a4ae0b4e538b5aafb5209",
+            "status": "completed",
+            "step_id": "call_019f390451347c81a46e9d42",
+            "title": "Search query_rewrite completed",
+            "type": "search.query_rewrite.completed"
+          },
+          {
+            "created_at": "2026-07-06T20:00:18.679949Z",
+            "id": "evt_c225901b3ae74e2ba62abc364ae94055",
+            "payload": {
+              "node": "recall",
+              "status": "completed",
+              "workflow_node": "main_loop"
+            },
+            "run_id": "run_d15d1a51d26a4ae0b4e538b5aafb5209",
+            "status": "completed",
+            "step_id": "call_019f390451347c81a46e9d42",
+            "title": "Search recall completed",
+            "type": "search.recall.completed"
+          },
+          {
+            "created_at": "2026-07-06T20:00:18.680023Z",
+            "duration_ms": 10,
+            "id": "evt_81ef9ff25e35402f86afcd25d0d95dc1",
+            "payload": {
+              "node": "ranking",
+              "status": "completed",
+              "workflow_node": "main_loop"
+            },
+            "run_id": "run_d15d1a51d26a4ae0b4e538b5aafb5209",
+            "status": "completed",
+            "step_id": "call_019f390451347c81a46e9d42",
+            "title": "Search ranking completed",
+            "type": "search.ranking.completed"
+          },
+          {
+            "created_at": "2026-07-06T20:00:18.680089Z",
+            "duration_ms": 4475,
+            "id": "evt_053db222a4cf4730abd2fa525c80b7fe",
+            "payload": {
+              "model": "MiniMax-M3",
+              "node": "llm_rerank",
+              "provider": "llm:minimax",
+              "status": "completed",
+              "usage": {
+                "input": 1996,
+                "output": 251
+              },
+              "workflow_node": "main_loop"
+            },
+            "run_id": "run_d15d1a51d26a4ae0b4e538b5aafb5209",
+            "status": "completed",
+            "step_id": "call_019f390451347c81a46e9d42",
+            "title": "Search llm_rerank completed",
+            "type": "search.llm_rerank.completed"
+          },
+          {
+            "created_at": "2026-07-06T20:00:18.680150Z",
+            "duration_ms": 0,
+            "id": "evt_cfa5d276823a45f884704f966220a98c",
+            "payload": {
+              "node": "open_results",
+              "status": "completed",
+              "workflow_node": "main_loop"
+            },
+            "run_id": "run_d15d1a51d26a4ae0b4e538b5aafb5209",
+            "status": "completed",
+            "step_id": "call_019f390451347c81a46e9d42",
+            "title": "Search open_results completed",
+            "type": "search.open_results.completed"
+          },
+          {
+            "created_at": "2026-07-06T20:00:18.680215Z",
+            "duration_ms": 6471,
+            "id": "evt_a434384d30284919abf23d9166c2b04c",
+            "payload": {
+              "arguments": {
+                "query": "\"jimdunlop.com\" \"System 65\" fingerboard kit"
+              },
+              "result_preview": "{\"success\": true, \"data\": {\"query\": \"\\\"jimdunlop.com\\\" \\\"System 65\\\" fingerboard kit\", \"query_rewrite\": {\"node\": \"query_rewrite\", \"policy_id\": \"lexical_recall_no_inference_v1\", \"policy\": \"query_rewrite 是召回阶段的词法改写节点，只做保守扩召，不做事实判断。必须保留用户原始意图，不把未被用户文本或上下文支持的解释、分类、用途、材质、结论写进 query。允许的操作仅包括：保留原句、空格/大小写等规范化、字母数字边界拆分、精确短语加引号、可机械推出的缩写、以及对原词的重组。\", \"strategy\": \"syntax_preserving_rewrite\", \"original_query\": \"\\\"jimdunlop.com\\\" \\\"System 65\\\" fingerboard kit\", \"queries\": [\"\\\"jimdunlop.com\\\" \\\"System 65\\\" fing",
+              "workflow_node": "main_loop"
+            },
+            "run_id": "run_d15d1a51d26a4ae0b4e538b5aafb5209",
+            "status": "completed",
+            "step_id": "call_019f390451347c81a46e9d42",
+            "title": "Tool search completed",
+            "type": "tool.completed"
+          },
+          {
+            "created_at": "2026-07-06T20:00:18.680349Z",
+            "id": "evt_4c33b8e5332a4f069dc2f13bf6903bf0",
+            "payload": {
+              "arguments": {
+                "query": "\"jimdunlop.com\" \"Formula 65\" polish cleaner"
+              },
+              "workflow_node": "main_loop"
+            },
+            "run_id": "run_d15d1a51d26a4ae0b4e538b5aafb5209",
+            "status": "running",
+            "step_id": "call_019f390451347c81a46e9d56",
+            "title": "Tool search",
+            "type": "tool.started"
+          },
+          {
+            "created_at": "2026-07-06T20:00:27.320283Z",
+            "id": "evt_ff8a59313dc641a09b8d9f8a61971585",
+            "payload": {
+              "node": "query_rewrite",
+              "status": "completed",
+              "workflow_node": "main_loop"
+            },
+            "run_id": "run_d15d1a51d26a4ae0b4e538b5aafb5209",
+            "status": "completed",
+            "step_id": "call_019f390451347c81a46e9d56",
+            "title": "Search query_rewrite completed",
+            "type": "search.query_rewrite.completed"
+          },
+          {
+            "created_at": "2026-07-06T20:00:27.320312Z",
+            "id": "evt_c199309f54d147829aa55e2077a08f58",
+            "payload": {
+              "node": "recall",
+              "status": "completed",
+              "workflow_node": "main_loop"
+            },
+            "run_id": "run_d15d1a51d26a4ae0b4e538b5aafb5209",
+            "status": "completed",
+            "step_id": "call_019f390451347c81a46e9d56",
+            "title": "Search recall completed",
+            "type": "search.recall.completed"
+          },
+          {
+            "created_at": "2026-07-06T20:00:27.320326Z",
+            "duration_ms": 14,
+            "id": "evt_22f1b397620a45649033ebd9518f1638",
+            "payload": {
+              "node": "ranking",
+              "status": "completed",
+              "workflow_node": "main_loop"
+            },
+            "run_id": "run_d15d1a51d26a4ae0b4e538b5aafb5209",
+            "status": "completed",
+            "step_id": "call_019f390451347c81a46e9d56",
+            "title": "Search ranking completed",
+            "type": "search.ranking.completed"
+          },
+          {
+            "created_at": "2026-07-06T20:00:27.320339Z",
+            "duration_ms": 4889,
+            "id": "evt_4525ed6fb1754a6ab86262fa0947765a",
+            "payload": {
+              "model": "MiniMax-M3",
+              "node": "llm_rerank",
+              "provider": "llm:minimax",
+              "status": "completed",
+              "usage": {
+                "input": 2760,
+                "output": 385
+              },
+              "workflow_node": "main_loop"
+            },
+            "run_id": "run_d15d1a51d26a4ae0b4e538b5aafb5209",
+            "status": "completed",
+            "step_id": "call_019f390451347c81a46e9d56",
+            "title": "Search llm_rerank completed",
+            "type": "search.llm_rerank.completed"
+          },
+          {
+            "created_at": "2026-07-06T20:00:27.320352Z",
+            "duration_ms": 1541,
+            "id": "evt_3b4ceee2b6bf499c928d0655942efe12",
+            "payload": {
+              "node": "open_results",
+              "status": "partial",
+              "workflow_node": "main_loop"
+            },
+            "run_id": "run_d15d1a51d26a4ae0b4e538b5aafb5209",
+            "status": "partial",
+            "step_id": "call_019f390451347c81a46e9d56",
+            "title": "Search open_results partial",
+            "type": "search.open_results.partial"
+          },
+          {
+            "created_at": "2026-07-06T20:00:27.320394Z",
+            "id": "evt_d9db30b7100e4053b4c475e3588654ba",
+            "payload": {
+              "count": 4,
+              "total": 6,
+              "urls": [
+                "https://www.thomann.de/de/dunlop_formula65.htm?",
+                "https://www.ebay.com/itm/144460216496?_ul=CN",
+                "https://www.ebay.com/itm/NEW-Dunlop-J6540-65-Polish-Cleaner-Guitar-/324293961134?_ul=PT",
+                "https://www.ebay.com/itm/363158989940?hash=item548df66c74%3Ag%3AMYoAAOSwz6tfmu40\u0026LH_All=1"
+              ]
+            },
+            "run_id": "run_d15d1a51d26a4ae0b4e538b5aafb5209",
+            "status": "completed",
+            "step_id": "call_019f390451347c81a46e9d56",
+            "title": "Search citations collected",
+            "type": "citations.collected"
+          },
+          {
+            "created_at": "2026-07-06T20:00:27.320405Z",
+            "duration_ms": 8640,
+            "id": "evt_8c77fda6083d4cebaf6e28ce2bedb9a0",
+            "payload": {
+              "arguments": {
+                "query": "\"jimdunlop.com\" \"Formula 65\" polish cleaner"
+              },
+              "result_preview": "{\"success\": true, \"data\": {\"query\": \"\\\"jimdunlop.com\\\" \\\"Formula 65\\\" polish cleaner\", \"query_rewrite\": {\"node\": \"query_rewrite\", \"policy_id\": \"lexical_recall_no_inference_v1\", \"policy\": \"query_rewrite 是召回阶段的词法改写节点，只做保守扩召，不做事实判断。必须保留用户原始意图，不把未被用户文本或上下文支持的解释、分类、用途、材质、结论写进 query。允许的操作仅包括：保留原句、空格/大小写等规范化、字母数字边界拆分、精确短语加引号、可机械推出的缩写、以及对原词的重组。\", \"strategy\": \"syntax_preserving_rewrite\", \"original_query\": \"\\\"jimdunlop.com\\\" \\\"Formula 65\\\" polish cleaner\", \"queries\": [\"\\\"jimdunlop.com\\\" \\\"Formula 65\\\" pol",
+              "workflow_node": "main_loop"
+            },
+            "run_id": "run_d15d1a51d26a4ae0b4e538b5aafb5209",
+            "status": "completed",
+            "step_id": "call_019f390451347c81a46e9d56",
+            "title": "Tool search completed",
+            "type": "tool.completed"
+          },
+          {
+            "created_at": "2026-07-06T20:00:27.320453Z",
+            "id": "evt_bb272c6e5f2542379786bb2e4e6ab627",
+            "payload": {
+              "message_count": 13,
+              "round": 5,
+              "streaming": false,
+              "tools_count": 12,
+              "workflow_node": "main_loop"
+            },
+            "run_id": "run_d15d1a51d26a4ae0b4e538b5aafb5209",
+            "status": "running",
+            "title": "Model call 5",
+            "type": "model.started"
+          },
+          {
+            "created_at": "2026-07-06T20:00:33.435473Z",
+            "duration_ms": 6115,
+            "id": "evt_5f01a80ab20a42f6ad973f263732e4f7",
+            "payload": {
+              "model": "MiniMax-M3",
+              "round": 5,
+              "tool_calls": [
+                {
+                  "id": "call_019f3904a4117ab2bfa245c1",
+                  "name": "open_url"
+                },
+                {
+                  "id": "call_019f3904a4117ab2bfa245dd",
+                  "name": "open_url"
+                },
+                {
+                  "id": "call_019f3904a4117ab2bfa245ea",
+                  "name": "open_url"
+                }
+              ],
+              "usage": {
+                "input": 20744,
+                "output": 257
+              },
+              "workflow_node": "main_loop"
+            },
+            "run_id": "run_d15d1a51d26a4ae0b4e538b5aafb5209",
+            "status": "completed",
+            "title": "Model call 5 completed",
+            "type": "model.completed"
+          },
+          {
+            "created_at": "2026-07-06T20:00:33.435630Z",
+            "id": "evt_920ded54f4264c3582fa985a19823053",
+            "payload": {
+              "arguments": {
+                "url": "https://www.thomann.de/de/dunlop_formula_no65_polish.htm"
+              },
+              "workflow_node": "main_loop"
+            },
+            "run_id": "run_d15d1a51d26a4ae0b4e538b5aafb5209",
+            "status": "running",
+            "step_id": "call_019f3904a4117ab2bfa245c1",
+            "title": "Tool open_url",
+            "type": "tool.started"
+          },
+          {
+            "created_at": "2026-07-06T20:00:34.576767Z",
+            "duration_ms": 1141,
+            "id": "evt_b9b1b6187f5f4c5190bcf5f79dc9f835",
+            "payload": {
+              "arguments": {
+                "url": "https://www.thomann.de/de/dunlop_formula_no65_polish.htm"
+              },
+              "result_preview": "{\"error\":\"Open URL failed: HTTPStatusError: Client error '404 Not Found' for url 'https://www.thomann.de/de/dunlop_formula_no65_polish.htm'\\nFor more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/404\",\"success\":false}",
+              "workflow_node": "main_loop"
+            },
+            "run_id": "run_d15d1a51d26a4ae0b4e538b5aafb5209",
+            "status": "error",
+            "step_id": "call_019f3904a4117ab2bfa245c1",
+            "title": "Tool open_url error",
+            "type": "tool.failed"
+          },
+          {
+            "created_at": "2026-07-06T20:00:34.576912Z",
+            "id": "evt_f2a64f511d7240f290b5b70274cc2d3a",
+            "payload": {
+              "arguments": {
+                "url": "https://www.thomann.de/de/dunlop_fingerboard_cleaner_01.htm"
+              },
+              "workflow_node": "main_loop"
+            },
+            "run_id": "run_d15d1a51d26a4ae0b4e538b5aafb5209",
+            "status": "running",
+            "step_id": "call_019f3904a4117ab2bfa245dd",
+            "title": "Tool open_url",
+            "type": "tool.started"
+          },
+          {
+            "created_at": "2026-07-06T20:00:35.774519Z",
+            "id": "evt_9017126af1904324bf2d2ff5382038a3",
+            "payload": {
+              "count": 1,
+              "total": 7,
+              "urls": [
+                "https://www.thomann.de/de/dunlop_fingerboard_cleaner_01.htm"
+              ]
+            },
+            "run_id": "run_d15d1a51d26a4ae0b4e538b5aafb5209",
+            "status": "completed",
+            "step_id": "call_019f3904a4117ab2bfa245dd",
+            "title": "Open URL citation collected",
+            "type": "citations.collected"
+          },
+          {
+            "created_at": "2026-07-06T20:00:35.774541Z",
+            "duration_ms": 1197,
+            "id": "evt_719fd6db9ed84509a8a569d346c3c4c5",
+            "payload": {
+              "arguments": {
+                "url": "https://www.thomann.de/de/dunlop_fingerboard_cleaner_01.htm"
+              },
+              "result_preview": "{\"success\": true, \"data\": {\"page\": {\"url\": \"https://www.thomann.de/de/dunlop_fingerboard_cleaner_01.htm\", \"final_url\": \"https://www.thomann.de/de/dunlop_fingerboard_cleaner_01.htm\", \"title\": \"Dunlop Fingerboard Cleaner 01 – Musikhaus Thomann\", \"description\": \"Dunlop Fingerboard Cleaner 01; Griffbrettreiniger; löst den unerwünschten Schmutz und die Rückstände vom Griffbrett ab; 118 ml Sprühflasche\", \"content\": \"Mit Liebe serviert!\\nMit unseren Cookies möchten wir Ihnen ein fluffiges Einkaufserleb",
+              "workflow_node": "main_loop"
+            },
+            "run_id": "run_d15d1a51d26a4ae0b4e538b5aafb5209",
+            "status": "completed",
+            "step_id": "call_019f3904a4117ab2bfa245dd",
+            "title": "Tool open_url completed",
+            "type": "tool.completed"
+          },
+          {
+            "created_at": "2026-07-06T20:00:35.774563Z",
+            "id": "evt_d78ad1648099458b92630e646e88f4dc",
+            "payload": {
+              "arguments": {
+                "url": "https://www.thomann.de/de/dunlop_fingerboard_conditioner_02.htm"
+              },
+              "workflow_node": "main_loop"
+            },
+            "run_id": "run_d15d1a51d26a4ae0b4e538b5aafb5209",
+            "status": "running",
+            "step_id": "call_019f3904a4117ab2bfa245ea",
+            "title": "Tool open_url",
+            "type": "tool.started"
+          },
+          {
+            "created_at": "2026-07-06T20:00:36.799736Z",
+            "duration_ms": 1025,
+            "id": "evt_2a7b7adf7a124054bcf8f343dda583c2",
+            "payload": {
+              "arguments": {
+                "url": "https://www.thomann.de/de/dunlop_fingerboard_conditioner_02.htm"
+              },
+              "result_preview": "{\"error\":\"Open URL failed: HTTPStatusError: Client error '404 Not Found' for url 'https://www.thomann.de/de/dunlop_fingerboard_conditioner_02.htm'\\nFor more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/404\",\"success\":false}",
+              "workflow_node": "main_loop"
+            },
+            "run_id": "run_d15d1a51d26a4ae0b4e538b5aafb5209",
+            "status": "error",
+            "step_id": "call_019f3904a4117ab2bfa245ea",
+            "title": "Tool open_url error",
+            "type": "tool.failed"
+          },
+          {
+            "created_at": "2026-07-06T20:00:36.800015Z",
+            "id": "evt_f55d594ca8464d6d926537d609349f22",
+            "payload": {
+              "message_count": 17,
+              "round": 6,
+              "streaming": false,
+              "tools_count": 12,
+              "workflow_node": "main_loop"
+            },
+            "run_id": "run_d15d1a51d26a4ae0b4e538b5aafb5209",
+            "status": "running",
+            "title": "Model call 6",
+            "type": "model.started"
+          },
+          {
+            "created_at": "2026-07-06T20:00:40.015800Z",
+            "duration_ms": 3215,
+            "id": "evt_69e5768b96764acab7a44708e4dff59a",
+            "payload": {
+              "model": "MiniMax-M3",
+              "round": 6,
+              "tool_calls": [
+                {
+                  "id": "call_019f3904bdbb790091413b2e",
+                  "name": "open_url"
+                },
+                {
+                  "id": "call_019f3904bdbb790091413b36",
+                  "name": "search"
+                }
+              ],
+              "usage": {
+                "input": 23676,
+                "output": 145
+              },
+              "workflow_node": "main_loop"
+            },
+            "run_id": "run_d15d1a51d26a4ae0b4e538b5aafb5209",
+            "status": "completed",
+            "title": "Model call 6 completed",
+            "type": "model.completed"
+          },
+          {
+            "created_at": "2026-07-06T20:00:40.015935Z",
+            "id": "evt_b3872de748e54ec3b79d01d74ae70ecc",
+            "payload": {
+              "arguments": {
+                "url": "https://www.thomann.de/de/dunlop_65_fingerboard_conditioner.htm"
+              },
+              "workflow_node": "main_loop"
+            },
+            "run_id": "run_d15d1a51d26a4ae0b4e538b5aafb5209",
+            "status": "running",
+            "step_id": "call_019f3904bdbb790091413b2e",
+            "title": "Tool open_url",
+            "type": "tool.started"
+          },
+          {
+            "created_at": "2026-07-06T20:00:41.067710Z",
+            "duration_ms": 1051,
+            "id": "evt_b0fa532c76c5433699b3cacda980e676",
+            "payload": {
+              "arguments": {
+                "url": "https://www.thomann.de/de/dunlop_65_fingerboard_conditioner.htm"
+              },
+              "result_preview": "{\"error\":\"Open URL failed: HTTPStatusError: Client error '404 Not Found' for url 'https://www.thomann.de/de/dunlop_65_fingerboard_conditioner.htm'\\nFor more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/404\",\"success\":false}",
+              "workflow_node": "main_loop"
+            },
+            "run_id": "run_d15d1a51d26a4ae0b4e538b5aafb5209",
+            "status": "error",
+            "step_id": "call_019f3904bdbb790091413b2e",
+            "title": "Tool open_url error",
+            "type": "tool.failed"
+          },
+          {
+            "created_at": "2026-07-06T20:00:41.067866Z",
+            "id": "evt_21d4ebf0c2934b3f9c758c576a6c1597",
+            "payload": {
+              "arguments": {
+                "query": "Dunlop \"Fingerboard Conditioner\" 02 lemon oil rosewood ebony usage instructions"
+              },
+              "workflow_node": "main_loop"
+            },
+            "run_id": "run_d15d1a51d26a4ae0b4e538b5aafb5209",
+            "status": "running",
+            "step_id": "call_019f3904bdbb790091413b36",
+            "title": "Tool search",
+            "type": "tool.started"
+          },
+          {
+            "created_at": "2026-07-06T20:00:47.323028Z",
+            "id": "evt_e7ac83be26914b9089ae135a0f4cc0b1",
+            "payload": {
+              "node": "query_rewrite",
+              "status": "completed",
+              "workflow_node": "main_loop"
+            },
+            "run_id": "run_d15d1a51d26a4ae0b4e538b5aafb5209",
+            "status": "completed",
+            "step_id": "call_019f3904bdbb790091413b36",
+            "title": "Search query_rewrite completed",
+            "type": "search.query_rewrite.completed"
+          },
+          {
+            "created_at": "2026-07-06T20:00:47.323125Z",
+            "id": "evt_8328a453c1474d628d7b388f03c6951e",
+            "payload": {
+              "node": "recall",
+              "status": "completed",
+              "workflow_node": "main_loop"
+            },
+            "run_id": "run_d15d1a51d26a4ae0b4e538b5aafb5209",
+            "status": "completed",
+            "step_id": "call_019f3904bdbb790091413b36",
+            "title": "Search recall completed",
+            "type": "search.recall.completed"
+          },
+          {
+            "created_at": "2026-07-06T20:00:47.323175Z",
+            "duration_ms": 2,
+            "id": "evt_b62b8f01757e4b3f8e3b564a4b6a9fa7",
+            "payload": {
+              "node": "ranking",
+              "status": "completed",
+              "workflow_node": "main_loop"
+            },
+            "run_id": "run_d15d1a51d26a4ae0b4e538b5aafb5209",
+            "status": "completed",
+            "step_id": "call_019f3904bdbb790091413b36",
+            "title": "Search ranking completed",
+            "type": "search.ranking.completed"
+          },
+          {
+            "created_at": "2026-07-06T20:00:47.323221Z",
+            "duration_ms": 5260,
+            "id": "evt_9762b55a7e4b40568655d7f0df4cc926",
+            "payload": {
+              "model": "MiniMax-M3",
+              "node": "llm_rerank",
+              "provider": "llm:minimax",
+              "status": "completed",
+              "usage": {
+                "input": 1770,
+                "output": 255
+              },
+              "workflow_node": "main_loop"
+            },
+            "run_id": "run_d15d1a51d26a4ae0b4e538b5aafb5209",
+            "status": "completed",
+            "step_id": "call_019f3904bdbb790091413b36",
+            "title": "Search llm_rerank completed",
+            "type": "search.llm_rerank.completed"
+          },
+          {
+            "created_at": "2026-07-06T20:00:47.323273Z",
+            "duration_ms": 6255,
+            "id": "evt_83ff433fde584afe8c8f3689c4c0fb0a",
+            "payload": {
+              "arguments": {
+                "query": "Dunlop \"Fingerboard Conditioner\" 02 lemon oil rosewood ebony usage instructions"
+              },
+              "result_preview": "{\"success\": true, \"data\": {\"query\": \"Dunlop \\\"Fingerboard Conditioner\\\" 02 lemon oil rosewood ebony usage instructions\", \"query_rewrite\": {\"node\": \"query_rewrite\", \"policy_id\": \"lexical_recall_no_inference_v1\", \"policy\": \"query_rewrite 是召回阶段的词法改写节点，只做保守扩召，不做事实判断。必须保留用户原始意图，不把未被用户文本或上下文支持的解释、分类、用途、材质、结论写进 query。允许的操作仅包括：保留原句、空格/大小写等规范化、字母数字边界拆分、精确短语加引号、可机械推出的缩写、以及对原词的重组。\", \"strategy\": \"syntax_preserving_rewrite\", \"original_query\": \"Dunlop \\\"Fingerboard Conditioner\\\" 02 lemon oil rosewood ebony us",
+              "workflow_node": "main_loop"
+            },
+            "run_id": "run_d15d1a51d26a4ae0b4e538b5aafb5209",
+            "status": "completed",
+            "step_id": "call_019f3904bdbb790091413b36",
+            "title": "Tool search completed",
+            "type": "tool.completed"
+          },
+          {
+            "created_at": "2026-07-06T20:00:47.323463Z",
+            "id": "evt_23e4cfc0e71741669e4af1d0c6041126",
+            "payload": {
+              "message_count": 20,
+              "round": 7,
+              "streaming": false,
+              "tools_count": 12,
+              "workflow_node": "main_loop"
+            },
+            "run_id": "run_d15d1a51d26a4ae0b4e538b5aafb5209",
+            "status": "running",
+            "title": "Model call 7",
+            "type": "model.started"
+          },
+          {
+            "created_at": "2026-07-06T20:00:50.625342Z",
+            "duration_ms": 3301,
+            "id": "evt_9428698b45bb490f87a9303e8e7c877b",
+            "payload": {
+              "model": "MiniMax-M3",
+              "round": 7,
+              "tool_calls": [
+                {
+                  "id": "call_019f3904e75671b19dfeb713",
+                  "name": "open_url"
+                }
+              ],
+              "usage": {
+                "input": 25990,
+                "output": 66
+              },
+              "workflow_node": "main_loop"
+            },
+            "run_id": "run_d15d1a51d26a4ae0b4e538b5aafb5209",
+            "status": "completed",
+            "title": "Model call 7 completed",
+            "type": "model.completed"
+          },
+          {
+            "created_at": "2026-07-06T20:00:50.625500Z",
+            "id": "evt_d6d17052a4bb4927baff50cb4d1acb25",
+            "payload": {
+              "arguments": {
+                "url": "https://www.thomann.de/de/dunlop_formula65.htm?"
+              },
+              "workflow_node": "main_loop"
+            },
+            "run_id": "run_d15d1a51d26a4ae0b4e538b5aafb5209",
+            "status": "running",
+            "step_id": "call_019f3904e75671b19dfeb713",
+            "title": "Tool open_url",
+            "type": "tool.started"
+          },
+          {
+            "created_at": "2026-07-06T20:00:51.783307Z",
+            "duration_ms": 1157,
+            "id": "evt_e6c1d788e1e14301bbce0b91edccb48b",
+            "payload": {
+              "arguments": {
+                "url": "https://www.thomann.de/de/dunlop_formula65.htm?"
+              },
+              "result_preview": "{\"success\": true, \"data\": {\"page\": {\"url\": \"https://www.thomann.de/de/dunlop_formula65.htm?\", \"final_url\": \"https://www.thomann.de/de/dunlop_formula65.htm?\", \"title\": \"Dunlop Formula65 Stringcleaner – Musikhaus Thomann\", \"description\": \"Dunlop Formula 65 Stringcleaner - Conditioner - schützt Saiten gegen Verlust der Brillanz und Korrosion, verlängert das Leben der Saiten, Bringt eine spielefördernde, glatte Beschaffenheit der Saiten und verhindert...\", \"content\": \"Mit Liebe serviert!\\nMit unsere",
+              "workflow_node": "main_loop"
+            },
+            "run_id": "run_d15d1a51d26a4ae0b4e538b5aafb5209",
+            "status": "completed",
+            "step_id": "call_019f3904e75671b19dfeb713",
+            "title": "Tool open_url completed",
+            "type": "tool.completed"
+          },
+          {
+            "created_at": "2026-07-06T20:00:51.783373Z",
+            "id": "evt_d1b8535c6ff6446ebd01addb722ce216",
+            "payload": {
+              "message_count": 22,
+              "round": 8,
+              "streaming": false,
+              "tools_count": 12,
+              "workflow_node": "main_loop"
+            },
+            "run_id": "run_d15d1a51d26a4ae0b4e538b5aafb5209",
+            "status": "running",
+            "title": "Model call 8",
+            "type": "model.started"
+          },
+          {
+            "created_at": "2026-07-06T20:01:02.814064Z",
+            "duration_ms": 11030,
+            "id": "evt_d2cd85bd9399468ba21ef129ece0add3",
+            "payload": {
+              "model": "MiniMax-M3",
+              "round": 8,
+              "tool_calls": [],
+              "usage": {
+                "input": 28488,
+                "output": 835
+              },
+              "workflow_node": "main_loop"
+            },
+            "run_id": "run_d15d1a51d26a4ae0b4e538b5aafb5209",
+            "status": "completed",
+            "title": "Model call 8 completed",
+            "type": "model.completed"
+          },
+          {
+            "created_at": "2026-07-06T20:01:02.814279Z",
+            "duration_ms": 82036,
+            "id": "evt_e8f1d1da71bc4065bf5364f3f187f6cc",
+            "payload": {
+              "budget_error_type": "",
+              "budget_reason": "",
+              "citation_count": 7,
+              "failed_tool_call_count": 5,
+              "finalization_status": "",
+              "node": "main_loop",
+              "response_status": "completed",
+              "result": "final_answer",
+              "skills_used": [
+                "search",
+                "open_url"
+              ],
+              "tool_call_count": 13,
+              "workflow_node": "main_loop"
+            },
+            "run_id": "run_d15d1a51d26a4ae0b4e538b5aafb5209",
+            "status": "completed",
+            "title": "Workflow node main_loop completed",
+            "type": "workflow.node.completed"
+          },
+          {
+            "created_at": "2026-07-06T20:01:02.814348Z",
+            "duration_ms": 82036,
+            "id": "evt_013d4d44b060494a93465e348ea19fb4",
+            "payload": {
+              "budget_error_type": "",
+              "budget_reason": "",
+              "citation_count": 7,
+              "finalization_status": "",
+              "response_status": "completed",
+              "result": "final_answer",
+              "skills_used": [
+                "search",
+                "open_url"
+              ]
+            },
+            "run_id": "run_d15d1a51d26a4ae0b4e538b5aafb5209",
+            "status": "completed",
+            "title": "Workflow agent_loop completed",
+            "type": "workflow.completed"
+          },
+          {
+            "created_at": "2026-07-06T20:01:02.816699Z",
+            "id": "evt_c5bf8caff75f478ebdf2640bcedb8f6d",
+            "payload": {
+              "message_count": 2,
+              "tools_count": 1
+            },
+            "run_id": "run_d15d1a51d26a4ae0b4e538b5aafb5209",
+            "status": "running",
+            "title": "Drive auto-save decision",
+            "type": "drive.auto_save.model.started"
+          },
+          {
+            "created_at": "2026-07-06T20:01:12.502545Z",
+            "duration_ms": 9685,
+            "id": "evt_8438c95b30414cb79658fdeab761ca3d",
+            "payload": {
+              "tool_calls": [
+                {
+                  "id": "call_HpMB3gJEUPM1t46yWHFBtU7Q",
+                  "name": "save_drive"
+                }
+              ]
+            },
+            "run_id": "run_d15d1a51d26a4ae0b4e538b5aafb5209",
+            "status": "completed",
+            "title": "Drive auto-save decision completed",
+            "type": "drive.auto_save.model.completed"
+          },
+          {
+            "created_at": "2026-07-06T20:01:12.502636Z",
+            "id": "evt_ea59f076be854ddbabce37e42027dc89",
+            "payload": {
+              "arguments": {}
+            },
+            "run_id": "run_d15d1a51d26a4ae0b4e538b5aafb5209",
+            "status": "running",
+            "step_id": "call_HpMB3gJEUPM1t46yWHFBtU7Q",
+            "title": "Tool save_drive",
+            "type": "tool.started"
+          },
+          {
+            "created_at": "2026-07-06T20:01:12.539071Z",
+            "duration_ms": 36,
+            "id": "evt_3767069675394838933e0b097a60c403",
+            "payload": {
+              "arguments": {},
+              "result_preview": "{\"error\":\"path not found: /知识\",\"success\":false}"
+            },
+            "run_id": "run_d15d1a51d26a4ae0b4e538b5aafb5209",
+            "status": "error",
+            "step_id": "call_HpMB3gJEUPM1t46yWHFBtU7Q",
+            "title": "Tool save_drive error",
+            "type": "tool.failed"
+          },
+          {
+            "created_at": "2026-07-06T20:01:12.539277Z",
+            "duration_ms": 91794,
+            "id": "evt_e517482fc565463ab054ed9a597adc42",
+            "payload": {
+              "skills_used": [
+                "search",
+                "open_url"
+              ]
+            },
+            "run_id": "run_d15d1a51d26a4ae0b4e538b5aafb5209",
+            "status": "completed",
+            "title": "Run completed",
+            "type": "run.completed"
+          }
+        ]
+      },
+      "id": "conv_d93e233ca0_我现在要保养电吉他_手里面有_dunlop65_01_02_三瓶清洁",
+      "input": {
+        "agent_id": "super_chat",
+        "disabled_tools": [],
+        "messages": [
+          {
+            "content": "我现在要保养电吉他，手里面有Dunlop65、01、02三瓶清洁/保养剂，但是我忘记这几瓶分别的作用了，告诉我如何使用这些来保养我的电吉他",
+            "role": "user"
+          }
+        ],
+        "mode_ids": []
+      },
+      "metadata": {
+        "approved_at": "2026-07-11T12:10:20Z",
+        "approved_by": "20eb82c7-37fa-4630-8123-ae1fc96cdaf1",
+        "auto_confidence": 0.93,
+        "dedupe_key": "19baccdbcbefd2e70e655f49d2c2db0eef049e5a",
+        "edited_at": "2026-07-11T12:10:17Z",
+        "edited_by": "20eb82c7-37fa-4630-8123-ae1fc96cdaf1",
+        "language": "mixed",
+        "priority": "p1",
+        "tags": [
+          "information_lookup",
+          "mixed_language",
+          "identifier_or_model_number",
+          "comparison_or_disambiguation",
+          "tool_search",
+          "tool_or_trace_error",
+          "brand_ambiguity_pollution"
+        ]
+      },
+      "rubric": {
+        "dimensions": [
+          {
+            "checks": {
+              "forbidden_tools": [],
+              "required_tools": [
+                "search"
+              ]
+            },
+            "id": "tool_use",
+            "label": "工具使用",
+            "passing_score": 5,
+            "requirements": [
+              "必须调用工具：search"
+            ],
+            "score_scale": {
+              "max": 5,
+              "min": 1
+            },
+            "scorer": "trace_assertion",
+            "standard": "需要调用 search 或等价检索工具核对产品用途，且不得调用无关禁用工具。",
+            "threshold": 1
+          },
+          {
+            "checks": {
+              "min_must_include": 5,
+              "must_include": [
+                "Formula No. 65",
+                "01",
+                "02",
+                "指板",
+                "漆面",
+                "清洁剂",
+                "护理油",
+                "枫木"
+              ],
+              "must_not_include": [
+                "轮胎",
+                "tyres",
+                "tires",
+                "无法联网",
+                "我不能访问互联网"
+              ]
+            },
+            "id": "accuracy",
+            "label": "准确性",
+            "passing_score": 4,
+            "requirements": [
+              "至少命中 5 个核心术语：Formula No. 65、01、02、指板、漆面、清洁剂、护理油、枫木",
+              "答案不得包含: 轮胎 / tyres / tires",
+              "答案不得包含: 无法联网",
+              "答案不得包含: 我不能访问互联网"
+            ],
+            "score_scale": {
+              "max": 5,
+              "min": 1
+            },
+            "scorer": "keyword_coverage",
+            "standard": "回答必须正确区分三瓶产品用途，避免把 Dunlop 吉他护理产品误判为轮胎品牌或其他无关产品。",
+            "threshold": 0.625
+          },
+          {
+            "checks": {
+              "min_required_points": 4,
+              "min_score": 0.66,
+              "required_points": [
+                {
+                  "any_text_contains": [
+                    "三瓶身份",
+                    "Formula No. 65",
+                    "65（液瓶/喷瓶）"
+                  ],
+                  "label": "区分三瓶用途"
+                },
+                {
+                  "all_text_contains": [
+                    "65",
+                    "漆面"
+                  ],
+                  "any_text_contains": [
+                    "抛光",
+                    "提亮",
+                    "琴体"
+                  ],
+                  "label": "65 用于琴体漆面清洁和抛光"
+                },
+                {
+                  "all_text_contains": [
+                    "01",
+                    "指板"
+                  ],
+                  "any_text_contains": [
+                    "清洁剂",
+                    "去脏",
+                    "汗渍",
+                    "油泥"
+                  ],
+                  "label": "01 用于指板清洁去污"
+                },
+                {
+                  "all_text_contains": [
+                    "02",
+                    "指板"
+                  ],
+                  "any_text_contains": [
+                    "护理油",
+                    "柠檬油",
+                    "补油",
+                    "防干裂"
+                  ],
+                  "label": "02 用于未上漆木质指板护理补油"
+                },
+                {
+                  "any_text_contains": [
+                    "01 → 02",
+                    "推荐保养顺序",
+                    "步骤",
+                    "先",
+                    "然后"
+                  ],
+                  "label": "给出可执行保养顺序"
+                },
+                {
+                  "any_text_contains": [
+                    "枫木",
+                    "不要直接喷",
+                    "拾音器",
+                    "电路",
+                    "不进电路"
+                  ],
+                  "label": "给出关键禁忌和安全提醒"
+                }
+              ]
+            },
+            "id": "completeness",
+            "label": "完整性",
+            "passing_score": 4,
+            "requirements": [
+              "至少覆盖 4 个完整性要点。",
+              "完整性命中率不低于 0.66。"
+            ],
+            "score_scale": {
+              "max": 5,
+              "min": 1
+            },
+            "scorer": "point_coverage",
+            "standard": "回答需要覆盖用途区分、操作顺序和关键禁忌，能让用户直接照着完成一次保养。",
+            "threshold": 0.66
+          },
+          {
+            "checks": {
+              "no_forbidden_terms": true,
+              "no_forbidden_tools": true,
+              "non_empty_response": true
+            },
+            "id": "constraints",
+            "label": "约束遵循",
+            "passing_score": 5,
+            "requirements": [
+              "响应不能为空。",
+              "不得出现禁用词。",
+              "不得调用禁用工具。"
+            ],
+            "score_scale": {
+              "max": 5,
+              "min": 1
+            },
+            "scorer": "hard_gates",
+            "standard": "响应非空，不出现禁用词，不调用禁用工具。",
+            "threshold": 1
+          }
+        ],
+        "gates": [
+          "non_empty_response",
+          "no_forbidden_terms",
+          "no_forbidden_tools"
+        ],
+        "pass_threshold": 0.8333333333333334,
+        "schema_version": 2
+      },
+      "scoring": {
+        "judge_prompt": "",
+        "rules": [
+          "contains_any_threshold",
+          "not_contains",
+          "tool_used"
+        ]
+      },
+      "source": {
+        "conversation_id": "019007b0-1e29-4b1d-87b3-6da1043a783d",
+        "created_at": "2026-07-07 04:01:13.292177+08:00",
+        "kind": "conversation",
+        "message_ids": [
+          625,
+          626
+        ],
+        "run_id": "run_d15d1a51d26a4ae0b4e538b5aafb5209",
+        "user_id": "20eb82c7-37fa-4630-8123-ae1fc96cdaf1"
+      },
+      "status": "approved",
+      "taxonomy": {
+        "edge_cases": [
+          "mixed_language",
+          "identifier_or_model_number",
+          "comparison_or_disambiguation",
+          "tool_search"
+        ],
+        "failure_modes": [
+          "tool_or_trace_error",
+          "brand_ambiguity_pollution"
+        ],
+        "intent": "information_lookup",
+        "scenario": "Dunlop 65/01/02 电吉他保养用品使用说明",
+        "task_chain": [
+          "理解用户目标和上下文",
+          "检索并核对 Dunlop 65/01/02 的产品用途",
+          "区分琴体漆面、木质指板和护理油的适用范围",
+          "给出可执行保养顺序和禁忌提醒",
+          "组织最终回答"
+        ]
+      },
+      "type": "conversation_task"
+    }
+  ],
+  "description": "Approved conversation eval cases. Use scripts/collect_conversation_eval_cases.py to mine candidates, then approve curated cases into this file.",
+  "updated_at": "2026-07-11T15:35:00Z",
+  "version": 2
+}

@@ -1,4 +1,4 @@
-.PHONY: dev start stop restart status logs build clean install test test-py test-go collect-search-evals eval-search eval-search-compare eval-search-trace eval-search-live
+.PHONY: dev start stop restart status logs build clean install test test-py test-go collect-search-evals eval-search eval-search-compare eval-search-trace eval-search-live collect-conversation-evals eval-conversation eval-conversation-agent
 
 # ===== Production =====
 
@@ -79,6 +79,18 @@ eval-search-trace:
 # Run live search quality evals against configured providers
 eval-search-live:
 	python3 scripts/eval_search.py --mode live --endpoint http://127.0.0.1:9090/agent/search
+
+# Mine conversation eval candidates from real local conversation history
+collect-conversation-evals:
+	python3 scripts/collect_conversation_eval_cases.py
+
+# Run approved conversation eval cases against historical stored responses
+eval-conversation:
+	python3 scripts/eval_conversation.py --mode historical
+
+# Replay approved conversation eval cases against the local Python Agent service
+eval-conversation-agent:
+	python3 scripts/eval_conversation.py --mode agent --endpoint http://127.0.0.1:9090/agent/chat
 
 # ===== Misc =====
 

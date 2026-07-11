@@ -81,6 +81,17 @@ class ContextBuilder:
                     "- 如果 search 不可用、失败、结果少或来源可疑，要在回答中说明限制，并区分搜索片段和已核验事实。",
                 ]
             )
+        if agent_id == "super_chat" and "create_todo" in normalized_tool_names:
+            tool_policy_lines.extend(
+                [
+                    "- 用户明确要求“记一下、提醒我、加入待办、安排、todo、待办、明天/某天做某事”时，"
+                    "应调用 create_todo 创建待办，不要只口头承诺已经记录。",
+                    "- 用户询问今日待办、待排期、月度计划或要修改/完成某个待办时，优先用 list_todos 查找；"
+                    "已确认 todo_id 后用 update_todo 修改状态或内容。",
+                    "- 调用 Todo 工具时，相对日期必须依据本轮时间上下文换成 YYYY-MM-DD；不确定日期时可以创建"
+                    "暂不排期待办，或先向用户确认。",
+                ]
+            )
         system_config = (
             "系统级配置：\n"
             f"- 当前 Agent：{agent_id}。\n"

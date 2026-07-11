@@ -15,6 +15,12 @@ from agent.skills.builtin.drive import (
     DriveSaveSkill,
     DriveSearchSkill,
 )
+from agent.skills.builtin.todo import (
+    TodoCreateSkill,
+    TodoGatewayClient,
+    TodoListSkill,
+    TodoUpdateSkill,
+)
 from agent.skills.builtin.open_url import OpenURLSkill
 from agent.skills.builtin.search import SearchSkill
 from agent.skills.base import Skill
@@ -2416,3 +2422,122 @@ class TestDriveSkills:
         assert captured["parent_id"] == "folder-1"
         assert captured["name"] == "todo.md"
         assert captured["content"] == "write me"
+
+
+class TestTodoSkills:
+    def client(self, handler):
+        return TodoGatewayClient(
+            "http://gateway.test",
+            transport=httpx.MockTransport(handler),
+        )
+
+    @pytest.mark.asyncio
+    async def test_create_todo_injects_user_and_conversation_context(self):
+        captured = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            assert request.method == "POST"
+            assert request.url.path == "/api/todos"
+            assert request.headers["X-User-ID"] == "alice"
+            captured.update(json.loads(request.content.decode("utf-8")))
+            return httpx.Response(
+                201,
+                json={
+                    "todo": {
+                        "id": "todo-1",
+                        "title": "提交周报",
+                        "status": "open",
+                        "due_date": "2026-07-12",
+                        "priority": "high",
+                        "repeat_rule": "once",
+                        "tags": ["work"],
+                    }
+                },
+            )
+
+        skill = TodoCreateSkill(client_factory=lambda: self.client(handler))
+
+        result = await skill.execute(
+            title="提交周报",
+            due_date="2026-07-12",
+            priority="high",
+            tags="work",
+            _user_id="alice",
+            _conversation_id="conv-1",
+        )
+
+        assert result.success is True
+        assert result.data["todo"]["id"] == "todo-1"
+        assert captured["user_id"] == "alice"
+        assert captured["origin_conversation_id"] == "conv-1"
+        assert captured["title"] == "提交周报"
+        assert captured["due_date"] == "2026-07-12"
+        assert captured["tags"] == ["work"]
+        assert "提交周报" in result.display_text
+
+    @pytest.mark.asyncio
+    async def test_list_todos_returns_candidate_ids(self):
+        def handler(request: httpx.Request) -> httpx.Response:
+            assert request.method == "GET"
+            assert request.url.path == "/api/todos"
+            assert request.headers["X-User-ID"] == "alice"
+            assert request.url.params.get("scope") == "today"
+            assert request.url.params.get("date") == "2026-07-11"
+            return httpx.Response(
+                200,
+                json={
+                    "scope": "today",
+                    "date": "2026-07-11",
+                    "items": [
+                        {
+                            "id": "todo-1",
+                            "title": "提交周报",
+                            "status": "open",
+                            "due_date": "2026-07-11",
+                            "priority": "normal",
+                            "repeat_rule": "once",
+                        }
+                    ],
+                    "counts": {"today": 1},
+                },
+            )
+
+        skill = TodoListSkill(client_factory=lambda: self.client(handler))
+
+        result = await skill.execute(scope="today", date="2026-07-11", _user_id="alice")
+
+        assert result.success is True
+        assert result.data["items"][0]["id"] == "todo-1"
+        assert "todo-1" in result.display_text
+
+    @pytest.mark.asyncio
+    async def test_update_todo_marks_done(self):
+        captured = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            assert request.method == "PUT"
+            assert request.url.path == "/api/todos/todo-1"
+            assert request.headers["X-User-ID"] == "alice"
+            captured.update(json.loads(request.content.decode("utf-8")))
+            return httpx.Response(
+                200,
+                json={
+                    "todo": {
+                        "id": "todo-1",
+                        "title": "提交周报",
+                        "status": "done",
+                        "due_date": "2026-07-11",
+                        "priority": "normal",
+                        "repeat_rule": "once",
+                    }
+                },
+            )
+
+        skill = TodoUpdateSkill(client_factory=lambda: self.client(handler))
+
+        result = await skill.execute(todo_id="todo-1", status="completed", _user_id="alice")
+
+        assert result.success is True
+        assert captured["user_id"] == "alice"
+        assert captured["status"] == "done"
+        assert result.data["todo"]["status"] == "done"

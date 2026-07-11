@@ -332,6 +332,35 @@ python3 scripts/eval_search.py --mode live --endpoint http://127.0.0.1:9090/agen
 
 评测输出包含 `recall@k`、`precision@k`、`MRR`、`bad@k`、耗时和 trace 节点。线上 trace 发现新的坏例后，优先把 query、期望结果、污染结果和 fixture 补进 `evals/search/cases.json`，再调参数或 prompt。
 
+Conversation Eval 是更通用的用例准备 workflow：从真实 conversation/message/trace 里挖掘候选场景、意图、任务链、边界情况和失败模式，再审核进可回归的 `evals/conversation/cases.json`。
+
+```bash
+make collect-conversation-evals
+make eval-conversation
+python3 scripts/eval_conversation.py --mode agent --endpoint http://127.0.0.1:9090/agent/chat
+```
+
+Conversation Eval 有两种运行模式：
+
+- historical：只检查 case 内保存的 `historical_response`，不会调用模型或工具，适合快速验证规则和已批准用例。
+- agent：用隔离身份 `__eval__` 直接调用 Python Agent `/agent/chat` 重放，不经过 Gateway conversation 写入，不污染真实用户帐号；但它会实际消耗模型/工具调用额度。
+
+每个 case 分三层：
+
+- `taxonomy`：场景、意图、任务链、边界情况、失败模式和 tags，只用于归类与切片。
+- `expected.include`：用例应包含的可编辑要求，拆为 `tool_calls`、`answer_result`、`citations` 三类；工具与答案结果会同步到确定性评分字段。
+- `rubric`：维度评分规则，默认包含 `tool_use`、`accuracy`、`completeness`、`constraints`；每个维度记录标准、标准要求和 1-5 通过分，不再使用人工权重；运行后生成 `scorecard`，报告按维度和 tag slice 聚合。
+
+相关文件：
+
+- `evals/conversation/candidates.json`：自动挖掘的候选用例，默认不是金标。
+- `evals/conversation/cases.json`：人工批准后的回归用例集。
+- `evals/conversation/latest_report.json`：最近一次 eval 报告。
+- `evals/conversation/run_history.json`：最近多次回归的轻量历史记录。
+- `evals/conversation/runs/<run_id>.json`：每次回归的完整报告快照。
+
+Web 工作台里可以在 Developer -> Eval 中一键采集候选、编辑候选、批准用例、运行 Historical Check 和 Isolated Replay，并查看总分、历史记录、每个用例的分数和运行详情。候选挖掘默认会尝试用当前 LLM 补全场景、意图、期望项和 1-5 分维度标准；如果 LLM 不可用，会保留确定性规则兜底，候选 metadata 会记录 enrichment 状态。
+
 `mcp.servers` 目前只是通用配置入口，尚未实现通用 MCP server 启动、tool discovery、权限审批和动态注册。MiniMax Token Plan MCP 已作为 search provider 的专项集成接入。
 
 ### 6.4 Trace 事件
