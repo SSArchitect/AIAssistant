@@ -15,6 +15,9 @@ class EchoSkill(Skill):
                 ),
             ],
             tags=["utility", "test"],
+            domains=["utility"],
+            routing_keywords=["echo", "回显", "测试工具", "use a tool", "tool test"],
+            idempotent=True,
         )
 
     async def execute(self, **kwargs) -> SkillResult:

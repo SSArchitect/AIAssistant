@@ -75,7 +75,7 @@ func main() {
 	mediaHandler := handlers.NewMediaHandler()
 	pulseHandler := handlers.NewPulseHandlerWithSyncer(agentClient, configSyncer)
 	todoHandler := handlers.NewTodoHandler()
-	driveHandler := handlers.NewDriveHandler()
+	driveHandler := handlers.NewDriveHandler(agentClient)
 	evalHandler := handlers.NewEvalHandler(projectRoot, dbPath, cfg.Agent.URL)
 
 	// Setup router

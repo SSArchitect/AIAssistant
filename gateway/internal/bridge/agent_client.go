@@ -60,13 +60,37 @@ type SearchResponse struct {
 }
 
 type ChatAttachment struct {
-	Name      string `json:"name,omitempty"`
-	Type      string `json:"type,omitempty"`
-	Size      int    `json:"size,omitempty"`
-	Kind      string `json:"kind,omitempty"`
-	Content   string `json:"content,omitempty"`
-	DataURL   string `json:"data_url,omitempty"`
-	Truncated bool   `json:"truncated,omitempty"`
+	Name               string                 `json:"name,omitempty"`
+	Type               string                 `json:"type,omitempty"`
+	Size               int                    `json:"size,omitempty"`
+	Kind               string                 `json:"kind,omitempty"`
+	Content            string                 `json:"content,omitempty"`
+	DataURL            string                 `json:"data_url,omitempty"`
+	Truncated          bool                   `json:"truncated,omitempty"`
+	ExtractionStatus   string                 `json:"extraction_status,omitempty"`
+	Parser             string                 `json:"parser,omitempty"`
+	ExtractionError    string                 `json:"extraction_error,omitempty"`
+	ExtractionMetadata map[string]interface{} `json:"extraction_metadata,omitempty"`
+}
+
+type DocumentParseRequest struct {
+	Name       string `json:"name,omitempty"`
+	MimeType   string `json:"mime_type,omitempty"`
+	DataBase64 string `json:"data_base64,omitempty"`
+	DataURL    string `json:"data_url,omitempty"`
+	MaxChars   int    `json:"max_chars,omitempty"`
+}
+
+type DocumentParseResponse struct {
+	Supported bool                   `json:"supported"`
+	Format    string                 `json:"format,omitempty"`
+	Parser    string                 `json:"parser,omitempty"`
+	Text      string                 `json:"text,omitempty"`
+	Title     string                 `json:"title,omitempty"`
+	Summary   string                 `json:"summary,omitempty"`
+	Truncated bool                   `json:"truncated,omitempty"`
+	Metadata  map[string]interface{} `json:"metadata,omitempty"`
+	Warnings  []string               `json:"warnings,omitempty"`
 }
 
 type DriveContext struct {
@@ -231,6 +255,16 @@ type SkillInfo struct {
 	DefaultPolicy    string                   `json:"default_policy,omitempty"`
 	MaxCallsPerRun   int                      `json:"max_calls_per_run,omitempty"`
 	TimeoutSeconds   float64                  `json:"timeout_seconds,omitempty"`
+	SensitiveArgs    []string                 `json:"sensitive_arguments,omitempty"`
+	SensitiveResults []string                 `json:"sensitive_result_fields,omitempty"`
+	Domains          []string                 `json:"domains,omitempty"`
+	RoutingKeywords  []string                 `json:"routing_keywords,omitempty"`
+	AllowedAgents    []string                 `json:"allowed_agents,omitempty"`
+	AlwaysOn         bool                     `json:"always_on"`
+	Discoverable     bool                     `json:"discoverable"`
+	ParallelSafe     bool                     `json:"parallel_safe"`
+	Idempotent       bool                     `json:"idempotent"`
+	OutputSchema     map[string]interface{}   `json:"output_schema,omitempty"`
 	UserEnabled      *bool                    `json:"user_enabled,omitempty"`
 	EffectiveEnabled bool                     `json:"effective_enabled"`
 	UserPolicy       string                   `json:"user_policy,omitempty"`
@@ -409,6 +443,34 @@ func (c *AgentClient) Search(req SearchRequest) (*SearchResponse, error) {
 	}
 
 	return &searchResp, nil
+}
+
+func (c *AgentClient) ParseDocument(req DocumentParseRequest) (*DocumentParseResponse, error) {
+	body, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("marshal document parse request: %w", err)
+	}
+
+	resp, err := c.httpClient.Post(
+		c.baseURL+"/agent/documents/parse",
+		"application/json",
+		bytes.NewReader(body),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("document parse request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("document parser returned status %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	var parseResp DocumentParseResponse
+	if err := json.NewDecoder(resp.Body).Decode(&parseResp); err != nil {
+		return nil, fmt.Errorf("decode document parse response: %w", err)
+	}
+	return &parseResp, nil
 }
 
 func (c *AgentClient) ChatStream(req ChatRequest) (*http.Response, error) {

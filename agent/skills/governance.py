@@ -172,6 +172,8 @@ class ToolGovernance:
             return SkillResult(
                 success=False,
                 error=f"Tool timed out after {timeout_seconds:g}s: {decision.tool_name}",
+                error_code="tool_timeout",
+                retryable=True,
                 data={
                     "governance": {
                         **decision.as_dict(),
@@ -194,6 +196,8 @@ class ToolGovernance:
         return SkillResult(
             success=False,
             error=f"Tool governance blocked {decision.tool_name}: {detail}",
+            error_code=decision.reason,
+            retryable=False,
             data={"governance": decision.as_dict()},
         )
 
@@ -228,6 +232,8 @@ class ToolGovernance:
         return SkillResult(
             success=False,
             error=f"Tool timed out after {timeout_seconds:g}s: {decision.tool_name}",
+            error_code="tool_timeout",
+            retryable=True,
             data={
                 "governance": {
                     **decision.as_dict(),

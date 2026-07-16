@@ -114,6 +114,11 @@ func (h *ChatHandler) Chat(c *gin.Context) {
 		}
 	}
 
+	if !h.syncConfigToAgent(c) {
+		return
+	}
+	req.Attachments = h.prepareChatAttachments(req.Attachments)
+
 	agentReq := bridge.ChatRequest{
 		ConversationID:  req.ConversationID,
 		UserID:          req.UserID,
@@ -132,10 +137,6 @@ func (h *ChatHandler) Chat(c *gin.Context) {
 		RunID:           req.RunID,
 		DisabledTools:   disabledTools,
 		ToolPolicies:    toolPolicies,
-	}
-
-	if !h.syncConfigToAgent(c) {
-		return
 	}
 
 	if req.Stream {
@@ -159,6 +160,57 @@ func (h *ChatHandler) Chat(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, agentResp)
+}
+
+func (h *ChatHandler) prepareChatAttachments(
+	attachments []bridge.ChatAttachment,
+) []bridge.ChatAttachment {
+	prepared := make([]bridge.ChatAttachment, len(attachments))
+	copy(prepared, attachments)
+	for index := range prepared {
+		attachment := &prepared[index]
+		if strings.TrimSpace(attachment.DataURL) == "" ||
+			!driveDocumentParsingSupported(attachment.Name, attachment.Type) {
+			continue
+		}
+		result, err := h.agent.ParseDocument(bridge.DocumentParseRequest{
+			Name:     attachment.Name,
+			MimeType: attachment.Type,
+			DataURL:  attachment.DataURL,
+			MaxChars: documentMaxContentRunes,
+		})
+		attachment.DataURL = ""
+		attachment.Kind = "file"
+		if err != nil {
+			attachment.ExtractionStatus = "failed"
+			attachment.ExtractionError = limitRunes(err.Error(), 1000)
+			attachment.Content = ""
+			continue
+		}
+		attachment.Parser = result.Parser
+		attachment.Truncated = attachment.Truncated || result.Truncated
+		attachment.ExtractionMetadata = result.Metadata
+		if len(result.Warnings) > 0 {
+			if attachment.ExtractionMetadata == nil {
+				attachment.ExtractionMetadata = map[string]interface{}{}
+			}
+			attachment.ExtractionMetadata["warnings"] = result.Warnings
+		}
+		if !result.Supported {
+			attachment.ExtractionStatus = "unsupported"
+			attachment.Content = ""
+			if len(result.Warnings) > 0 {
+				attachment.ExtractionError = strings.Join(result.Warnings, " ")
+			}
+			continue
+		}
+		attachment.ExtractionStatus = "completed"
+		attachment.Content = result.Text
+		if strings.TrimSpace(result.Text) == "" && len(result.Warnings) > 0 {
+			attachment.ExtractionError = strings.Join(result.Warnings, " ")
+		}
+	}
+	return prepared
 }
 
 func (h *ChatHandler) streamChat(

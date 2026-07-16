@@ -25,6 +25,11 @@ class DateTimeSkill(Skill):
                 ),
             ],
             tags=["utility", "time"],
+            domains=["utility", "time"],
+            routing_keywords=["时间", "日期", "几点", "今天", "时区"],
+            always_on=True,
+            parallel_safe=True,
+            idempotent=True,
         )
 
     async def execute(self, **kwargs) -> SkillResult:

@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -10,18 +11,42 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aan/agent-assistant-gateway/internal/bridge"
 	"github.com/aan/agent-assistant-gateway/internal/database"
 	"github.com/aan/agent-assistant-gateway/internal/models"
 	"github.com/gin-gonic/gin"
 )
 
+type fakeDriveDocumentParser struct {
+	response *bridge.DocumentParseResponse
+	err      error
+	requests []bridge.DocumentParseRequest
+}
+
+func (p *fakeDriveDocumentParser) ParseDocument(
+	req bridge.DocumentParseRequest,
+) (*bridge.DocumentParseResponse, error) {
+	p.requests = append(p.requests, req)
+	return p.response, p.err
+}
+
 func setupDriveTest(t *testing.T) (*gin.Engine, *DriveHandler) {
+	return setupDriveTestWithParser(t, nil)
+}
+
+func setupDriveTestWithParser(
+	t *testing.T,
+	parser documentParser,
+) (*gin.Engine, *DriveHandler) {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 	if err := database.Init(filepath.Join(t.TempDir(), "assistant.db")); err != nil {
 		t.Fatalf("init database: %v", err)
 	}
 	handler := NewDriveHandler()
+	if parser != nil {
+		handler = NewDriveHandler(parser)
+	}
 	router := gin.New()
 	router.GET("/api/drive/tree", handler.Tree)
 	router.GET("/api/drive/items", handler.List)
@@ -123,6 +148,91 @@ func TestDriveFileSearchAndDownload(t *testing.T) {
 	}
 	if !strings.Contains(downloadRecorder.Body.String(), "chunking") {
 		t.Fatalf("expected file content, got %s", downloadRecorder.Body.String())
+	}
+}
+
+func TestDriveBinaryDocumentUsesSharedParserForSearchContextAndRead(t *testing.T) {
+	parser := &fakeDriveDocumentParser{
+		response: &bridge.DocumentParseResponse{
+			Supported: true,
+			Format:    "pdf",
+			Parser:    "test-pdf-parser",
+			Text:      "parsed contract clause alpha-needle",
+			Summary:   "Parsed contract summary",
+			Metadata:  map[string]interface{}{"page_count": float64(2)},
+		},
+	}
+	router, _ := setupDriveTestWithParser(t, parser)
+	original := []byte("%PDF-original-binary")
+	payload := map[string]interface{}{
+		"name":      "Contract.pdf",
+		"mime_type": "application/pdf",
+		"encoding":  "base64",
+		"content":   base64.StdEncoding.EncodeToString(original),
+	}
+	body, _ := json.Marshal(payload)
+	req := httptest.NewRequest(http.MethodPost, "/api/drive/files", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-User-ID", "user-a")
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("unexpected create status %d: %s", recorder.Code, recorder.Body.String())
+	}
+	var created struct {
+		Item driveItemResponse `json:"item"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode create response: %v", err)
+	}
+	if created.Item.ExtractionStatus != "completed" ||
+		created.Item.ExtractedText != "parsed contract clause alpha-needle" {
+		t.Fatalf("expected extracted text, got %#v", created.Item)
+	}
+	if created.Item.Summary != "Parsed contract summary" {
+		t.Fatalf("expected parser summary, got %q", created.Item.Summary)
+	}
+	if len(parser.requests) != 1 || parser.requests[0].DataBase64 != payload["content"] {
+		t.Fatalf("expected parser to receive original payload, got %#v", parser.requests)
+	}
+
+	searchReq := httptest.NewRequest(http.MethodGet, "/api/drive/search?q=alpha-needle", nil)
+	searchReq.Header.Set("X-User-ID", "user-a")
+	searchRecorder := httptest.NewRecorder()
+	router.ServeHTTP(searchRecorder, searchReq)
+	if searchRecorder.Code != http.StatusOK ||
+		!strings.Contains(searchRecorder.Body.String(), "Contract.pdf") ||
+		!strings.Contains(searchRecorder.Body.String(), "alpha-needle") {
+		t.Fatalf("expected extracted text search result, got %d: %s", searchRecorder.Code, searchRecorder.Body.String())
+	}
+
+	contextBody := []byte(`{"item_ids":["` + created.Item.ID + `"],"query":"alpha-needle"}`)
+	contextReq := httptest.NewRequest(http.MethodPost, "/api/drive/context", bytes.NewReader(contextBody))
+	contextReq.Header.Set("Content-Type", "application/json")
+	contextReq.Header.Set("X-User-ID", "user-a")
+	contextRecorder := httptest.NewRecorder()
+	router.ServeHTTP(contextRecorder, contextReq)
+	if contextRecorder.Code != http.StatusOK ||
+		!strings.Contains(contextRecorder.Body.String(), "parsed contract clause alpha-needle") {
+		t.Fatalf("expected extracted text context, got %d: %s", contextRecorder.Code, contextRecorder.Body.String())
+	}
+
+	getReq := httptest.NewRequest(http.MethodGet, "/api/drive/items/"+created.Item.ID, nil)
+	getReq.Header.Set("X-User-ID", "user-a")
+	getRecorder := httptest.NewRecorder()
+	router.ServeHTTP(getRecorder, getReq)
+	if getRecorder.Code != http.StatusOK ||
+		!strings.Contains(getRecorder.Body.String(), "parsed contract clause alpha-needle") {
+		t.Fatalf("expected extracted text in item read, got %d: %s", getRecorder.Code, getRecorder.Body.String())
+	}
+
+	downloadReq := httptest.NewRequest(http.MethodGet, "/api/drive/items/"+created.Item.ID+"/download", nil)
+	downloadReq.Header.Set("X-User-ID", "user-a")
+	downloadRecorder := httptest.NewRecorder()
+	router.ServeHTTP(downloadRecorder, downloadReq)
+	if downloadRecorder.Code != http.StatusOK || !bytes.Equal(downloadRecorder.Body.Bytes(), original) {
+		t.Fatalf("expected exact original download, got %d: %q", downloadRecorder.Code, downloadRecorder.Body.Bytes())
 	}
 }
 

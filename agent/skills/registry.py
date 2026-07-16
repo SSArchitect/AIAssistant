@@ -38,6 +38,8 @@ class SkillRegistry:
                     name=td["name"],
                     description=td["description"],
                     parameters=td["parameters"],
+                    output_schema=td.get("output_schema") or {},
+                    metadata=td.get("metadata") or {},
                 )
             )
         return definitions

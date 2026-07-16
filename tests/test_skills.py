@@ -2352,6 +2352,36 @@ class TestDriveSkills:
         assert "Readable drive content." in result.display_text
 
     @pytest.mark.asyncio
+    async def test_read_drive_returns_extracted_binary_document_text(self):
+        async def handler(request: httpx.Request) -> httpx.Response:
+            assert request.url.path == "/api/drive/items/file-pdf"
+            return httpx.Response(
+                200,
+                json={
+                    "item": {
+                        "id": "file-pdf",
+                        "type": "file",
+                        "name": "Contract.pdf",
+                        "mime_type": "application/pdf",
+                        "encoding": "base64",
+                        "content": "JVBERi0xLjQ=",
+                        "extracted_text": "Parsed contract clause.",
+                        "extraction_status": "completed",
+                        "extraction_metadata": {"page_count": 1},
+                    }
+                },
+            )
+
+        skill = DriveReadSkill(client_factory=lambda: self.client(handler))
+        result = await skill.execute(item_id="file-pdf", _user_id="alice")
+
+        assert result.success is True
+        assert result.data["content"] == "Parsed contract clause."
+        assert result.data["encoding"] == "base64"
+        assert result.data["extraction_status"] == "completed"
+        assert "JVBERi0xLjQ=" not in result.display_text
+
+    @pytest.mark.asyncio
     async def test_read_drive_resolves_display_path_and_returns_item_path(self):
         def handler(request: httpx.Request) -> httpx.Response:
             assert request.headers["X-User-ID"] == "alice"

@@ -1638,7 +1638,8 @@ function allModes() {
 
 const MAX_TEXT_ATTACHMENT_BYTES = 1024 * 1024;
 const MAX_MEDIA_ATTACHMENT_BYTES = 8 * 1024 * 1024;
-const MAX_DRIVE_BINARY_BYTES = 2 * 1024 * 1024;
+const MAX_DOCUMENT_ATTACHMENT_BYTES = 8 * 1024 * 1024;
+const MAX_DRIVE_BINARY_BYTES = 8 * 1024 * 1024;
 const MAX_ATTACHMENT_CHARS = 12000;
 const MAX_TOTAL_ATTACHMENT_CHARS = 24000;
 const ACTIVE_RUN_POLL_MS = 1500;
@@ -1659,6 +1660,7 @@ const IMAGE_ATTACHMENT_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'webp', 'gif'
 const AUDIO_ATTACHMENT_EXTENSIONS = new Set(['mp3', 'wav', 'm4a', 'aac', 'ogg', 'flac', 'webm']);
 const VIDEO_ATTACHMENT_EXTENSIONS = new Set(['mp4', 'mov', 'webm', 'm4v', 'avi', 'mkv', 'ogv']);
 const DOCUMENT_ATTACHMENT_EXTENSIONS = new Set(['pdf', 'doc', 'docx', 'rtf', 'odt', 'xls', 'xlsx', 'ods', 'ppt', 'pptx', 'odp', 'key', 'numbers', 'pages']);
+const PARSED_DOCUMENT_ATTACHMENT_EXTENSIONS = new Set(['pdf', 'docx', 'pptx', 'xlsx']);
 const ARCHIVE_ATTACHMENT_EXTENSIONS = new Set(['zip', 'rar', '7z', 'tar', 'gz', 'tgz', 'bz2']);
 const DRIVE_BINARY_EXTENSIONS = new Set([
     ...IMAGE_ATTACHMENT_EXTENSIONS,
@@ -3093,6 +3095,17 @@ async function parseAttachmentFile(file, item = null) {
         };
     }
 
+    if (isServerParsedDocument(file)) {
+        if (file.size > MAX_DOCUMENT_ATTACHMENT_BYTES) {
+            throw new Error(t('attachments.tooLarge', { size: formatBytes(MAX_DOCUMENT_ATTACHMENT_BYTES) }));
+        }
+        return {
+            kind: 'file',
+            content: '',
+            dataUrl: normalizeDocumentDataUrl(await readFileAsDataURL(file), file),
+        };
+    }
+
     if (file.size > MAX_TEXT_ATTACHMENT_BYTES) {
         throw new Error(t('attachments.tooLarge', { size: formatBytes(MAX_TEXT_ATTACHMENT_BYTES) }));
     }
@@ -3148,6 +3161,12 @@ function normalizeMediaDataUrl(dataUrl, file, kind) {
     return String(dataUrl).replace(/^data:[^;,]*(;base64,)/i, `data:${mimeType}$1`);
 }
 
+function normalizeDocumentDataUrl(dataUrl, file) {
+    const mimeType = driveMimeTypeForFile(file);
+    if (!mimeType || !String(dataUrl).startsWith('data:')) return dataUrl;
+    return String(dataUrl).replace(/^data:[^;,]*(;base64,)/i, `data:${mimeType}$1`);
+}
+
 function mediaMimeTypeForFile(file, kind) {
     const ext = fileExtension(file.name);
     if (kind === 'image') {
@@ -3189,6 +3208,19 @@ function isReadableAttachment(file) {
     }
     const ext = fileExtension(file.name);
     return TEXT_ATTACHMENT_EXTENSIONS.has(ext);
+}
+
+function isServerParsedDocument(file) {
+    const type = (file.type || '').toLowerCase().split(';', 1)[0];
+    if ([
+        'application/pdf',
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    ].includes(type)) {
+        return true;
+    }
+    return PARSED_DOCUMENT_ATTACHMENT_EXTENSIONS.has(fileExtension(file.name));
 }
 
 function isSupportedDriveBinaryFile(file) {
@@ -3693,7 +3725,9 @@ async function handleProjectUpload(files) {
                 mime_type: driveMimeTypeForFile(file),
                 encoding: 'base64',
                 content,
-                summary: `${t('projects.uploadBinaryNote')} ${formatBytes(file.size || 0)}`,
+                summary: isServerParsedDocument(file)
+                    ? ''
+                    : `${t('projects.uploadBinaryNote')} ${formatBytes(file.size || 0)}`,
             });
             uploaded += 1;
         }
@@ -14039,9 +14073,8 @@ async function handleSend(queryOverride = '') {
     const attachmentsForTurn = attachedContexts
         .filter((item) => item.status === 'ready' && (item.content || item.dataUrl))
         .map((item) => ({ ...item }));
-    const attachmentContext = buildAttachmentContext(attachmentsForTurn);
     const attachmentPayload = chatAttachmentPayload(attachmentsForTurn);
-    const query = typedQuery || (attachmentContext ? defaultAttachmentPrompt() : '');
+    const query = typedQuery || (attachmentsForTurn.length ? defaultAttachmentPrompt() : '');
     if (!query) return;
 
     if (!currentConversationId) {
@@ -14074,9 +14107,8 @@ async function handleSend(queryOverride = '') {
     scrollToBottom();
 
     try {
-        const contextBlocks = [attachmentContext].filter(Boolean);
-        const resp = await sendMessageStream(conversationId, query, streamView, attachmentContext, attachmentPayload, {
-            context_blocks: contextBlocks,
+        const resp = await sendMessageStream(conversationId, query, streamView, '', attachmentPayload, {
+            context_blocks: [],
         });
         streamView.finalize(resp);
         captureMemoryDebug(resp, conversationId);

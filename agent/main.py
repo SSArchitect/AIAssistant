@@ -17,6 +17,7 @@ from pydantic import BaseModel
 
 from agent.aigc import MiniMaxAIGCClient
 from agent.config import settings, runtime_config
+from agent.documents import DocumentParseError, parse_document
 from agent.llm.base import LLMMessage, RateLimitError
 from agent.llm.factory import create_provider
 from agent.memory import RoleMemoryStore
@@ -33,6 +34,7 @@ from agent.schemas.chat import (
     SkillInfo,
     SkillListResponse,
 )
+from agent.schemas.document import DocumentParseRequest, DocumentParseResponse
 from agent.schemas.memory import (
     MemoryCreateRequest,
     MemoryKind,
@@ -272,7 +274,7 @@ async def list_skills():
                 name=meta.name,
                 description=meta.description,
                 parameters=[
-                    {"name": p.name, "type": p.type, "description": p.description, "required": p.required}
+                    p.model_dump(mode="json")
                     for p in meta.parameters
                 ],
                 version=meta.version,
@@ -284,10 +286,32 @@ async def list_skills():
                 default_policy=meta.default_policy,
                 max_calls_per_run=meta.max_calls_per_run,
                 timeout_seconds=meta.timeout_seconds,
+                sensitive_arguments=meta.sensitive_arguments,
+                sensitive_result_fields=meta.sensitive_result_fields,
+                domains=meta.domains,
+                routing_keywords=meta.routing_keywords,
+                allowed_agents=meta.allowed_agents,
+                always_on=meta.always_on,
+                discoverable=meta.discoverable,
+                parallel_safe=meta.parallel_safe,
+                idempotent=meta.idempotent,
+                output_schema=meta.output_schema,
                 effective_policy=meta.default_policy,
             )
         )
     return SkillListResponse(skills=skills)
+
+
+@app.post("/agent/documents/parse", response_model=DocumentParseResponse)
+async def parse_document_endpoint(request: DocumentParseRequest):
+    try:
+        return await asyncio.to_thread(parse_document, request)
+    except DocumentParseError as exc:
+        status_code = 413 if exc.code == "document_too_large" else 400
+        raise HTTPException(
+            status_code=status_code,
+            detail={"code": exc.code, "message": str(exc)},
+        ) from exc
 
 
 @app.post("/agent/chat", response_model=ChatResponse)

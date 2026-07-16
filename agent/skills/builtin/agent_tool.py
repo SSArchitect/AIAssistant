@@ -56,6 +56,21 @@ class AgentToolSkill(Skill):
             ],
             tags=["agent", "workflow", self.agent.id],
             source="system",
+            domains=(
+                ["image"]
+                if self.agent.id == "image_generation_v1"
+                else ["weight_loss"]
+                if self.agent.id == "weight_loss_v1"
+                else ["agent"]
+            ),
+            routing_keywords=(
+                ["生图", "生成图片", "海报", "封面", "视觉设计"]
+                if self.agent.id == "image_generation_v1"
+                else ["减肥", "减脂", "热量", "饮食记录", "体重"]
+                if self.agent.id == "weight_loss_v1"
+                else []
+            ),
+            allowed_agents=["super_chat"],
             risk_level="medium",
             access="external",
             max_calls_per_run=4,

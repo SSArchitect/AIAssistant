@@ -537,6 +537,98 @@ func TestChatSessionUserOverridesBodyUserID(t *testing.T) {
 	}
 }
 
+func TestChatDocumentAttachmentUsesSharedParserBeforeAgentChat(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	if err := database.Init(filepath.Join(t.TempDir(), "assistant.db")); err != nil {
+		t.Fatalf("init database: %v", err)
+	}
+	if err := database.DB.Create(&models.Conversation{
+		ID:        "conv-document-attachment",
+		UserID:    "0",
+		Title:     "Document attachment",
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}).Error; err != nil {
+		t.Fatalf("create conversation: %v", err)
+	}
+
+	var parseRequest bridge.DocumentParseRequest
+	var captured bridge.ChatRequest
+	agentServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/agent/documents/parse":
+			if err := json.NewDecoder(r.Body).Decode(&parseRequest); err != nil {
+				t.Fatalf("decode parse request: %v", err)
+			}
+			_, _ = w.Write([]byte(`{
+				"supported": true,
+				"format": "pdf",
+				"parser": "test-pdf-parser",
+				"text": "parsed contract clause",
+				"summary": "contract summary",
+				"metadata": {"page_count": 1}
+			}`))
+		case "/agent/chat":
+			if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+				t.Fatalf("decode chat request: %v", err)
+			}
+			_, _ = w.Write([]byte(`{
+				"conversation_id": "conv-document-attachment",
+				"response": "ok",
+				"skills_used": [],
+				"model_used": "test-model",
+				"tokens_used": {},
+				"agent_id": "super_chat",
+				"runtime": "self"
+			}`))
+		default:
+			t.Fatalf("unexpected agent path: %s", r.URL.Path)
+		}
+	}))
+	defer agentServer.Close()
+
+	router := gin.New()
+	handler := NewChatHandler(bridge.NewAgentClient(agentServer.URL, time.Second))
+	router.POST("/api/chat", handler.Chat)
+	body := bytes.NewBufferString(`{
+		"conversation_id": "conv-document-attachment",
+		"query": "总结附件",
+		"agent_id": "super_chat",
+		"suppress_follow_ups": true,
+		"attachments": [{
+			"name": "contract.pdf",
+			"type": "application/pdf",
+			"size": 12,
+			"kind": "file",
+			"data_url": "data:application/pdf;base64,JVBERi0xLjQ="
+		}]
+	}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", body)
+	req.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("unexpected status %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if parseRequest.Name != "contract.pdf" || parseRequest.DataURL == "" {
+		t.Fatalf("expected document parser request, got %#v", parseRequest)
+	}
+	if len(captured.Attachments) != 1 {
+		t.Fatalf("expected one forwarded attachment, got %#v", captured.Attachments)
+	}
+	attachment := captured.Attachments[0]
+	if attachment.Content != "parsed contract clause" ||
+		attachment.ExtractionStatus != "completed" ||
+		attachment.Parser != "test-pdf-parser" {
+		t.Fatalf("expected parsed attachment fields, got %#v", attachment)
+	}
+	if attachment.DataURL != "" {
+		t.Fatalf("expected original data URL to be removed before chat, got %q", attachment.DataURL)
+	}
+}
+
 func TestRoleMemoryCreateSessionUserOverridesBodyUserID(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

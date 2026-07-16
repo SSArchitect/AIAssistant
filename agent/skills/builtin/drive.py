@@ -318,7 +318,13 @@ class DriveListSkill(_DriveTool):
             ],
             tags=["drive", "files"],
             source="builtin",
+            domains=["drive"],
+            routing_keywords=["列出网盘", "查看文件夹", "目录", "ls drive"],
+            allowed_agents=["super_chat"],
+            parallel_safe=True,
+            idempotent=True,
             max_calls_per_run=12,
+            sensitive_result_fields=["content"],
         )
 
     async def execute(self, **kwargs) -> SkillResult:
@@ -365,6 +371,11 @@ class DriveSearchSkill(_DriveTool):
             ],
             tags=["drive", "search", "files"],
             source="builtin",
+            domains=["drive"],
+            routing_keywords=["搜索网盘", "查找文件", "知识库检索"],
+            allowed_agents=["super_chat"],
+            parallel_safe=True,
+            idempotent=True,
             max_calls_per_run=16,
         )
 
@@ -401,7 +412,10 @@ class DriveReadSkill(_DriveTool):
     def metadata(self) -> SkillMetadata:
         return SkillMetadata(
             name="read_drive",
-            description="读取当前用户网盘中的文本文件内容。读取目录请先用 ls_drive。",
+            description=(
+                "读取当前用户网盘中的文件文本内容。文本文件直接读取；PDF、DOCX、PPTX、XLSX "
+                "返回上传时提取的文本。读取目录请先用 ls_drive。"
+            ),
             parameters=[
                 SkillParameter(name="item_id", type="string", description="文件 ID；如果提供，会优先于 path。", required=False),
                 SkillParameter(name="path", type="string", description="网盘文件路径，例如 /研究/notes.md。", required=False),
@@ -415,6 +429,11 @@ class DriveReadSkill(_DriveTool):
             ],
             tags=["drive", "files"],
             source="builtin",
+            domains=["drive"],
+            routing_keywords=["读取文件", "打开网盘文件", "文件正文"],
+            allowed_agents=["super_chat"],
+            parallel_safe=True,
+            idempotent=True,
             max_calls_per_run=12,
         )
 
@@ -436,7 +455,12 @@ class DriveReadSkill(_DriveTool):
             if str(item.get("type") or "") != "file":
                 return SkillResult(success=False, error="folders cannot be read; use ls_drive to inspect a folder")
             item_path = await _item_path(client, user_id, item)
-            content = str(item.get("content") or "")
+            encoding = str(item.get("encoding") or "")
+            content = (
+                str(item.get("extracted_text") or "")
+                if encoding == "base64"
+                else str(item.get("content") or "")
+            )
             truncated = len(content) > max_chars
             if truncated:
                 content = content[:max_chars]
@@ -444,7 +468,10 @@ class DriveReadSkill(_DriveTool):
                 "item": _item_summary(item, path=item_path),
                 "content": content,
                 "truncated": truncated,
-                "encoding": str(item.get("encoding") or ""),
+                "encoding": encoding,
+                "extraction_status": str(item.get("extraction_status") or ""),
+                "extraction_error": str(item.get("extraction_error") or ""),
+                "extraction_metadata": item.get("extraction_metadata") or {},
             }
             return SkillResult(
                 success=True,
@@ -491,8 +518,12 @@ class DriveSaveSkill(_DriveTool):
             ],
             tags=["drive", "files", "write"],
             source="builtin",
+            domains=["drive"],
+            routing_keywords=["保存到网盘", "保存回答", "新建文档", "沉淀知识"],
+            allowed_agents=["super_chat"],
             risk_level="medium",
             access="write",
+            idempotent=False,
             max_calls_per_run=8,
             sensitive_arguments=["content"],
         )
@@ -585,6 +616,9 @@ class DriveUpdateSkill(_DriveTool):
             ],
             tags=["drive", "files", "write"],
             source="builtin",
+            domains=["drive"],
+            routing_keywords=["更新文件", "重命名文件", "移动文件", "修改文档"],
+            allowed_agents=["super_chat"],
             risk_level="medium",
             access="write",
             max_calls_per_run=8,
@@ -666,6 +700,9 @@ class DriveMkdirSkill(_DriveTool):
             ],
             tags=["drive", "files", "write"],
             source="builtin",
+            domains=["drive"],
+            routing_keywords=["新建文件夹", "创建目录", "mkdir"],
+            allowed_agents=["super_chat"],
             risk_level="medium",
             access="write",
             max_calls_per_run=8,
@@ -724,6 +761,9 @@ class DriveDeleteSkill(_DriveTool):
             ],
             tags=["drive", "files", "delete"],
             source="builtin",
+            domains=["drive"],
+            routing_keywords=["删除网盘文件", "删除文件夹", "永久删除文件"],
+            allowed_agents=["super_chat"],
             risk_level="high",
             access="destructive",
             default_policy="confirm",
@@ -787,6 +827,9 @@ class DriveShareSkill(_DriveTool):
             ],
             tags=["drive", "files", "share"],
             source="builtin",
+            domains=["drive"],
+            routing_keywords=["分享文件", "公开链接", "取消分享"],
+            allowed_agents=["super_chat"],
             risk_level="high",
             access="external",
             default_policy="confirm",
@@ -879,6 +922,9 @@ class ArchiveURLToDriveSkill(_DriveTool):
             ],
             tags=["drive", "knowledge", "web", "archive"],
             source="builtin",
+            domains=["drive", "web"],
+            routing_keywords=["归档网页", "保存链接", "收藏网页"],
+            allowed_agents=["super_chat"],
             risk_level="medium",
             access="external",
             default_policy="auto",
@@ -1269,4 +1315,12 @@ def _format_read_result(data: dict[str, Any]) -> str:
     item = data.get("item") or {}
     content = str(data.get("content") or "")
     truncated = " [truncated]" if data.get("truncated") else ""
+    if not content and data.get("encoding") == "base64":
+        status = str(data.get("extraction_status") or "unavailable")
+        error = str(data.get("extraction_error") or "").strip()
+        return (
+            f"{item.get('name')} ({item.get('id')})\n\n"
+            f"Extracted text is unavailable (status: {status})."
+            + (f" {error}" if error else "")
+        )
     return f"{item.get('name')} ({item.get('id')}){truncated}\n\n{content}"

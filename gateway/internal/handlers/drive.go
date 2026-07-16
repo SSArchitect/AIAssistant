@@ -3,6 +3,7 @@ package handlers
 import (
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"html"
@@ -12,6 +13,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/aan/agent-assistant-gateway/internal/bridge"
 	"github.com/aan/agent-assistant-gateway/internal/database"
 	"github.com/aan/agent-assistant-gateway/internal/models"
 	"github.com/gin-gonic/gin"
@@ -26,13 +28,24 @@ const (
 	driveContextLimit   = 10
 	driveMaxContent     = documentMaxContentRunes
 	driveEncodingBase64 = "base64"
-	driveMaxBase64Bytes = 3 * 1024 * 1024
+	driveMaxBinaryBytes = 8 * 1024 * 1024
+	driveMaxBase64Chars = (driveMaxBinaryBytes*4)/3 + 8
 )
 
-type DriveHandler struct{}
+type documentParser interface {
+	ParseDocument(req bridge.DocumentParseRequest) (*bridge.DocumentParseResponse, error)
+}
 
-func NewDriveHandler() *DriveHandler {
-	return &DriveHandler{}
+type DriveHandler struct {
+	parser documentParser
+}
+
+func NewDriveHandler(parsers ...documentParser) *DriveHandler {
+	var parser documentParser
+	if len(parsers) > 0 {
+		parser = parsers[0]
+	}
+	return &DriveHandler{parser: parser}
 }
 
 type driveFolderRequest struct {
@@ -75,22 +88,26 @@ type driveContextRequest struct {
 }
 
 type driveItemResponse struct {
-	ID           string              `json:"id"`
-	UserID       string              `json:"user_id"`
-	ParentID     string              `json:"parent_id,omitempty"`
-	Type         string              `json:"type"`
-	Name         string              `json:"name"`
-	MimeType     string              `json:"mime_type,omitempty"`
-	Encoding     string              `json:"encoding,omitempty"`
-	Size         int64               `json:"size"`
-	Summary      string              `json:"summary,omitempty"`
-	Tags         []string            `json:"tags,omitempty"`
-	Content      string              `json:"content,omitempty"`
-	ShareEnabled bool                `json:"share_enabled"`
-	ShareToken   string              `json:"share_token,omitempty"`
-	Children     []driveItemResponse `json:"children,omitempty"`
-	CreatedAt    time.Time           `json:"created_at"`
-	UpdatedAt    time.Time           `json:"updated_at"`
+	ID                 string                 `json:"id"`
+	UserID             string                 `json:"user_id"`
+	ParentID           string                 `json:"parent_id,omitempty"`
+	Type               string                 `json:"type"`
+	Name               string                 `json:"name"`
+	MimeType           string                 `json:"mime_type,omitempty"`
+	Encoding           string                 `json:"encoding,omitempty"`
+	Size               int64                  `json:"size"`
+	Summary            string                 `json:"summary,omitempty"`
+	Tags               []string               `json:"tags,omitempty"`
+	Content            string                 `json:"content,omitempty"`
+	ExtractedText      string                 `json:"extracted_text,omitempty"`
+	ExtractionStatus   string                 `json:"extraction_status,omitempty"`
+	ExtractionError    string                 `json:"extraction_error,omitempty"`
+	ExtractionMetadata map[string]interface{} `json:"extraction_metadata,omitempty"`
+	ShareEnabled       bool                   `json:"share_enabled"`
+	ShareToken         string                 `json:"share_token,omitempty"`
+	Children           []driveItemResponse    `json:"children,omitempty"`
+	CreatedAt          time.Time              `json:"created_at"`
+	UpdatedAt          time.Time              `json:"updated_at"`
 }
 
 type driveSearchResult struct {
@@ -207,13 +224,17 @@ func (h *DriveHandler) CreateFile(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "file content is required"})
 			return
 		}
-		if len(content) > driveMaxBase64Bytes {
+		if len(content) > driveMaxBase64Chars {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "file is too large"})
 			return
 		}
 		decoded, err := base64.StdEncoding.DecodeString(content)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid base64 file content"})
+			return
+		}
+		if len(decoded) > driveMaxBinaryBytes {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "file is too large"})
 			return
 		}
 		size = int64(len(decoded))
@@ -227,14 +248,10 @@ func (h *DriveHandler) CreateFile(c *gin.Context) {
 	}
 	name := cleanDriveName(req.Name)
 	if name == "" {
-		name = titleFromDocumentContent(content, "Untitled.txt")
-	}
-	summary := strings.TrimSpace(req.Summary)
-	if summary == "" {
 		if encoding == driveEncodingBase64 {
-			summary = summarizeDriveBinaryFile(name, req.MimeType, size)
+			name = "Untitled.bin"
 		} else {
-			summary = summarizeDocumentContent(content)
+			name = titleFromDocumentContent(content, "Untitled.txt")
 		}
 	}
 	tags := normalizeDocumentTags(req.Tags)
@@ -248,11 +265,22 @@ func (h *DriveHandler) CreateFile(c *gin.Context) {
 		MimeType:  cleanDriveMimeType(req.MimeType),
 		Encoding:  encoding,
 		Size:      size,
-		Summary:   summary,
 		TagsJSON:  documentJSON(tags),
 		Content:   content,
 		CreatedAt: now,
 		UpdatedAt: now,
+	}
+	extractedSummary := h.applyDocumentExtraction(&item)
+	item.Summary = strings.TrimSpace(req.Summary)
+	if item.Summary == "" {
+		switch {
+		case extractedSummary != "":
+			item.Summary = extractedSummary
+		case encoding == driveEncodingBase64:
+			item.Summary = summarizeDriveBinaryFile(name, item.MimeType, size)
+		default:
+			item.Summary = summarizeDocumentContent(content)
+		}
 	}
 	if err := database.DB.Create(&item).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create file"})
@@ -281,7 +309,9 @@ func (h *DriveHandler) Update(c *gin.Context) {
 	if !ok {
 		return
 	}
+	nameChanged := false
 	if name := cleanDriveName(req.Name); name != "" {
+		nameChanged = name != item.Name
 		item.Name = name
 	}
 	if req.ParentID != nil {
@@ -330,13 +360,17 @@ func (h *DriveHandler) Update(c *gin.Context) {
 				c.JSON(http.StatusBadRequest, gin.H{"error": "file content is required"})
 				return
 			}
-			if len(content) > driveMaxBase64Bytes {
+			if len(content) > driveMaxBase64Chars {
 				c.JSON(http.StatusBadRequest, gin.H{"error": "file is too large"})
 				return
 			}
 			decoded, err := base64.StdEncoding.DecodeString(content)
 			if err != nil {
 				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid base64 file content"})
+				return
+			}
+			if len(decoded) > driveMaxBinaryBytes {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "file is too large"})
 				return
 			}
 			size = int64(len(decoded))
@@ -355,15 +389,28 @@ func (h *DriveHandler) Update(c *gin.Context) {
 	if req.MimeType != nil {
 		item.MimeType = cleanDriveMimeType(*req.MimeType)
 	}
+	shouldExtract := item.Encoding == driveEncodingBase64 &&
+		(req.Content != nil || req.Encoding != nil || req.MimeType != nil || nameChanged)
+	extractedSummary := ""
+	if shouldExtract {
+		extractedSummary = h.applyDocumentExtraction(&item)
+	} else if item.Encoding != driveEncodingBase64 {
+		clearDriveDocumentExtraction(&item)
+	}
 	if req.Summary != nil {
 		item.Summary = strings.TrimSpace(*req.Summary)
 	}
 	if req.Content != nil && (req.Summary == nil || item.Summary == "") {
-		if item.Encoding == driveEncodingBase64 {
+		if extractedSummary != "" {
+			item.Summary = extractedSummary
+		} else if item.Encoding == driveEncodingBase64 {
 			item.Summary = summarizeDriveBinaryFile(item.Name, item.MimeType, item.Size)
 		} else {
 			item.Summary = summarizeDocumentContent(item.Content)
 		}
+	} else if shouldExtract && req.Summary == nil && extractedSummary != "" &&
+		(item.Summary == "" || strings.HasPrefix(item.Summary, "Binary file")) {
+		item.Summary = extractedSummary
 	}
 	if req.Tags != nil {
 		item.TagsJSON = documentJSON(normalizeDocumentTags(*req.Tags))
@@ -805,7 +852,15 @@ func buildDriveContextBlock(files []models.DriveItem, query string) string {
 			lines = append(lines, fmt.Sprintf("Summary: %s", file.Summary))
 		}
 		if file.Encoding == driveEncodingBase64 {
-			lines = append(lines, "Content: binary file; use only the filename, MIME type, tags, and summary as context.")
+			if excerpt := documentExcerpt(file.ExtractedText, query, 1000); excerpt != "" {
+				lines = append(lines, "Extracted text:", excerpt)
+			} else {
+				status := strings.TrimSpace(file.ExtractionStatus)
+				if status == "" {
+					status = "not parsed"
+				}
+				lines = append(lines, "Content: binary file; extracted text is unavailable ("+status+").")
+			}
 		} else if excerpt := documentExcerpt(file.Content, query, 1000); excerpt != "" {
 			lines = append(lines, "Excerpt:", excerpt)
 		}
@@ -1441,15 +1496,98 @@ func summarizeDriveBinaryFile(name, mimeType string, size int64) string {
 	return strings.Join(parts, " · ")
 }
 
+func driveDocumentParsingSupported(name, mimeType string) bool {
+	switch driveShareFileExtension(name) {
+	case "pdf", "docx", "pptx", "xlsx":
+		return true
+	}
+	normalized := strings.ToLower(strings.TrimSpace(strings.Split(mimeType, ";")[0]))
+	switch normalized {
+	case "application/pdf",
+		"application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+		"application/vnd.openxmlformats-officedocument.presentationml.presentation",
+		"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":
+		return true
+	default:
+		return false
+	}
+}
+
+func clearDriveDocumentExtraction(item *models.DriveItem) {
+	item.ExtractedText = ""
+	item.ExtractionStatus = ""
+	item.ExtractionError = ""
+	item.ExtractionMetadataJSON = ""
+}
+
+func (h *DriveHandler) applyDocumentExtraction(item *models.DriveItem) string {
+	clearDriveDocumentExtraction(item)
+	if item.Encoding != driveEncodingBase64 {
+		return ""
+	}
+	if !driveDocumentParsingSupported(item.Name, item.MimeType) {
+		item.ExtractionStatus = "unsupported"
+		return ""
+	}
+	if h.parser == nil {
+		item.ExtractionStatus = "unavailable"
+		item.ExtractionError = "document parser is unavailable"
+		return ""
+	}
+	result, err := h.parser.ParseDocument(bridge.DocumentParseRequest{
+		Name:       item.Name,
+		MimeType:   item.MimeType,
+		DataBase64: item.Content,
+		MaxChars:   driveMaxContent,
+	})
+	if err != nil {
+		item.ExtractionStatus = "failed"
+		item.ExtractionError = limitRunes(err.Error(), 1000)
+		return ""
+	}
+	metadata := map[string]interface{}{}
+	for key, value := range result.Metadata {
+		metadata[key] = value
+	}
+	metadata["format"] = result.Format
+	metadata["parser"] = result.Parser
+	metadata["truncated"] = result.Truncated
+	if len(result.Warnings) > 0 {
+		metadata["warnings"] = result.Warnings
+	}
+	item.ExtractionMetadataJSON = documentJSON(metadata)
+	if !result.Supported {
+		item.ExtractionStatus = "unsupported"
+		return ""
+	}
+	item.ExtractionStatus = "completed"
+	item.ExtractedText = trimDocumentContent(result.Text)
+	return strings.TrimSpace(result.Summary)
+}
+
+func decodeDriveExtractionMetadata(value string) map[string]interface{} {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+	var metadata map[string]interface{}
+	if err := json.Unmarshal([]byte(value), &metadata); err != nil {
+		return nil
+	}
+	return metadata
+}
+
 func driveSearchableContent(file models.DriveItem) string {
 	if file.Encoding == driveEncodingBase64 {
-		return ""
+		return file.ExtractedText
 	}
 	return file.Content
 }
 
 func driveFileSnippet(file models.DriveItem, query string, maxRunes int) string {
 	if file.Encoding == driveEncodingBase64 {
+		if strings.TrimSpace(file.ExtractedText) != "" {
+			return documentExcerpt(file.ExtractedText, query, maxRunes)
+		}
 		return file.Summary
 	}
 	return documentExcerpt(file.Content, query, maxRunes)
@@ -1457,44 +1595,52 @@ func driveFileSnippet(file models.DriveItem, query string, maxRunes int) string 
 
 func driveItemFromModel(item models.DriveItem, includeContent bool) driveItemResponse {
 	response := driveItemResponse{
-		ID:           item.ID,
-		UserID:       item.UserID,
-		ParentID:     item.ParentID,
-		Type:         item.Type,
-		Name:         item.Name,
-		MimeType:     item.MimeType,
-		Encoding:     item.Encoding,
-		Size:         item.Size,
-		Summary:      item.Summary,
-		Tags:         decodeDocumentTags(item.TagsJSON),
-		ShareEnabled: item.ShareEnabled,
-		ShareToken:   item.ShareToken,
-		CreatedAt:    item.CreatedAt,
-		UpdatedAt:    item.UpdatedAt,
+		ID:                 item.ID,
+		UserID:             item.UserID,
+		ParentID:           item.ParentID,
+		Type:               item.Type,
+		Name:               item.Name,
+		MimeType:           item.MimeType,
+		Encoding:           item.Encoding,
+		Size:               item.Size,
+		Summary:            item.Summary,
+		Tags:               decodeDocumentTags(item.TagsJSON),
+		ExtractionStatus:   item.ExtractionStatus,
+		ExtractionError:    item.ExtractionError,
+		ExtractionMetadata: decodeDriveExtractionMetadata(item.ExtractionMetadataJSON),
+		ShareEnabled:       item.ShareEnabled,
+		ShareToken:         item.ShareToken,
+		CreatedAt:          item.CreatedAt,
+		UpdatedAt:          item.UpdatedAt,
 	}
 	if includeContent {
 		response.Content = item.Content
+		response.ExtractedText = item.ExtractedText
 	}
 	return response
 }
 
 func driveItemFromResponse(response driveItemResponse) models.DriveItem {
 	return models.DriveItem{
-		ID:           response.ID,
-		UserID:       response.UserID,
-		ParentID:     response.ParentID,
-		Type:         response.Type,
-		Name:         response.Name,
-		MimeType:     response.MimeType,
-		Encoding:     response.Encoding,
-		Size:         response.Size,
-		Summary:      response.Summary,
-		TagsJSON:     documentJSON(response.Tags),
-		Content:      response.Content,
-		ShareEnabled: response.ShareEnabled,
-		ShareToken:   response.ShareToken,
-		CreatedAt:    response.CreatedAt,
-		UpdatedAt:    response.UpdatedAt,
+		ID:                     response.ID,
+		UserID:                 response.UserID,
+		ParentID:               response.ParentID,
+		Type:                   response.Type,
+		Name:                   response.Name,
+		MimeType:               response.MimeType,
+		Encoding:               response.Encoding,
+		Size:                   response.Size,
+		Summary:                response.Summary,
+		TagsJSON:               documentJSON(response.Tags),
+		Content:                response.Content,
+		ExtractedText:          response.ExtractedText,
+		ExtractionStatus:       response.ExtractionStatus,
+		ExtractionError:        response.ExtractionError,
+		ExtractionMetadataJSON: documentJSON(response.ExtractionMetadata),
+		ShareEnabled:           response.ShareEnabled,
+		ShareToken:             response.ShareToken,
+		CreatedAt:              response.CreatedAt,
+		UpdatedAt:              response.UpdatedAt,
 	}
 }
 

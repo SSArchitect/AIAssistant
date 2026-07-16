@@ -63,6 +63,26 @@ async def test_list_skills_has_parameters(client):
 
 
 @pytest.mark.asyncio
+async def test_list_skills_exposes_tool_spec_v2_fields(client):
+    resp = await client.get("/agent/skills")
+    skills = {skill["name"]: skill for skill in resp.json()["skills"]}
+
+    tool_search = skills["tool_search"]
+    assert tool_search["always_on"] is True
+    assert tool_search["discoverable"] is False
+    assert tool_search["idempotent"] is True
+    assert tool_search["output_schema"]["type"] == "object"
+
+    create_todo = skills["create_todo"]
+    repeat_rule = next(
+        parameter
+        for parameter in create_todo["parameters"]
+        if parameter["name"] == "repeat_rule"
+    )
+    assert "daily" in repeat_rule["enum"]
+
+
+@pytest.mark.asyncio
 async def test_list_agents(client):
     resp = await client.get("/agent/agents")
     assert resp.status_code == 200

@@ -158,6 +158,138 @@ async def test_simple_response_no_tools(engine):
 
 
 @pytest.mark.asyncio
+async def test_parsed_document_attachment_is_added_to_model_context(engine):
+    response = LLMResponse(
+        content="附件中的关键条款是提前三十天通知。",
+        tool_calls=[],
+        model="test-model",
+        usage={},
+    )
+    with patch.object(engine, "_get_provider") as mock_provider:
+        provider = AsyncMock()
+        provider.chat = AsyncMock(return_value=response)
+        mock_provider.return_value = provider
+
+        await engine.process(
+            ChatRequest(
+                conversation_id="conv-parsed-attachment",
+                message="总结附件",
+                agent_id="super_chat",
+                attachments=[
+                    ChatAttachment(
+                        name="contract.pdf",
+                        type="application/pdf",
+                        kind="file",
+                        content="Termination requires thirty days written notice.",
+                        extraction_status="completed",
+                        parser="pypdf",
+                    )
+                ],
+            )
+        )
+
+    chat_call = provider.chat.await_args
+    messages = chat_call.kwargs.get("messages") or chat_call.args[0]
+    system_prompt = messages[0].content
+    assert "[Uploaded Attachments]" in system_prompt
+    assert "contract.pdf" in system_prompt
+    assert "Termination requires thirty days written notice." in system_prompt
+    assert "解析状态：completed；解析器：pypdf" in system_prompt
+
+
+@pytest.mark.asyncio
+async def test_tool_search_expands_real_tool_schema_on_next_round(engine):
+    calls = []
+
+    class ContractInspectionSkill(Skill):
+        def metadata(self) -> SkillMetadata:
+            return SkillMetadata(
+                name="inspect_contract",
+                description="Inspect a signed contract and return its obligations.",
+                parameters=[
+                    SkillParameter(
+                        name="document",
+                        type="string",
+                        description="Contract text to inspect.",
+                    )
+                ],
+                domains=["legal_documents"],
+                routing_keywords=["contract inspector"],
+                idempotent=True,
+            )
+
+        async def execute(self, **kwargs) -> SkillResult:
+            calls.append(kwargs)
+            return SkillResult(
+                success=True,
+                data={"obligations": ["thirty days notice"]},
+                display_text="thirty days notice",
+            )
+
+    engine.skill_registry.register(ContractInspectionSkill())
+    search_response = LLMResponse(
+        content="",
+        tool_calls=[
+            ToolCall(
+                id="call_tool_search",
+                name="tool_search",
+                arguments={"query": "inspect a signed contract"},
+            )
+        ],
+        model="test-model",
+        usage={},
+    )
+    inspect_response = LLMResponse(
+        content="",
+        tool_calls=[
+            ToolCall(
+                id="call_inspect_contract",
+                name="inspect_contract",
+                arguments={"document": "sample contract"},
+            )
+        ],
+        model="test-model",
+        usage={},
+    )
+    final_response = LLMResponse(
+        content="合同要求提前三十天通知。",
+        tool_calls=[],
+        model="test-model",
+        usage={},
+    )
+
+    with patch.object(engine, "_get_provider") as mock_provider:
+        provider = AsyncMock()
+        provider.chat = AsyncMock(
+            side_effect=[search_response, inspect_response, final_response]
+        )
+        mock_provider.return_value = provider
+        result = await engine.process(
+            ChatRequest(
+                conversation_id="conv-tool-search-expand",
+                message="请使用缺少的专用能力完成这项工作",
+            )
+        )
+
+    first_tools = {
+        tool.name
+        for tool in provider.chat.await_args_list[0].kwargs["tools"]
+    }
+    second_tools = {
+        tool.name
+        for tool in provider.chat.await_args_list[1].kwargs["tools"]
+    }
+    assert "tool_search" in first_tools
+    assert "inspect_contract" not in first_tools
+    assert "inspect_contract" in second_tools
+    assert calls == [{"document": "sample contract"}]
+    assert result.response == "合同要求提前三十天通知。"
+    assert {"tool_search", "inspect_contract"}.issubset(set(result.skills_used))
+    expanded = next(event for event in result.events if event.type == "tools.expanded")
+    assert expanded.payload["added_tools"] == ["inspect_contract"]
+
+
+@pytest.mark.asyncio
 async def test_disabled_tools_are_filtered_per_request(engine):
     mock_response = LLMResponse(
         content="No calculator needed.",
@@ -4605,8 +4737,7 @@ async def test_super_chat_does_not_route_day_recap_meal_words_to_weight_loss(reg
     assert result.agent_id == "super_chat"
     assert "今天已记录" not in result.response
     tools = provider.chat.await_args.kwargs["tools"]
-    weight_loss_tool = next(tool for tool in tools if tool.name == "weight_loss_v1")
-    assert "do not call it merely because the user mentions meals" in weight_loss_tool.description
+    assert "weight_loss_v1" not in {tool.name for tool in tools}
     event_types = [event.type for event in result.events]
     assert "agent.delegated" not in event_types
     assert "weight_loss.analysis.started" not in event_types

@@ -16,6 +16,10 @@ class ChatAttachment(BaseModel):
     content: str = ""
     data_url: str = ""
     truncated: bool = False
+    extraction_status: str = ""
+    parser: str = ""
+    extraction_error: str = ""
+    extraction_metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class DriveContextItem(BaseModel):
@@ -121,6 +125,15 @@ class SkillParameterSchema(BaseModel):
     type: str
     description: str
     required: bool = True
+    default: Any = None
+    enum: list[Any] = Field(default_factory=list)
+    items: dict[str, Any] | None = None
+    minimum: float | int | None = None
+    maximum: float | int | None = None
+    min_length: int | None = None
+    max_length: int | None = None
+    pattern: str | None = None
+    format: str | None = None
 
 
 class SkillInfo(BaseModel):
@@ -136,6 +149,16 @@ class SkillInfo(BaseModel):
     default_policy: Literal["auto", "confirm", "deny"] = "auto"
     max_calls_per_run: int = 8
     timeout_seconds: float = 30.0
+    sensitive_arguments: list[str] = Field(default_factory=list)
+    sensitive_result_fields: list[str] = Field(default_factory=list)
+    domains: list[str] = Field(default_factory=list)
+    routing_keywords: list[str] = Field(default_factory=list)
+    allowed_agents: list[str] = Field(default_factory=list)
+    always_on: bool = False
+    discoverable: bool = True
+    parallel_safe: bool = False
+    idempotent: bool = False
+    output_schema: dict[str, Any] = Field(default_factory=dict)
     user_enabled: bool | None = None
     effective_enabled: bool = True
     user_policy: Literal["auto", "confirm", "deny"] | None = None

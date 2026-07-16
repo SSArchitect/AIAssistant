@@ -81,6 +81,15 @@ class ContextBuilder:
                     "- 如果 search 不可用、失败、结果少或来源可疑，要在回答中说明限制，并区分搜索片段和已核验事实。",
                 ]
             )
+        if "tool_search" in normalized_tool_names:
+            tool_policy_lines.extend(
+                [
+                    "- tool_search 只用于发现当前 schema 中缺失的业务工具，不是网页搜索。"
+                    "只有现有工具确实不能完成任务时才调用。",
+                    "- tool_search 返回匹配项后，系统会在下一轮把这些工具的真实 schema 加入可调用集合；"
+                    "不要臆造或直接调用尚未暴露的工具名。",
+                ]
+            )
         if agent_id == "super_chat" and "create_todo" in normalized_tool_names:
             tool_policy_lines.extend(
                 [

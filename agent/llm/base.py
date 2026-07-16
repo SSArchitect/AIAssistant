@@ -16,6 +16,8 @@ class ToolDefinition(BaseModel):
     name: str
     description: str
     parameters: dict[str, Any]  # JSON Schema
+    output_schema: dict[str, Any] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class PromptCacheOptions(BaseModel):
