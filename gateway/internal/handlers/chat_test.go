@@ -1115,6 +1115,13 @@ func TestListToolsAppliesUserScopedSettings(t *testing.T) {
 	}).Error; err != nil {
 		t.Fatalf("save user setting: %v", err)
 	}
+	if err := database.DB.Save(&models.UserSetting{
+		UserID: "user-a",
+		Key:    "tool.calculator.policy",
+		Value:  "deny",
+	}).Error; err != nil {
+		t.Fatalf("save user policy: %v", err)
+	}
 
 	agentServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/agent/skills" {
@@ -1123,8 +1130,8 @@ func TestListToolsAppliesUserScopedSettings(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{
 			"skills": [
-				{"name": "search", "description": "Search", "enabled": true, "source": "builtin"},
-				{"name": "calculator", "description": "Calculator", "enabled": true, "source": "builtin"}
+				{"name": "search", "description": "Search", "enabled": true, "source": "builtin", "default_policy": "auto"},
+				{"name": "calculator", "description": "Calculator", "enabled": true, "source": "builtin", "default_policy": "auto"}
 			]
 		}`))
 	}))
@@ -1154,6 +1161,9 @@ func TestListToolsAppliesUserScopedSettings(t *testing.T) {
 		}
 		if skill.Name == "calculator" && !skill.EffectiveEnabled {
 			t.Fatalf("expected calculator to remain enabled for user-a: %#v", skill)
+		}
+		if skill.Name == "calculator" && skill.EffectivePolicy != "deny" {
+			t.Fatalf("expected calculator policy deny for user-a: %#v", skill)
 		}
 	}
 
@@ -1191,6 +1201,13 @@ func TestChatPassesDisabledToolsForUser(t *testing.T) {
 	}).Error; err != nil {
 		t.Fatalf("save user setting: %v", err)
 	}
+	if err := database.DB.Save(&models.UserSetting{
+		UserID: "user-a",
+		Key:    "tool.delete_drive.policy",
+		Value:  "confirm",
+	}).Error; err != nil {
+		t.Fatalf("save tool policy: %v", err)
+	}
 	conv := models.Conversation{
 		ID:        "conv-disabled-tools",
 		UserID:    "user-a",
@@ -1212,6 +1229,9 @@ func TestChatPassesDisabledToolsForUser(t *testing.T) {
 		}
 		if len(payload.DisabledTools) != 1 || payload.DisabledTools[0] != "search" {
 			t.Fatalf("expected disabled search in agent payload, got %#v", payload.DisabledTools)
+		}
+		if payload.ToolPolicies["delete_drive"] != "confirm" {
+			t.Fatalf("expected delete_drive policy in agent payload, got %#v", payload.ToolPolicies)
 		}
 		_, _ = w.Write([]byte(`{
 			"conversation_id": "conv-disabled-tools",

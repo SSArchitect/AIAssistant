@@ -16,6 +16,7 @@ import (
 const (
 	toolSettingPrefix = "tool."
 	toolEnabledSuffix = ".enabled"
+	toolPolicySuffix  = ".policy"
 	mcpEnabledKey     = "mcp.enabled"
 	mcpServersKey     = "mcp.servers"
 )
@@ -58,6 +59,7 @@ func (h *ChatHandler) UpdateToolSettings(c *gin.Context) {
 		"user_settings": settings,
 		"mcp":           mcpConfigFromSettings(settings),
 		"disabled":      disabledToolsFromSettings(settings),
+		"policies":      toolPoliciesFromSettings(settings),
 	})
 }
 
@@ -66,6 +68,11 @@ func validateUserToolSetting(key string, value string) error {
 	case isToolEnabledSetting(key):
 		if _, ok := parseBoolSetting(value); !ok {
 			return badToolSettingError("tool enabled settings must be true or false")
+		}
+		return nil
+	case isToolPolicySetting(key):
+		if !isValidToolPolicy(value) {
+			return badToolSettingError("tool policy settings must be auto, confirm, or deny")
 		}
 		return nil
 	case key == mcpEnabledKey:
@@ -138,6 +145,14 @@ func disabledToolsForUser(userID string) ([]string, error) {
 	return disabledToolsFromSettings(settings), nil
 }
 
+func toolRuntimeSettingsForUser(userID string) ([]string, map[string]string, error) {
+	settings, err := loadUserSettings(userID)
+	if err != nil {
+		return nil, nil, err
+	}
+	return disabledToolsFromSettings(settings), toolPoliciesFromSettings(settings), nil
+}
+
 func disabledToolsFromSettings(settings map[string]string) []string {
 	disabled := make([]string, 0)
 	for key, value := range settings {
@@ -151,6 +166,20 @@ func disabledToolsFromSettings(settings map[string]string) []string {
 	}
 	sort.Strings(disabled)
 	return disabled
+}
+
+func toolPoliciesFromSettings(settings map[string]string) map[string]string {
+	policies := make(map[string]string)
+	for key, value := range settings {
+		if !isToolPolicySetting(key) {
+			continue
+		}
+		normalized := strings.ToLower(strings.TrimSpace(value))
+		if isValidToolPolicy(normalized) {
+			policies[toolNameFromPolicySetting(key)] = normalized
+		}
+	}
+	return policies
 }
 
 func applyToolUserSettings(resp *bridge.SkillListResponse, settings map[string]string) {
@@ -170,11 +199,23 @@ func applyToolUserSettings(resp *bridge.SkillListResponse, settings map[string]s
 		}
 		tool.UserEnabled = userEnabled
 		tool.EffectiveEnabled = tool.Enabled && !disabledSet[tool.Name]
+		tool.UserPolicy = ""
+		if value, ok := settings[toolPolicySettingKey(tool.Name)]; ok && isValidToolPolicy(value) {
+			tool.UserPolicy = strings.ToLower(strings.TrimSpace(value))
+		}
+		tool.EffectivePolicy = tool.UserPolicy
+		if tool.EffectivePolicy == "" {
+			tool.EffectivePolicy = strings.ToLower(strings.TrimSpace(tool.DefaultPolicy))
+		}
+		if !isValidToolPolicy(tool.EffectivePolicy) {
+			tool.EffectivePolicy = "auto"
+		}
 		tool.Configurable = true
 	}
 	resp.UserSettings = settings
 	resp.MCP = mcpConfigFromSettings(settings)
 	resp.Disabled = disabled
+	resp.Policies = toolPoliciesFromSettings(settings)
 }
 
 func mcpConfigFromSettings(settings map[string]string) bridge.ToolMCPConfig {
@@ -194,14 +235,39 @@ func isToolEnabledSetting(key string) bool {
 		toolNameFromEnabledSetting(key) != ""
 }
 
+func isToolPolicySetting(key string) bool {
+	return strings.HasPrefix(key, toolSettingPrefix) &&
+		strings.HasSuffix(key, toolPolicySuffix) &&
+		toolNameFromPolicySetting(key) != ""
+}
+
 func toolEnabledSettingKey(toolName string) string {
 	return toolSettingPrefix + strings.TrimSpace(toolName) + toolEnabledSuffix
+}
+
+func toolPolicySettingKey(toolName string) string {
+	return toolSettingPrefix + strings.TrimSpace(toolName) + toolPolicySuffix
 }
 
 func toolNameFromEnabledSetting(key string) string {
 	name := strings.TrimPrefix(key, toolSettingPrefix)
 	name = strings.TrimSuffix(name, toolEnabledSuffix)
 	return strings.TrimSpace(name)
+}
+
+func toolNameFromPolicySetting(key string) string {
+	name := strings.TrimPrefix(key, toolSettingPrefix)
+	name = strings.TrimSuffix(name, toolPolicySuffix)
+	return strings.TrimSpace(name)
+}
+
+func isValidToolPolicy(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "auto", "confirm", "deny":
+		return true
+	default:
+		return false
+	}
 }
 
 func parseBoolSetting(value string) (bool, bool) {

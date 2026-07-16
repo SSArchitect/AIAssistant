@@ -263,6 +263,13 @@ var pulseModuleOrder = []string{
 	pulseSourceInterestHot,
 }
 
+var pulseBackgroundDisabledTools = []string{
+	"get_pulse",
+	"refresh_pulse",
+	"list_pulse_topics",
+	"upsert_pulse_topic",
+}
+
 var pulseModelEntityPattern = regexp.MustCompile(`(?i)\b(?:gpt|claude|gemini|llama|grok|fable|mythos|deepseek|qwen|kimi|mistral|sora|dall-e|o[0-9])(?:[-\s]?[a-z0-9.]+)?\b`)
 
 var pulseKnownEntities = []string{
@@ -1391,6 +1398,7 @@ func (h *PulseHandler) requestPulseChat(conversationID string, userID string, me
 			ModePrompts:     modePrompts,
 			ContextBlocks:   contextBlocks,
 			MemoryEnabled:   &memoryEnabled,
+			DisabledTools:   pulseBackgroundDisabledTools,
 		})
 		if err == nil {
 			if resp == nil {

@@ -24,7 +24,7 @@ const (
 	driveItemTypeFile   = "file"
 	driveLegacyRootID   = ""
 	driveContextLimit   = 10
-	driveMaxContent     = knowledgeMaxContentRunes
+	driveMaxContent     = documentMaxContentRunes
 	driveEncodingBase64 = "base64"
 	driveMaxBase64Bytes = 3 * 1024 * 1024
 )
@@ -53,9 +53,14 @@ type driveFileRequest struct {
 }
 
 type driveUpdateRequest struct {
-	UserID   string  `json:"user_id,omitempty"`
-	ParentID *string `json:"parent_id,omitempty"`
-	Name     string  `json:"name,omitempty"`
+	UserID   string    `json:"user_id,omitempty"`
+	ParentID *string   `json:"parent_id,omitempty"`
+	Name     string    `json:"name,omitempty"`
+	MimeType *string   `json:"mime_type,omitempty"`
+	Encoding *string   `json:"encoding,omitempty"`
+	Content  *string   `json:"content,omitempty"`
+	Summary  *string   `json:"summary,omitempty"`
+	Tags     *[]string `json:"tags,omitempty"`
 }
 
 type driveShareRequest struct {
@@ -213,7 +218,7 @@ func (h *DriveHandler) CreateFile(c *gin.Context) {
 		}
 		size = int64(len(decoded))
 	} else {
-		content = trimKnowledgeContent(req.Content)
+		content = trimDocumentContent(req.Content)
 		size = int64(len([]byte(content)))
 	}
 	if content == "" {
@@ -222,17 +227,17 @@ func (h *DriveHandler) CreateFile(c *gin.Context) {
 	}
 	name := cleanDriveName(req.Name)
 	if name == "" {
-		name = titleFromKnowledgeContent(content, "Untitled.txt")
+		name = titleFromDocumentContent(content, "Untitled.txt")
 	}
 	summary := strings.TrimSpace(req.Summary)
 	if summary == "" {
 		if encoding == driveEncodingBase64 {
 			summary = summarizeDriveBinaryFile(name, req.MimeType, size)
 		} else {
-			summary = summarizeKnowledgeContent(content)
+			summary = summarizeDocumentContent(content)
 		}
 	}
-	tags := normalizeKnowledgeTags(req.Tags)
+	tags := normalizeDocumentTags(req.Tags)
 	now := time.Now()
 	item := models.DriveItem{
 		ID:        uuid.New().String(),
@@ -244,7 +249,7 @@ func (h *DriveHandler) CreateFile(c *gin.Context) {
 		Encoding:  encoding,
 		Size:      size,
 		Summary:   summary,
-		TagsJSON:  knowledgeJSON(tags),
+		TagsJSON:  documentJSON(tags),
 		Content:   content,
 		CreatedAt: now,
 		UpdatedAt: now,
@@ -285,17 +290,83 @@ func (h *DriveHandler) Update(c *gin.Context) {
 			return
 		}
 		parentID := strings.TrimSpace(*req.ParentID)
-		if parentID != "" {
-			parent, ok := h.loadFolder(c, userID, parentID)
-			if !ok {
+		if parentID == "" {
+			root, err := ensureDriveRoot(userID)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to initialize drive"})
 				return
 			}
-			if item.Type == driveItemTypeFolder && driveFolderContains(item.ID, parent.ID, userID) {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "cannot move a folder into itself"})
-				return
-			}
+			parentID = root.ID
+		}
+		parent, ok := h.loadFolder(c, userID, parentID)
+		if !ok {
+			return
+		}
+		if item.Type == driveItemTypeFolder &&
+			(parent.ID == item.ID || driveFolderContains(item.ID, parent.ID, userID)) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "cannot move a folder into itself"})
+			return
 		}
 		item.ParentID = parentID
+	}
+	hasFileUpdate := req.MimeType != nil || req.Encoding != nil || req.Content != nil || req.Summary != nil || req.Tags != nil
+	if hasFileUpdate && item.Type != driveItemTypeFile {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "file content and metadata can only be updated on files"})
+		return
+	}
+	if req.Encoding != nil && req.Content == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "encoding can only be changed together with content"})
+		return
+	}
+	if req.Content != nil {
+		encoding := item.Encoding
+		if req.Encoding != nil {
+			encoding = cleanDriveEncoding(*req.Encoding)
+		}
+		content := strings.TrimSpace(*req.Content)
+		size := int64(0)
+		if encoding == driveEncodingBase64 {
+			if content == "" {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "file content is required"})
+				return
+			}
+			if len(content) > driveMaxBase64Bytes {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "file is too large"})
+				return
+			}
+			decoded, err := base64.StdEncoding.DecodeString(content)
+			if err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid base64 file content"})
+				return
+			}
+			size = int64(len(decoded))
+		} else {
+			content = trimDocumentContent(*req.Content)
+			size = int64(len([]byte(content)))
+		}
+		if content == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "file content is required"})
+			return
+		}
+		item.Encoding = encoding
+		item.Content = content
+		item.Size = size
+	}
+	if req.MimeType != nil {
+		item.MimeType = cleanDriveMimeType(*req.MimeType)
+	}
+	if req.Summary != nil {
+		item.Summary = strings.TrimSpace(*req.Summary)
+	}
+	if req.Content != nil && (req.Summary == nil || item.Summary == "") {
+		if item.Encoding == driveEncodingBase64 {
+			item.Summary = summarizeDriveBinaryFile(item.Name, item.MimeType, item.Size)
+		} else {
+			item.Summary = summarizeDocumentContent(item.Content)
+		}
+	}
+	if req.Tags != nil {
+		item.TagsJSON = documentJSON(normalizeDocumentTags(*req.Tags))
 	}
 	item.UpdatedAt = time.Now()
 	if err := database.DB.Save(&item).Error; err != nil {
@@ -659,7 +730,7 @@ func selectDriveContextFiles(userID string, itemIDs []string, query string) ([]m
 }
 
 func rankedDriveFiles(files []models.DriveItem, query string) []driveSearchResult {
-	terms := uniqueNonEmptyStrings(knowledgeTextTerms(query))
+	terms := uniqueNonEmptyStrings(documentTextTerms(query))
 	results := make([]driveSearchResult, 0, len(files))
 	for _, file := range files {
 		score := driveFileSearchScore(file, query, terms)
@@ -735,7 +806,7 @@ func buildDriveContextBlock(files []models.DriveItem, query string) string {
 		}
 		if file.Encoding == driveEncodingBase64 {
 			lines = append(lines, "Content: binary file; use only the filename, MIME type, tags, and summary as context.")
-		} else if excerpt := knowledgeExcerpt(file.Content, query, 1000); excerpt != "" {
+		} else if excerpt := documentExcerpt(file.Content, query, 1000); excerpt != "" {
 			lines = append(lines, "Excerpt:", excerpt)
 		}
 		lines = append(lines, "")
@@ -1381,7 +1452,7 @@ func driveFileSnippet(file models.DriveItem, query string, maxRunes int) string 
 	if file.Encoding == driveEncodingBase64 {
 		return file.Summary
 	}
-	return knowledgeExcerpt(file.Content, query, maxRunes)
+	return documentExcerpt(file.Content, query, maxRunes)
 }
 
 func driveItemFromModel(item models.DriveItem, includeContent bool) driveItemResponse {
@@ -1395,7 +1466,7 @@ func driveItemFromModel(item models.DriveItem, includeContent bool) driveItemRes
 		Encoding:     item.Encoding,
 		Size:         item.Size,
 		Summary:      item.Summary,
-		Tags:         decodeKnowledgeTags(item.TagsJSON),
+		Tags:         decodeDocumentTags(item.TagsJSON),
 		ShareEnabled: item.ShareEnabled,
 		ShareToken:   item.ShareToken,
 		CreatedAt:    item.CreatedAt,
@@ -1418,7 +1489,7 @@ func driveItemFromResponse(response driveItemResponse) models.DriveItem {
 		Encoding:     response.Encoding,
 		Size:         response.Size,
 		Summary:      response.Summary,
-		TagsJSON:     knowledgeJSON(response.Tags),
+		TagsJSON:     documentJSON(response.Tags),
 		Content:      response.Content,
 		ShareEnabled: response.ShareEnabled,
 		ShareToken:   response.ShareToken,

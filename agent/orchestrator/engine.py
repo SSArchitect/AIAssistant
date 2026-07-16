@@ -42,9 +42,11 @@ from agent.schemas.handoff import (
 from agent.schemas.memory import MemoryCandidate, MemoryContext, MemoryRecord, MemoryUpdateRequest
 from agent.search import extract_public_http_urls
 from agent.skills.base import SkillResult
+from agent.skills.governance import ToolGovernance
 from agent.skills.registry import SkillRegistry
 from agent.skills.builtin.agent_tool import AgentToolSkill
 from agent.skills.builtin.drive import DRIVE_TOOL_NAMES
+from agent.skills.builtin.pulse import PULSE_TOOL_NAMES
 from agent.skills.builtin.todo import TODO_TOOL_NAMES
 from agent.trace import TraceStore
 from agent.weight_loss import WeightLossStore
@@ -159,6 +161,7 @@ class AgentEngine:
         self.conversation_compaction_threshold = conversation_compaction_threshold
         self.conversation_compaction_keep_messages = conversation_compaction_keep_messages
         self.trace_store = trace_store or TraceStore()
+        self.tool_governance = ToolGovernance(self.trace_store)
         self.weight_loss_store = weight_loss_store or WeightLossStore()
         self.context_builder = ContextBuilder(base_system_prompt=SYSTEM_PROMPT)
         self._providers: dict[str, LLMProvider] = {}
@@ -581,6 +584,7 @@ class AgentEngine:
             "根目录",
             "folder_id",
             "save_drive",
+            "update_drive",
             "read_drive",
             "mkdir_drive",
             "ls_drive",
@@ -2583,6 +2587,7 @@ class AgentEngine:
             for tool in self.skill_registry.get_tool_definitions()
             if tool.name not in disabled
             if tool.name not in DRIVE_TOOL_NAMES or agent_id == SUPER_CHAT_AGENT_ID
+            if tool.name not in PULSE_TOOL_NAMES or agent_id == SUPER_CHAT_AGENT_ID
             if tool.name not in TODO_TOOL_NAMES or agent_id == SUPER_CHAT_AGENT_ID
             if tool.name not in AGENT_TOOL_IDS or agent_id == SUPER_CHAT_AGENT_ID
         ]
@@ -2594,13 +2599,54 @@ class AgentEngine:
         arguments: dict[str, Any] | None,
     ) -> dict[str, Any]:
         tool_arguments = dict(arguments) if isinstance(arguments, dict) else {}
-        if tool_name in DRIVE_TOOL_NAMES or tool_name in TODO_TOOL_NAMES:
+        if (
+            tool_name in DRIVE_TOOL_NAMES
+            or tool_name in PULSE_TOOL_NAMES
+            or tool_name in TODO_TOOL_NAMES
+        ):
             tool_arguments["_user_id"] = self._user_id(request)
         if tool_name in TODO_TOOL_NAMES:
             tool_arguments["_conversation_id"] = request.conversation_id
             if request.run_id:
                 tool_arguments["_run_id"] = request.run_id
         return tool_arguments
+
+    def _tool_arguments_for_trace(
+        self,
+        tool_name: str,
+        arguments: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        normalized = dict(arguments) if isinstance(arguments, dict) else {}
+        skill = self.skill_registry.get(tool_name)
+        if skill is None:
+            return {
+                key: value
+                for key, value in normalized.items()
+                if not key.startswith("_")
+            }
+        return self.tool_governance.redact_arguments(skill, normalized)
+
+    async def _execute_skill_with_governance(
+        self,
+        *,
+        request: ChatRequest,
+        run_id: str,
+        skill_name: str,
+        arguments: dict[str, Any],
+        trusted: bool = False,
+        step_id: str | None = None,
+    ) -> SkillResult:
+        skill = self.skill_registry.get(skill_name)
+        if skill is None:
+            return SkillResult(success=False, error=f"Unknown skill: {skill_name}")
+        return await self.tool_governance.execute(
+            skill=skill,
+            request=request,
+            run_id=run_id,
+            arguments=arguments,
+            trusted=trusted,
+            step_id=step_id,
+        )
 
     def _append_unique_artifact(self, artifacts: list[ChatArtifact], artifact: ChatArtifact | None) -> None:
         if artifact is None:
@@ -2649,15 +2695,23 @@ class AgentEngine:
         tool_name: str,
         result_data: Any,
     ) -> ChatArtifact | None:
-        if tool_name not in {"save_drive", "mkdir_drive"} or not isinstance(result_data, dict):
+        if tool_name not in {
+            "save_drive",
+            "update_drive",
+            "mkdir_drive",
+            "archive_url_to_drive",
+            "share_drive",
+        } or not isinstance(result_data, dict):
             return None
         item = result_data.get("item")
         if not isinstance(item, dict):
             return None
         item_type = str(item.get("type") or "")
-        if tool_name == "save_drive" and item_type != "file":
+        if tool_name in {"save_drive", "archive_url_to_drive", "share_drive"} and item_type != "file":
             return None
         if tool_name == "mkdir_drive" and item_type != "folder":
+            return None
+        if tool_name == "update_drive" and item_type not in {"file", "folder"}:
             return None
         item_id = str(item.get("id") or "")
         name = str(item.get("name") or "")
@@ -2671,6 +2725,7 @@ class AgentEngine:
             mime_type=str(item.get("mime_type") or ""),
             size=int(item.get("size") or 0),
             summary=str(item.get("summary") or ""),
+            url=str(result_data.get("share_url") or ""),
             metadata={
                 "parent_id": str(item.get("parent_id") or ""),
                 "path": str(item.get("path") or ""),
@@ -2711,33 +2766,44 @@ class AgentEngine:
         if len(content) < 500:
             return False
         message = str(request.message or "").lower()
-        mode_ids = set(request.mode_ids or [])
+        negative_save_keywords = [
+            "不要保存",
+            "不用保存",
+            "别保存",
+            "不要归档",
+            "不用归档",
+            "do not save",
+            "don't save",
+            "do not archive",
+            "no need to save",
+        ]
+        if any(keyword in message for keyword in negative_save_keywords):
+            return False
         if agent_id == RESEARCH_AGENT_ID and citations:
             return True
-        intent_keywords = [
-            "研究",
-            "调研",
-            "收集",
-            "整理资料",
-            "整理信息",
-            "报告",
-            "归档",
-            "保存",
-            "research",
-            "collect",
-            "report",
-            "brief",
-            "save",
+        explicit_save_keywords = [
+            "保存到",
+            "保存至",
+            "请保存",
+            "帮我保存",
+            "保存一下",
+            "并保存",
+            "后保存",
+            "归档到",
+            "请归档",
+            "帮我归档",
+            "归档一下",
+            "存到网盘",
+            "存入网盘",
+            "写入网盘",
+            "放到网盘",
+            "写到 drive",
+            "save to drive",
+            "save this",
+            "archive this",
+            "archive to drive",
         ]
-        used_retrieval = any(
-            skill in set(skills_used)
-            for skill in ("search", "open_url", "search_drive", "read_drive")
-        )
-        return (
-            DEEP_RESEARCH_MODE_ID in mode_ids
-            or any(keyword in message for keyword in intent_keywords)
-            or (used_retrieval and bool(citations))
-        )
+        return any(keyword in message for keyword in explicit_save_keywords)
 
     def _drive_auto_save_messages(
         self,
@@ -2753,16 +2819,15 @@ class AgentEngine:
                 source_lines.append(f"- {label}: {citation.url}")
         source_text = "\n".join(source_lines) or "无结构化来源。"
         system = (
-            "你是一个谨慎的网盘归档决策节点。只在用户任务明显是研究、收集资料、整理信息、"
-            "生成报告或需要后续复用时调用 save_drive；普通问答、闲聊、很短的回答不要保存。"
-            "如果保存，生成一个简洁可读的 Markdown 文件名，内容使用助手最终回答的 Markdown 正文，"
-            "可以在末尾保留来源列表。不要调用除 save_drive 以外的工具。"
+            "你是一个谨慎的网盘归档节点。当前请求已经明确要求保存或归档，调用 save_drive。"
+            "生成简洁可读的 Markdown 文件名，默认保存到 /知识库；正文应包含用户问题、"
+            "助手最终回答、保存时间和来源列表。不要调用除 save_drive 以外的工具。"
         )
         user = (
             f"用户原始请求：\n{request.message}\n\n"
             f"助手最终回答：\n{final_content[:30000]}\n\n"
             f"来源：\n{source_text}\n\n"
-            "请判断是否需要保存为网盘报告。需要保存就调用 save_drive；不需要保存就直接回复 SKIP。"
+            "请调用 save_drive 保存这份知识文档。"
         )
         return [LLMMessage(role="system", content=system), LLMMessage(role="user", content=user)]
 
@@ -2857,7 +2922,7 @@ class AgentEngine:
             step_id=save_call.id,
             payload={
                 "name": save_call.name,
-                "arguments": save_call.arguments,
+                "arguments": self._tool_arguments_for_trace(save_call.name, tool_arguments),
                 "engine_context": {"user_id": self._user_id(request)},
                 "auto_save": True,
             },
@@ -2865,10 +2930,14 @@ class AgentEngine:
         result_text = ""
         status = "error"
         try:
-            skill = self.skill_registry.get("save_drive")
-            if skill is None:
-                raise RuntimeError("save_drive tool is unavailable")
-            result = await skill.execute(**tool_arguments)
+            result = await self._execute_skill_with_governance(
+                request=request,
+                run_id=run_id,
+                skill_name="save_drive",
+                arguments=tool_arguments,
+                trusted=True,
+                step_id=save_call.id,
+            )
             result_text = json.dumps(
                 {
                     "success": result.success,
@@ -2898,7 +2967,7 @@ class AgentEngine:
             step_id=save_call.id,
             payload={
                 "name": "save_drive",
-                "arguments": save_call.arguments,
+                "arguments": self._tool_arguments_for_trace("save_drive", tool_arguments),
                 "result_preview": result_text[:500],
                 "auto_save": True,
             },
@@ -3091,6 +3160,53 @@ class AgentEngine:
             display_text=response.response[:2000],
         )
 
+    async def _execute_agent_tool_with_governance(
+        self,
+        *,
+        request: ChatRequest,
+        role_context: MemoryContext,
+        run_id: str,
+        tool_name: str,
+        tool_call_id: str,
+        arguments: dict[str, Any],
+        tool_started: float,
+        workflow_context: dict[str, Any] | None = None,
+    ) -> SkillResult:
+        skill = self.skill_registry.get(tool_name)
+        if skill is None:
+            return SkillResult(success=False, error=f"Unknown skill: {tool_name}")
+        decision = self.tool_governance.authorize(
+            skill=skill,
+            request=request,
+            run_id=run_id,
+            arguments=arguments,
+            step_id=tool_call_id,
+        )
+        if not decision.allowed:
+            return self.tool_governance.blocked_result(decision)
+        timeout_seconds = skill.metadata().timeout_seconds
+        try:
+            return await asyncio.wait_for(
+                self._execute_agent_tool_as_result(
+                    request=request,
+                    role_context=role_context,
+                    run_id=run_id,
+                    tool_name=tool_name,
+                    tool_call_id=tool_call_id,
+                    arguments=arguments,
+                    tool_started=tool_started,
+                    workflow_context=workflow_context,
+                ),
+                timeout=timeout_seconds,
+            )
+        except (TimeoutError, asyncio.TimeoutError):
+            return self.tool_governance.record_timeout(
+                decision=decision,
+                run_id=run_id,
+                timeout_seconds=timeout_seconds,
+                step_id=tool_call_id,
+            )
+
     @staticmethod
     def _skill_result_json(result: SkillResult) -> str:
         return json.dumps(
@@ -3190,8 +3306,15 @@ class AgentEngine:
             workflow_source=workflow_source,
             legacy_workflow=legacy_workflow,
         )
-        tool_started_payload = {"name": tc.name, "arguments": tc.arguments}
-        if tc.name in DRIVE_TOOL_NAMES or tc.name in TODO_TOOL_NAMES:
+        tool_started_payload = {
+            "name": tc.name,
+            "arguments": self._tool_arguments_for_trace(tc.name, tool_arguments),
+        }
+        if (
+            tc.name in DRIVE_TOOL_NAMES
+            or tc.name in PULSE_TOOL_NAMES
+            or tc.name in TODO_TOOL_NAMES
+        ):
             tool_started_payload["engine_context"] = {"user_id": self._user_id(request)}
         tool_started_payload.update(workflow_payload)
         self.trace_store.append_event(
@@ -3211,7 +3334,7 @@ class AgentEngine:
             result_text = json.dumps({"error": f"Tool disabled or unavailable: {tc.name}"})
         elif tc.name in AGENT_TOOL_IDS:
             try:
-                result = await self._execute_agent_tool_as_result(
+                result = await self._execute_agent_tool_with_governance(
                     request=request,
                     role_context=role_context,
                     run_id=run_id,
@@ -3240,7 +3363,13 @@ class AgentEngine:
             result_text = json.dumps({"error": f"Unknown skill: {tc.name}"})
         else:
             try:
-                result = await skill.execute(**tool_arguments)
+                result = await self._execute_skill_with_governance(
+                    request=request,
+                    run_id=run_id,
+                    skill_name=tc.name,
+                    arguments=tool_arguments,
+                    step_id=tc.id,
+                )
                 result_data = result.data
                 result_text = self._skill_result_json(result)
                 status = "completed" if result.success else "error"
@@ -3346,7 +3475,7 @@ class AgentEngine:
 
         tool_completed_payload = {
             "name": tc.name,
-            "arguments": tc.arguments,
+            "arguments": self._tool_arguments_for_trace(tc.name, execution.tool_arguments),
             "result_preview": execution.result_text[:500],
         }
         tool_completed_payload.update(workflow_payload)
@@ -3982,8 +4111,13 @@ class AgentEngine:
                 },
             )
             try:
-                mkdir_result = await mkdir_skill.execute(
-                    **self._tool_arguments_for_execution(request, "mkdir_drive", mkdir_arguments)
+                mkdir_result = await self._execute_skill_with_governance(
+                    request=request,
+                    run_id=run_id,
+                    skill_name="mkdir_drive",
+                    arguments=self._tool_arguments_for_execution(request, "mkdir_drive", mkdir_arguments),
+                    trusted=True,
+                    step_id="deep_research_archive_mkdir",
                 )
                 mkdir_status = "completed" if mkdir_result.success else "error"
                 mkdir_result_text = json.dumps(
@@ -4077,8 +4211,13 @@ class AgentEngine:
         )
         save_result = None
         try:
-            save_result = await save_skill.execute(
-                **self._tool_arguments_for_execution(request, "save_drive", save_arguments)
+            save_result = await self._execute_skill_with_governance(
+                request=request,
+                run_id=run_id,
+                skill_name="save_drive",
+                arguments=self._tool_arguments_for_execution(request, "save_drive", save_arguments),
+                trusted=True,
+                step_id="deep_research_archive_save",
             )
             save_status = "completed" if save_result.success else "error"
             save_result_text = json.dumps(
@@ -5183,7 +5322,14 @@ class AgentEngine:
                 result_text = json.dumps({"error": "search skill is not registered"}, ensure_ascii=False)
             else:
                 try:
-                    result = await search_skill.execute(**arguments)
+                    result = await self._execute_skill_with_governance(
+                        request=request,
+                        run_id=run_id,
+                        skill_name="search",
+                        arguments=arguments,
+                        trusted=True,
+                        step_id=step_id,
+                    )
                     result_data = result.data if isinstance(result.data, dict) else {}
                     new_citations = (
                         self._collect_search_citations(
@@ -5590,6 +5736,7 @@ class AgentEngine:
     async def _execute_deep_research_search_queries(
         self,
         *,
+        request: ChatRequest,
         run_id: str,
         search_skill: Any,
         queries: list[str],
@@ -5630,7 +5777,14 @@ class AgentEngine:
                 payload=payload_context,
             )
             try:
-                result = await search_skill.execute(**arguments)
+                result = await self._execute_skill_with_governance(
+                    request=request,
+                    run_id=run_id,
+                    skill_name="search",
+                    arguments=arguments,
+                    trusted=True,
+                    step_id=f"deep_research_search_{query_index}",
+                )
                 executed_count += 1
                 status = "completed" if result.success else "error"
                 result_data = result.data if isinstance(result.data, dict) else {}
@@ -5916,6 +6070,7 @@ class AgentEngine:
             )
         else:
             executed_count, _new_count = await self._execute_deep_research_search_queries(
+                request=request,
                 run_id=run_id,
                 search_skill=search_skill,
                 queries=queries,
@@ -6045,6 +6200,7 @@ class AgentEngine:
 
             before_supplemental_count = len(citations)
             executed_count, new_count = await self._execute_deep_research_search_queries(
+                request=request,
                 run_id=run_id,
                 search_skill=search_skill,
                 queries=supplemental_queries,
@@ -7331,7 +7487,10 @@ class AgentEngine:
                     status="running",
                     title=f"Tool {tc.name}",
                     step_id=tc.id,
-                    payload={"name": tc.name, "arguments": tool_arguments},
+                    payload={
+                        "name": tc.name,
+                        "arguments": self._tool_arguments_for_trace(tc.name, tool_arguments),
+                    },
                 )
                 skill = self.skill_registry.get(tc.name)
                 if tc.name not in allowed_tool_names:
@@ -7339,7 +7498,7 @@ class AgentEngine:
                     status = "error"
                 elif tc.name in AGENT_TOOL_IDS:
                     try:
-                        result = await self._execute_agent_tool_as_result(
+                        result = await self._execute_agent_tool_with_governance(
                             request=request,
                             role_context=role_context,
                             run_id=run.run_id,
@@ -7389,7 +7548,13 @@ class AgentEngine:
                     status = "error"
                 else:
                     try:
-                        result = await skill.execute(**tool_arguments)
+                        result = await self._execute_skill_with_governance(
+                            request=request,
+                            run_id=run_id,
+                            skill_name=tc.name,
+                            arguments=tool_arguments,
+                            step_id=tc.id,
+                        )
                         result_text = json.dumps(
                             {
                                 "success": result.success,
@@ -7439,7 +7604,7 @@ class AgentEngine:
                     step_id=tc.id,
                     payload={
                         "name": tc.name,
-                        "arguments": tool_arguments,
+                        "arguments": self._tool_arguments_for_trace(tc.name, tool_arguments),
                         "result_preview": result_text[:500],
                     },
                     duration_ms=int((perf_counter() - tool_started) * 1000),

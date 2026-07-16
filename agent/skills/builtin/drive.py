@@ -2,17 +2,30 @@ from __future__ import annotations
 
 import os
 import posixpath
+import re
 from collections import defaultdict
+from datetime import datetime, timezone
 from typing import Any, Callable
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
 import httpx
 
 from agent.config import runtime_config
+from agent.search import SearchService
 from agent.skills.base import Skill, SkillMetadata, SkillParameter, SkillResult
 
 
-DRIVE_TOOL_NAMES = {"ls_drive", "search_drive", "read_drive", "save_drive", "mkdir_drive"}
+DRIVE_TOOL_NAMES = {
+    "ls_drive",
+    "search_drive",
+    "read_drive",
+    "save_drive",
+    "update_drive",
+    "mkdir_drive",
+    "delete_drive",
+    "share_drive",
+    "archive_url_to_drive",
+}
 _DEFAULT_GATEWAY_BASE_URL = "http://localhost:8080"
 
 
@@ -144,6 +157,42 @@ class DriveGatewayClient:
             raise DriveGatewayError("created file was not returned")
         return item
 
+    async def update_item(
+        self,
+        user_id: str,
+        item_id: str,
+        updates: dict[str, Any],
+    ) -> dict[str, Any]:
+        payload = await self._request(
+            "PUT",
+            f"/drive/items/{quote(item_id, safe='')}",
+            user_id=user_id,
+            json_body=updates,
+        )
+        item = payload.get("item")
+        if not isinstance(item, dict):
+            raise DriveGatewayError("updated drive item was not returned")
+        return item
+
+    async def delete_item(self, user_id: str, item_id: str) -> None:
+        await self._request(
+            "DELETE",
+            f"/drive/items/{quote(item_id, safe='')}",
+            user_id=user_id,
+        )
+
+    async def share_item(self, user_id: str, item_id: str, *, enabled: bool) -> dict[str, Any]:
+        payload = await self._request(
+            "PUT",
+            f"/drive/items/{quote(item_id, safe='')}/share",
+            user_id=user_id,
+            json_body={"enabled": enabled},
+        )
+        item = payload.get("item")
+        if not isinstance(item, dict):
+            raise DriveGatewayError("shared drive item was not returned")
+        return item
+
 
 class _DriveIndex:
     def __init__(self, flat_items: list[dict[str, Any]]):
@@ -269,6 +318,7 @@ class DriveListSkill(_DriveTool):
             ],
             tags=["drive", "files"],
             source="builtin",
+            max_calls_per_run=12,
         )
 
     async def execute(self, **kwargs) -> SkillResult:
@@ -315,6 +365,7 @@ class DriveSearchSkill(_DriveTool):
             ],
             tags=["drive", "search", "files"],
             source="builtin",
+            max_calls_per_run=16,
         )
 
     async def execute(self, **kwargs) -> SkillResult:
@@ -364,6 +415,7 @@ class DriveReadSkill(_DriveTool):
             ],
             tags=["drive", "files"],
             source="builtin",
+            max_calls_per_run=12,
         )
 
     async def execute(self, **kwargs) -> SkillResult:
@@ -410,27 +462,39 @@ class DriveSaveSkill(_DriveTool):
         return SkillMetadata(
             name="save_drive",
             description=(
-                "把文本内容保存到当前用户网盘。模型只需要提供文件名/路径和内容；"
+                "把文本内容保存到当前用户网盘。问答、总结和可复用知识应优先保存为 Markdown，"
+                "并包含问题、回答、来源和保存时间。未指定目录时保存到 /知识库；"
                 "用户身份由系统注入。当前不覆盖已有同名文件。"
             ),
             parameters=[
                 SkillParameter(name="content", type="string", description="要保存的文本内容。", required=True),
                 SkillParameter(name="name", type="string", description="文件名，例如 notes.md。path 已包含文件名时可省略。", required=False),
                 SkillParameter(name="path", type="string", description="完整网盘文件路径，例如 /研究/notes.md。", required=False),
-                SkillParameter(name="folder_path", type="string", description="保存目录路径，默认 /。", required=False),
+                SkillParameter(name="folder_path", type="string", description="保存目录路径，默认 /知识库。", required=False),
                 SkillParameter(name="folder_id", type="string", description="保存目录 ID；如果提供，会优先于 folder_path。", required=False),
+                SkillParameter(
+                    name="create_folders",
+                    type="boolean",
+                    description="目录不存在时是否递归创建，默认 true。",
+                    required=False,
+                    default=True,
+                ),
                 SkillParameter(
                     name="mime_type",
                     type="string",
-                    description="MIME 类型，默认 text/plain; charset=utf-8。",
+                    description="MIME 类型，默认 text/markdown; charset=utf-8。",
                     required=False,
-                    default="text/plain; charset=utf-8",
+                    default="text/markdown; charset=utf-8",
                 ),
                 SkillParameter(name="summary", type="string", description="可选摘要；留空则由网关自动生成。", required=False),
                 SkillParameter(name="tags", type="string", description="可选标签，逗号分隔。", required=False),
             ],
             tags=["drive", "files", "write"],
             source="builtin",
+            risk_level="medium",
+            access="write",
+            max_calls_per_run=8,
+            sensitive_arguments=["content"],
         )
 
     async def execute(self, **kwargs) -> SkillResult:
@@ -446,7 +510,13 @@ class DriveSaveSkill(_DriveTool):
             )
             folder_id = str(kwargs.get("folder_id") or kwargs.get("parent_id") or "").strip()
             client = self._client()
-            folder = await _resolve_folder(client, user_id, folder_id=folder_id, path=folder_path)
+            folder = await _resolve_folder(
+                client,
+                user_id,
+                folder_id=folder_id,
+                path=folder_path,
+                create_missing=_coerce_bool(kwargs.get("create_folders"), default=True),
+            )
             siblings = await client.list_items(user_id, str(folder.get("id") or ""))
             existing = [
                 item
@@ -465,7 +535,7 @@ class DriveSaveSkill(_DriveTool):
                 parent_id=str(folder.get("id") or ""),
                 name=name,
                 content=content,
-                mime_type=str(kwargs.get("mime_type") or "text/plain; charset=utf-8").strip(),
+                mime_type=str(kwargs.get("mime_type") or "text/markdown; charset=utf-8").strip(),
                 summary=str(kwargs.get("summary") or "").strip(),
                 tags=_coerce_tags(kwargs.get("tags")),
             )
@@ -479,13 +549,115 @@ class DriveSaveSkill(_DriveTool):
             return SkillResult(success=False, error=str(exc))
 
 
+class DriveUpdateSkill(_DriveTool):
+    auto_discover = True
+
+    def metadata(self) -> SkillMetadata:
+        return SkillMetadata(
+            name="update_drive",
+            description=(
+                "更新当前用户网盘中的已有文件或文件夹。可按 item_id/path 定位，"
+                "修改文件内容、名称、摘要、标签，或移动到其他目录。"
+            ),
+            parameters=[
+                SkillParameter(name="item_id", type="string", description="目标文件或文件夹 ID；优先于 path。", required=False),
+                SkillParameter(name="path", type="string", description="目标文件或文件夹的现有网盘路径。", required=False),
+                SkillParameter(name="content", type="string", description="新的文件内容；仅文件可用。", required=False),
+                SkillParameter(name="name", type="string", description="新的文件或文件夹名称。", required=False),
+                SkillParameter(name="folder_id", type="string", description="移动到的目标目录 ID。", required=False),
+                SkillParameter(name="folder_path", type="string", description="移动到的目标目录路径。", required=False),
+                SkillParameter(
+                    name="create_folders",
+                    type="boolean",
+                    description="目标目录不存在时是否递归创建，默认 true。",
+                    required=False,
+                    default=True,
+                ),
+                SkillParameter(name="mime_type", type="string", description="新的 MIME 类型；仅文件可用。", required=False),
+                SkillParameter(
+                    name="encoding",
+                    type="string",
+                    description="新内容编码；二进制文件使用 base64。仅与 content 一起提供。",
+                    required=False,
+                ),
+                SkillParameter(name="summary", type="string", description="新的摘要；仅文件可用。", required=False),
+                SkillParameter(name="tags", type="string", description="新的标签，逗号分隔；仅文件可用。", required=False),
+            ],
+            tags=["drive", "files", "write"],
+            source="builtin",
+            risk_level="medium",
+            access="write",
+            max_calls_per_run=8,
+            sensitive_arguments=["content"],
+        )
+
+    async def execute(self, **kwargs) -> SkillResult:
+        try:
+            user_id = self._user_id(kwargs)
+            client = self._client()
+            item_id = str(kwargs.get("item_id") or "").strip()
+            source_path = str(kwargs.get("path") or "").strip()
+            if item_id:
+                item = await client.get_item(user_id, item_id)
+            else:
+                if not source_path:
+                    return SkillResult(success=False, error="item_id or path is required")
+                index = await self._index(client, user_id)
+                item = index.resolve(source_path)
+                item_id = str(item.get("id") or "")
+            if not item_id:
+                return SkillResult(success=False, error="drive item id was not found")
+
+            updates: dict[str, Any] = {}
+            if str(kwargs.get("name") or "").strip():
+                updates["name"] = _clean_drive_name(str(kwargs.get("name") or ""))
+
+            folder_id = str(kwargs.get("folder_id") or kwargs.get("parent_id") or "").strip()
+            folder_path = str(kwargs.get("folder_path") or "").strip()
+            if folder_id or folder_path:
+                folder = await _resolve_folder(
+                    client,
+                    user_id,
+                    folder_id=folder_id,
+                    path=folder_path or "/",
+                    create_missing=_coerce_bool(kwargs.get("create_folders"), default=True),
+                )
+                updates["parent_id"] = str(folder.get("id") or "")
+
+            content_provided = "content" in kwargs and kwargs.get("content") is not None
+            if content_provided:
+                updates["content"] = str(kwargs.get("content") or "")
+            for argument, field in (
+                ("mime_type", "mime_type"),
+                ("encoding", "encoding"),
+                ("summary", "summary"),
+            ):
+                if argument in kwargs and kwargs.get(argument) is not None:
+                    updates[field] = str(kwargs.get(argument) or "")
+            if "tags" in kwargs and kwargs.get("tags") is not None:
+                updates["tags"] = _coerce_tags(kwargs.get("tags"))
+            if not updates:
+                return SkillResult(success=False, error="at least one update is required")
+
+            updated = await client.update_item(user_id, item_id, updates)
+            item_path = await _item_path(client, user_id, updated)
+            data = {"item": _item_summary(updated, path=item_path)}
+            return SkillResult(
+                success=True,
+                data=data,
+                display_text=f"Updated {updated.get('name')} ({updated.get('id')}) at {item_path or '/'}."
+            )
+        except (DriveGatewayError, ValueError) as exc:
+            return SkillResult(success=False, error=str(exc))
+
+
 class DriveMkdirSkill(_DriveTool):
     auto_discover = True
 
     def metadata(self) -> SkillMetadata:
         return SkillMetadata(
             name="mkdir_drive",
-            description="在当前用户网盘中新建文件夹。当前只创建最后一级目录，不递归创建缺失父目录。",
+            description="在当前用户网盘中新建文件夹，并递归创建缺失的父目录。",
             parameters=[
                 SkillParameter(name="name", type="string", description="新文件夹名。path 已包含最终目录名时可省略。", required=False),
                 SkillParameter(name="path", type="string", description="完整目录路径，例如 /研究/素材。", required=False),
@@ -494,6 +666,9 @@ class DriveMkdirSkill(_DriveTool):
             ],
             tags=["drive", "files", "write"],
             source="builtin",
+            risk_level="medium",
+            access="write",
+            max_calls_per_run=8,
         )
 
     async def execute(self, **kwargs) -> SkillResult:
@@ -506,7 +681,13 @@ class DriveMkdirSkill(_DriveTool):
             )
             parent_id = str(kwargs.get("parent_id") or kwargs.get("folder_id") or "").strip()
             client = self._client()
-            parent = await _resolve_folder(client, user_id, folder_id=parent_id, path=parent_path)
+            parent = await _resolve_folder(
+                client,
+                user_id,
+                folder_id=parent_id,
+                path=parent_path,
+                create_missing=True,
+            )
             siblings = await client.list_items(user_id, str(parent.get("id") or ""))
             for item in siblings:
                 if _name_equals(str(item.get("name") or ""), name) and str(item.get("type") or "") == "folder":
@@ -527,23 +708,346 @@ class DriveMkdirSkill(_DriveTool):
             return SkillResult(success=False, error=str(exc))
 
 
+class DriveDeleteSkill(_DriveTool):
+    auto_discover = True
+
+    def metadata(self) -> SkillMetadata:
+        return SkillMetadata(
+            name="delete_drive",
+            description=(
+                "永久删除当前用户网盘中的文件或文件夹；删除文件夹会连同其子项一起删除。"
+                "仅在用户当前消息明确要求删除时使用，根目录不能删除。"
+            ),
+            parameters=[
+                SkillParameter(name="item_id", type="string", description="目标文件或文件夹 ID；优先于 path。", required=False),
+                SkillParameter(name="path", type="string", description="目标文件或文件夹的网盘路径。", required=False),
+            ],
+            tags=["drive", "files", "delete"],
+            source="builtin",
+            risk_level="high",
+            access="destructive",
+            default_policy="confirm",
+            max_calls_per_run=4,
+            confirmation_keywords=[
+                "删除文件",
+                "删除文件夹",
+                "删掉文件",
+                "删掉文件夹",
+                "从网盘删除",
+                "delete file",
+                "delete folder",
+                "remove file",
+            ],
+        )
+
+    async def execute(self, **kwargs) -> SkillResult:
+        try:
+            user_id = self._user_id(kwargs)
+            client = self._client()
+            item = await _resolve_item(
+                client,
+                user_id,
+                item_id=str(kwargs.get("item_id") or "").strip(),
+                path=str(kwargs.get("path") or "").strip(),
+            )
+            if not str(item.get("parent_id") or "").strip():
+                return SkillResult(success=False, error="drive root folder cannot be deleted")
+            item_path = await _item_path(client, user_id, item)
+            deleted = _item_summary(item, path=item_path)
+            await client.delete_item(user_id, str(item.get("id") or ""))
+            return SkillResult(
+                success=True,
+                data={"deleted": deleted},
+                display_text=f"Deleted {item.get('name')} from {item_path or '/'} permanently.",
+            )
+        except (DriveGatewayError, ValueError) as exc:
+            return SkillResult(success=False, error=str(exc))
+
+
+class DriveShareSkill(_DriveTool):
+    auto_discover = True
+
+    def metadata(self) -> SkillMetadata:
+        return SkillMetadata(
+            name="share_drive",
+            description=(
+                "开启或关闭当前用户网盘文件的公开分享链接。公开分享会让持有链接的人无需登录即可读取文件，"
+                "因此仅在用户当前消息明确要求分享、公开或取消分享时使用；文件夹不能分享。"
+            ),
+            parameters=[
+                SkillParameter(name="item_id", type="string", description="目标文件 ID；优先于 path。", required=False),
+                SkillParameter(name="path", type="string", description="目标网盘文件路径。", required=False),
+                SkillParameter(
+                    name="enabled",
+                    type="boolean",
+                    description="true 开启公开分享，false 关闭公开分享。默认 true。",
+                    required=False,
+                    default=True,
+                ),
+            ],
+            tags=["drive", "files", "share"],
+            source="builtin",
+            risk_level="high",
+            access="external",
+            default_policy="confirm",
+            max_calls_per_run=4,
+            confirmation_keywords=[
+                "分享",
+                "共享",
+                "公开这个文件",
+                "公开文件",
+                "取消分享",
+                "关闭分享",
+                "share",
+                "publish",
+                "unshare",
+            ],
+        )
+
+    async def execute(self, **kwargs) -> SkillResult:
+        try:
+            user_id = self._user_id(kwargs)
+            client = self._client()
+            item = await _resolve_item(
+                client,
+                user_id,
+                item_id=str(kwargs.get("item_id") or "").strip(),
+                path=str(kwargs.get("path") or "").strip(),
+            )
+            if str(item.get("type") or "") != "file":
+                return SkillResult(success=False, error="folders cannot be shared")
+            enabled = _coerce_bool(kwargs.get("enabled"), default=True)
+            updated = await client.share_item(
+                user_id,
+                str(item.get("id") or ""),
+                enabled=enabled,
+            )
+            item_path = await _item_path(client, user_id, updated)
+            token = str(updated.get("share_token") or "").strip()
+            share_url = _drive_share_url(client, token) if enabled and token else ""
+            data = {
+                "item": _item_summary(updated, path=item_path),
+                "share_enabled": enabled,
+                "share_url": share_url,
+            }
+            action = "Shared" if enabled else "Stopped sharing"
+            suffix = f": {share_url}" if share_url else "."
+            return SkillResult(
+                success=True,
+                data=data,
+                display_text=f"{action} {updated.get('name')}{suffix}",
+            )
+        except (DriveGatewayError, ValueError) as exc:
+            return SkillResult(success=False, error=str(exc))
+
+
+class ArchiveURLToDriveSkill(_DriveTool):
+    auto_discover = True
+
+    def __init__(
+        self,
+        client_factory: Callable[[], DriveGatewayClient] | None = None,
+        search_factory: Callable[[], SearchService] | None = None,
+    ):
+        super().__init__(client_factory=client_factory)
+        self._search_factory = search_factory or SearchService
+
+    def metadata(self) -> SkillMetadata:
+        return SkillMetadata(
+            name="archive_url_to_drive",
+            description=(
+                "读取一个公开 HTTP/HTTPS 网页，把标题、来源、归档时间和可读正文保存为 Markdown 到当前用户网盘。"
+                "适合用户明确说“归档/收藏/保存这个网页或链接”时使用；默认目录是 /知识库/网页归档。"
+            ),
+            parameters=[
+                SkillParameter(name="url", type="string", description="要归档的公开 HTTP/HTTPS 网页 URL。", required=True),
+                SkillParameter(name="name", type="string", description="可选 Markdown 文件名；留空时按时间和网页标题生成。", required=False),
+                SkillParameter(
+                    name="folder_path",
+                    type="string",
+                    description="保存目录，默认 /知识库/网页归档。",
+                    required=False,
+                    default="/知识库/网页归档",
+                ),
+                SkillParameter(
+                    name="max_chars",
+                    type="integer",
+                    description="归档正文最大字符数，默认 12000，范围 500-12000。",
+                    required=False,
+                    default=12000,
+                ),
+            ],
+            tags=["drive", "knowledge", "web", "archive"],
+            source="builtin",
+            risk_level="medium",
+            access="external",
+            default_policy="auto",
+            max_calls_per_run=4,
+            timeout_seconds=45,
+            confirmation_keywords=[
+                "归档",
+                "收藏网页",
+                "收藏这个网页",
+                "保存网页",
+                "保存这个网页",
+                "保存链接",
+                "archive",
+                "save this page",
+                "save this link",
+            ],
+        )
+
+    async def execute(self, **kwargs) -> SkillResult:
+        url = str(kwargs.get("url") or "").strip()
+        if not url:
+            return SkillResult(success=False, error="url is required")
+        try:
+            user_id = self._user_id(kwargs)
+            max_chars = _coerce_int(kwargs.get("max_chars"), default=12000, minimum=500, maximum=12000)
+            page = await self._search_factory().open_url(url, max_chars=max_chars)
+            source_url = page.final_url or page.url
+            title = str(page.title or page.description or urlparse(source_url).netloc or "Archived web page").strip()
+            archived_at = datetime.now(timezone.utc)
+            name = _archive_file_name(
+                str(kwargs.get("name") or "").strip(),
+                title=title,
+                source_url=source_url,
+                archived_at=archived_at,
+            )
+            folder_path = _normalize_drive_path(kwargs.get("folder_path") or "/知识库/网页归档")
+            client = self._client()
+            folder = await _resolve_folder(
+                client,
+                user_id,
+                path=folder_path,
+                create_missing=True,
+            )
+            siblings = await client.list_items(user_id, str(folder.get("id") or ""))
+            if any(_name_equals(str(item.get("name") or ""), name) for item in siblings):
+                return SkillResult(success=False, error=f"drive item already exists in target folder: {name}")
+
+            content = _archived_page_markdown(
+                title=title,
+                source_url=source_url,
+                description=page.description,
+                body=page.content,
+                archived_at=archived_at,
+            )
+            item = await client.create_file(
+                user_id,
+                parent_id=str(folder.get("id") or ""),
+                name=name,
+                content=content,
+                mime_type="text/markdown; charset=utf-8",
+                summary=str(page.description or page.content[:240]).strip(),
+                tags=["网页归档", "知识库"],
+            )
+            item_path = await _item_path(client, user_id, item)
+            data = {
+                "item": _item_summary(item, path=item_path),
+                "source": {
+                    "url": page.url,
+                    "final_url": page.final_url,
+                    "title": page.title,
+                    "content_type": page.content_type,
+                    "status_code": page.status_code,
+                },
+            }
+            return SkillResult(
+                success=True,
+                data=data,
+                display_text=f"Archived {title} to {item_path or folder_path + '/' + name}.",
+            )
+        except (DriveGatewayError, ValueError) as exc:
+            return SkillResult(success=False, error=str(exc))
+        except Exception as exc:
+            return SkillResult(success=False, error=f"archive URL failed: {exc}")
+
+
 async def _resolve_folder(
     client: DriveGatewayClient,
     user_id: str,
     *,
     folder_id: str = "",
     path: str = "/",
+    create_missing: bool = False,
 ) -> dict[str, Any]:
     if folder_id:
         item = await client.get_item(user_id, folder_id)
         if str(item.get("type") or "") != "folder":
             raise ValueError(f"item is not a folder: {folder_id}")
         return item
+    if create_missing:
+        return await _ensure_folder_path(client, user_id, path or "/")
     index = _DriveIndex(_dict_list((await client.tree(user_id)).get("flat_items")))
     item = index.resolve(path or "/", folder_only=True)
     if str(item.get("type") or "") != "folder":
         raise ValueError(f"path is not a folder: {path}")
     return item
+
+
+async def _resolve_item(
+    client: DriveGatewayClient,
+    user_id: str,
+    *,
+    item_id: str = "",
+    path: str = "",
+) -> dict[str, Any]:
+    if item_id:
+        return await client.get_item(user_id, item_id)
+    if not path:
+        raise ValueError("item_id or path is required")
+    index = _DriveIndex(_dict_list((await client.tree(user_id)).get("flat_items")))
+    item = index.resolve(path)
+    if not str(item.get("id") or ""):
+        raise ValueError(f"path not found: {path}")
+    return item
+
+
+async def _ensure_folder_path(
+    client: DriveGatewayClient,
+    user_id: str,
+    path: str,
+) -> dict[str, Any]:
+    index = _DriveIndex(_dict_list((await client.tree(user_id)).get("flat_items")))
+    if index.root is None:
+        raise ValueError("drive root was not found")
+    normalized = _normalize_drive_path(path)
+    segments = [part for part in normalized.strip("/").split("/") if part]
+    root_name = str(index.root.get("name") or "").strip()
+    if segments and root_name and _name_equals(segments[0], root_name):
+        segments = segments[1:]
+    current = index.root
+    for segment in segments:
+        indexed_folders = [
+            item
+            for item in index.children_by_parent.get(str(current.get("id") or ""), [])
+            if _name_equals(str(item.get("name") or ""), segment)
+            and str(item.get("type") or "") == "folder"
+        ]
+        if len(indexed_folders) > 1:
+            ids = ", ".join(str(item.get("id") or "") for item in indexed_folders[:5])
+            raise ValueError(f"path is ambiguous: {normalized} ({ids})")
+        if indexed_folders:
+            current = indexed_folders[0]
+            continue
+        siblings = await client.list_items(user_id, str(current.get("id") or ""))
+        matching_folders = [
+            item
+            for item in siblings
+            if _name_equals(str(item.get("name") or ""), segment)
+            and str(item.get("type") or "") == "folder"
+        ]
+        if len(matching_folders) > 1:
+            ids = ", ".join(str(item.get("id") or "") for item in matching_folders[:5])
+            raise ValueError(f"path is ambiguous: {normalized} ({ids})")
+        if matching_folders:
+            current = matching_folders[0]
+            continue
+        if any(_name_equals(str(item.get("name") or ""), segment) for item in siblings):
+            raise ValueError(f"a file blocks the folder path: {normalized}")
+        current = await client.create_folder(user_id, str(current.get("id") or ""), segment)
+    return current
 
 
 async def _item_path(client: DriveGatewayClient, user_id: str, item: dict[str, Any]) -> str:
@@ -567,6 +1071,11 @@ def _drive_gateway_base_url() -> str:
 def _normalize_gateway_base_url(value: str) -> str:
     value = str(value or "").strip() or _DEFAULT_GATEWAY_BASE_URL
     return value.rstrip("/")
+
+
+def _drive_share_url(client: DriveGatewayClient, token: str) -> str:
+    base_url = client.base_url[:-4] if client.base_url.endswith("/api") else client.base_url
+    return f"{base_url.rstrip('/')}/share/drive/{quote(token, safe='')}"
 
 
 def _normalize_user_id(value: Any) -> str:
@@ -613,6 +1122,19 @@ def _coerce_int(value: Any, *, default: int, minimum: int, maximum: int) -> int:
     return max(minimum, min(parsed, maximum))
 
 
+def _coerce_bool(value: Any, *, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    normalized = str(value).strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
 def _coerce_tags(value: Any) -> list[str]:
     if isinstance(value, list):
         raw_tags = [str(item).strip() for item in value]
@@ -623,7 +1145,7 @@ def _coerce_tags(value: Any) -> list[str]:
 
 def _save_target(*, path: Any, name: Any, folder_path: Any) -> tuple[str, str]:
     target_name = str(name or "").strip()
-    target_folder_path = str(folder_path or "").strip() or "/"
+    target_folder_path = str(folder_path or "").strip() or "/知识库"
     raw_path = str(path or "").strip()
     if raw_path:
         normalized = _normalize_drive_path(raw_path)
@@ -662,6 +1184,46 @@ def _clean_drive_name(value: str) -> str:
     return " ".join(value.split())
 
 
+def _archive_file_name(
+    requested_name: str,
+    *,
+    title: str,
+    source_url: str,
+    archived_at: datetime,
+) -> str:
+    if requested_name:
+        name = _clean_drive_name(requested_name)
+        if not name.lower().endswith(".md"):
+            name += ".md"
+        return name
+    host = urlparse(source_url).netloc or "web"
+    stem = _clean_drive_name(title or host or "web-page")
+    stem = re.sub(r"[\x00-\x1f:*?\"<>|]+", " ", stem)
+    stem = " ".join(stem.split()).strip(" .")[:72] or host[:40] or "web-page"
+    stamp = archived_at.strftime("%Y%m%d-%H%M%S")
+    return f"{stamp}-{stem}.md"
+
+
+def _archived_page_markdown(
+    *,
+    title: str,
+    source_url: str,
+    description: str,
+    body: str,
+    archived_at: datetime,
+) -> str:
+    lines = [
+        f"# {title}",
+        "",
+        f"- 来源：[{source_url}]({source_url})",
+        f"- 归档时间：{archived_at.isoformat()}",
+    ]
+    if str(description or "").strip():
+        lines.extend(["", f"> {str(description).strip()}"])
+    lines.extend(["", "---", "", str(body or "").strip()])
+    return "\n".join(lines).rstrip() + "\n"
+
+
 def _item_summary(item: dict[str, Any], *, path: str = "") -> dict[str, Any]:
     return {
         "id": str(item.get("id") or ""),
@@ -673,6 +1235,8 @@ def _item_summary(item: dict[str, Any], *, path: str = "") -> dict[str, Any]:
         "size": item.get("size") or 0,
         "summary": str(item.get("summary") or ""),
         "tags": item.get("tags") if isinstance(item.get("tags"), list) else [],
+        "share_enabled": bool(item.get("share_enabled")),
+        "share_token": str(item.get("share_token") or ""),
         "updated_at": str(item.get("updated_at") or ""),
     }
 

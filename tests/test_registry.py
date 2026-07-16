@@ -79,8 +79,17 @@ class TestSkillRegistry:
         assert "datetime" in names
         assert "calculator" in names
         assert "create_todo" in names
+        assert "get_todo" in names
         assert "list_todos" in names
         assert "update_todo" in names
+        assert "delete_todo" in names
+        assert "delete_drive" in names
+        assert "share_drive" in names
+        assert "archive_url_to_drive" in names
+        assert "get_pulse" in names
+        assert "refresh_pulse" in names
+        assert "list_pulse_topics" in names
+        assert "upsert_pulse_topic" in names
         assert "image_generation_v1" in names
         assert "deep_research_v1" not in names
         assert "weight_loss_v1" in names

@@ -1,6 +1,6 @@
 from __future__ import annotations
 from abc import ABC, abstractmethod
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -21,6 +21,13 @@ class SkillMetadata(BaseModel):
     tags: list[str] = Field(default_factory=list)
     source: str = "builtin"
     enabled: bool = True
+    risk_level: Literal["low", "medium", "high"] = "low"
+    access: Literal["read", "write", "destructive", "external"] = "read"
+    default_policy: Literal["auto", "confirm", "deny"] = "auto"
+    max_calls_per_run: int = Field(default=8, ge=1, le=100)
+    timeout_seconds: float = Field(default=30.0, gt=0, le=600)
+    sensitive_arguments: list[str] = Field(default_factory=list)
+    confirmation_keywords: list[str] = Field(default_factory=list)
 
 
 class SkillResult(BaseModel):
@@ -58,6 +65,8 @@ class Skill(ABC):
                 "type": type_map.get(p.type, "string"),
                 "description": p.description,
             }
+            if p.default is not None:
+                properties[p.name]["default"] = p.default
             if p.required:
                 required.append(p.name)
 

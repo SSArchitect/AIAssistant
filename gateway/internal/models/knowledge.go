@@ -2,6 +2,8 @@ package models
 
 import "time"
 
+// Deprecated: the standalone Knowledge store has been replaced by Drive.
+// These models remain only so existing installations can migrate old data.
 type KnowledgeProject struct {
 	ID          string    `json:"id" gorm:"primaryKey"`
 	UserID      string    `json:"user_id" gorm:"index;not null;default:0"`

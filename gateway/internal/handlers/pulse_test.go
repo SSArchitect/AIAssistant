@@ -168,6 +168,15 @@ func TestPulseChatPersistsBackgroundTokenUsage(t *testing.T) {
 		if req.ConversationID != "pulse-acct-a-2026-07-06" || req.UserID != "acct-a" || req.AgentID != superChatAgentID {
 			t.Fatalf("unexpected pulse chat request: %#v", req)
 		}
+		disabled := map[string]bool{}
+		for _, name := range req.DisabledTools {
+			disabled[name] = true
+		}
+		for _, name := range pulseBackgroundDisabledTools {
+			if !disabled[name] {
+				t.Fatalf("expected Pulse background request to disable %s: %#v", name, req.DisabledTools)
+			}
+		}
 
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(bridge.ChatResponse{

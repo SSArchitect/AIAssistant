@@ -3350,6 +3350,43 @@ button.mode-chip:focus-visible {
     gap: 4px;
 }
 
+.tool-row-actions {
+    display: grid;
+    justify-items: end;
+    gap: 8px;
+}
+
+.tool-policy-control {
+    display: grid;
+    justify-items: end;
+    gap: 3px;
+    color: var(--text-muted);
+    font-size: 10px;
+    font-weight: 700;
+}
+
+.tool-policy-control select {
+    min-width: 118px;
+    height: 30px;
+    padding: 0 26px 0 9px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--surface);
+    color: var(--text);
+    font-size: 11px;
+    font-weight: 700;
+}
+
+.tool-risk.medium {
+    border-color: #f0c36d;
+    color: #8a5a00;
+}
+
+.tool-risk.high {
+    border-color: #ef9a9a;
+    color: #a52828;
+}
+
 .tool-identity {
     min-width: 0;
     display: flex;
@@ -3419,6 +3456,17 @@ button.mode-chip:focus-visible {
     cursor: pointer;
     font-size: 11px;
     font-weight: 800;
+}
+
+@media (max-width: 720px) {
+    .tool-row {
+        grid-template-columns: minmax(0, 1fr);
+    }
+
+    .tool-row-actions,
+    .tool-policy-control {
+        justify-items: start;
+    }
 }
 
 .tool-details[open] summary {
@@ -5226,12 +5274,14 @@ button.mode-chip:focus-visible {
 
 .todo-list {
     display: grid;
+    grid-auto-rows: max-content;
     align-content: start;
     gap: 8px;
     flex: 1 1 auto;
     min-height: 0;
     overflow-y: auto;
     overscroll-behavior: contain;
+    scrollbar-gutter: stable;
     padding-right: 2px;
 }
 
@@ -5460,6 +5510,12 @@ button.mode-chip:focus-visible {
     overflow: hidden;
 }
 
+@media (min-width: 861px) {
+    .todo-list > .todo-item:not(.todo-edit-card) {
+        min-height: 72px;
+    }
+}
+
 .todo-item::before {
     content: "";
     position: absolute;
@@ -5600,12 +5656,13 @@ button.mode-chip:focus-visible {
 }
 
 .todo-edit-card {
-    grid-template-columns: minmax(220px, 1.4fr) repeat(3, minmax(124px, 0.8fr));
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     align-items: start;
     column-gap: 10px;
     row-gap: 10px;
     padding: 13px;
     background: linear-gradient(90deg, var(--todo-soft) 0, #ffffff 30%);
+    scroll-margin-block: 8px;
 }
 
 .todo-edit-card::before {
@@ -5649,6 +5706,12 @@ button.mode-chip:focus-visible {
     width: auto;
     min-width: 92px;
     white-space: nowrap;
+}
+
+@media (min-width: 1400px) {
+    .todo-edit-card {
+        grid-template-columns: minmax(180px, 1.4fr) repeat(3, minmax(108px, 0.8fr));
+    }
 }
 
 .todo-mini-button:hover {

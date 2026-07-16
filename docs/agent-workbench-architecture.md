@@ -1,9 +1,19 @@
 # Personal AI Workbench 架构与设计方案
 
-版本：Draft v0.3  
+版本：Draft v0.4
 目标：日常可用 + 面试 showcase + 多 Agent 框架实验平台
 
 开发、启动、测试和运行限制见：[Agent Assistant 开发与运行规范](./development-and-operations.md)。
+
+## 当前收敛决策（2026-07）
+
+当前个人版不再维护独立 Knowledge 服务、Knowledge API 和另一套文档表：
+
+- Drive 是唯一的持久知识内容层。问答、报告、资料和笔记都以文件形式保存，并通过 `search_drive`、`read_drive` 和 Drive context 进入问答。
+- Memory 只承担会话摘要、用户偏好、长期事实和角色习惯，不保存完整知识文档。
+- `/api/projects` 旧数据会迁移到 `/知识库`，新功能只基于 `/api/drive/*`。
+- 当前检索使用文件名、摘要、标签和正文关键词；未来 chunk、embedding、rerank 和 vector index 都作为 Drive 的派生索引增加，不再引入平行的 Knowledge 内容存储。
+- 下文出现的独立 `KnowledgeSvc`、`knowledge_qa_*` A/B 路线属于早期架构草案。若后续恢复专业 RAG Agent，也必须复用 Drive 作为事实源。
 
 ## 1. 产品定位
 
@@ -34,8 +44,8 @@
 4. 可观测性内建  
    每次 Agent 运行都要有 run、step、event、tool call、token、耗时、错误，方便调试和面试讲解。
 
-5. Memory 自研，工具和框架按 Agent 需要适配  
-   Conversation memory、long-term memory、knowledge memory 应由平台自己沉淀；工具定义不强制统一成一个厚 `ToolSpec`，但需要能被 trace、权限和 UI 调试层理解。
+5. Memory 自研，知识内容统一归 Drive
+   Conversation memory、long-term memory 和 profile memory 由平台沉淀；完整知识内容保存到 Drive。工具定义不强制统一成一个厚 `ToolSpec`，但需要能被 trace、权限和 UI 调试层理解。
 
 6. 专业 Agent 可 A/B 对比  
    同一专业场景可以同时保留多个实现版本，例如 `knowledge_qa_self_v1`、`knowledge_qa_langgraph_v1`、`knowledge_qa_openai_agents_v1`。平台负责统一入口、trace 和评估，不强行要求内部实现一致。
@@ -582,37 +592,39 @@ flowchart LR
 
 - 能提供 JSON Schema 的工具尽量提供，便于 LLM function calling 和 UI 展示。
 - 工具结果统一包装为 `ToolResult`。
-- 高风险工具需要 `requires_approval`。
-- 工具调用必须写入 `RunEvent` 或 `RunStep`。
+- Skill 元数据声明 `risk_level`、`access`、`default_policy`、`max_calls_per_run`、`timeout_seconds` 和敏感参数。
+- 用户可按工具设置 `auto / confirm / deny`；当前个人版的 `confirm` 表示本轮消息必须明确要求该动作。
+- 所有 Skill 调用统一经过 Tool Governance，执行前鉴权/限次、执行中超时、执行后通过 `tool.governance.*` 与 `tool.*` 事件审计。
+- 高风险删除和公开分享默认使用 `confirm`；可撤销的网页归档和普通业务写入默认 `auto`。用户 `deny` 对内部工作流同样生效。
 - MCP server 可以作为一等工具来源，但不要求所有 Agent 都先转换成同一个 `ToolSpec`。
 
-## 10. Memory 与 Knowledge
+## 10. Memory 与 Drive Knowledge
 
-Memory 分层：
+当前分层：
 
 | 类型 | 用途 | 存储 |
 | --- | --- | --- |
 | Conversation Memory | 当前会话上下文 | DB messages + summary |
 | Working Memory | 当前 run 的中间状态 | Run state |
 | Long-term Memory | 用户偏好、长期事实 | memory_items |
-| Knowledge Memory | 文档知识、资料库 | document chunks + vector store |
+| Drive Knowledge | 问答、报告、文档和资料库 | Drive files |
 
-Knowledge 流程：
+Drive 知识流程：
 
 ```mermaid
 flowchart TD
-    Upload["Upload document / URL / note"]
-    Parse["Parse and normalize"]
-    Chunk["Chunk with metadata"]
-    Embed["Embedding"]
-    Index["Vector index"]
-    Retrieve["Retrieve by query"]
+    Save["Save Q&A / report / document"]
+    Drive["Drive files"]
+    Search["Keyword search now"]
+    Read["Read selected files"]
     Cite["Answer with citations"]
+    Future["Future derived index<br/>chunk / embedding / rerank"]
 
-    Upload --> Parse --> Chunk --> Embed --> Index --> Retrieve --> Cite
+    Save --> Drive --> Search --> Read --> Cite
+    Drive -.-> Future -.-> Search
 ```
 
-专业智能问答 Agent 应该优先落地这一块，因为它最能展示 RAG 中台能力。
+如需专业智能问答 Agent，应复用这条数据链路，并把语义索引视为 Drive 文件的可重建派生数据。
 
 ## 11. 专业 Agent 模板
 

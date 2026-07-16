@@ -147,7 +147,7 @@ const I18N = {
         views: {
             chat: { title: 'Super Chat', subtitle: '意图识别、Agent 调用与汇总回答入口' },
             pulse: { title: 'Pulse', subtitle: 'Topic 推荐、信息簇阅读与下一跳学习入口' },
-            todos: { title: 'Todo', subtitle: '今日、待排期、月视图和高置信建议' },
+            todos: { title: 'Todo', subtitle: '今日、逾期、待排期、月视图和高置信建议' },
             projects: { title: '网盘', subtitle: '每个帐号独立的文件树、上传下载与 Super Chat 上下文' },
             agents: { title: 'Agents', subtitle: 'Agent 功能入口、实现版本和能力状态' },
             tools: { title: 'Tools', subtitle: '内置工具、参数和调用状态' },
@@ -164,7 +164,8 @@ const I18N = {
             titlePlaceholder: '输入一个待办',
             notesPlaceholder: '备注',
             inboxHint: '待排期是已经记录、但还没有安排具体日期的待办。',
-            todayHint: '今日包含今天到期、正在进行和逾期未完成的待办。',
+            todayHint: '今日只包含今天到期或今天仍在进行的待办。',
+            overdueHint: '逾期只显示结束日期早于今天且仍未完成的一次性待办。',
             monthHint: '月视图按日期展示本月待办，包含每天和每工作日重复任务。',
             monthDayDetails: '{date} 的待办',
             monthDayEmpty: '这一天没有待办',
@@ -267,7 +268,7 @@ const I18N = {
             moveDone: '已移动 {count} 个项目',
             moveFailed: '移动失败：{message}',
             contextSources: '上下文来源',
-            generatedDocDefaultTitle: 'Super Chat 报告.md',
+            generatedDocDefaultTitle: '问答知识.md',
             rootName: '我的网盘',
             chatPathChip: '网盘路径',
             chatPathTitle: 'Super Chat 网盘路径：{path}',
@@ -720,6 +721,19 @@ const I18N = {
             saved: '已保存',
             saveFailed: '保存失败：{message}',
             invalidJson: '请输入合法 JSON',
+            policy: '执行策略',
+            policyAuto: '自动执行',
+            policyConfirm: '需明确指令',
+            policyDeny: '禁止执行',
+            riskLow: '低风险',
+            riskMedium: '中风险',
+            riskHigh: '高风险',
+            accessRead: '只读',
+            accessWrite: '写入',
+            accessDestructive: '删除',
+            accessExternal: '外部访问',
+            maxCalls: '每次最多 {count} 次',
+            timeout: '超时 {seconds} 秒',
         },
         runs: {
             unavailableTitle: 'Trace 接口不可用',
@@ -907,7 +921,7 @@ const I18N = {
         views: {
             chat: { title: 'Super Chat', subtitle: 'Intent routing, agent calls, and final answers' },
             pulse: { title: 'Pulse', subtitle: 'Topic seeds, information clusters, and next-step reading' },
-            todos: { title: 'Todo', subtitle: 'Today, unscheduled items, month view, and high-confidence suggestions' },
+            todos: { title: 'Todo', subtitle: 'Today, overdue, unscheduled items, month view, and high-confidence suggestions' },
             projects: { title: 'Drive', subtitle: 'Per-account file tree, uploads, downloads, and Super Chat context' },
             agents: { title: 'Agents', subtitle: 'Agent entry points, runtimes, and capability status' },
             tools: { title: 'Tools', subtitle: 'Built-in tools, parameters, and execution status' },
@@ -924,7 +938,8 @@ const I18N = {
             titlePlaceholder: 'Enter a todo',
             notesPlaceholder: 'Notes',
             inboxHint: 'Unscheduled items are saved tasks that do not have a date yet.',
-            todayHint: 'Today includes due, active, and overdue open todos.',
+            todayHint: 'Today only includes todos due today or still active today.',
+            overdueHint: 'Overdue shows unfinished one-time todos whose end date is before today.',
             monthHint: 'Month view lays out scheduled todos, including daily and workday repeats.',
             monthDayDetails: 'Todos for {date}',
             monthDayEmpty: 'No todos on this day',
@@ -1027,7 +1042,7 @@ const I18N = {
             moveDone: 'Moved {count} items',
             moveFailed: 'Move failed: {message}',
             contextSources: 'Context sources',
-            generatedDocDefaultTitle: 'Super Chat Report.md',
+            generatedDocDefaultTitle: 'Q&A Knowledge.md',
             rootName: 'My Drive',
             chatPathChip: 'Drive path',
             chatPathTitle: 'Super Chat drive path: {path}',
@@ -1480,6 +1495,19 @@ const I18N = {
             saved: 'Saved',
             saveFailed: 'Save failed: {message}',
             invalidJson: 'Enter valid JSON',
+            policy: 'Execution policy',
+            policyAuto: 'Auto',
+            policyConfirm: 'Explicit request',
+            policyDeny: 'Deny',
+            riskLow: 'Low risk',
+            riskMedium: 'Medium risk',
+            riskHigh: 'High risk',
+            accessRead: 'Read',
+            accessWrite: 'Write',
+            accessDestructive: 'Destructive',
+            accessExternal: 'External',
+            maxCalls: 'Max {count} per run',
+            timeout: '{seconds}s timeout',
         },
         runs: {
             unavailableTitle: 'Trace API unavailable',
@@ -3752,54 +3780,70 @@ async function expandProjectMap() {
 
 async function saveProjectAnswerAsDocument() {
     if (!projectAskAnswer.trim()) return;
-    const result = await openDriveSaveDialog({
-        title: t('projects.generatedDocDefaultTitle'),
-        content: projectAskAnswer,
-        defaultFolderId: currentProjectId || driveRootItem()?.id || '',
-        returnFocus: document.querySelector('[data-project-save-answer]'),
-        onSave: ({ title, folderId, content }) => createProjectDocument(folderId, {
-            title,
-            type: 'generated',
-            source_document_id: selectedProjectDocumentIds.size === 1 ? Array.from(selectedProjectDocumentIds)[0] : '',
+    try {
+        const root = await ensureDriveTreeForSave();
+        const currentFolder = driveItemById(currentProjectId);
+        const knowledgeFolder = currentFolder?.type === 'folder' && currentFolder.id !== root.id
+            ? currentFolder
+            : await ensureKnowledgeDriveFolder();
+        const content = buildDriveKnowledgeDocument({
+            question: projectAskInput,
+            answer: projectAskAnswer,
+            driveSources: projectAskSources,
+            conversationId: loadProjectConversationId(currentProjectId || 'root'),
+        });
+        const result = await openDriveSaveDialog({
+            title: defaultKnowledgeDriveFileName(projectAskInput, projectAskAnswer),
             content,
-        }),
-    });
-    if (result?.saved) {
-        setProjectStatus(t('projects.saveDone'), 'ok');
+            defaultFolderId: knowledgeFolder.id,
+            returnFocus: document.querySelector('[data-project-save-answer]'),
+            onSave: ({ title, folderId, content }) => createProjectDocument(folderId, {
+                title,
+                mime_type: 'text/markdown; charset=utf-8',
+                content,
+                summary: truncateText(projectAskInput || projectAskAnswer, 240),
+                tags: ['问答', '知识'],
+            }),
+        });
+        if (result?.saved) {
+            setProjectStatus(t('projects.saveDone'), 'ok');
+        }
+    } catch (err) {
+        setProjectStatus(t('projects.saveFailed', { message: err.message }), 'error');
     }
 }
 
 async function saveAssistantMessageToDrive(button) {
     const message = button.closest('[data-copy-text]');
-    const text = message?.dataset.copyText || '';
-    if (!text.trim()) return;
+    const answer = message?.dataset.copyText || '';
+    if (!answer.trim()) return;
     if (!currentConversationId || activeConversationRequests.has(currentConversationId)) return;
     button.disabled = true;
     button.setAttribute('aria-disabled', 'true');
     try {
+        const question = assistantQuestionForDrive(message);
+        const citations = assistantCitationsForDrive(message);
+        const runId = message?.querySelector('[data-open-trace-run]')?.dataset.openTraceRun || '';
+        const content = buildDriveKnowledgeDocument({
+            question,
+            answer,
+            citations,
+            conversationId: currentConversationId,
+            runId,
+        });
+        const knowledgeFolder = await ensureKnowledgeDriveFolder();
         const result = await openDriveSaveDialog({
-            title: defaultDriveFileName(text),
-            content: text,
-            defaultFolderId: chatDrivePathItem()?.id || driveRootItem()?.id || '',
+            title: defaultKnowledgeDriveFileName(question, answer),
+            content,
+            defaultFolderId: knowledgeFolder.id,
             returnFocus: button,
-            closeOnSaveStart: true,
-            onSave: ({ title, folderId, content }) => generateAssistantReportToDrive({
+            onSave: ({ title, folderId, content }) => createProjectDocument(folderId, {
                 title,
-                folderId,
+                mime_type: 'text/markdown; charset=utf-8',
                 content,
+                summary: truncateText(question || answer, 240),
+                tags: ['问答', '知识'],
             }),
-            onBackgroundSaveDone: () => {
-                projectStatusText = t('projects.saveDone');
-                projectStatusType = 'ok';
-                renderProjectList();
-                if (activeView === 'projects') renderProjects();
-            },
-            onBackgroundSaveError: (err) => {
-                if (isCancelledError(err)) return;
-                projectStatusText = t('projects.saveFailed', { message: err.message });
-                projectStatusType = 'error';
-                if (activeView === 'projects') renderProjects();
-            },
         });
         if (!result?.saved) return;
         projectStatusText = t('projects.saveDone');
@@ -3816,85 +3860,104 @@ async function saveAssistantMessageToDrive(button) {
     }
 }
 
-async function generateAssistantReportToDrive({ title, folderId, content }) {
-    const conversationId = currentConversationId;
-    if (!conversationId) throw new Error(t('chat.createConversationFailed', { message: '' }));
-    if (activeConversationRequests.has(conversationId)) throw new Error(t('errors.requestFailed'));
-
-    const folder = driveItemById(folderId) || chatDrivePathItem() || driveRootItem();
-    const safeTitle = String(title || defaultDriveFileName(content)).trim();
-    const reportRunId = createClientRunId();
-    const cancelTaskId = createClientTaskId('report-save');
-    const controller = new AbortController();
-    let cancelled = false;
-    const query = currentLanguage === 'zh'
-        ? `请基于上一条助手回答生成 Markdown 报告，并保存到网盘文件「${safeTitle}」。`
-        : `Generate a Markdown report from the previous assistant answer and save it to Drive as "${safeTitle}".`;
-    const contextBlock = [
-        '【Report generation source】',
-        'The following is the assistant answer that must be transformed into a clean, reusable Markdown report.',
-        '',
-        content,
-    ].join('\n');
-    const instruction = [
-        `目标文件名：${safeTitle}`,
-        `目标 folder_id：${folder?.id || folderId || ''}`,
-        '必须调用 save_drive 工具保存报告。save_drive 参数使用：name=目标文件名，folder_id=目标 folder_id，mime_type=text/markdown; charset=utf-8，content=生成后的 Markdown 报告正文。',
-        '保存成功后只简短说明已保存，不要在聊天里重复输出完整报告正文。',
-    ].join('\n');
-    const fullQuery = `${query}\n\n${instruction}`;
-
-    activeConversationRequests.add(conversationId);
-    forgetConversationRender(conversationId);
-    removeFollowUpMessages();
-    updateSendState();
-    const streamView = appendStreamingAssistantMessage('', conversationId, {
-        cancelTaskId,
-        onCancel: () => {
-            if (cancelled) return;
-            cancelled = true;
-            streamView.setPending(t('projects.canceling'));
-            void requestRunCancellation(reportRunId);
-            controller.abort();
-        },
+async function ensureKnowledgeDriveFolder() {
+    const root = await ensureDriveTreeForSave();
+    const existing = driveChildren(root.id).find((item) => (
+        item.type === 'folder' && String(item.name || '').trim().toLocaleLowerCase() === '知识库'
+    ));
+    if (existing) return existing;
+    const data = await apiCall('POST', '/api/drive/folders', {
+        parent_id: root.id,
+        name: '知识库',
     });
-    streamView.setPending(t('projects.saveTaskStarted', { title: safeTitle }));
-    scrollToBottom();
-    try {
-        const resp = await sendMessageStream(conversationId, fullQuery, streamView, '', [], {
-            agent_id: SUPER_CHAT_AGENT_ID,
-            mode_ids: [],
-            mode_prompts: [],
-            context_blocks: [contextBlock],
-            run_id: reportRunId,
-            suppress_user_message: true,
-            suppress_follow_ups: true,
-            signal: controller.signal,
-        });
-        streamView.finalize(resp);
-        captureMemoryDebug(resp, conversationId);
-        if (driveWriteToolsUsed(resp)) await loadProjects();
-        void Promise.allSettled([loadConversations(), loadRuns()]).then(() => {
-            if (currentConversationId === conversationId) updateTopbar();
-        });
-        const artifact = normalizeArtifacts(resp.artifacts || []).find((item) => item.type === 'drive_file');
-        if (!artifact) throw new Error(t('projects.saveFailed', { message: t('errors.requestFailed') }));
-        return driveItemById(artifact.item_id) || driveArtifactAsItem(artifact);
-    } catch (err) {
-        if (cancelled || isCancelledError(err)) {
-            streamView.showCancelled(t('projects.saveCancelled'));
-            throw markCancelledError(err);
+    await loadProjects();
+    const folder = driveItemById(data.item?.id) || data.item;
+    if (!folder?.id) throw new Error(t('projects.pathRequired'));
+    return folder;
+}
+
+function assistantQuestionForDrive(message) {
+    const direct = String(message?.dataset.regenerateQuery || '').trim();
+    if (direct) return direct;
+    let sibling = message?.previousElementSibling || null;
+    while (sibling) {
+        if (sibling.matches?.('.message.user')) {
+            return String(sibling.dataset.copyText || '').trim();
         }
-        streamView.showError(`Error: ${err.message}`);
-        throw err;
-    } finally {
-        activeConversationRequests.delete(conversationId);
-        updateSendState();
-        if (currentConversationId === conversationId) {
-            scrollToBottom();
-            focusMessageInput();
-        }
+        sibling = sibling.previousElementSibling;
     }
+    return '';
+}
+
+function assistantCitationsForDrive(message) {
+    return Array.from(message?.querySelectorAll?.('.citation-link') || []).map((link) => ({
+        title: link.querySelector('.citation-link-title')?.textContent?.trim() || link.href,
+        url: link.href,
+    })).filter((item) => item.url);
+}
+
+function buildDriveKnowledgeDocument(options = {}) {
+    const question = String(options.question || '').trim();
+    const answer = String(options.answer || '').trim();
+    const citations = Array.isArray(options.citations) ? options.citations : [];
+    const driveSources = Array.isArray(options.driveSources) ? options.driveSources : [];
+    const title = knowledgeDocumentTitle(question, answer);
+    const metadata = [
+        `${currentLanguage === 'zh' ? '保存时间' : 'Saved at'}：${formatFullTime(new Date().toISOString())}`,
+        options.conversationId ? `Conversation：${options.conversationId}` : '',
+        options.runId ? `Run：${options.runId}` : '',
+    ].filter(Boolean).map((line) => `> ${line}`);
+    const sourceLines = citations.map((citation) => {
+        const label = markdownLinkLabel(citation.title || citation.url);
+        return `- [${label || citation.url}](<${citation.url}>)`;
+    });
+    for (const item of driveSources) {
+        const path = driveItemById(item.id) ? driveBreadcrumbText(item.id) : (item.name || item.title || item.id || '');
+        if (path) sourceLines.push(`- \`${String(path).replace(/`/g, '')}\``);
+    }
+    if (!sourceLines.length) {
+        sourceLines.push(currentLanguage === 'zh' ? '- 无结构化来源' : '- No structured sources');
+    }
+    return [
+        `# ${title}`,
+        '',
+        ...metadata,
+        '',
+        `## ${currentLanguage === 'zh' ? '问题' : 'Question'}`,
+        '',
+        question || (currentLanguage === 'zh' ? '未记录' : 'Not recorded'),
+        '',
+        `## ${currentLanguage === 'zh' ? '回答' : 'Answer'}`,
+        '',
+        answer,
+        '',
+        `## ${currentLanguage === 'zh' ? '来源' : 'Sources'}`,
+        '',
+        ...sourceLines,
+        '',
+    ].join('\n');
+}
+
+function knowledgeDocumentTitle(question = '', answer = '') {
+    const candidates = [question, answer]
+        .map(cleanDriveFileNameCandidate)
+        .filter((value) => value && !looksLikeDriveFilenameNoise(value));
+    return truncateText(candidates[0] || t('projects.generatedDocDefaultTitle').replace(/\.md$/i, ''), 80);
+}
+
+function defaultKnowledgeDriveFileName(question = '', answer = '') {
+    const title = knowledgeDocumentTitle(question, answer).replace(/\.md$/i, '');
+    const now = new Date();
+    const date = [
+        now.getFullYear(),
+        String(now.getMonth() + 1).padStart(2, '0'),
+        String(now.getDate()).padStart(2, '0'),
+    ].join('-');
+    return `${date}-${truncateText(title, 48)}.md`;
+}
+
+function markdownLinkLabel(value = '') {
+    return String(value).replace(/[\[\]<>]/g, '').replace(/\s+/g, ' ').trim();
 }
 
 function defaultDriveFileName(content = '') {
@@ -3943,40 +4006,8 @@ function looksLikeDriveFilenameNoise(value = '') {
     return false;
 }
 
-function createClientRunId() {
-    const id = crypto?.randomUUID?.().replace(/-/g, '')
-        || `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
-    return `run_${id}`;
-}
-
-function createClientTaskId(prefix = 'task') {
-    return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 9)}`;
-}
-
 function isCancelledError(err) {
     return err?.cancelled === true || err?.name === 'AbortError' || err?.errorType === 'cancelled' || err?.message === 'cancelled';
-}
-
-function markCancelledError(err) {
-    const error = err instanceof Error ? err : new Error(t('projects.saveCancelled'));
-    error.cancelled = true;
-    return error;
-}
-
-async function requestRunCancellation(runId) {
-    if (!runId) return;
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-        try {
-            await apiCall('POST', `/api/runs/${encodeURIComponent(runId)}/cancel`, {});
-            return;
-        } catch (err) {
-            if (attempt >= 2) {
-                console.warn('Cancel run failed', err);
-                return;
-            }
-            await wait(150);
-        }
-    }
 }
 
 function createEmptyDriveSaveDialogState() {
@@ -7255,7 +7286,7 @@ async function loadTodos(scope = todoState.scope || 'today') {
         const params = new URLSearchParams({
             scope: normalizedScope,
             date: todoTodayKey(),
-            include_completed: 'true',
+            include_completed: normalizedScope === 'overdue' ? 'false' : 'true',
         });
         if (normalizedScope === 'month') {
             const range = todoMonthRange(todoState.month);
@@ -7380,6 +7411,18 @@ async function setTodoCompleted(id, completed, occurrenceDate = '') {
     }
 }
 
+function revealTodoEditor(id, options = {}) {
+    if (!id) return;
+    requestAnimationFrame(() => {
+        const editor = todoWorkbench?.querySelector(`[data-todo-edit-id="${cssEscape(id)}"]`);
+        if (!editor) return;
+        editor.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+        if (options.focusTitle) {
+            editor.querySelector('[data-todo-edit-title]')?.focus({ preventScroll: true });
+        }
+    });
+}
+
 function startEditTodo(id) {
     const item = todoState.items.find((candidate) => candidate.id === id);
     if (!item) return;
@@ -7394,9 +7437,7 @@ function startEditTodo(id) {
         error: '',
     };
     renderTodos();
-    requestAnimationFrame(() => {
-        todoWorkbench?.querySelector(`[data-todo-edit-id="${cssEscape(id)}"] [data-todo-edit-title]`)?.focus();
-    });
+    revealTodoEditor(id, { focusTitle: true });
 }
 
 function cancelEditTodo() {
@@ -7660,12 +7701,16 @@ function renderTodos() {
     const counts = todoState.counts || {};
     const items = Array.isArray(todoState.items) ? todoState.items : [];
     const suggestions = Array.isArray(todoState.suggestions) ? todoState.suggestions : [];
+    const previousList = todoWorkbench.querySelector('.todo-list');
+    const previousListScope = previousList?.dataset.todoListScope || '';
+    const previousListScrollTop = previousList?.scrollTop || 0;
     todoWorkbench.innerHTML = `
         <div class="todo-layout">
             <section class="todo-main-panel">
                 <div class="todo-toolbar">
                     <div class="todo-tabs">
                         ${renderTodoScopeButton('today', counts.today)}
+                        ${renderTodoScopeButton('overdue', counts.overdue)}
                         ${renderTodoScopeButton('inbox', counts.inbox)}
                         ${renderTodoScopeButton('month', '')}
                     </div>
@@ -7703,7 +7748,7 @@ function renderTodos() {
                 ` : ''}
                 ${todoState.error ? `<div class="todo-banner error">${escapeHtml(todoState.error)}</div>` : ''}
                 ${todoState.notice ? `<div class="todo-banner notice">${escapeHtml(todoState.notice)}</div>` : ''}
-                <div class="todo-list">
+                <div class="todo-list" data-todo-list-scope="${escapeAttr(scope)}">
                     ${renderTodoContent(scope, items)}
                 </div>
             </section>
@@ -7724,6 +7769,13 @@ function renderTodos() {
             </aside>
         </div>
     `;
+    const nextList = todoWorkbench.querySelector('.todo-list');
+    if (nextList && previousListScope === scope) {
+        nextList.scrollTop = previousListScrollTop;
+    }
+    if (todoState.editingId) {
+        revealTodoEditor(todoState.editingId);
+    }
     renderTodoSidebar();
 }
 
@@ -7739,6 +7791,7 @@ function renderTodoContent(scope, items) {
 
 function todoScopeHint(scope) {
     if (scope === 'inbox') return t('todos.inboxHint');
+    if (scope === 'overdue') return t('todos.overdueHint');
     if (scope === 'month') return t('todos.monthHint');
     return t('todos.todayHint');
 }
@@ -7990,6 +8043,9 @@ function todoDestinationForItem(item = {}) {
     if (repeatRule === 'once' && !startDate && !endDate) {
         return { scope: 'inbox', month: todoState.month };
     }
+    if (todoItemIsOverdue(item)) {
+        return { scope: 'overdue', month: todoState.month };
+    }
     if (todoItemBelongsToToday(item)) {
         return { scope: 'today', month: todoState.month };
     }
@@ -8021,9 +8077,15 @@ function todoItemBelongsToToday(item = {}) {
         return startDate <= today && endDate >= today;
     }
     if (endDate) {
-        return endDate <= today;
+        return endDate === today;
     }
     return Boolean(startDate && startDate <= today);
+}
+
+function todoItemIsOverdue(item = {}) {
+    if ((item.repeat_rule || 'once') !== 'once' || item.status === 'done') return false;
+    const endDate = item.end_date || item.due_date || '';
+    return Boolean(endDate && endDate < todoTodayKey());
 }
 
 function renderTodoSuggestion(suggestion) {
@@ -8051,7 +8113,7 @@ function renderTodoSuggestion(suggestion) {
 }
 
 function normalizeTodoScope(scope = '') {
-    return ['today', 'inbox', 'month'].includes(scope) ? scope : 'today';
+    return ['today', 'overdue', 'inbox', 'month'].includes(scope) ? scope : 'today';
 }
 
 function normalizeTodoDateMode(mode = '') {
@@ -11175,6 +11237,16 @@ function renderToolRow(tool) {
         : (effectiveEnabled ? t('tools.userEnabled') : t('tools.userDisabled'));
     const statusTone = effectiveEnabled ? 'ok' : 'warn';
     const disabledAttr = (!baseEnabled || toolSettingsSaving) ? 'disabled' : '';
+    const policy = toolEffectivePolicy(tool);
+    const risk = ['low', 'medium', 'high'].includes(tool.risk_level) ? tool.risk_level : 'low';
+    const access = ['read', 'write', 'destructive', 'external'].includes(tool.access) ? tool.access : 'read';
+    const policyOptions = [
+        ['auto', t('tools.policyAuto')],
+        ['confirm', t('tools.policyConfirm')],
+        ['deny', t('tools.policyDeny')],
+    ];
+    const riskLabel = t(`tools.risk${risk.charAt(0).toUpperCase()}${risk.slice(1)}`);
+    const accessLabel = t(`tools.access${access.charAt(0).toUpperCase()}${access.slice(1)}`);
     return `
         <article class="tool-row ${effectiveEnabled ? '' : 'disabled'}">
             <div class="tool-row-main">
@@ -11188,6 +11260,10 @@ function renderToolRow(tool) {
                 <div class="tool-meta-line">
                     <div class="tool-tags">
                         ${tool.source ? `<span class="chip">${escapeHtml(tool.source)}</span>` : ''}
+                        <span class="chip tool-risk ${escapeAttr(risk)}">${escapeHtml(riskLabel)}</span>
+                        <span class="chip">${escapeHtml(accessLabel)}</span>
+                        ${tool.max_calls_per_run ? `<span class="chip muted">${escapeHtml(t('tools.maxCalls', { count: tool.max_calls_per_run }))}</span>` : ''}
+                        ${tool.timeout_seconds ? `<span class="chip muted">${escapeHtml(t('tools.timeout', { seconds: tool.timeout_seconds }))}</span>` : ''}
                         ${tags.slice(0, 4).map((tag) => `<span class="chip">${escapeHtml(tag)}</span>`).join('')}
                         ${tags.length > 4 ? `<span class="chip muted">+${tags.length - 4}</span>` : ''}
                     </div>
@@ -11197,13 +11273,23 @@ function renderToolRow(tool) {
                     </details>
                 </div>
             </div>
-            <label class="toggle-switch tool-toggle">
-                <input type="checkbox"
-                       data-tool-enabled="${escapeAttr(tool.name || '')}"
-                       ${userEnabled ? 'checked' : ''}
-                       ${disabledAttr}>
-                <span>${escapeHtml(effectiveEnabled ? t('tools.enabled') : t('tools.disabled'))}</span>
-            </label>
+            <div class="tool-row-actions">
+                <label class="tool-policy-control">
+                    <span>${escapeHtml(t('tools.policy'))}</span>
+                    <select data-tool-policy="${escapeAttr(tool.name || '')}" ${disabledAttr}>
+                        ${policyOptions.map(([value, label]) => `
+                            <option value="${value}" ${policy === value ? 'selected' : ''}>${escapeHtml(label)}</option>
+                        `).join('')}
+                    </select>
+                </label>
+                <label class="toggle-switch tool-toggle">
+                    <input type="checkbox"
+                           data-tool-enabled="${escapeAttr(tool.name || '')}"
+                           ${userEnabled ? 'checked' : ''}
+                           ${disabledAttr}>
+                    <span>${escapeHtml(effectiveEnabled ? t('tools.enabled') : t('tools.disabled'))}</span>
+                </label>
+            </div>
         </article>
     `;
 }
@@ -11242,6 +11328,20 @@ function toolUserEnabled(tool) {
 
 function toolEnabledSettingKey(toolName) {
     return `tool.${String(toolName || '').trim()}.enabled`;
+}
+
+function toolPolicySettingKey(toolName) {
+    return `tool.${String(toolName || '').trim()}.policy`;
+}
+
+function toolEffectivePolicy(tool) {
+    const direct = String(tool.effective_policy || tool.effectivePolicy || '').trim().toLowerCase();
+    if (['auto', 'confirm', 'deny'].includes(direct)) return direct;
+    const key = toolPolicySettingKey(tool.name || '');
+    const configured = String(toolUserSettings[key] || '').trim().toLowerCase();
+    if (['auto', 'confirm', 'deny'].includes(configured)) return configured;
+    const fallback = String(tool.default_policy || tool.defaultPolicy || 'auto').trim().toLowerCase();
+    return ['auto', 'confirm', 'deny'].includes(fallback) ? fallback : 'auto';
 }
 
 function parseBooleanSetting(value, fallback = false) {
@@ -17137,6 +17237,18 @@ document.addEventListener('change', async (event) => {
             error: '',
         };
         renderEvalView();
+        return;
+    }
+
+    const toolPolicy = event.target.closest('[data-tool-policy]');
+    if (toolPolicy && !toolPolicy.disabled) {
+        const toolName = toolPolicy.dataset.toolPolicy || '';
+        const policy = ['auto', 'confirm', 'deny'].includes(toolPolicy.value)
+            ? toolPolicy.value
+            : 'auto';
+        await updateToolSettings({
+            [toolPolicySettingKey(toolName)]: policy,
+        });
         return;
     }
 

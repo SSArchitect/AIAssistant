@@ -54,6 +54,7 @@ class ChatRequest(BaseModel):
     memory_enabled: bool = True
     run_id: Optional[str] = None
     disabled_tools: list[str] = Field(default_factory=list)
+    tool_policies: dict[str, Literal["auto", "confirm", "deny"]] = Field(default_factory=dict)
 
 
 class SkillCallInfo(BaseModel):
@@ -130,8 +131,15 @@ class SkillInfo(BaseModel):
     tags: list[str] = Field(default_factory=list)
     source: str = "builtin"
     enabled: bool = True
+    risk_level: Literal["low", "medium", "high"] = "low"
+    access: Literal["read", "write", "destructive", "external"] = "read"
+    default_policy: Literal["auto", "confirm", "deny"] = "auto"
+    max_calls_per_run: int = 8
+    timeout_seconds: float = 30.0
     user_enabled: bool | None = None
     effective_enabled: bool = True
+    user_policy: Literal["auto", "confirm", "deny"] | None = None
+    effective_policy: Literal["auto", "confirm", "deny"] = "auto"
     configurable: bool = False
 
 

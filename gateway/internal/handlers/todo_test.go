@@ -23,6 +23,7 @@ func setupTodoTest(t *testing.T) (*gin.Engine, *TodoHandler) {
 	handler := NewTodoHandler()
 	router := gin.New()
 	router.GET("/api/todos", handler.List)
+	router.GET("/api/todos/:id", handler.Get)
 	router.POST("/api/todos", handler.Create)
 	router.PUT("/api/todos/:id", handler.Update)
 	router.POST("/api/todos/:id/complete", handler.Complete)
@@ -65,6 +66,8 @@ func TestTodoCRUDScopesByUserAndDate(t *testing.T) {
 		{ID: "tomorrow-a", UserID: "user-a", Title: "Tomorrow A", Status: todoStatusOpen, DueDate: tomorrowText, Priority: todoPriorityHigh, Source: todoSourceManual, CreatedAt: now, UpdatedAt: now},
 		{ID: "range-a", UserID: "user-a", Title: "Range A", Status: todoStatusOpen, StartDate: yesterdayText, DueDate: nextWeekText, Priority: todoPriorityNormal, Source: todoSourceManual, CreatedAt: now, UpdatedAt: now},
 		{ID: "daily-a", UserID: "user-a", Title: "Daily A", Status: todoStatusOpen, StartDate: yesterdayText, RepeatRule: todoRepeatDaily, Priority: todoPriorityNormal, Source: todoSourceManual, CreatedAt: now, UpdatedAt: now},
+		{ID: "overdue-a", UserID: "user-a", Title: "Overdue A", Status: todoStatusOpen, DueDate: yesterdayText, Priority: todoPriorityHigh, Source: todoSourceManual, CreatedAt: now, UpdatedAt: now},
+		{ID: "overdue-done-a", UserID: "user-a", Title: "Completed overdue A", Status: todoStatusDone, DueDate: yesterdayText, Priority: todoPriorityNormal, Source: todoSourceManual, CreatedAt: now, UpdatedAt: now},
 		{ID: "inbox-a", UserID: "user-a", Title: "Inbox A", Status: todoStatusOpen, Priority: todoPriorityLow, Source: todoSourceManual, CreatedAt: now, UpdatedAt: now},
 		{ID: "today-b", UserID: "user-b", Title: "Today B", Status: todoStatusOpen, DueDate: todayText, Priority: todoPriorityNormal, Source: todoSourceManual, CreatedAt: now, UpdatedAt: now},
 	}
@@ -89,8 +92,25 @@ func TestTodoCRUDScopesByUserAndDate(t *testing.T) {
 	if len(payload.Items) != 3 || payload.Items[0].ID != "range-a" || payload.Items[1].ID != "daily-a" || payload.Items[2].ID != "today-a" {
 		t.Fatalf("expected today's user-a todos including active range, got %#v", payload.Items)
 	}
-	if payload.Counts["today"] != 3 || payload.Counts["upcoming"] != 1 || payload.Counts["inbox"] != 1 {
+	if payload.Counts["today"] != 3 || payload.Counts["overdue"] != 1 || payload.Counts["upcoming"] != 1 || payload.Counts["inbox"] != 1 {
 		t.Fatalf("unexpected counts: %#v", payload.Counts)
+	}
+
+	overdueReq := httptest.NewRequest(http.MethodGet, "/api/todos?scope=overdue&date="+todayText, nil)
+	overdueReq.Header.Set("X-User-ID", "user-a")
+	overdueRecorder := httptest.NewRecorder()
+	router.ServeHTTP(overdueRecorder, overdueReq)
+	if overdueRecorder.Code != http.StatusOK {
+		t.Fatalf("unexpected overdue status %d: %s", overdueRecorder.Code, overdueRecorder.Body.String())
+	}
+	var overduePayload struct {
+		Items []todoResponse `json:"items"`
+	}
+	if err := json.Unmarshal(overdueRecorder.Body.Bytes(), &overduePayload); err != nil {
+		t.Fatalf("decode overdue response: %v", err)
+	}
+	if len(overduePayload.Items) != 1 || overduePayload.Items[0].ID != "overdue-a" {
+		t.Fatalf("expected only unfinished overdue todo, got %#v", overduePayload.Items)
 	}
 
 	createReq := httptest.NewRequest(http.MethodPost, "/api/todos", bytes.NewBufferString(`{"title":"Review todo UI","start_date":"`+todayText+`","end_date":"`+tomorrowText+`","priority":"high","tags":["ui"]}`))
@@ -109,6 +129,23 @@ func TestTodoCRUDScopesByUserAndDate(t *testing.T) {
 	}
 	if created.Todo.Title != "Review todo UI" || created.Todo.Priority != todoPriorityHigh || created.Todo.StartDate != todayText || created.Todo.EndDate != tomorrowText || len(created.Todo.Tags) != 1 {
 		t.Fatalf("unexpected created todo: %#v", created.Todo)
+	}
+
+	getReq := httptest.NewRequest(http.MethodGet, "/api/todos/"+created.Todo.ID, nil)
+	getReq.Header.Set("X-User-ID", "user-a")
+	getRecorder := httptest.NewRecorder()
+	router.ServeHTTP(getRecorder, getReq)
+	if getRecorder.Code != http.StatusOK {
+		t.Fatalf("unexpected get status %d: %s", getRecorder.Code, getRecorder.Body.String())
+	}
+	var fetched struct {
+		Todo todoResponse `json:"todo"`
+	}
+	if err := json.Unmarshal(getRecorder.Body.Bytes(), &fetched); err != nil {
+		t.Fatalf("decode fetched todo: %v", err)
+	}
+	if fetched.Todo.ID != created.Todo.ID || fetched.Todo.Title != created.Todo.Title {
+		t.Fatalf("unexpected fetched todo: %#v", fetched.Todo)
 	}
 
 	editReq := httptest.NewRequest(http.MethodPut, "/api/todos/"+created.Todo.ID, bytes.NewBufferString(`{"title":"Review todo polish","notes":"tighten card UI","start_date":"`+yesterdayText+`","end_date":"`+nextWeekText+`","repeat_rule":"daily","priority":"low"}`))

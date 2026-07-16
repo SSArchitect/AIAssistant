@@ -282,6 +282,94 @@ async def test_drive_tools_are_hidden_from_general_assistant(engine):
 
 
 @pytest.mark.asyncio
+async def test_pulse_tools_are_super_chat_only_and_get_user_context(engine):
+    pulse_calls = []
+
+    class FakePulseSkill(Skill):
+        def metadata(self) -> SkillMetadata:
+            return SkillMetadata(
+                name="get_pulse",
+                description="Read Pulse recommendations.",
+                parameters=[
+                    SkillParameter(name="date", type="string", description="Date", required=False)
+                ],
+            )
+
+        async def execute(self, **kwargs) -> SkillResult:
+            pulse_calls.append(kwargs)
+            return SkillResult(
+                success=True,
+                data={"items": [{"id": "pulse-1", "title": "值得关注"}]},
+                display_text="值得关注",
+            )
+
+    engine.skill_registry.register(FakePulseSkill())
+    tool_response = LLMResponse(
+        content="",
+        tool_calls=[
+            ToolCall(
+                id="call_get_pulse",
+                name="get_pulse",
+                arguments={"date": "2026-07-16"},
+            )
+        ],
+        model="test-model",
+        usage={},
+    )
+    final_response = LLMResponse(
+        content="今天值得关注这条动态。",
+        tool_calls=[],
+        model="test-model",
+        usage={},
+    )
+
+    with patch.object(engine, "_get_provider") as mock_provider:
+        provider = AsyncMock()
+        provider.chat = AsyncMock(side_effect=[tool_response, final_response])
+        mock_provider.return_value = provider
+        result = await engine.process(
+            ChatRequest(
+                conversation_id="conv-pulse-tools",
+                user_id="alice",
+                message="今天有什么值得关注？",
+                agent_id="super_chat",
+            )
+        )
+
+    assert result.response == "今天值得关注这条动态。"
+    assert pulse_calls == [{"date": "2026-07-16", "_user_id": "alice"}]
+    first_tools = provider.chat.await_args_list[0].kwargs["tools"]
+    assert "get_pulse" in {tool.name for tool in first_tools}
+
+
+@pytest.mark.asyncio
+async def test_pulse_tools_are_hidden_from_general_assistant(engine):
+    class FakePulseSkill(Skill):
+        def metadata(self) -> SkillMetadata:
+            return SkillMetadata(name="get_pulse", description="Read Pulse recommendations.")
+
+        async def execute(self, **kwargs) -> SkillResult:
+            return SkillResult(success=True, data={})
+
+    engine.skill_registry.register(FakePulseSkill())
+    with patch.object(engine, "_get_provider") as mock_provider:
+        provider = AsyncMock()
+        provider.chat = AsyncMock(
+            return_value=LLMResponse(
+                content="Hello.",
+                tool_calls=[],
+                model="test-model",
+                usage={},
+            )
+        )
+        mock_provider.return_value = provider
+        await engine.process(ChatRequest(conversation_id="conv-general-no-pulse", message="Hello"))
+
+    tools = provider.chat.await_args.kwargs["tools"]
+    assert "get_pulse" not in {tool.name for tool in tools}
+
+
+@pytest.mark.asyncio
 async def test_drive_context_is_lightweight_prompt_index(engine):
     mock_response = LLMResponse(
         content="我会按需检索网盘。",
@@ -406,6 +494,62 @@ async def test_save_drive_tool_result_becomes_chat_artifact(engine):
     assert artifact.type == "drive_file"
     assert artifact.item_id == "file-report"
     assert artifact.name == "report.md"
+
+
+def test_update_drive_tool_result_becomes_chat_artifact(engine):
+    artifact = engine._drive_artifact_from_tool_result(
+        "update_drive",
+        {
+            "item": {
+                "id": "file-updated",
+                "type": "file",
+                "name": "knowledge.md",
+                "path": "/知识库/knowledge.md",
+                "size": 42,
+            }
+        },
+    )
+
+    assert artifact is not None
+    assert artifact.type == "drive_file"
+    assert artifact.item_id == "file-updated"
+    assert artifact.metadata["source_tool"] == "update_drive"
+
+
+def test_super_chat_auto_save_requires_explicit_save_request(engine):
+    content = "长回答。" * 200
+    common = {
+        "agent_id": "super_chat",
+        "final_content": content,
+        "skills_used": ["search"],
+        "citations": [],
+        "existing_artifacts": [],
+    }
+
+    assert engine._drive_auto_save_candidate(
+        request=ChatRequest(
+            conversation_id="conv-report-only",
+            message="请生成一份调研报告",
+            agent_id="super_chat",
+        ),
+        **common,
+    ) is False
+    assert engine._drive_auto_save_candidate(
+        request=ChatRequest(
+            conversation_id="conv-save",
+            message="请生成一份调研报告并保存到网盘",
+            agent_id="super_chat",
+        ),
+        **common,
+    ) is True
+    assert engine._drive_auto_save_candidate(
+        request=ChatRequest(
+            conversation_id="conv-no-save",
+            message="请生成一份调研报告，但不要保存",
+            agent_id="super_chat",
+        ),
+        **common,
+    ) is False
 
 
 @pytest.mark.asyncio
@@ -694,6 +838,66 @@ async def test_tool_call_calculator(engine):
     event_types = [event.type for event in result.events]
     assert "tool.started" in event_types
     assert "tool.completed" in event_types
+
+
+@pytest.mark.asyncio
+async def test_tool_governance_blocks_unconfirmed_high_risk_call(engine):
+    class ConfirmedDeleteSkill(Skill):
+        def __init__(self):
+            self.calls = 0
+
+        def metadata(self) -> SkillMetadata:
+            return SkillMetadata(
+                name="confirmed_delete",
+                description="Delete a test item.",
+                parameters=[
+                    SkillParameter(name="item_id", type="string", description="Item ID.")
+                ],
+                risk_level="high",
+                access="destructive",
+                default_policy="confirm",
+                confirmation_keywords=["删除测试项"],
+            )
+
+        async def execute(self, **kwargs) -> SkillResult:
+            self.calls += 1
+            return SkillResult(success=True, data={"deleted": kwargs.get("item_id")})
+
+    skill = ConfirmedDeleteSkill()
+    engine.skill_registry.register(skill)
+    tool_response = LLMResponse(
+        content="",
+        tool_calls=[
+            ToolCall(
+                id="call_delete",
+                name="confirmed_delete",
+                arguments={"item_id": "item-1"},
+            )
+        ],
+        model="test-model",
+        usage={"input": 10, "output": 5},
+    )
+    final_response = LLMResponse(
+        content="没有执行删除，因为缺少明确确认。",
+        tool_calls=[],
+        model="test-model",
+        usage={"input": 10, "output": 5},
+    )
+
+    with patch.object(engine, "_get_provider") as mock_provider:
+        provider = AsyncMock()
+        provider.chat = AsyncMock(side_effect=[tool_response, final_response])
+        mock_provider.return_value = provider
+        result = await engine.process(
+            ChatRequest(
+                conversation_id="governance-confirm",
+                message="查看测试项 item-1",
+            )
+        )
+
+    assert skill.calls == 0
+    assert result.plan[0].status == "error"
+    assert any(event.type == "tool.governance.blocked" for event in result.events)
 
 
 @pytest.mark.asyncio

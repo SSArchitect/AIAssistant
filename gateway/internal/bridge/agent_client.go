@@ -35,6 +35,7 @@ type ChatRequest struct {
 	MemoryEnabled   *bool                  `json:"memory_enabled,omitempty"`
 	RunID           string                 `json:"run_id,omitempty"`
 	DisabledTools   []string               `json:"disabled_tools,omitempty"`
+	ToolPolicies    map[string]string      `json:"tool_policies,omitempty"`
 }
 
 type SearchRequest struct {
@@ -225,8 +226,15 @@ type SkillInfo struct {
 	Tags             []string                 `json:"tags,omitempty"`
 	Source           string                   `json:"source,omitempty"`
 	Enabled          bool                     `json:"enabled"`
+	RiskLevel        string                   `json:"risk_level,omitempty"`
+	Access           string                   `json:"access,omitempty"`
+	DefaultPolicy    string                   `json:"default_policy,omitempty"`
+	MaxCallsPerRun   int                      `json:"max_calls_per_run,omitempty"`
+	TimeoutSeconds   float64                  `json:"timeout_seconds,omitempty"`
 	UserEnabled      *bool                    `json:"user_enabled,omitempty"`
 	EffectiveEnabled bool                     `json:"effective_enabled"`
+	UserPolicy       string                   `json:"user_policy,omitempty"`
+	EffectivePolicy  string                   `json:"effective_policy,omitempty"`
 	Configurable     bool                     `json:"configurable"`
 }
 
@@ -235,6 +243,7 @@ type SkillListResponse struct {
 	UserSettings map[string]string `json:"user_settings,omitempty"`
 	MCP          ToolMCPConfig     `json:"mcp,omitempty"`
 	Disabled     []string          `json:"disabled,omitempty"`
+	Policies     map[string]string `json:"policies,omitempty"`
 }
 
 type ToolMCPConfig struct {

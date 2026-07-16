@@ -56,6 +56,11 @@ class AgentToolSkill(Skill):
             ],
             tags=["agent", "workflow", self.agent.id],
             source="system",
+            risk_level="medium",
+            access="external",
+            max_calls_per_run=4,
+            timeout_seconds=300,
+            sensitive_arguments=["context"],
         )
 
     async def execute(self, **kwargs) -> SkillResult:

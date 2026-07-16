@@ -43,6 +43,8 @@ async def test_list_skills(client):
     assert "datetime" in names
     assert "calculator" in names
     assert "search" in names
+    assert "get_pulse" in names
+    assert "upsert_pulse_topic" in names
 
 
 @pytest.mark.asyncio
@@ -55,6 +57,9 @@ async def test_list_skills_has_parameters(client):
         assert "parameters" in skill
         assert "source" in skill
         assert "enabled" in skill
+        assert "risk_level" in skill
+        assert "access" in skill
+        assert "default_policy" in skill
 
 
 @pytest.mark.asyncio

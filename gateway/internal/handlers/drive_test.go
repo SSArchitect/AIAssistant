@@ -135,6 +135,72 @@ func TestDriveFileCreateDoesNotAutoGenerateTags(t *testing.T) {
 	}
 }
 
+func TestDriveFileUpdateChangesContentMetadataAndFolder(t *testing.T) {
+	router, _ := setupDriveTest(t)
+	sourceFolder := createDriveFolderViaAPI(t, router, "user-a", "", "Source")
+	targetFolder := createDriveFolderViaAPI(t, router, "user-a", "", "Knowledge")
+	file := createDriveFileViaAPI(t, router, "user-a", sourceFolder.ID, "Draft.md", "old content")
+
+	payload := map[string]interface{}{
+		"parent_id": targetFolder.ID,
+		"name":      "Final.md",
+		"mime_type": "text/markdown; charset=utf-8",
+		"content":   "# Final\n\nnew searchable content",
+		"summary":   "final summary",
+		"tags":      []string{"问答", "知识"},
+	}
+	body, _ := json.Marshal(payload)
+	req := httptest.NewRequest(http.MethodPut, "/api/drive/items/"+file.ID, bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-User-ID", "user-a")
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("unexpected update status %d: %s", recorder.Code, recorder.Body.String())
+	}
+	var response struct {
+		Item driveItemResponse `json:"item"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode update response: %v", err)
+	}
+	updated := response.Item
+	if updated.Name != "Final.md" || updated.ParentID != targetFolder.ID {
+		t.Fatalf("expected renamed and moved file, got %#v", updated)
+	}
+	if updated.Content != "# Final\n\nnew searchable content" || updated.Summary != "final summary" {
+		t.Fatalf("expected updated content and summary, got %#v", updated)
+	}
+	if updated.Size != int64(len([]byte(updated.Content))) || len(updated.Tags) != 2 {
+		t.Fatalf("expected updated size and tags, got %#v", updated)
+	}
+
+	searchReq := httptest.NewRequest(http.MethodGet, "/api/drive/search?q=searchable", nil)
+	searchReq.Header.Set("X-User-ID", "user-a")
+	searchRecorder := httptest.NewRecorder()
+	router.ServeHTTP(searchRecorder, searchReq)
+	if searchRecorder.Code != http.StatusOK || !strings.Contains(searchRecorder.Body.String(), "Final.md") {
+		t.Fatalf("expected updated content to be searchable, got %d: %s", searchRecorder.Code, searchRecorder.Body.String())
+	}
+}
+
+func TestDriveFolderRejectsContentUpdate(t *testing.T) {
+	router, _ := setupDriveTest(t)
+	folder := createDriveFolderViaAPI(t, router, "user-a", "", "Folder")
+
+	body := []byte(`{"content":"not allowed"}`)
+	req := httptest.NewRequest(http.MethodPut, "/api/drive/items/"+folder.ID, bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-User-ID", "user-a")
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("expected folder content update to fail, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestDriveContextOmitsTags(t *testing.T) {
 	router, _ := setupDriveTest(t)
 	file := createDriveFileWithTagsViaAPI(t, router, "user-a", "", "Guide.md", "grounded body text", []string{"noise-tag"})

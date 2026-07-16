@@ -80,7 +80,7 @@ func (h *ChatHandler) Chat(c *gin.Context) {
 		return
 	}
 	req.UserID = requestUserIDWithBody(c, req.UserID)
-	disabledTools, err := disabledToolsForUser(req.UserID)
+	disabledTools, toolPolicies, err := toolRuntimeSettingsForUser(req.UserID)
 	if err != nil {
 		slog.Warn("Failed to load user tool settings", "user_id", req.UserID, "error", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load tool settings"})
@@ -131,6 +131,7 @@ func (h *ChatHandler) Chat(c *gin.Context) {
 		Handoff:         req.Handoff,
 		RunID:           req.RunID,
 		DisabledTools:   disabledTools,
+		ToolPolicies:    toolPolicies,
 	}
 
 	if !h.syncConfigToAgent(c) {

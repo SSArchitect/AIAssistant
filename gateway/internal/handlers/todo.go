@@ -178,6 +178,16 @@ func (h *TodoHandler) List(c *gin.Context) {
 	})
 }
 
+func (h *TodoHandler) Get(c *gin.Context) {
+	userID := requestUserID(c)
+	var item models.TodoItem
+	if err := database.DB.First(&item, "id = ? AND user_id = ?", c.Param("id"), userID).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "todo not found"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"todo": todoResponseFromModel(item)})
+}
+
 func (h *TodoHandler) Create(c *gin.Context) {
 	var req todoWriteRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -642,6 +652,9 @@ func loadTodos(userID string, scope string, date string, rangeStart string, rang
 	case "upcoming":
 		query = todoStatusQuery(query, includeCompleted)
 		query = query.Where(todoUpcomingSQL(), date, date, date)
+	case "overdue":
+		query = todoStatusQuery(query, includeCompleted)
+		query = query.Where(todoOverdueSQL(), date)
 	case "inbox":
 		query = todoStatusQuery(query, includeCompleted)
 		query = query.Where(todoInboxSQL())
@@ -713,7 +726,11 @@ func sortTodoItems(items []models.TodoItem, scope string, date string, completio
 }
 
 func todoTodaySQL() string {
-	return "((repeat_rule IN ('daily', 'workdays') AND (start_date IS NULL OR start_date = '' OR start_date <= ?) AND (due_date IS NULL OR due_date = '' OR due_date >= ?)) OR ((repeat_rule IS NULL OR repeat_rule = '' OR repeat_rule = 'once') AND ((due_date IS NOT NULL AND due_date != '' AND due_date <= ?) OR (start_date IS NOT NULL AND start_date != '' AND start_date <= ? AND (due_date IS NULL OR due_date = '' OR due_date >= ?)))))"
+	return "((repeat_rule IN ('daily', 'workdays') AND (start_date IS NULL OR start_date = '' OR start_date <= ?) AND (due_date IS NULL OR due_date = '' OR due_date >= ?)) OR ((repeat_rule IS NULL OR repeat_rule = '' OR repeat_rule = 'once') AND ((due_date IS NOT NULL AND due_date != '' AND due_date = ?) OR (start_date IS NOT NULL AND start_date != '' AND start_date <= ? AND (due_date IS NULL OR due_date = '' OR due_date >= ?)))))"
+}
+
+func todoOverdueSQL() string {
+	return "(repeat_rule IS NULL OR repeat_rule = '' OR repeat_rule = 'once') AND due_date IS NOT NULL AND due_date != '' AND due_date < ?"
 }
 
 func todoUpcomingSQL() string {
@@ -738,6 +755,10 @@ func filterTodoItemsForScope(items []models.TodoItem, scope string, date string,
 			}
 		case "inbox", "done", "completed", "upcoming":
 			filtered = append(filtered, item)
+		case "overdue":
+			if todoItemIsOverdue(item, date) {
+				filtered = append(filtered, item)
+			}
 		default:
 			if todoOccursOnDate(item, date) {
 				if isRepeatingTodo(item) && !includeCompleted && todoCompletionExists(completions, item.ID, date) {
@@ -911,10 +932,17 @@ func todoOccursOnDate(item models.TodoItem, date string) bool {
 			return startDate <= date && endDate >= date
 		}
 		if endDate != "" {
-			return endDate <= date
+			return endDate == date
 		}
 		return startDate != "" && startDate <= date
 	}
+}
+
+func todoItemIsOverdue(item models.TodoItem, date string) bool {
+	if date == "" || isRepeatingTodo(item) {
+		return false
+	}
+	return item.DueDate != "" && item.DueDate < date
 }
 
 func todoOccursInRange(item models.TodoItem, startDate string, endDate string) bool {
@@ -1003,11 +1031,12 @@ func todoCounts(userID string, date string) (map[string]int64, error) {
 	userID = normalizedUserID(userID)
 	counts := map[string]int64{
 		"today":    0,
+		"overdue":  0,
 		"upcoming": 0,
 		"inbox":    0,
 		"done":     0,
 	}
-	for _, scope := range []string{"today", "upcoming", "inbox"} {
+	for _, scope := range []string{"today", "overdue", "upcoming", "inbox"} {
 		items, err := loadTodos(userID, scope, date, date, date, false)
 		if err != nil {
 			return nil, err
@@ -1343,7 +1372,7 @@ func todoResponsesForScope(userID string, items []models.TodoItem, scope string,
 
 func todoOccurrenceDateForScope(scope string, date string) string {
 	switch scope {
-	case "month", "inbox", "upcoming", "done", "completed":
+	case "month", "inbox", "overdue", "upcoming", "done", "completed":
 		return ""
 	default:
 		return date

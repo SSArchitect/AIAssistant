@@ -42,11 +42,11 @@ func Init(dbPath string) error {
 		&models.TodoItem{},
 		&models.TodoCompletion{},
 		&models.TodoSuggestion{},
-		&models.KnowledgeProject{},
-		&models.KnowledgeDocument{},
-		&models.KnowledgeLink{},
 		&models.DriveItem{},
 	); err != nil {
+		return err
+	}
+	if err := migrateLegacyKnowledgeToDrive(DB); err != nil {
 		return err
 	}
 

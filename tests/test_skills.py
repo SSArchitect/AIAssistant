@@ -9,19 +9,32 @@ from agent.skills.builtin.datetime_skill import DateTimeSkill
 from agent.skills.builtin.calculator import CalculatorSkill
 from agent.skills.builtin.agent_tool import AgentToolSkill
 from agent.skills.builtin.drive import (
+    ArchiveURLToDriveSkill,
+    DriveDeleteSkill,
     DriveGatewayClient,
     DriveListSkill,
     DriveReadSkill,
     DriveSaveSkill,
     DriveSearchSkill,
+    DriveShareSkill,
+    DriveUpdateSkill,
 )
 from agent.skills.builtin.todo import (
     TodoCreateSkill,
+    TodoDeleteSkill,
     TodoGatewayClient,
+    TodoGetSkill,
     TodoListSkill,
     TodoUpdateSkill,
 )
 from agent.skills.builtin.open_url import OpenURLSkill
+from agent.skills.builtin.pulse import (
+    PulseGatewayClient,
+    PulseGetSkill,
+    PulseListTopicsSkill,
+    PulseRefreshSkill,
+    PulseUpsertTopicSkill,
+)
 from agent.skills.builtin.search import SearchSkill
 from agent.skills.base import Skill
 from agent.runtime.registry import get_agent
@@ -2423,6 +2436,446 @@ class TestDriveSkills:
         assert captured["name"] == "todo.md"
         assert captured["content"] == "write me"
 
+    @pytest.mark.asyncio
+    async def test_save_drive_defaults_to_knowledge_folder_and_creates_it(self):
+        captured = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.method == "GET" and request.url.path == "/api/drive/tree":
+                return httpx.Response(
+                    200,
+                    json={
+                        "flat_items": [
+                            {"id": "root", "parent_id": "", "type": "folder", "name": "我的网盘"},
+                        ]
+                    },
+                )
+            if request.method == "GET" and request.url.path == "/api/drive/items":
+                return httpx.Response(200, json={"items": []})
+            if request.method == "POST" and request.url.path == "/api/drive/folders":
+                body = json.loads(request.content.decode("utf-8"))
+                assert body["parent_id"] == "root"
+                assert body["name"] == "知识库"
+                return httpx.Response(
+                    201,
+                    json={
+                        "item": {
+                            "id": "knowledge",
+                            "parent_id": "root",
+                            "type": "folder",
+                            "name": "知识库",
+                        }
+                    },
+                )
+            if request.method == "POST" and request.url.path == "/api/drive/files":
+                captured.update(json.loads(request.content.decode("utf-8")))
+                return httpx.Response(
+                    201,
+                    json={
+                        "item": {
+                            "id": "qa-file",
+                            "parent_id": "knowledge",
+                            "type": "file",
+                            "name": "qa.md",
+                            "content": "# Q&A",
+                            "size": 5,
+                        }
+                    },
+                )
+            return httpx.Response(404, json={"error": "not found"})
+
+        skill = DriveSaveSkill(client_factory=lambda: self.client(handler))
+
+        result = await skill.execute(name="qa.md", content="# Q&A", _user_id="alice")
+
+        assert result.success is True
+        assert captured["parent_id"] == "knowledge"
+        assert captured["name"] == "qa.md"
+
+    @pytest.mark.asyncio
+    async def test_update_drive_updates_file_by_path(self):
+        captured = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.method == "GET" and request.url.path == "/api/drive/tree":
+                return httpx.Response(
+                    200,
+                    json={
+                        "flat_items": [
+                            {"id": "root", "parent_id": "", "type": "folder", "name": "我的网盘"},
+                            {"id": "knowledge", "parent_id": "root", "type": "folder", "name": "知识库"},
+                            {"id": "file-1", "parent_id": "knowledge", "type": "file", "name": "old.md"},
+                        ]
+                    },
+                )
+            if request.method == "PUT" and request.url.path == "/api/drive/items/file-1":
+                captured.update(json.loads(request.content.decode("utf-8")))
+                return httpx.Response(
+                    200,
+                    json={
+                        "item": {
+                            "id": "file-1",
+                            "parent_id": "knowledge",
+                            "type": "file",
+                            "name": "new.md",
+                            "content": "# New",
+                            "summary": "updated",
+                            "tags": ["知识"],
+                            "size": 5,
+                        }
+                    },
+                )
+            return httpx.Response(404, json={"error": "not found"})
+
+        skill = DriveUpdateSkill(client_factory=lambda: self.client(handler))
+
+        result = await skill.execute(
+            path="/知识库/old.md",
+            name="new.md",
+            content="# New",
+            summary="updated",
+            tags="知识",
+            _user_id="alice",
+        )
+
+        assert result.success is True
+        assert captured["user_id"] == "alice"
+        assert captured["name"] == "new.md"
+        assert captured["content"] == "# New"
+        assert captured["tags"] == ["知识"]
+        assert result.data["item"]["path"] == "/知识库/new.md"
+
+    @pytest.mark.asyncio
+    async def test_delete_drive_resolves_path_and_deletes_item(self):
+        requests = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append((request.method, request.url.path))
+            if request.method == "GET" and request.url.path == "/api/drive/tree":
+                return httpx.Response(
+                    200,
+                    json={
+                        "flat_items": [
+                            {"id": "root", "parent_id": "", "type": "folder", "name": "我的网盘"},
+                            {"id": "file-1", "parent_id": "root", "type": "file", "name": "old.md"},
+                        ]
+                    },
+                )
+            if request.method == "DELETE" and request.url.path == "/api/drive/items/file-1":
+                return httpx.Response(200, json={"status": "deleted"})
+            return httpx.Response(404, json={"error": "not found"})
+
+        skill = DriveDeleteSkill(client_factory=lambda: self.client(handler))
+
+        result = await skill.execute(path="/old.md", _user_id="alice")
+
+        assert result.success is True
+        assert result.data["deleted"]["id"] == "file-1"
+        assert ("DELETE", "/api/drive/items/file-1") in requests
+
+    @pytest.mark.asyncio
+    async def test_share_drive_returns_public_url(self):
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.method == "GET" and request.url.path == "/api/drive/items/file-1":
+                return httpx.Response(
+                    200,
+                    json={"item": {"id": "file-1", "parent_id": "root", "type": "file", "name": "notes.md"}},
+                )
+            if request.method == "PUT" and request.url.path == "/api/drive/items/file-1/share":
+                body = json.loads(request.content.decode("utf-8"))
+                assert body["enabled"] is True
+                return httpx.Response(
+                    200,
+                    json={
+                        "item": {
+                            "id": "file-1",
+                            "parent_id": "root",
+                            "type": "file",
+                            "name": "notes.md",
+                            "share_enabled": True,
+                            "share_token": "token-1",
+                        }
+                    },
+                )
+            if request.method == "GET" and request.url.path == "/api/drive/tree":
+                return httpx.Response(
+                    200,
+                    json={
+                        "flat_items": [
+                            {"id": "root", "parent_id": "", "type": "folder", "name": "我的网盘"},
+                            {"id": "file-1", "parent_id": "root", "type": "file", "name": "notes.md"},
+                        ]
+                    },
+                )
+            return httpx.Response(404, json={"error": "not found"})
+
+        skill = DriveShareSkill(client_factory=lambda: self.client(handler))
+
+        result = await skill.execute(item_id="file-1", enabled=True, _user_id="alice")
+
+        assert result.success is True
+        assert result.data["share_url"] == "http://gateway.test/share/drive/token-1"
+
+    @pytest.mark.asyncio
+    async def test_archive_url_to_drive_saves_markdown_in_knowledge_folder(self):
+        captured = {}
+
+        class FakeSearch:
+            async def open_url(self, url, *, max_chars):
+                assert url == "https://example.com/article"
+                assert max_chars == 12000
+                return WebPageContent(
+                    url=url,
+                    final_url=url,
+                    title="Example Article",
+                    description="A useful page",
+                    content="Readable article body.",
+                    content_type="text/html",
+                    status_code=200,
+                )
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.method == "GET" and request.url.path == "/api/drive/tree":
+                return httpx.Response(
+                    200,
+                    json={
+                        "flat_items": [
+                            {"id": "root", "parent_id": "", "type": "folder", "name": "我的网盘"},
+                        ]
+                    },
+                )
+            if request.method == "GET" and request.url.path == "/api/drive/items":
+                return httpx.Response(200, json={"items": []})
+            if request.method == "POST" and request.url.path == "/api/drive/folders":
+                body = json.loads(request.content.decode("utf-8"))
+                folder_id = "knowledge" if body["name"] == "知识库" else "archive"
+                parent_id = "root" if body["name"] == "知识库" else "knowledge"
+                return httpx.Response(
+                    201,
+                    json={"item": {"id": folder_id, "parent_id": parent_id, "type": "folder", "name": body["name"]}},
+                )
+            if request.method == "POST" and request.url.path == "/api/drive/files":
+                captured.update(json.loads(request.content.decode("utf-8")))
+                return httpx.Response(
+                    201,
+                    json={
+                        "item": {
+                            "id": "archive-file",
+                            "parent_id": "archive",
+                            "type": "file",
+                            "name": captured["name"],
+                            "mime_type": captured["mime_type"],
+                            "summary": captured["summary"],
+                            "size": len(captured["content"]),
+                        }
+                    },
+                )
+            return httpx.Response(404, json={"error": "not found"})
+
+        skill = ArchiveURLToDriveSkill(
+            client_factory=lambda: self.client(handler),
+            search_factory=FakeSearch,
+        )
+        assert skill.metadata().default_policy == "auto"
+
+        result = await skill.execute(
+            url="https://example.com/article",
+            name="example.md",
+            _user_id="alice",
+        )
+
+        assert result.success is True
+        assert captured["parent_id"] == "archive"
+        assert captured["name"] == "example.md"
+        assert "# Example Article" in captured["content"]
+        assert "https://example.com/article" in captured["content"]
+        assert "Readable article body." in captured["content"]
+
+
+class TestPulseSkills:
+    def client(self, handler):
+        return PulseGatewayClient(
+            "http://gateway.test",
+            transport=httpx.MockTransport(handler),
+        )
+
+    @pytest.mark.asyncio
+    async def test_get_pulse_returns_ranked_recommendations(self):
+        def handler(request: httpx.Request) -> httpx.Response:
+            assert request.method == "GET"
+            assert request.url.path == "/api/pulse"
+            assert request.url.params.get("date") == "2026-07-16"
+            assert request.headers["X-User-ID"] == "alice"
+            return httpx.Response(
+                200,
+                json={
+                    "date": "2026-07-16",
+                    "generated_at": "2026-07-16T08:00:00Z",
+                    "refreshing": False,
+                    "candidate_count": 20,
+                    "recommended_count": 1,
+                    "topics": [
+                        {
+                            "id": "topic-1",
+                            "name": "AI Agent",
+                            "keywords": ["Agent"],
+                            "enabled": True,
+                        }
+                    ],
+                    "modules": [
+                        {
+                            "key": "topic_hot",
+                            "title": "关注 Topic",
+                            "summary": "今日追踪",
+                            "items": [{"id": "pulse-1"}],
+                        }
+                    ],
+                    "items": [
+                        {
+                            "id": "pulse-1",
+                            "date": "2026-07-16",
+                            "topic_id": "topic-1",
+                            "topic_name": "AI Agent",
+                            "source": "topic_hot",
+                            "title": "Agent 产品出现新进展",
+                            "summary": "值得关注的新变化。",
+                            "heat_score": 88,
+                            "detail": {
+                                "recommendation_reason": "匹配订阅 Topic",
+                                "key_points": ["产品", "生态"],
+                                "suggested_questions": ["有哪些变化？"],
+                                "news_sources": [
+                                    {
+                                        "title": "Official update",
+                                        "url": "https://example.com/update",
+                                        "source": "official",
+                                    }
+                                ],
+                            },
+                        }
+                    ],
+                },
+            )
+
+        skill = PulseGetSkill(client_factory=lambda: self.client(handler))
+
+        result = await skill.execute(date="2026-07-16", _user_id="alice")
+
+        assert result.success is True
+        assert result.data["items"][0]["title"] == "Agent 产品出现新进展"
+        assert result.data["items"][0]["news_sources"][0]["url"] == "https://example.com/update"
+        assert "Agent 产品出现新进展" in result.display_text
+
+    @pytest.mark.asyncio
+    async def test_refresh_pulse_waits_and_returns_new_feed(self):
+        captured = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            assert request.method == "POST"
+            assert request.url.path == "/api/pulse/refresh"
+            captured.update(json.loads(request.content.decode("utf-8")))
+            return httpx.Response(
+                200,
+                json={
+                    "date": "2026-07-16",
+                    "refreshing": False,
+                    "items": [
+                        {
+                            "id": "pulse-1",
+                            "title": "刷新后的推荐",
+                            "summary": "新内容",
+                            "heat_score": 90,
+                            "detail": {},
+                        }
+                    ],
+                },
+            )
+
+        skill = PulseRefreshSkill(client_factory=lambda: self.client(handler))
+
+        result = await skill.execute(date="2026-07-16", wait=True, _user_id="alice")
+
+        assert result.success is True
+        assert captured["user_id"] == "alice"
+        assert captured["date"] == "2026-07-16"
+        assert captured["wait"] is True
+        assert result.data["waited"] is True
+        assert "Refreshed Pulse" in result.display_text
+
+    @pytest.mark.asyncio
+    async def test_list_pulse_topics_can_filter_disabled(self):
+        def handler(request: httpx.Request) -> httpx.Response:
+            assert request.method == "GET"
+            assert request.url.path == "/api/pulse/topics"
+            return httpx.Response(
+                200,
+                json={
+                    "topics": [
+                        {"id": "topic-1", "name": "AI", "keywords": ["Agent"], "enabled": True},
+                        {"id": "topic-2", "name": "旧关注", "keywords": [], "enabled": False},
+                    ]
+                },
+            )
+
+        skill = PulseListTopicsSkill(client_factory=lambda: self.client(handler))
+
+        result = await skill.execute(include_disabled=False, _user_id="alice")
+
+        assert result.success is True
+        assert result.data["total"] == 1
+        assert result.data["topics"][0]["id"] == "topic-1"
+
+    @pytest.mark.asyncio
+    async def test_upsert_pulse_topic_creates_and_updates(self):
+        requests = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            body = json.loads(request.content.decode("utf-8"))
+            requests.append((request.method, request.url.path, body))
+            if request.method == "POST":
+                return httpx.Response(
+                    201,
+                    json={
+                        "topic": {
+                            "id": "topic-1",
+                            "name": body["name"],
+                            "keywords": body["keywords"],
+                            "enabled": body["enabled"],
+                        }
+                    },
+                )
+            return httpx.Response(
+                200,
+                json={
+                    "topic": {
+                        "id": "topic-1",
+                        "name": "机器人",
+                        "keywords": ["具身智能"],
+                        "enabled": body["enabled"],
+                    }
+                },
+            )
+
+        skill = PulseUpsertTopicSkill(client_factory=lambda: self.client(handler))
+
+        created = await skill.execute(
+            name="机器人",
+            keywords="具身智能，供应链",
+            _user_id="alice",
+        )
+        updated = await skill.execute(
+            topic_id="topic-1",
+            enabled=False,
+            _user_id="alice",
+        )
+
+        assert created.success is True
+        assert created.data["topic"]["keywords"] == ["具身智能", "供应链"]
+        assert updated.success is True
+        assert updated.data["topic"]["enabled"] is False
+        assert requests[0][0:2] == ("POST", "/api/pulse/topics")
+        assert requests[1][0:2] == ("PUT", "/api/pulse/topics/topic-1")
+
 
 class TestTodoSkills:
     def client(self, handler):
@@ -2541,3 +2994,63 @@ class TestTodoSkills:
         assert captured["user_id"] == "alice"
         assert captured["status"] == "done"
         assert result.data["todo"]["status"] == "done"
+
+    @pytest.mark.asyncio
+    async def test_get_todo_returns_detail(self):
+        def handler(request: httpx.Request) -> httpx.Response:
+            assert request.method == "GET"
+            assert request.url.path == "/api/todos/todo-1"
+            return httpx.Response(
+                200,
+                json={
+                    "todo": {
+                        "id": "todo-1",
+                        "title": "提交周报",
+                        "status": "open",
+                        "notes": "Friday",
+                        "priority": "normal",
+                        "repeat_rule": "once",
+                    }
+                },
+            )
+
+        skill = TodoGetSkill(client_factory=lambda: self.client(handler))
+
+        result = await skill.execute(todo_id="todo-1", _user_id="alice")
+
+        assert result.success is True
+        assert result.data["todo"]["notes"] == "Friday"
+
+    @pytest.mark.asyncio
+    async def test_delete_todo_reads_then_deletes(self):
+        requests = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append((request.method, request.url.path))
+            if request.method == "GET":
+                return httpx.Response(
+                    200,
+                    json={
+                        "todo": {
+                            "id": "todo-1",
+                            "title": "提交周报",
+                            "status": "open",
+                            "priority": "normal",
+                            "repeat_rule": "once",
+                        }
+                    },
+                )
+            if request.method == "DELETE":
+                return httpx.Response(200, json={"status": "deleted"})
+            return httpx.Response(404, json={"error": "not found"})
+
+        skill = TodoDeleteSkill(client_factory=lambda: self.client(handler))
+
+        result = await skill.execute(todo_id="todo-1", _user_id="alice")
+
+        assert result.success is True
+        assert result.data["deleted"]["id"] == "todo-1"
+        assert requests == [
+            ("GET", "/api/todos/todo-1"),
+            ("DELETE", "/api/todos/todo-1"),
+        ]

@@ -279,6 +279,12 @@ async def list_skills():
                 tags=meta.tags,
                 source=meta.source,
                 enabled=meta.enabled,
+                risk_level=meta.risk_level,
+                access=meta.access,
+                default_policy=meta.default_policy,
+                max_calls_per_run=meta.max_calls_per_run,
+                timeout_seconds=meta.timeout_seconds,
+                effective_policy=meta.default_policy,
             )
         )
     return SkillListResponse(skills=skills)

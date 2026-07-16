@@ -10,7 +10,7 @@ from agent.config import runtime_config
 from agent.skills.base import Skill, SkillMetadata, SkillParameter, SkillResult
 
 
-TODO_TOOL_NAMES = {"create_todo", "list_todos", "update_todo"}
+TODO_TOOL_NAMES = {"create_todo", "get_todo", "list_todos", "update_todo", "delete_todo"}
 _DEFAULT_GATEWAY_BASE_URL = "http://localhost:8080"
 
 
@@ -100,6 +100,17 @@ class TodoGatewayClient:
             params["end"] = end
         return await self._request("GET", "/todos", user_id=user_id, params=params)
 
+    async def get(self, user_id: str, todo_id: str) -> dict[str, Any]:
+        payload = await self._request(
+            "GET",
+            f"/todos/{quote(todo_id, safe='')}",
+            user_id=user_id,
+        )
+        todo = payload.get("todo")
+        if not isinstance(todo, dict):
+            raise TodoGatewayError("todo was not returned")
+        return todo
+
     async def update(self, user_id: str, todo_id: str, body: dict[str, Any]) -> dict[str, Any]:
         payload = await self._request(
             "PUT",
@@ -111,6 +122,13 @@ class TodoGatewayClient:
         if not isinstance(todo, dict):
             raise TodoGatewayError("updated todo was not returned")
         return todo
+
+    async def delete(self, user_id: str, todo_id: str) -> None:
+        await self._request(
+            "DELETE",
+            f"/todos/{quote(todo_id, safe='')}",
+            user_id=user_id,
+        )
 
 
 class _TodoTool(Skill):
@@ -180,6 +198,10 @@ class TodoCreateSkill(_TodoTool):
             ],
             tags=["todo", "task", "write"],
             source="builtin",
+            risk_level="medium",
+            access="write",
+            max_calls_per_run=8,
+            sensitive_arguments=["notes"],
         )
 
     async def execute(self, **kwargs) -> SkillResult:
@@ -216,6 +238,36 @@ class TodoCreateSkill(_TodoTool):
             return SkillResult(success=False, error=str(exc))
 
 
+class TodoGetSkill(_TodoTool):
+    auto_discover = True
+
+    def metadata(self) -> SkillMetadata:
+        return SkillMetadata(
+            name="get_todo",
+            description="按 todo_id 读取当前用户的一条待办详情。适合 list_todos 已给出候选 ID 后进一步查看。",
+            parameters=[
+                SkillParameter(name="todo_id", type="string", description="待办 ID。", required=True),
+            ],
+            tags=["todo", "task", "read"],
+            source="builtin",
+            max_calls_per_run=12,
+        )
+
+    async def execute(self, **kwargs) -> SkillResult:
+        todo_id = str(kwargs.get("todo_id") or kwargs.get("id") or "").strip()
+        if not todo_id:
+            return SkillResult(success=False, error="todo_id is required")
+        try:
+            todo = await self._client().get(self._user_id(kwargs), todo_id)
+            return SkillResult(
+                success=True,
+                data={"todo": _todo_summary(todo)},
+                display_text=_format_todo_line(todo),
+            )
+        except (TodoGatewayError, ValueError) as exc:
+            return SkillResult(success=False, error=str(exc))
+
+
 class TodoListSkill(_TodoTool):
     auto_discover = True
 
@@ -230,7 +282,7 @@ class TodoListSkill(_TodoTool):
                 SkillParameter(
                     name="scope",
                     type="string",
-                    description="范围：today、inbox、month、upcoming、done。默认 today。",
+                    description="范围：today、overdue、inbox、month、upcoming、done。默认 today。",
                     required=False,
                     default="today",
                 ),
@@ -264,6 +316,7 @@ class TodoListSkill(_TodoTool):
             ],
             tags=["todo", "task", "read"],
             source="builtin",
+            max_calls_per_run=12,
         )
 
     async def execute(self, **kwargs) -> SkillResult:
@@ -323,6 +376,10 @@ class TodoUpdateSkill(_TodoTool):
             ],
             tags=["todo", "task", "write"],
             source="builtin",
+            risk_level="medium",
+            access="write",
+            max_calls_per_run=8,
+            sensitive_arguments=["notes"],
         )
 
     async def execute(self, **kwargs) -> SkillResult:
@@ -353,6 +410,52 @@ class TodoUpdateSkill(_TodoTool):
                 success=True,
                 data={"todo": _todo_summary(todo)},
                 display_text=f"Updated todo: {_format_todo_line(todo)}",
+            )
+        except (TodoGatewayError, ValueError) as exc:
+            return SkillResult(success=False, error=str(exc))
+
+
+class TodoDeleteSkill(_TodoTool):
+    auto_discover = True
+
+    def metadata(self) -> SkillMetadata:
+        return SkillMetadata(
+            name="delete_todo",
+            description=(
+                "永久删除当前用户的一条待办。仅在用户当前消息明确要求删除待办时使用；"
+                "如果没有 todo_id，先调用 list_todos 查找候选项。"
+            ),
+            parameters=[
+                SkillParameter(name="todo_id", type="string", description="要永久删除的待办 ID。", required=True),
+            ],
+            tags=["todo", "task", "delete"],
+            source="builtin",
+            risk_level="high",
+            access="destructive",
+            default_policy="confirm",
+            max_calls_per_run=4,
+            confirmation_keywords=[
+                "删除待办",
+                "删掉待办",
+                "移除待办",
+                "delete todo",
+                "remove todo",
+            ],
+        )
+
+    async def execute(self, **kwargs) -> SkillResult:
+        todo_id = str(kwargs.get("todo_id") or kwargs.get("id") or "").strip()
+        if not todo_id:
+            return SkillResult(success=False, error="todo_id is required")
+        try:
+            user_id = self._user_id(kwargs)
+            todo = await self._client().get(user_id, todo_id)
+            await self._client().delete(user_id, todo_id)
+            deleted = _todo_summary(todo)
+            return SkillResult(
+                success=True,
+                data={"deleted": deleted},
+                display_text=f"Deleted todo permanently: {_format_todo_line(todo)}",
             )
         except (TodoGatewayError, ValueError) as exc:
             return SkillResult(success=False, error=str(exc))
@@ -422,7 +525,7 @@ def _coerce_bool(value: Any) -> bool:
 
 def _normalize_scope(value: Any) -> str:
     scope = str(value or "today").strip().lower()
-    return scope if scope in {"today", "inbox", "month", "upcoming", "done", "completed"} else "today"
+    return scope if scope in {"today", "overdue", "inbox", "month", "upcoming", "done", "completed"} else "today"
 
 
 def _normalize_repeat_rule(value: Any) -> str:

@@ -31,6 +31,10 @@ class OpenURLSkill(Skill):
             ],
             tags=["web", "reader", "retrieval"],
             source="builtin",
+            risk_level="low",
+            access="external",
+            max_calls_per_run=16,
+            timeout_seconds=30,
         )
 
     async def execute(self, **kwargs) -> SkillResult:

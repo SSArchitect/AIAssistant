@@ -79,6 +79,10 @@ class SearchSkill(Skill):
             ],
             tags=["search", "retrieval", "api"],
             source="builtin",
+            risk_level="low",
+            access="external",
+            max_calls_per_run=48,
+            timeout_seconds=60,
         )
 
     async def execute(self, **kwargs) -> SkillResult:
