@@ -166,6 +166,8 @@ const I18N = {
             inboxHint: '待排期是已经记录、但还没有安排具体日期的待办。',
             todayHint: '今日包含今天到期、正在进行和逾期未完成的待办。',
             monthHint: '月视图按日期展示本月待办，包含每天和每工作日重复任务。',
+            monthDayDetails: '{date} 的待办',
+            monthDayEmpty: '这一天没有待办',
             dateMode: '日期',
             dateToday: '今天',
             dateTomorrow: '明天',
@@ -191,6 +193,8 @@ const I18N = {
             suggestions: '建议',
             suggestionsHint: '从近期会话里提取明确的后续行动；接受后才会进入待办。',
             refreshSuggestions: '重新生成',
+            moreInDay: '查看另外 {count} 项',
+            collapseDay: '收起',
             accept: '接受',
             dismiss: '忽略',
             previousMonth: '上个月',
@@ -922,6 +926,8 @@ const I18N = {
             inboxHint: 'Unscheduled items are saved tasks that do not have a date yet.',
             todayHint: 'Today includes due, active, and overdue open todos.',
             monthHint: 'Month view lays out scheduled todos, including daily and workday repeats.',
+            monthDayDetails: 'Todos for {date}',
+            monthDayEmpty: 'No todos on this day',
             dateMode: 'Date',
             dateToday: 'Today',
             dateTomorrow: 'Tomorrow',
@@ -947,6 +953,8 @@ const I18N = {
             suggestions: 'Suggestions',
             suggestionsHint: 'Extract clear next actions from recent conversations; accepted items become todos.',
             refreshSuggestions: 'Regenerate',
+            moreInDay: 'View {count} more',
+            collapseDay: 'Collapse',
             accept: 'Accept',
             dismiss: 'Dismiss',
             previousMonth: 'Previous month',
@@ -1657,6 +1665,8 @@ let todoState = {
     counts: {},
     date: '',
     month: todoMonthKey(new Date()),
+    monthSelectedDate: todoTodayKey(),
+    monthExpandedDate: '',
     dateMode: 'today',
     editingId: '',
     editDateMode: 'custom',
@@ -2527,6 +2537,8 @@ async function switchAccount(userId, options = {}) {
         counts: {},
         date: '',
         month: todoMonthKey(new Date()),
+        monthSelectedDate: todoTodayKey(),
+        monthExpandedDate: '',
         dateMode: 'today',
         editingId: '',
         editDateMode: 'custom',
@@ -7353,12 +7365,14 @@ async function createTodoFromForm() {
     }
 }
 
-async function setTodoCompleted(id, completed) {
+async function setTodoCompleted(id, completed, occurrenceDate = '') {
     if (!id) return;
+    const payload = {
+        status: completed ? 'done' : 'open',
+    };
+    if (occurrenceDate) payload.occurrence_date = occurrenceDate;
     try {
-        await apiCall('PUT', `/api/todos/${encodeURIComponent(id)}`, {
-            status: completed ? 'done' : 'open',
-        });
+        await apiCall('PUT', `/api/todos/${encodeURIComponent(id)}`, payload);
         await reloadTodosAndSuggestions();
     } catch (err) {
         todoState = { ...todoState, error: t('todos.saveFailed', { message: err.message }) };
@@ -7500,11 +7514,25 @@ async function reloadTodosAndSuggestions() {
 function setTodoScope(scope) {
     const nextScope = normalizeTodoScope(scope);
     if (todoState.scope === nextScope && todoState.items.length) {
-        todoState = { ...todoState, notice: '', editingId: '', editDateMode: 'custom', editDraft: null };
+        todoState = {
+            ...todoState,
+            monthSelectedDate: nextScope === 'month' ? todoDefaultMonthSelectedDate(todoState.month) : todoState.monthSelectedDate,
+            notice: '',
+            editingId: '',
+            editDateMode: 'custom',
+            editDraft: null,
+        };
         renderTodos();
         return;
     }
-    todoState = { ...todoState, notice: '', editingId: '', editDateMode: 'custom', editDraft: null };
+    todoState = {
+        ...todoState,
+        monthSelectedDate: nextScope === 'month' ? todoDefaultMonthSelectedDate(todoState.month) : todoState.monthSelectedDate,
+        notice: '',
+        editingId: '',
+        editDateMode: 'custom',
+        editDraft: null,
+    };
     void loadTodos(nextScope);
 }
 
@@ -7526,8 +7554,51 @@ function setTodoDateMode(mode) {
 function shiftTodoMonth(delta) {
     const base = todoMonthDate(todoState.month);
     base.setMonth(base.getMonth() + delta);
-    todoState = { ...todoState, month: todoMonthKey(base), scope: 'month' };
+    const nextMonth = todoMonthKey(base);
+    todoState = {
+        ...todoState,
+        month: nextMonth,
+        monthSelectedDate: todoDefaultMonthSelectedDate(nextMonth),
+        monthExpandedDate: '',
+        scope: 'month',
+    };
     void loadTodos('month');
+}
+
+function selectTodoMonthDay(dateKey) {
+    if (!dateKey) return;
+    const nextMonth = todoMonthKey(todoParseDateKey(dateKey));
+    const monthChanged = nextMonth && nextMonth !== todoState.month;
+    todoState = {
+        ...todoState,
+        scope: 'month',
+        month: nextMonth || todoState.month,
+        monthSelectedDate: dateKey,
+    };
+    if (monthChanged) {
+        void loadTodos('month');
+    } else {
+        renderTodos();
+    }
+}
+
+function toggleTodoMonthDay(dateKey) {
+    if (!dateKey) return;
+    const nextMonth = todoMonthKey(todoParseDateKey(dateKey));
+    const monthChanged = nextMonth && nextMonth !== todoState.month;
+    const expanded = todoState.monthExpandedDate === dateKey;
+    todoState = {
+        ...todoState,
+        scope: 'month',
+        month: nextMonth || todoState.month,
+        monthSelectedDate: dateKey,
+        monthExpandedDate: expanded ? '' : dateKey,
+    };
+    if (monthChanged) {
+        void loadTodos('month');
+    } else {
+        renderTodos();
+    }
 }
 
 function todoScheduleFromForm() {
@@ -7575,7 +7646,7 @@ function renderTodoSidebar() {
     }
     todoSidebarList.innerHTML = items.slice(0, 5).map((item) => `
         <div class="todo-sidebar-item" data-todo-focus="${escapeAttr(item.id)}">
-            <button class="todo-check" type="button" data-todo-toggle-complete="${escapeAttr(item.id)}" data-todo-completed="true" title="${escapeAttr(t('todos.complete'))}" aria-label="${escapeAttr(t('todos.complete'))}">
+            <button class="todo-check" type="button" data-todo-toggle-complete="${escapeAttr(item.id)}" data-todo-completed="true" data-todo-occurrence-date="${escapeAttr(item.occurrence_date || todoTodayKey())}" title="${escapeAttr(t('todos.complete'))}" aria-label="${escapeAttr(t('todos.complete'))}">
                 <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.8"><path d="m5 12 4 4L19 6"/></svg>
             </button>
             <span>${escapeHtml(item.title || '')}</span>
@@ -7714,6 +7785,9 @@ function renderTodoMonthView(items) {
     const range = todoMonthRange(todoState.month);
     const days = todoMonthDays(monthDate);
     const byDate = mapTodoItemsByDate(items, range.start, range.end);
+    const selectedDate = todoSelectedMonthDate(range, byDate);
+    const selectedItems = byDate[selectedDate] || [];
+    const expandedDate = todoState.monthExpandedDate || '';
     const weekdayLabels = currentLanguage === 'zh'
         ? ['一', '二', '三', '四', '五', '六', '日']
         : ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
@@ -7731,29 +7805,54 @@ function renderTodoMonthView(items) {
             </div>
             <div class="todo-month-grid">
                 ${weekdayLabels.map((label) => `<div class="todo-month-weekday">${escapeHtml(label)}</div>`).join('')}
-                ${days.map((day) => renderTodoMonthDay(day, byDate[day.key] || [])).join('')}
+                ${days.map((day) => renderTodoMonthDay(day, byDate[day.key] || [], selectedDate, expandedDate)).join('')}
             </div>
             ${visibleCount ? '' : `<div class="empty-inline">${escapeHtml(t('todos.monthlyEmpty'))}</div>`}
+            ${renderTodoMonthDetailPanel(selectedDate, selectedItems)}
         </div>
     `;
 }
 
-function renderTodoMonthDay(day, items) {
+function renderTodoMonthDay(day, items, selectedDate = '', expandedDate = '') {
     const classes = ['todo-month-day'];
     if (!day.inMonth) classes.push('muted');
     if (day.key === todoTodayKey()) classes.push('today');
+    if (day.key === selectedDate) classes.push('selected');
+    const expanded = day.key === expandedDate;
+    if (expanded) classes.push('expanded');
+    const visibleItems = expanded ? items : items.slice(0, 3);
     return `
-        <div class="${classes.join(' ')}">
+        <div class="${classes.join(' ')}" data-todo-month-day="${escapeAttr(day.key)}" role="button" tabindex="0" aria-label="${escapeAttr(formatTodoDateLabel(day.key))}">
             <div class="todo-month-date">${escapeHtml(String(day.date.getDate()))}</div>
             <div class="todo-month-items">
-                ${items.slice(0, 3).map((item) => `
-                    <button class="todo-month-item ${item.status === 'done' ? 'done' : ''}" type="button" data-todo-toggle-complete="${escapeAttr(item.id)}" data-todo-completed="${item.status === 'done' ? 'false' : 'true'}">
+                ${visibleItems.map((item) => {
+                    const done = todoItemDoneForDate(item, day.key);
+                    const tone = todoItemTone(item);
+                    return `
+                    <button class="todo-month-item ${tone} ${done ? 'done' : ''}" type="button" data-todo-toggle-complete="${escapeAttr(item.id)}" data-todo-completed="${done ? 'false' : 'true'}" data-todo-occurrence-date="${escapeAttr(day.key)}">
                         ${escapeHtml(item.title || '')}
                     </button>
-                `).join('')}
-                ${items.length > 3 ? `<span class="todo-month-more">+${escapeHtml(String(items.length - 3))}</span>` : ''}
+                `;
+                }).join('')}
+                ${items.length > 3 ? `<button class="todo-month-more" type="button" data-todo-month-day-open="${escapeAttr(day.key)}">${escapeHtml(expanded ? t('todos.collapseDay') : t('todos.moreInDay', { count: String(items.length - 3) }))}</button>` : ''}
             </div>
         </div>
+    `;
+}
+
+function renderTodoMonthDetailPanel(dateKey, items) {
+    return `
+        <section class="todo-month-detail" aria-live="polite">
+            <div class="todo-month-detail-head">
+                <div>
+                    <span>${escapeHtml(t('todos.monthDayDetails', { date: formatTodoDateLabel(dateKey) }))}</span>
+                    <strong>${escapeHtml(String(items.length))}</strong>
+                </div>
+            </div>
+            <div class="todo-month-detail-list">
+                ${items.length ? items.map((item) => renderTodoItem(item, dateKey)).join('') : `<div class="empty-inline">${escapeHtml(t('todos.monthDayEmpty'))}</div>`}
+            </div>
+        </section>
     `;
 }
 
@@ -7767,17 +7866,19 @@ function renderTodoScopeButton(scope, count) {
     `;
 }
 
-function renderTodoItem(item) {
+function renderTodoItem(item, occurrenceDateOverride = '') {
     if (todoState.editingId === item.id) {
         return renderTodoEditItem(item);
     }
-    const done = item.status === 'done';
+    const occurrenceDate = occurrenceDateOverride || item.occurrence_date || todoState.date || todoTodayKey();
+    const done = todoItemDoneForDate(item, occurrenceDate);
+    const tone = todoItemTone(item);
     const dateLabel = formatTodoScheduleLabel(item);
     const nextCompleted = done ? 'false' : 'true';
     const completeLabel = done ? t('todos.reopen') : t('todos.complete');
     return `
-        <article class="todo-item ${done ? 'done' : ''}">
-            <button class="todo-check ${done ? 'checked' : ''}" type="button" data-todo-toggle-complete="${escapeAttr(item.id)}" data-todo-completed="${escapeAttr(nextCompleted)}" title="${escapeAttr(completeLabel)}" aria-label="${escapeAttr(completeLabel)}" aria-pressed="${done ? 'true' : 'false'}">
+        <article class="todo-item ${tone} ${done ? 'done' : ''}">
+            <button class="todo-check ${done ? 'checked' : ''}" type="button" data-todo-toggle-complete="${escapeAttr(item.id)}" data-todo-completed="${escapeAttr(nextCompleted)}" data-todo-occurrence-date="${escapeAttr(occurrenceDate)}" title="${escapeAttr(completeLabel)}" aria-label="${escapeAttr(completeLabel)}" aria-pressed="${done ? 'true' : 'false'}">
                 <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.8"><path d="m5 12 4 4L19 6"/></svg>
             </button>
             <div class="todo-item-body">
@@ -7812,9 +7913,13 @@ function renderTodoEditItem(item) {
         end_date: draft.end_date || draft.due_date || '',
     };
     const priority = draft.priority || 'normal';
+    const tone = todoItemTone(item);
     return `
-        <article class="todo-item todo-edit-card" data-todo-edit-id="${escapeAttr(item.id)}">
-            <input class="todo-edit-title" type="text" data-todo-edit-title value="${escapeAttr(draft.title || '')}" ${todoState.saving ? 'disabled' : ''}>
+        <article class="todo-item todo-edit-card ${tone}" data-todo-edit-id="${escapeAttr(item.id)}">
+            <label class="todo-field todo-edit-title-field">
+                <span>${escapeHtml(t('todos.addTitle'))}</span>
+                <input class="todo-edit-title" type="text" data-todo-edit-title value="${escapeAttr(draft.title || '')}" ${todoState.saving ? 'disabled' : ''}>
+            </label>
             <label class="todo-field">
                 <span>${escapeHtml(t('todos.dateMode'))}</span>
                 <select data-todo-edit-date-mode aria-label="${escapeAttr(t('todos.dateMode'))}" ${todoState.saving ? 'disabled' : ''}>
@@ -7835,7 +7940,10 @@ function renderTodoEditItem(item) {
                     <option value="low" ${priority === 'low' ? 'selected' : ''}>${escapeHtml(t('todos.low'))}</option>
                 </select>
             </label>
-            <input class="todo-edit-notes" type="text" data-todo-edit-notes value="${escapeAttr(draft.notes || '')}" placeholder="${escapeAttr(t('todos.notesPlaceholder'))}" ${todoState.saving ? 'disabled' : ''}>
+            <label class="todo-field todo-edit-notes-field">
+                <span>${escapeHtml(t('todos.notesPlaceholder'))}</span>
+                <input class="todo-edit-notes" type="text" data-todo-edit-notes value="${escapeAttr(draft.notes || '')}" placeholder="${escapeAttr(t('todos.notesPlaceholder'))}" ${todoState.saving ? 'disabled' : ''}>
+            </label>
             <div class="todo-edit-actions">
                 <button class="btn-secondary" type="button" data-todo-edit-cancel="${escapeAttr(item.id)}">${escapeHtml(t('todos.cancelEdit'))}</button>
                 <button class="btn-primary" type="button" data-todo-edit-save="${escapeAttr(item.id)}" ${todoState.saving ? 'disabled aria-busy="true"' : ''}>${escapeHtml(t('todos.saveEdit'))}</button>
@@ -7989,6 +8097,21 @@ function todoMonthRange(monthKey = todoState.month) {
     };
 }
 
+function todoDefaultMonthSelectedDate(monthKey = todoState.month) {
+    const range = todoMonthRange(monthKey);
+    const today = todoTodayKey();
+    return today >= range.start && today <= range.end ? today : range.start;
+}
+
+function todoSelectedMonthDate(range, byDate = {}) {
+    const selected = todoState.monthSelectedDate || '';
+    if (selected >= range.start && selected <= range.end) return selected;
+    const today = todoTodayKey();
+    if (today >= range.start && today <= range.end) return today;
+    const firstTodoDate = Object.keys(byDate).sort().find((dateKey) => dateKey >= range.start && dateKey <= range.end);
+    return firstTodoDate || range.start;
+}
+
 function todoDateKey(date) {
     const year = date.getFullYear();
     const month = String(date.getMonth() + 1).padStart(2, '0');
@@ -8037,6 +8160,24 @@ function mapTodoItemsByDate(items, startDate, endDate) {
         }
     }
     return byDate;
+}
+
+function todoItemDoneForDate(item = {}, dateKey = '') {
+    if (item.occurrence_completed) return true;
+    const repeatRule = item.repeat_rule || 'once';
+    if ((repeatRule === 'daily' || repeatRule === 'workdays') && dateKey) {
+        return Array.isArray(item.completed_dates) && item.completed_dates.includes(dateKey);
+    }
+    return item.status === 'done';
+}
+
+function todoItemTone(item = {}) {
+    const seed = String(item.id || item.title || '');
+    let hash = 0;
+    for (let index = 0; index < seed.length; index += 1) {
+        hash = (hash * 31 + seed.charCodeAt(index)) >>> 0;
+    }
+    return `todo-tone-${hash % 7}`;
 }
 
 function todoOccurrenceDates(item, startDate, endDate) {
@@ -16250,7 +16391,27 @@ document.addEventListener('click', async (event) => {
     if (todoCompleteButton && !todoCompleteButton.disabled) {
         event.preventDefault();
         event.stopPropagation();
-        await setTodoCompleted(todoCompleteButton.dataset.todoToggleComplete, todoCompleteButton.dataset.todoCompleted === 'true');
+        await setTodoCompleted(
+            todoCompleteButton.dataset.todoToggleComplete,
+            todoCompleteButton.dataset.todoCompleted === 'true',
+            todoCompleteButton.dataset.todoOccurrenceDate || ''
+        );
+        return;
+    }
+
+    const todoMonthDayOpenButton = event.target.closest('[data-todo-month-day-open]');
+    if (todoMonthDayOpenButton) {
+        event.preventDefault();
+        event.stopPropagation();
+        toggleTodoMonthDay(todoMonthDayOpenButton.dataset.todoMonthDayOpen || '');
+        return;
+    }
+
+    const todoMonthDayOpen = event.target.closest('[data-todo-month-day]');
+    if (todoMonthDayOpen) {
+        event.preventDefault();
+        event.stopPropagation();
+        selectTodoMonthDay(todoMonthDayOpen.dataset.todoMonthDay || '');
         return;
     }
 
@@ -17121,6 +17282,15 @@ document.addEventListener('keydown', (event) => {
         if (editor?.dataset.todoEditId) {
             event.preventDefault();
             void saveTodoEdit(editor.dataset.todoEditId);
+            return;
+        }
+    }
+
+    if ((event.key === 'Enter' || event.key === ' ') && event.target.closest?.('[data-todo-month-day]') && !event.target.closest?.('button, input, select, textarea')) {
+        const monthDay = event.target.closest('[data-todo-month-day]');
+        if (monthDay?.dataset.todoMonthDay) {
+            event.preventDefault();
+            selectTodoMonthDay(monthDay.dataset.todoMonthDay);
             return;
         }
     }

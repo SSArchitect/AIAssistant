@@ -3132,10 +3132,16 @@ button.mode-chip:focus-visible {
 #view-agents,
 #view-tools,
 #view-pulse,
+#view-todos,
 #view-developer,
 #view-eval {
     overflow-y: auto;
     padding: 18px;
+}
+
+#view-todos {
+    align-items: stretch;
+    -webkit-overflow-scrolling: touch;
 }
 
 .content-grid {
@@ -5011,6 +5017,7 @@ button.mode-chip:focus-visible {
     width: min(1180px, 100%);
     height: min(760px, calc(100vh - 136px));
     min-height: 520px;
+    min-height: min(520px, calc(100dvh - 98px));
 }
 
 .todo-layout {
@@ -5018,6 +5025,7 @@ button.mode-chip:focus-visible {
     grid-template-columns: minmax(0, 1fr) minmax(260px, 320px);
     gap: 14px;
     align-items: stretch;
+    height: 100%;
     min-height: 100%;
 }
 
@@ -5036,6 +5044,7 @@ button.mode-chip:focus-visible {
     flex-direction: column;
     gap: 12px;
     min-height: 0;
+    overflow: hidden;
 }
 
 .todo-suggestion-panel {
@@ -5047,6 +5056,7 @@ button.mode-chip:focus-visible {
     top: 0;
     max-height: min(760px, calc(100vh - 136px));
     min-height: 0;
+    overflow: hidden;
 }
 
 .todo-toolbar {
@@ -5221,6 +5231,7 @@ button.mode-chip:focus-visible {
     flex: 1 1 auto;
     min-height: 0;
     overflow-y: auto;
+    overscroll-behavior: contain;
     padding-right: 2px;
 }
 
@@ -5236,6 +5247,7 @@ button.mode-chip:focus-visible {
 .todo-month-view {
     min-height: 0;
     display: grid;
+    align-content: start;
     gap: 10px;
 }
 
@@ -5280,6 +5292,13 @@ button.mode-chip:focus-visible {
     display: grid;
     grid-template-rows: auto minmax(0, 1fr);
     gap: 5px;
+    cursor: pointer;
+    transition: border-color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease, background 0.15s ease;
+}
+
+.todo-month-day:hover {
+    border-color: #b7c7ff;
+    box-shadow: 0 5px 14px rgba(49, 87, 213, 0.08);
 }
 
 .todo-month-day.muted {
@@ -5290,6 +5309,17 @@ button.mode-chip:focus-visible {
 .todo-month-day.today {
     border-color: #c6d8ff;
     background: var(--primary-soft);
+}
+
+.todo-month-day.selected {
+    border-color: var(--violet);
+    box-shadow: inset 0 0 0 1px rgba(109, 74, 255, 0.35), 0 6px 18px rgba(109, 74, 255, 0.12);
+}
+
+.todo-month-day.expanded {
+    min-height: 178px;
+    background: #ffffff;
+    z-index: 1;
 }
 
 .todo-month-date {
@@ -5305,6 +5335,13 @@ button.mode-chip:focus-visible {
     gap: 4px;
 }
 
+.todo-month-day.expanded .todo-month-items {
+    max-height: 226px;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding-right: 2px;
+}
+
 .todo-month-item {
     width: 100%;
     min-width: 0;
@@ -5312,8 +5349,8 @@ button.mode-chip:focus-visible {
     padding: 2px 5px;
     border: 1px solid var(--line);
     border-radius: 4px;
-    background: var(--surface);
-    color: var(--text);
+    background: var(--todo-soft, var(--surface));
+    color: var(--todo-ink, var(--text));
     cursor: pointer;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -5321,6 +5358,7 @@ button.mode-chip:focus-visible {
     text-align: left;
     font-size: 11px;
     font-weight: 750;
+    border-left: 3px solid var(--todo-accent, #c6d8ff);
 }
 
 .todo-month-item:hover {
@@ -5331,15 +5369,84 @@ button.mode-chip:focus-visible {
 .todo-month-item.done {
     color: var(--text-soft);
     text-decoration: line-through;
+    background: var(--surface-muted);
+    border-left-color: var(--green);
 }
 
 .todo-month-more {
+    width: fit-content;
+    max-width: 100%;
+    min-height: 20px;
+    padding: 0 6px;
+    border: 1px dashed var(--line-strong);
+    border-radius: 999px;
+    background: var(--surface);
     color: var(--text-soft);
+    cursor: pointer;
     font-size: 10px;
     font-weight: 800;
+    white-space: nowrap;
+}
+
+.todo-month-more:hover {
+    border-color: var(--primary);
+    color: var(--primary);
+    background: var(--primary-soft);
+}
+
+.todo-month-detail {
+    min-width: 0;
+    display: grid;
+    gap: 8px;
+    padding: 10px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
+}
+
+.todo-month-detail-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.todo-month-detail-head div {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+}
+
+.todo-month-detail-head span {
+    color: var(--text);
+    font-size: 13px;
+    font-weight: 850;
+}
+
+.todo-month-detail-head strong {
+    min-width: 22px;
+    height: 22px;
+    padding: 0 7px;
+    border-radius: 999px;
+    background: var(--violet-soft);
+    color: var(--violet);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 11px;
+}
+
+.todo-month-detail-list {
+    min-width: 0;
+    display: grid;
+    gap: 8px;
 }
 
 .todo-item {
+    --todo-accent: #3157d5;
+    --todo-soft: #e9f0ff;
+    --todo-ink: #2448b5;
     position: relative;
     display: grid;
     grid-template-columns: 30px minmax(0, 1fr) auto;
@@ -5348,7 +5455,7 @@ button.mode-chip:focus-visible {
     padding: 11px 12px 11px 13px;
     border: 1px solid var(--line);
     border-radius: var(--radius-sm);
-    background: var(--surface);
+    background: linear-gradient(90deg, var(--todo-soft) 0, var(--surface) 28%);
     box-shadow: 0 1px 2px rgba(16, 24, 40, 0.03);
     overflow: hidden;
 }
@@ -5358,7 +5465,7 @@ button.mode-chip:focus-visible {
     position: absolute;
     inset: 0 auto 0 0;
     width: 3px;
-    background: #c6d8ff;
+    background: var(--todo-accent);
 }
 
 .todo-item:hover {
@@ -5417,7 +5524,8 @@ button.mode-chip:focus-visible {
     min-height: 20px;
     padding: 2px 7px;
     border-radius: 999px;
-    background: var(--surface-muted);
+    background: var(--todo-soft);
+    color: var(--todo-ink);
 }
 
 .todo-item-actions {
@@ -5436,6 +5544,48 @@ button.mode-chip:focus-visible {
     color: var(--teal);
 }
 
+.todo-tone-0 {
+    --todo-accent: #3157d5;
+    --todo-soft: #e9f0ff;
+    --todo-ink: #2448b5;
+}
+
+.todo-tone-1 {
+    --todo-accent: #0f766e;
+    --todo-soft: #e6f7f4;
+    --todo-ink: #0f766e;
+}
+
+.todo-tone-2 {
+    --todo-accent: #b45309;
+    --todo-soft: #fff5e7;
+    --todo-ink: #92400e;
+}
+
+.todo-tone-3 {
+    --todo-accent: #be3455;
+    --todo-soft: #fff0f3;
+    --todo-ink: #9f1239;
+}
+
+.todo-tone-4 {
+    --todo-accent: #6d4aff;
+    --todo-soft: #f0edff;
+    --todo-ink: #5b35d5;
+}
+
+.todo-tone-5 {
+    --todo-accent: #15803d;
+    --todo-soft: #ecfdf3;
+    --todo-ink: #166534;
+}
+
+.todo-tone-6 {
+    --todo-accent: #2563eb;
+    --todo-soft: #eff6ff;
+    --todo-ink: #1d4ed8;
+}
+
 .todo-mini-button {
     width: 28px;
     height: 28px;
@@ -5450,16 +5600,16 @@ button.mode-chip:focus-visible {
 }
 
 .todo-edit-card {
-    grid-template-columns: minmax(180px, 1fr) minmax(132px, 150px) minmax(132px, 150px) 112px;
+    grid-template-columns: minmax(220px, 1.4fr) repeat(3, minmax(124px, 0.8fr));
     align-items: start;
-    column-gap: 8px;
+    column-gap: 10px;
     row-gap: 10px;
-    padding: 12px;
-    background: #f8fbff;
+    padding: 13px;
+    background: linear-gradient(90deg, var(--todo-soft) 0, #ffffff 30%);
 }
 
 .todo-edit-card::before {
-    background: var(--primary);
+    background: var(--todo-accent);
 }
 
 .todo-edit-card input,
@@ -5482,8 +5632,8 @@ button.mode-chip:focus-visible {
     box-shadow: 0 0 0 2px rgba(49, 87, 213, 0.12);
 }
 
-.todo-edit-title,
-.todo-edit-notes {
+.todo-edit-title-field,
+.todo-edit-notes-field {
     grid-column: 1 / -1;
 }
 
@@ -5492,6 +5642,13 @@ button.mode-chip:focus-visible {
     display: flex;
     justify-content: flex-end;
     gap: 8px;
+}
+
+.todo-edit-actions .btn-secondary,
+.todo-edit-actions .btn-primary {
+    width: auto;
+    min-width: 92px;
+    white-space: nowrap;
 }
 
 .todo-mini-button:hover {
@@ -5513,6 +5670,19 @@ button.mode-chip:focus-visible {
     align-items: flex-start;
     justify-content: space-between;
     gap: 10px;
+}
+
+.todo-suggestion-head > div {
+    min-width: 0;
+}
+
+.todo-suggestion-head .btn-secondary {
+    flex: 0 0 auto;
+    white-space: nowrap;
+}
+
+.todo-suggestion-head .btn-secondary span {
+    white-space: nowrap;
 }
 
 .todo-suggestion-head h2 {
@@ -9597,18 +9767,33 @@ body.drive-selecting {
 }
 
 @media (max-width: 860px) {
+    #view-todos {
+        padding: 10px;
+    }
+
     .todo-layout {
         grid-template-columns: 1fr;
+        height: auto;
+        min-height: 0;
     }
 
     .todo-suggestion-panel {
         position: static;
         max-height: none;
+        overflow: visible;
     }
 
     .todo-workbench {
         height: auto;
-        min-height: 0;
+        min-height: calc(100dvh - 86px);
+    }
+
+    .todo-main-panel {
+        overflow: visible;
+    }
+
+    .todo-list {
+        overflow: visible;
     }
 
     .todo-create-panel,
@@ -9618,10 +9803,23 @@ body.drive-selecting {
 
     .todo-add-button,
     .todo-notes-input,
-    .todo-edit-title,
-    .todo-edit-notes,
+    .todo-edit-title-field,
+    .todo-edit-notes-field,
     .todo-edit-actions {
         grid-column: 1 / -1;
+    }
+
+    .todo-edit-actions {
+        justify-content: stretch;
+    }
+
+    .todo-edit-actions .btn-secondary,
+    .todo-edit-actions .btn-primary {
+        flex: 1 1 0;
+    }
+
+    .todo-suggestion-head {
+        align-items: center;
     }
 
     .todo-month-grid {
@@ -9631,6 +9829,14 @@ body.drive-selecting {
     .todo-month-day {
         min-height: 74px;
         padding: 5px;
+    }
+
+    .todo-month-day.expanded {
+        min-height: 150px;
+    }
+
+    .todo-month-day.expanded .todo-month-items {
+        max-height: 190px;
     }
 
     .todo-month-item {

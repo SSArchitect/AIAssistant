@@ -63,17 +63,18 @@ type todoWriteRequest struct {
 }
 
 type todoPatchRequest struct {
-	Title      *string   `json:"title,omitempty"`
-	Notes      *string   `json:"notes,omitempty"`
-	StartDate  *string   `json:"start_date,omitempty"`
-	DueDate    *string   `json:"due_date,omitempty"`
-	EndDate    *string   `json:"end_date,omitempty"`
-	DueTime    *string   `json:"due_time,omitempty"`
-	Timezone   *string   `json:"timezone,omitempty"`
-	RepeatRule *string   `json:"repeat_rule,omitempty"`
-	Priority   *string   `json:"priority,omitempty"`
-	Tags       *[]string `json:"tags,omitempty"`
-	Status     *string   `json:"status,omitempty"`
+	Title          *string   `json:"title,omitempty"`
+	Notes          *string   `json:"notes,omitempty"`
+	StartDate      *string   `json:"start_date,omitempty"`
+	DueDate        *string   `json:"due_date,omitempty"`
+	EndDate        *string   `json:"end_date,omitempty"`
+	DueTime        *string   `json:"due_time,omitempty"`
+	Timezone       *string   `json:"timezone,omitempty"`
+	RepeatRule     *string   `json:"repeat_rule,omitempty"`
+	Priority       *string   `json:"priority,omitempty"`
+	Tags           *[]string `json:"tags,omitempty"`
+	Status         *string   `json:"status,omitempty"`
+	OccurrenceDate *string   `json:"occurrence_date,omitempty"`
 }
 
 type todoSuggestionRefreshRequest struct {
@@ -102,6 +103,9 @@ type todoResponse struct {
 	CreatedAt            time.Time  `json:"created_at"`
 	UpdatedAt            time.Time  `json:"updated_at"`
 	CompletedAt          *time.Time `json:"completed_at,omitempty"`
+	OccurrenceDate       string     `json:"occurrence_date,omitempty"`
+	OccurrenceCompleted  bool       `json:"occurrence_completed,omitempty"`
+	CompletedDates       []string   `json:"completed_dates,omitempty"`
 }
 
 type todoSuggestionResponse struct {
@@ -140,6 +144,8 @@ type todoSuggestionCandidate struct {
 	OriginRunID          string
 }
 
+type todoCompletionMap map[string]map[string]models.TodoCompletion
+
 func (h *TodoHandler) List(c *gin.Context) {
 	userID := requestUserID(c)
 	scope := strings.ToLower(strings.TrimSpace(c.DefaultQuery("scope", "today")))
@@ -157,8 +163,13 @@ func (h *TodoHandler) List(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load todo counts"})
 		return
 	}
+	responses, err := todoResponsesForScope(userID, items, scope, date, rangeStart, rangeEnd)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load todo completions"})
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{
-		"items":  todoResponses(items),
+		"items":  responses,
 		"counts": counts,
 		"scope":  scope,
 		"date":   date,
@@ -199,16 +210,49 @@ func (h *TodoHandler) Update(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request: " + err.Error()})
 		return
 	}
+	statusPatch := req.Status
+	req.Status = nil
 	if err := applyTodoPatch(&item, req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
+	}
+	occurrenceDate := ""
+	var completion *models.TodoCompletion
+	if statusPatch != nil {
+		status := normalizeTodoStatus(*statusPatch)
+		if status == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "unsupported todo status"})
+			return
+		}
+		if isRepeatingTodo(item) && status != todoStatusArchived {
+			var err error
+			occurrenceDate, err = normalizeTodoOccurrenceDate(pointerTodoString(req.OccurrenceDate))
+			if err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+				return
+			}
+			item.Status = todoStatusOpen
+			item.CompletedAt = nil
+			completion, err = setTodoOccurrenceCompletion(item, occurrenceDate, status == todoStatusDone)
+			if err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+				return
+			}
+		} else if err := applyTodoStatus(&item, status); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
 	}
 	item.UpdatedAt = time.Now()
 	if err := saveTodoItem(&item); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update todo"})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"todo": todoResponseFromModel(item)})
+	response := todoResponseFromModel(item)
+	if occurrenceDate != "" {
+		applyTodoOccurrenceToResponse(&response, occurrenceDate, completion)
+	}
+	c.JSON(http.StatusOK, gin.H{"todo": response})
 }
 
 func (h *TodoHandler) Complete(c *gin.Context) {
@@ -216,6 +260,29 @@ func (h *TodoHandler) Complete(c *gin.Context) {
 	var item models.TodoItem
 	if err := database.DB.First(&item, "id = ? AND user_id = ?", c.Param("id"), userID).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "todo not found"})
+		return
+	}
+	if isRepeatingTodo(item) {
+		occurrenceDate, err := normalizeTodoOccurrenceDate(firstNonEmptyTodo(c.Query("occurrence_date"), c.Query("date")))
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		item.Status = todoStatusOpen
+		item.CompletedAt = nil
+		completion, err := setTodoOccurrenceCompletion(item, occurrenceDate, true)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		item.UpdatedAt = time.Now()
+		if err := saveTodoItem(&item); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to complete todo"})
+			return
+		}
+		response := todoResponseFromModel(item)
+		applyTodoOccurrenceToResponse(&response, occurrenceDate, completion)
+		c.JSON(http.StatusOK, gin.H{"todo": response})
 		return
 	}
 	now := time.Now()
@@ -240,6 +307,7 @@ func (h *TodoHandler) Delete(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "todo not found"})
 		return
 	}
+	_ = database.DB.Delete(&models.TodoCompletion{}, "todo_id = ? AND user_id = ?", c.Param("id"), userID).Error
 	c.JSON(http.StatusOK, gin.H{"status": "deleted"})
 }
 
@@ -541,17 +609,22 @@ func applyTodoPatch(item *models.TodoItem, req todoPatchRequest) error {
 		item.TagsJSON = encodeTodoTags(*req.Tags)
 	}
 	if req.Status != nil {
-		status := normalizeTodoStatus(*req.Status)
-		if status == "" {
-			return errors.New("unsupported todo status")
-		}
-		item.Status = status
-		now := time.Now()
-		if status == todoStatusDone {
-			item.CompletedAt = &now
-		} else {
-			item.CompletedAt = nil
-		}
+		return applyTodoStatus(item, *req.Status)
+	}
+	return nil
+}
+
+func applyTodoStatus(item *models.TodoItem, statusValue string) error {
+	status := normalizeTodoStatus(statusValue)
+	if status == "" {
+		return errors.New("unsupported todo status")
+	}
+	item.Status = status
+	now := time.Now()
+	if status == todoStatusDone {
+		item.CompletedAt = &now
+	} else {
+		item.CompletedAt = nil
 	}
 	return nil
 }
@@ -579,8 +652,13 @@ func loadTodos(userID string, scope string, date string, rangeStart string, rang
 	if err := query.Find(&items).Error; err != nil {
 		return nil, err
 	}
-	items = filterTodoItemsForScope(items, scope, date, rangeStart, rangeEnd)
-	sortTodoItems(items, scope)
+	completionStart, completionEnd := todoCompletionRangeForScope(scope, date, rangeStart, rangeEnd)
+	completions, err := loadTodoCompletions(userID, items, completionStart, completionEnd)
+	if err != nil {
+		return nil, err
+	}
+	items = filterTodoItemsForScope(items, scope, date, rangeStart, rangeEnd, includeCompleted, completions)
+	sortTodoItems(items, scope, date, completions)
 	return items, nil
 }
 
@@ -588,17 +666,24 @@ func todoStatusQuery(query *gorm.DB, includeCompleted bool) *gorm.DB {
 	if includeCompleted {
 		return query.Where("status IN ?", []string{todoStatusOpen, todoStatusDone})
 	}
-	return query.Where("status = ?", todoStatusOpen)
+	return query.Where(
+		"(status = ? OR (status = ? AND repeat_rule IN ?))",
+		todoStatusOpen,
+		todoStatusDone,
+		[]string{todoRepeatDaily, todoRepeatWorkdays},
+	)
 }
 
-func sortTodoItems(items []models.TodoItem, scope string) {
+func sortTodoItems(items []models.TodoItem, scope string, date string, completions todoCompletionMap) {
 	sort.SliceStable(items, func(i, j int) bool {
 		left, right := items[i], items[j]
 		if scope == "done" || scope == "completed" {
-			return todoCompletedUnix(left) > todoCompletedUnix(right)
+			return todoCompletedUnixForScope(left, date, completions) > todoCompletedUnixForScope(right, date, completions)
 		}
-		if left.Status != right.Status {
-			return left.Status == todoStatusOpen
+		leftDone := todoItemDoneForSort(left, date, completions)
+		rightDone := todoItemDoneForSort(right, date, completions)
+		if leftDone != rightDone {
+			return !leftDone
 		}
 		leftDate := todoSortDate(left)
 		rightDate := todoSortDate(right)
@@ -643,7 +728,7 @@ func todoMonthSQL() string {
 	return "((repeat_rule IN ('daily', 'workdays') AND (start_date IS NULL OR start_date = '' OR start_date <= ?) AND (due_date IS NULL OR due_date = '' OR due_date >= ?)) OR ((repeat_rule IS NULL OR repeat_rule = '' OR repeat_rule = 'once') AND ((start_date IS NOT NULL AND start_date != '' AND due_date IS NOT NULL AND due_date != '' AND start_date <= ? AND due_date >= ?) OR (start_date IS NOT NULL AND start_date != '' AND (due_date IS NULL OR due_date = '') AND start_date BETWEEN ? AND ?) OR ((start_date IS NULL OR start_date = '') AND due_date IS NOT NULL AND due_date != '' AND due_date BETWEEN ? AND ?))))"
 }
 
-func filterTodoItemsForScope(items []models.TodoItem, scope string, date string, rangeStart string, rangeEnd string) []models.TodoItem {
+func filterTodoItemsForScope(items []models.TodoItem, scope string, date string, rangeStart string, rangeEnd string, includeCompleted bool, completions todoCompletionMap) []models.TodoItem {
 	filtered := make([]models.TodoItem, 0, len(items))
 	for _, item := range items {
 		switch scope {
@@ -655,11 +740,151 @@ func filterTodoItemsForScope(items []models.TodoItem, scope string, date string,
 			filtered = append(filtered, item)
 		default:
 			if todoOccursOnDate(item, date) {
+				if isRepeatingTodo(item) && !includeCompleted && todoCompletionExists(completions, item.ID, date) {
+					continue
+				}
 				filtered = append(filtered, item)
 			}
 		}
 	}
 	return filtered
+}
+
+func isRepeatingTodo(item models.TodoItem) bool {
+	repeatRule := normalizeTodoRepeatRule(item.RepeatRule)
+	return repeatRule == todoRepeatDaily || repeatRule == todoRepeatWorkdays
+}
+
+func normalizeTodoOccurrenceDate(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return time.Now().In(todoLocalLocation).Format("2006-01-02"), nil
+	}
+	return normalizeTodoDate(value, "occurrence_date")
+}
+
+func setTodoOccurrenceCompletion(item models.TodoItem, occurrenceDate string, completed bool) (*models.TodoCompletion, error) {
+	if occurrenceDate == "" {
+		var err error
+		occurrenceDate, err = normalizeTodoOccurrenceDate(occurrenceDate)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if !todoOccursOnDate(item, occurrenceDate) {
+		return nil, errors.New("todo does not occur on occurrence_date")
+	}
+	if !completed {
+		err := database.DB.Delete(&models.TodoCompletion{}, "todo_id = ? AND user_id = ? AND occurrence_date = ?", item.ID, item.UserID, occurrenceDate).Error
+		return nil, err
+	}
+
+	now := time.Now()
+	var completion models.TodoCompletion
+	err := database.DB.First(&completion, "todo_id = ? AND occurrence_date = ?", item.ID, occurrenceDate).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		completion = models.TodoCompletion{
+			ID:             uuid.NewString(),
+			TodoID:         item.ID,
+			UserID:         item.UserID,
+			OccurrenceDate: occurrenceDate,
+			CompletedAt:    now,
+			CreatedAt:      now,
+			UpdatedAt:      now,
+		}
+		if err := database.DB.Create(&completion).Error; err != nil {
+			return nil, err
+		}
+		return &completion, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	completion.UserID = item.UserID
+	completion.CompletedAt = now
+	completion.UpdatedAt = now
+	if err := database.DB.Save(&completion).Error; err != nil {
+		return nil, err
+	}
+	return &completion, nil
+}
+
+func todoCompletionRangeForScope(scope string, date string, rangeStart string, rangeEnd string) (string, string) {
+	if scope == "month" {
+		return rangeStart, rangeEnd
+	}
+	return date, date
+}
+
+func loadTodoCompletions(userID string, items []models.TodoItem, startDate string, endDate string) (todoCompletionMap, error) {
+	completionsByTodo := todoCompletionMap{}
+	if len(items) == 0 || startDate == "" || endDate == "" {
+		return completionsByTodo, nil
+	}
+	ids := make([]string, 0, len(items))
+	seen := map[string]bool{}
+	for _, item := range items {
+		if item.ID == "" || seen[item.ID] || !isRepeatingTodo(item) {
+			continue
+		}
+		ids = append(ids, item.ID)
+		seen[item.ID] = true
+	}
+	if len(ids) == 0 {
+		return completionsByTodo, nil
+	}
+	var completions []models.TodoCompletion
+	err := database.DB.
+		Where("user_id = ? AND todo_id IN ? AND occurrence_date BETWEEN ? AND ?", normalizedUserID(userID), ids, startDate, endDate).
+		Order("occurrence_date asc").
+		Find(&completions).Error
+	if err != nil {
+		return nil, err
+	}
+	for _, completion := range completions {
+		if completionsByTodo[completion.TodoID] == nil {
+			completionsByTodo[completion.TodoID] = map[string]models.TodoCompletion{}
+		}
+		completionsByTodo[completion.TodoID][completion.OccurrenceDate] = completion
+	}
+	return completionsByTodo, nil
+}
+
+func todoCompletionForDate(completions todoCompletionMap, todoID string, date string) (models.TodoCompletion, bool) {
+	if completions == nil || todoID == "" || date == "" {
+		return models.TodoCompletion{}, false
+	}
+	itemCompletions := completions[todoID]
+	if itemCompletions == nil {
+		return models.TodoCompletion{}, false
+	}
+	completion, ok := itemCompletions[date]
+	return completion, ok
+}
+
+func todoCompletionExists(completions todoCompletionMap, todoID string, date string) bool {
+	_, ok := todoCompletionForDate(completions, todoID, date)
+	return ok
+}
+
+func todoCompletedDatesForItem(completions todoCompletionMap, todoID string) []string {
+	itemCompletions := completions[todoID]
+	if len(itemCompletions) == 0 {
+		return []string{}
+	}
+	dates := make([]string, 0, len(itemCompletions))
+	for date := range itemCompletions {
+		dates = append(dates, date)
+	}
+	sort.Strings(dates)
+	return dates
+}
+
+func todoItemDoneForSort(item models.TodoItem, date string, completions todoCompletionMap) bool {
+	if isRepeatingTodo(item) {
+		return todoCompletionExists(completions, item.ID, date)
+	}
+	return item.Status == todoStatusDone
 }
 
 func todoSortDate(item models.TodoItem) string {
@@ -1089,6 +1314,57 @@ func todoDedupKey(text string) string {
 	return strings.ToLower(regexp.MustCompile(`\s+`).ReplaceAllString(strings.TrimSpace(text), " "))
 }
 
+func todoResponsesForScope(userID string, items []models.TodoItem, scope string, date string, rangeStart string, rangeEnd string) ([]todoResponse, error) {
+	completionStart, completionEnd := todoCompletionRangeForScope(scope, date, rangeStart, rangeEnd)
+	completions, err := loadTodoCompletions(userID, items, completionStart, completionEnd)
+	if err != nil {
+		return nil, err
+	}
+	responses := make([]todoResponse, 0, len(items))
+	for _, item := range items {
+		response := todoResponseFromModel(item)
+		if isRepeatingTodo(item) {
+			response.Status = todoStatusOpen
+			response.CompletedAt = nil
+			if scope == "month" {
+				response.CompletedDates = todoCompletedDatesForItem(completions, item.ID)
+			} else if occurrenceDate := todoOccurrenceDateForScope(scope, date); occurrenceDate != "" {
+				if completion, ok := todoCompletionForDate(completions, item.ID, occurrenceDate); ok {
+					applyTodoOccurrenceToResponse(&response, occurrenceDate, &completion)
+				} else {
+					response.OccurrenceDate = occurrenceDate
+				}
+			}
+		}
+		responses = append(responses, response)
+	}
+	return responses, nil
+}
+
+func todoOccurrenceDateForScope(scope string, date string) string {
+	switch scope {
+	case "month", "inbox", "upcoming", "done", "completed":
+		return ""
+	default:
+		return date
+	}
+}
+
+func applyTodoOccurrenceToResponse(response *todoResponse, occurrenceDate string, completion *models.TodoCompletion) {
+	if response == nil || occurrenceDate == "" {
+		return
+	}
+	response.OccurrenceDate = occurrenceDate
+	if completion == nil {
+		response.OccurrenceCompleted = false
+		return
+	}
+	response.Status = todoStatusDone
+	response.OccurrenceCompleted = true
+	response.CompletedAt = &completion.CompletedAt
+	response.CompletedDates = []string{occurrenceDate}
+}
+
 func todoResponses(items []models.TodoItem) []todoResponse {
 	responses := make([]todoResponse, 0, len(items))
 	for _, item := range items {
@@ -1337,6 +1613,15 @@ func todoCompletedUnix(item models.TodoItem) int64 {
 	return item.UpdatedAt.Unix()
 }
 
+func todoCompletedUnixForScope(item models.TodoItem, date string, completions todoCompletionMap) int64 {
+	if isRepeatingTodo(item) {
+		if completion, ok := todoCompletionForDate(completions, item.ID, date); ok {
+			return completion.CompletedAt.Unix()
+		}
+	}
+	return todoCompletedUnix(item)
+}
+
 func clampTodoConfidence(value int) int {
 	if value < 0 {
 		return 0
@@ -1354,6 +1639,13 @@ func firstNonEmptyTodo(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func pointerTodoString(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
 }
 
 func findTodoByID(userID string, id string) (models.TodoItem, error) {

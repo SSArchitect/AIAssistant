@@ -40,6 +40,7 @@ func Init(dbPath string) error {
 		&models.PulseModule{},
 		&models.PulseEvent{},
 		&models.TodoItem{},
+		&models.TodoCompletion{},
 		&models.TodoSuggestion{},
 		&models.KnowledgeProject{},
 		&models.KnowledgeDocument{},

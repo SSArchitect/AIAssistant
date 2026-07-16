@@ -34,6 +34,24 @@ func setupTodoTest(t *testing.T) (*gin.Engine, *TodoHandler) {
 	return router, handler
 }
 
+func todoResponseByID(items []todoResponse, id string) (todoResponse, bool) {
+	for _, item := range items {
+		if item.ID == id {
+			return item, true
+		}
+	}
+	return todoResponse{}, false
+}
+
+func containsTodoDate(dates []string, date string) bool {
+	for _, candidate := range dates {
+		if candidate == date {
+			return true
+		}
+	}
+	return false
+}
+
 func TestTodoCRUDScopesByUserAndDate(t *testing.T) {
 	router, _ := setupTodoTest(t)
 	today := time.Now().In(todoLocalLocation)
@@ -111,7 +129,7 @@ func TestTodoCRUDScopesByUserAndDate(t *testing.T) {
 		t.Fatalf("unexpected edited todo: %#v", edited.Todo)
 	}
 
-	completeReq := httptest.NewRequest(http.MethodPost, "/api/todos/"+created.Todo.ID+"/complete", nil)
+	completeReq := httptest.NewRequest(http.MethodPost, "/api/todos/"+created.Todo.ID+"/complete?occurrence_date="+todayText, nil)
 	completeReq.Header.Set("X-User-ID", "user-a")
 	completeRecorder := httptest.NewRecorder()
 	router.ServeHTTP(completeRecorder, completeReq)
@@ -122,8 +140,15 @@ func TestTodoCRUDScopesByUserAndDate(t *testing.T) {
 	if err := database.DB.First(&completed, "id = ?", created.Todo.ID).Error; err != nil {
 		t.Fatalf("load completed todo: %v", err)
 	}
-	if completed.Status != todoStatusDone || completed.CompletedAt == nil {
-		t.Fatalf("expected completed todo, got %#v", completed)
+	if completed.Status != todoStatusOpen || completed.CompletedAt != nil {
+		t.Fatalf("expected repeating todo to stay globally open, got %#v", completed)
+	}
+	var occurrenceCount int64
+	if err := database.DB.Model(&models.TodoCompletion{}).Where("todo_id = ? AND occurrence_date = ?", created.Todo.ID, todayText).Count(&occurrenceCount).Error; err != nil {
+		t.Fatalf("count completion occurrence: %v", err)
+	}
+	if occurrenceCount != 1 {
+		t.Fatalf("expected one completed occurrence, got %d", occurrenceCount)
 	}
 
 	doneReq := httptest.NewRequest(http.MethodGet, "/api/todos?scope=today&include_completed=true&date="+todayText, nil)
@@ -139,11 +164,12 @@ func TestTodoCRUDScopesByUserAndDate(t *testing.T) {
 	if err := json.Unmarshal(doneRecorder.Body.Bytes(), &donePayload); err != nil {
 		t.Fatalf("decode include completed response: %v", err)
 	}
-	if len(donePayload.Items) != 4 || donePayload.Items[3].ID != created.Todo.ID || donePayload.Items[3].Status != todoStatusDone {
-		t.Fatalf("expected completed todo at bottom of today list, got %#v", donePayload.Items)
+	doneTodo, ok := todoResponseByID(donePayload.Items, created.Todo.ID)
+	if len(donePayload.Items) != 4 || !ok || doneTodo.Status != todoStatusDone || !doneTodo.OccurrenceCompleted || doneTodo.OccurrenceDate != todayText {
+		t.Fatalf("expected completed occurrence in today list, got %#v", donePayload.Items)
 	}
 
-	reopenReq := httptest.NewRequest(http.MethodPut, "/api/todos/"+created.Todo.ID, bytes.NewBufferString(`{"status":"open"}`))
+	reopenReq := httptest.NewRequest(http.MethodPut, "/api/todos/"+created.Todo.ID, bytes.NewBufferString(`{"status":"open","occurrence_date":"`+todayText+`"}`))
 	reopenReq.Header.Set("Content-Type", "application/json")
 	reopenReq.Header.Set("X-User-ID", "user-a")
 	reopenRecorder := httptest.NewRecorder()
@@ -157,6 +183,134 @@ func TestTodoCRUDScopesByUserAndDate(t *testing.T) {
 	}
 	if reopened.Status != todoStatusOpen || reopened.CompletedAt != nil {
 		t.Fatalf("expected reopened todo, got %#v", reopened)
+	}
+	if err := database.DB.Model(&models.TodoCompletion{}).Where("todo_id = ? AND occurrence_date = ?", created.Todo.ID, todayText).Count(&occurrenceCount).Error; err != nil {
+		t.Fatalf("count reopened occurrence: %v", err)
+	}
+	if occurrenceCount != 0 {
+		t.Fatalf("expected reopened occurrence to be removed, got %d", occurrenceCount)
+	}
+}
+
+func TestRepeatingTodoCompletionOnlyAffectsSingleOccurrence(t *testing.T) {
+	router, _ := setupTodoTest(t)
+	now := time.Now()
+	item := models.TodoItem{
+		ID:         "daily-one",
+		UserID:     "user-a",
+		Title:      "Daily one",
+		Status:     todoStatusOpen,
+		StartDate:  "2026-07-01",
+		DueDate:    "2026-07-31",
+		RepeatRule: todoRepeatDaily,
+		Priority:   todoPriorityNormal,
+		Source:     todoSourceManual,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}
+	if err := database.DB.Create(&item).Error; err != nil {
+		t.Fatalf("create todo: %v", err)
+	}
+
+	completeReq := httptest.NewRequest(http.MethodPut, "/api/todos/daily-one", bytes.NewBufferString(`{"status":"done","occurrence_date":"2026-07-11"}`))
+	completeReq.Header.Set("Content-Type", "application/json")
+	completeReq.Header.Set("X-User-ID", "user-a")
+	completeRecorder := httptest.NewRecorder()
+	router.ServeHTTP(completeRecorder, completeReq)
+	if completeRecorder.Code != http.StatusOK {
+		t.Fatalf("unexpected complete status %d: %s", completeRecorder.Code, completeRecorder.Body.String())
+	}
+
+	dayReq := httptest.NewRequest(http.MethodGet, "/api/todos?scope=today&date=2026-07-11&include_completed=false", nil)
+	dayReq.Header.Set("X-User-ID", "user-a")
+	dayRecorder := httptest.NewRecorder()
+	router.ServeHTTP(dayRecorder, dayReq)
+	if dayRecorder.Code != http.StatusOK {
+		t.Fatalf("unexpected completed day status %d: %s", dayRecorder.Code, dayRecorder.Body.String())
+	}
+	var completedDay struct {
+		Items []todoResponse `json:"items"`
+	}
+	if err := json.Unmarshal(dayRecorder.Body.Bytes(), &completedDay); err != nil {
+		t.Fatalf("decode completed day: %v", err)
+	}
+	if _, ok := todoResponseByID(completedDay.Items, "daily-one"); ok {
+		t.Fatalf("completed occurrence should be hidden when include_completed=false, got %#v", completedDay.Items)
+	}
+
+	nextReq := httptest.NewRequest(http.MethodGet, "/api/todos?scope=today&date=2026-07-12&include_completed=false", nil)
+	nextReq.Header.Set("X-User-ID", "user-a")
+	nextRecorder := httptest.NewRecorder()
+	router.ServeHTTP(nextRecorder, nextReq)
+	if nextRecorder.Code != http.StatusOK {
+		t.Fatalf("unexpected next day status %d: %s", nextRecorder.Code, nextRecorder.Body.String())
+	}
+	var nextDay struct {
+		Items []todoResponse `json:"items"`
+	}
+	if err := json.Unmarshal(nextRecorder.Body.Bytes(), &nextDay); err != nil {
+		t.Fatalf("decode next day: %v", err)
+	}
+	if nextTodo, ok := todoResponseByID(nextDay.Items, "daily-one"); !ok || nextTodo.Status != todoStatusOpen {
+		t.Fatalf("future occurrence should remain open, got %#v", nextDay.Items)
+	}
+
+	monthReq := httptest.NewRequest(http.MethodGet, "/api/todos?scope=month&start=2026-07-01&end=2026-07-31&include_completed=true", nil)
+	monthReq.Header.Set("X-User-ID", "user-a")
+	monthRecorder := httptest.NewRecorder()
+	router.ServeHTTP(monthRecorder, monthReq)
+	if monthRecorder.Code != http.StatusOK {
+		t.Fatalf("unexpected month status %d: %s", monthRecorder.Code, monthRecorder.Body.String())
+	}
+	var monthPayload struct {
+		Items []todoResponse `json:"items"`
+	}
+	if err := json.Unmarshal(monthRecorder.Body.Bytes(), &monthPayload); err != nil {
+		t.Fatalf("decode month: %v", err)
+	}
+	monthTodo, ok := todoResponseByID(monthPayload.Items, "daily-one")
+	if !ok || monthTodo.Status != todoStatusOpen || !containsTodoDate(monthTodo.CompletedDates, "2026-07-11") || containsTodoDate(monthTodo.CompletedDates, "2026-07-12") {
+		t.Fatalf("month payload should mark only completed date, got %#v", monthPayload.Items)
+	}
+}
+
+func TestLegacyRepeatingDoneTodoStillShowsOpenOccurrences(t *testing.T) {
+	router, _ := setupTodoTest(t)
+	now := time.Now()
+	item := models.TodoItem{
+		ID:          "legacy-done",
+		UserID:      "user-a",
+		Title:       "Legacy done",
+		Status:      todoStatusDone,
+		StartDate:   "2026-07-01",
+		DueDate:     "2026-07-31",
+		RepeatRule:  todoRepeatDaily,
+		Priority:    todoPriorityNormal,
+		Source:      todoSourceManual,
+		CompletedAt: &now,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}
+	if err := database.DB.Create(&item).Error; err != nil {
+		t.Fatalf("create legacy todo: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/todos?scope=today&date=2026-07-12&include_completed=false", nil)
+	req.Header.Set("X-User-ID", "user-a")
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("unexpected status %d: %s", recorder.Code, recorder.Body.String())
+	}
+	var payload struct {
+		Items []todoResponse `json:"items"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	todo, ok := todoResponseByID(payload.Items, "legacy-done")
+	if !ok || todo.Status != todoStatusOpen || todo.CompletedAt != nil {
+		t.Fatalf("legacy repeating todo should render as open occurrence, got %#v", payload.Items)
 	}
 }
 

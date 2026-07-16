@@ -24,6 +24,16 @@ type TodoItem struct {
 	CompletedAt          *time.Time `json:"completed_at,omitempty"`
 }
 
+type TodoCompletion struct {
+	ID             string    `json:"id" gorm:"primaryKey"`
+	TodoID         string    `json:"todo_id" gorm:"index:idx_todo_completion_occurrence,unique;not null"`
+	UserID         string    `json:"user_id" gorm:"index;not null;default:0"`
+	OccurrenceDate string    `json:"occurrence_date" gorm:"index:idx_todo_completion_occurrence,unique;not null"`
+	CompletedAt    time.Time `json:"completed_at"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
+}
+
 type TodoSuggestion struct {
 	ID                   string     `json:"id" gorm:"primaryKey"`
 	UserID               string     `json:"user_id" gorm:"index;not null;default:0"`
