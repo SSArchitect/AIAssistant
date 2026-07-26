@@ -190,6 +190,12 @@ func TestAgentClientSearch(t *testing.T) {
 		if req.Limit != 3 {
 			t.Fatalf("unexpected limit: %d", req.Limit)
 		}
+		if !req.OpenResults {
+			t.Fatal("expected search request to open result pages")
+		}
+		if req.OpenLimit != 2 || req.PageChars != 1400 {
+			t.Fatalf("unexpected page-open budget: open_limit=%d page_chars=%d", req.OpenLimit, req.PageChars)
+		}
 
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{
@@ -210,7 +216,13 @@ func TestAgentClientSearch(t *testing.T) {
 	defer server.Close()
 
 	client := NewAgentClient(server.URL, time.Second)
-	resp, err := client.Search(SearchRequest{Query: "AI Agent latest", Limit: 3})
+	resp, err := client.Search(SearchRequest{
+		Query:       "AI Agent latest",
+		Limit:       3,
+		OpenResults: true,
+		OpenLimit:   2,
+		PageChars:   1400,
+	})
 	if err != nil {
 		t.Fatalf("Search returned error: %v", err)
 	}
@@ -223,6 +235,27 @@ func TestAgentClientSearch(t *testing.T) {
 	rank, ok := resp.Results[0].Metadata["rank"].(float64)
 	if !ok || rank != 1 {
 		t.Fatalf("unexpected metadata: %#v", resp.Results[0].Metadata)
+	}
+}
+
+func TestSearchRequestOmitsOpenResultsByDefault(t *testing.T) {
+	body, err := json.Marshal(SearchRequest{Query: "AI Agent latest"})
+	if err != nil {
+		t.Fatalf("marshal search request: %v", err)
+	}
+
+	var payload map[string]interface{}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("decode search request payload: %v", err)
+	}
+	if _, ok := payload["open_results"]; ok {
+		t.Fatalf("expected open_results to be omitted by default, got %s", body)
+	}
+	if _, ok := payload["open_limit"]; ok {
+		t.Fatalf("expected open_limit to be omitted by default, got %s", body)
+	}
+	if _, ok := payload["page_chars"]; ok {
+		t.Fatalf("expected page_chars to be omitted by default, got %s", body)
 	}
 }
 

@@ -1,4 +1,5 @@
 const API_BASE = '';
+const CHAT_RECOVERY = globalThis.ChatRecovery;
 const LANGUAGE_KEY = 'agent_assistant_language';
 const MODE_STORAGE_KEY = 'super_chat_mode_ids';
 const SUPER_CHAT_AGENT_ID = 'super_chat';
@@ -39,6 +40,7 @@ const VIEW_COPY = {
     pulse: ['views.pulse.title', 'views.pulse.subtitle'],
     todos: ['views.todos.title', 'views.todos.subtitle'],
     projects: ['views.projects.title', 'views.projects.subtitle'],
+    role: ['views.role.title', 'views.role.subtitle'],
     agents: ['views.agents.title', 'views.agents.subtitle'],
     tools: ['views.tools.title', 'views.tools.subtitle'],
     trace: ['views.trace.title', 'views.trace.subtitle'],
@@ -49,14 +51,29 @@ const VIEW_COPY = {
 const I18N = {
     zh: {
         app: { name: '阿安的工作台' },
-        nav: { chat: 'Super Chat', pulse: 'Pulse', todos: 'Todo', projects: '网盘', agents: 'Agents', tools: 'Tools', trace: 'Trace', runs: 'Runs', developer: 'Developer', memory: 'Memory', eval: 'Eval' },
+        nav: {
+            chat: 'Super Chat',
+            pulse: 'Pulse',
+            todos: 'Todo',
+            projects: '网盘',
+            config: 'Config',
+            role: 'Role',
+            memory: 'Memory',
+            tools: 'Tool',
+            agents: 'Agents',
+            developer: 'Developer',
+            trace: 'Trace',
+            runs: 'Runs',
+            eval: 'Eval',
+            adminConfig: '管理员配置',
+        },
         sidebar: {
             navigation: '导航',
             pinned: '固定 Agent',
             todos: '今日待办',
             projects: '网盘',
             recent: '最近会话',
-            fullConfig: '完整配置',
+            fullConfig: '管理员配置',
             modelSelect: '模型选择',
             defaultModel: '默认模型',
             emptyConversations: '暂无会话',
@@ -119,7 +136,7 @@ const I18N = {
             unpin: '取消固定',
             test: 'Test',
             testing: 'Testing...',
-            openConfig: '打开完整配置',
+            openConfig: '打开管理员配置',
             generate: '生成图片',
             generating: '生成中...',
             regenerateAnswer: '重新回答',
@@ -149,6 +166,7 @@ const I18N = {
             pulse: { title: 'Pulse', subtitle: 'Topic 推荐、信息簇阅读与下一跳学习入口' },
             todos: { title: 'Todo', subtitle: '今日、逾期、待排期、月视图和高置信建议' },
             projects: { title: '网盘', subtitle: '每个帐号独立的文件树、上传下载与 Super Chat 上下文' },
+            role: { title: 'Role', subtitle: '创建和管理当前帐号自己的角色人设、指令与偏好' },
             agents: { title: 'Agents', subtitle: 'Agent 功能入口、实现版本和能力状态' },
             tools: { title: 'Tools', subtitle: '内置工具、参数和调用状态' },
             runs: { title: 'Runs', subtitle: '执行轨迹、事件和调试信息' },
@@ -328,6 +346,7 @@ const I18N = {
             createConversationFailed: '创建会话失败：{message}',
             deleteConversationFailed: '删除会话失败：{message}',
             resumePending: 'AI 仍在生成，完成后会自动恢复到当前会话',
+            resumeFailed: '连接已恢复，但暂时无法取得这次回答。请刷新会话后重试。',
             citations: '引用来源',
             followUpAria: '推荐追问',
         },
@@ -354,6 +373,41 @@ const I18N = {
             deleteFailed: '删除失败：{message}',
             manual: '手动',
             ai: '对话',
+        },
+        roleConfig: {
+            title: '角色人设',
+            listDetail: '内置角色只读，自定义角色仅属于当前帐号。',
+            new: '新建角色',
+            templatesTitle: '常用模板',
+            templatesDetail: '套用后仍可继续修改。',
+            id: '角色 ID',
+            name: '角色名',
+            namePlaceholder: '角色名称',
+            description: '描述',
+            descriptionPlaceholder: '一句话描述',
+            basePersona: '基础 Persona',
+            instructions: '指令',
+            instructionsPlaceholder: '每行一条指令',
+            preferences: '习惯 / 偏好',
+            preferencesPlaceholder: '每行一条，例如：回答先给结论；默认用中文；复杂任务先列计划',
+            enabled: '启用',
+            memoryEnabled: '启用记忆',
+            save: '保存角色',
+            saving: '保存中...',
+            delete: '删除',
+            builtIn: '内置',
+            custom: '自定义',
+            count: '{count} 个角色',
+            empty: '暂无角色',
+            nameRequired: '名称不能为空',
+            saved: '角色已保存',
+            deleted: '角色已删除',
+            builtInHint: '内置角色不可编辑或删除。可以从模板新建一个属于你的自定义角色。',
+            customHint: '这个自定义角色仅对当前帐号可见。',
+            deleteConfirm: '确定删除角色「{name}」吗？',
+            loadFailed: '加载角色失败：{message}',
+            saveFailed: '保存失败：{message}',
+            deleteFailed: '删除失败：{message}',
         },
         developer: {
             refresh: '刷新 Memory',
@@ -583,13 +637,14 @@ const I18N = {
             generatedAt: '已预计算：{time}',
             neverGenerated: '等待生成',
             refreshing: '正在生成新的 Pulse...',
+            refreshTimedOut: '本次刷新耗时较长，后台仍在继续；完成后会自动更新。',
             loading: '正在加载 Pulse...',
             emptyTitle: '还没有信息簇',
             emptyDetail: '添加一个 Topic 或刷新 Pulse。',
             emptyComputingTitle: 'Pulse 还在计算中',
             emptyComputingDetail: '先不展示失败兜底卡；拿到可核验来源后会自动更新。',
             emptyUnavailableTitle: '暂无有效信息簇',
-            emptyUnavailableDetail: '本次搜索或总结没有拿到可核验来源，先隐藏推荐卡。',
+            emptyUnavailableDetail: '本轮没有找到由至少两个近期独立来源共同证实的具体事件，因此不展示卡片。',
             emptyTopics: '还没有订阅 Topic',
             emptyModule: '这个模块暂时没有推荐',
             emptyFiltered: '这个 Topic 暂时没有信息簇',
@@ -601,6 +656,7 @@ const I18N = {
             hot: '热度',
             heat: '热度 {score}',
             featureScore: '排序 {score}',
+            sourceCount: '{count} 个独立来源',
             expand: '展开',
             collapse: '收起',
             ask: '继续聊',
@@ -611,6 +667,7 @@ const I18N = {
             upvote: '赞',
             downvote: '踩',
             reason: '推荐理由',
+            clusterContent: '新闻簇内容',
             signals: '依据线索',
             quickContext: '背景',
             keyPoints: '关键点',
@@ -618,6 +675,7 @@ const I18N = {
             suggestedQuestions: '可以追问',
             relatedClusters: '相关信息簇',
             openCluster: '打开',
+            relatedUnavailable: '本轮未展示',
             sourceTopic: '关注 Topic',
             sourceMemory: '近日 Memory',
             sourceHot: '可能兴趣',
@@ -823,14 +881,29 @@ const I18N = {
     },
     en: {
         app: { name: '阿安的工作台' },
-        nav: { chat: 'Super Chat', pulse: 'Pulse', todos: 'Todo', projects: 'Drive', agents: 'Agents', tools: 'Tools', trace: 'Trace', runs: 'Runs', developer: 'Developer', memory: 'Memory', eval: 'Eval' },
+        nav: {
+            chat: 'Super Chat',
+            pulse: 'Pulse',
+            todos: 'Todo',
+            projects: 'Drive',
+            config: 'Config',
+            role: 'Role',
+            memory: 'Memory',
+            tools: 'Tool',
+            agents: 'Agents',
+            developer: 'Developer',
+            trace: 'Trace',
+            runs: 'Runs',
+            eval: 'Eval',
+            adminConfig: 'Admin Settings',
+        },
         sidebar: {
             navigation: 'Navigation',
             pinned: 'Pinned Agents',
             todos: "Today's Todos",
             projects: 'Drive',
             recent: 'Recent Chats',
-            fullConfig: 'Full Settings',
+            fullConfig: 'Admin Settings',
             modelSelect: 'Model selection',
             defaultModel: 'Default Model',
             emptyConversations: 'No conversations',
@@ -893,7 +966,7 @@ const I18N = {
             unpin: 'Unpin',
             test: 'Test',
             testing: 'Testing...',
-            openConfig: 'Open Full Settings',
+            openConfig: 'Open Admin Settings',
             generate: 'Generate Image',
             generating: 'Generating...',
             regenerateAnswer: 'Regenerate Answer',
@@ -923,6 +996,7 @@ const I18N = {
             pulse: { title: 'Pulse', subtitle: 'Topic seeds, information clusters, and next-step reading' },
             todos: { title: 'Todo', subtitle: 'Today, overdue, unscheduled items, month view, and high-confidence suggestions' },
             projects: { title: 'Drive', subtitle: 'Per-account file tree, uploads, downloads, and Super Chat context' },
+            role: { title: 'Role', subtitle: 'Create and manage personas, instructions, and preferences for this account' },
             agents: { title: 'Agents', subtitle: 'Agent entry points, runtimes, and capability status' },
             tools: { title: 'Tools', subtitle: 'Built-in tools, parameters, and execution status' },
             runs: { title: 'Runs', subtitle: 'Execution traces, events, and debugging details' },
@@ -1102,6 +1176,7 @@ const I18N = {
             createConversationFailed: 'Failed to create conversation: {message}',
             deleteConversationFailed: 'Failed to delete conversation: {message}',
             resumePending: 'AI is still generating. The answer will reappear here when it finishes.',
+            resumeFailed: 'The connection is back, but this answer could not be recovered yet. Refresh the conversation and try again.',
             citations: 'Sources',
             followUpAria: 'Suggested follow-up questions',
         },
@@ -1128,6 +1203,41 @@ const I18N = {
             deleteFailed: 'Failed to delete: {message}',
             manual: 'Manual',
             ai: 'Chat',
+        },
+        roleConfig: {
+            title: 'Personas',
+            listDetail: 'Built-in roles are read-only. Custom roles belong only to this account.',
+            new: 'New Persona',
+            templatesTitle: 'Templates',
+            templatesDetail: 'Apply a template, then tailor it to your needs.',
+            id: 'Role ID',
+            name: 'Persona Name',
+            namePlaceholder: 'Persona name',
+            description: 'Description',
+            descriptionPlaceholder: 'Short description',
+            basePersona: 'Base Persona',
+            instructions: 'Instructions',
+            instructionsPlaceholder: 'One instruction per line',
+            preferences: 'Habits / Preferences',
+            preferencesPlaceholder: 'One per line, e.g. conclusion first; use English; plan complex work first',
+            enabled: 'Enabled',
+            memoryEnabled: 'Enable Memory',
+            save: 'Save Persona',
+            saving: 'Saving...',
+            delete: 'Delete',
+            builtIn: 'built-in',
+            custom: 'custom',
+            count: '{count} roles',
+            empty: 'No personas',
+            nameRequired: 'Name is required',
+            saved: 'Persona saved',
+            deleted: 'Persona deleted',
+            builtInHint: 'Built-in personas cannot be edited or deleted. Create a custom persona from a template.',
+            customHint: 'This custom persona is visible only to the current account.',
+            deleteConfirm: 'Delete persona "{name}"?',
+            loadFailed: 'Failed to load personas: {message}',
+            saveFailed: 'Failed to save: {message}',
+            deleteFailed: 'Failed to delete: {message}',
         },
         developer: {
             refresh: 'Refresh Memory',
@@ -1357,13 +1467,14 @@ const I18N = {
             generatedAt: 'Precomputed: {time}',
             neverGenerated: 'Waiting to generate',
             refreshing: 'Generating a fresh Pulse...',
+            refreshTimedOut: 'This refresh is taking longer than expected. It is still running and will update automatically.',
             loading: 'Loading Pulse...',
             emptyTitle: 'No clusters yet',
             emptyDetail: 'Add a topic or refresh Pulse.',
             emptyComputingTitle: 'Pulse is still computing',
             emptyComputingDetail: 'Failed fallback cards are hidden; clusters will appear after verifiable sources are available.',
             emptyUnavailableTitle: 'No valid clusters',
-            emptyUnavailableDetail: 'This run did not find verifiable sources, so recommendation cards are hidden for now.',
+            emptyUnavailableDetail: 'No concrete event was confirmed by at least two recent independent sources, so no cards are shown.',
             emptyTopics: 'No topic subscriptions yet',
             emptyModule: 'No recommendations in this module yet',
             emptyFiltered: 'No clusters for this topic yet',
@@ -1375,6 +1486,7 @@ const I18N = {
             hot: 'Hot',
             heat: 'Heat {score}',
             featureScore: 'Rank {score}',
+            sourceCount: '{count} independent sources',
             expand: 'Expand',
             collapse: 'Collapse',
             ask: 'Ask',
@@ -1385,6 +1497,7 @@ const I18N = {
             upvote: 'Up',
             downvote: 'Down',
             reason: 'Why this',
+            clusterContent: 'News Cluster',
             signals: 'Signals',
             quickContext: 'Context',
             keyPoints: 'Key Points',
@@ -1392,6 +1505,7 @@ const I18N = {
             suggestedQuestions: 'Suggested Questions',
             relatedClusters: 'Related Clusters',
             openCluster: 'Open',
+            relatedUnavailable: 'Not in this feed',
             sourceTopic: 'Followed Topic',
             sourceMemory: 'Recent Memory',
             sourceHot: 'Likely Interest',
@@ -1640,13 +1754,80 @@ const MAX_TEXT_ATTACHMENT_BYTES = 1024 * 1024;
 const MAX_MEDIA_ATTACHMENT_BYTES = 8 * 1024 * 1024;
 const MAX_DOCUMENT_ATTACHMENT_BYTES = 8 * 1024 * 1024;
 const MAX_DRIVE_BINARY_BYTES = 8 * 1024 * 1024;
+const ROLE_CONFIG_EXAMPLES = [
+    {
+        id: 'personal_operator',
+        name: { zh: '私人执行助理', en: 'Personal Operator' },
+        description: {
+            zh: '帮我拆任务、跟进事项、整理日程和推动个人项目。',
+            en: 'Helps break down tasks, track follow-ups, organize schedules, and move personal projects forward.',
+        },
+        basePersona: {
+            zh: '你是一位靠谱、细致、有推进感的私人执行助理。你会把模糊想法整理成清晰行动，并帮用户减少拖延和遗漏。',
+            en: 'You are a reliable, detail-oriented personal operator. You turn fuzzy ideas into clear actions and help the user avoid procrastination and missed details.',
+        },
+        instructions: {
+            zh: ['先确认目标和截止时间。', '复杂事项拆成今天、这周、之后三层。', '输出尽量能直接变成待办或日程。'],
+            en: ['Clarify the goal and deadline first.', 'Split complex work into today, this week, and later.', 'Make outputs easy to turn into tasks or calendar items.'],
+        },
+        preferences: {
+            zh: ['默认用中文。', '回答先给结论，再给行动清单。', '提醒我哪些事需要主动推进。'],
+            en: ['Use English by default.', 'Answer with the conclusion first, then action items.', 'Call out items that need proactive follow-up.'],
+        },
+    },
+    {
+        id: 'engineering_partner',
+        name: { zh: '工程搭档', en: 'Engineering Partner' },
+        description: {
+            zh: '一起设计、实现、排查和复盘代码项目。',
+            en: 'Collaborates on design, implementation, debugging, and review for engineering projects.',
+        },
+        basePersona: {
+            zh: '你是一位资深工程搭档。你会先读懂现有系统，再提出保守、清晰、可验证的实现方案。',
+            en: 'You are a senior engineering partner. You understand the existing system first, then suggest conservative, clear, verifiable implementation paths.',
+        },
+        instructions: {
+            zh: ['先确认代码边界和现有约定。', '优先给可测试、可回滚的小步改动。', '发现风险时直接指出具体文件或行为。'],
+            en: ['Confirm code boundaries and existing conventions first.', 'Prefer small changes that can be tested and rolled back.', 'Point to concrete files or behavior when identifying risks.'],
+        },
+        preferences: {
+            zh: ['不要空泛重构。', '解释时带上验证方式。', '遇到不确定先查代码。'],
+            en: ['Avoid vague refactors.', 'Include verification steps when explaining.', 'Inspect the code before assuming.'],
+        },
+    },
+    {
+        id: 'writing_editor_custom',
+        name: { zh: '写作编辑', en: 'Writing Editor' },
+        description: {
+            zh: '帮我写作、润色、改标题、调整语气和结构。',
+            en: 'Helps draft, polish, title, tune tone, and structure writing.',
+        },
+        basePersona: {
+            zh: '你是一位克制但有审美的写作编辑。你会保留用户原意，让表达更准确、有节奏、有辨识度。',
+            en: 'You are a restrained editor with taste. You preserve the user intent while making the writing clearer, sharper, and more distinctive.',
+        },
+        instructions: {
+            zh: ['先判断文本目标和读者。', '给少量高质量版本，不堆砌选项。', '修改时说明关键取舍。'],
+            en: ['Identify the goal and audience first.', 'Offer a few high-quality versions instead of many options.', 'Explain the key editorial tradeoffs.'],
+        },
+        preferences: {
+            zh: ['偏好自然、克制、不过度营销。', '标题要短、有力、具体。', '保留我原来的语气底色。'],
+            en: ['Prefer natural, restrained language over hype.', 'Titles should be short, strong, and specific.', 'Preserve my underlying voice.'],
+        },
+    },
+];
+
 const MAX_ATTACHMENT_CHARS = 12000;
 const MAX_TOTAL_ATTACHMENT_CHARS = 24000;
 const ACTIVE_RUN_POLL_MS = 1500;
 const ACTIVE_RUN_MAX_POLLS = 240;
+const ACTIVE_RUN_START_MAX_POLLS = 40;
 const CONVERSATION_RENDER_CACHE_LIMIT = 20;
 const FOLLOW_UP_QUESTION_COUNT = 3;
 const FOLLOW_UP_POLL_DELAYS_MS = [500, 1000, 1500, 2000, 3000, 4000];
+const PULSE_REFRESH_POLL_MS = 5000;
+const PULSE_REFRESH_SLOW_POLL_MS = 30000;
+const PULSE_REFRESH_FAST_MAX_POLLS = 24;
 const TEXT_ATTACHMENT_EXTENSIONS = new Set([
     'txt', 'md', 'markdown', 'csv', 'tsv', 'json', 'jsonl', 'yaml', 'yml',
     'xml', 'html', 'htm', 'log', 'ini', 'toml', 'env', 'conf', 'cfg', 'properties',
@@ -1745,6 +1926,12 @@ let collapsedDriveFolderIds = loadDriveCollapsedFolderIds();
 let driveRecentPathIds = loadDriveRecentPathIds();
 let roles = [];
 let currentRoleId = loadCurrentRoleId();
+let selectedRoleConfigId = 'default';
+let roleConfigSaving = false;
+let roleConfigStatusText = '';
+let roleConfigStatusType = 'muted';
+let roleConfigDraft = null;
+let roleConfigDirty = false;
 let roleMemories = [];
 let roleMemoryError = '';
 let roleMemoryStatusText = '';
@@ -1812,12 +1999,17 @@ let pulseErrorType = 'load';
 let pulseTopicSubmitting = false;
 let pulseRefreshPollTimer = null;
 let pulseRefreshPollAttempts = 0;
+let pulseRequestEpoch = 0;
+let pulseRequestSequence = 0;
+let pulseLatestRequestSequence = 0;
+let pulseRefreshRequestPending = false;
 let pinnedAgentIds = loadPinnedAgents();
 let collapsedSidebarSections = loadCollapsedSidebarSections();
 let selectedModeIds = loadSelectedModes();
 let attachedContexts = [];
 let attachmentSeq = 0;
 let activeRunWatcher = null;
+let chatResumeReconcilePromise = null;
 let mediaPreviewScale = 1;
 let mediaPreviewRotation = 0;
 let mediaPreviewReturnFocus = null;
@@ -1882,6 +2074,10 @@ const roleMemoryList = document.getElementById('role-memory-list');
 const roleMemoryForm = document.getElementById('role-memory-form');
 const roleMemoryInput = document.getElementById('role-memory-input');
 const roleMemoryStatus = document.getElementById('role-memory-status');
+const roleConfigList = document.getElementById('role-config-list');
+const roleConfigCount = document.getElementById('role-config-count');
+const roleConfigTemplateList = document.getElementById('role-config-template-list');
+const roleConfigStatus = document.getElementById('role-config-status');
 const viewTitle = document.getElementById('view-title');
 const viewSubtitle = document.getElementById('view-subtitle');
 const systemStatus = document.getElementById('system-status');
@@ -1920,6 +2116,8 @@ const drivePreviewTitle = document.getElementById('drive-preview-title');
 const drivePreviewMeta = document.getElementById('drive-preview-meta');
 const drivePreviewStatus = document.getElementById('drive-preview-status');
 const drivePreviewContent = document.getElementById('drive-preview-content');
+const drivePreviewShareButton = document.getElementById('drive-preview-share-button');
+const drivePreviewShareMenu = document.getElementById('drive-preview-share-menu');
 const drivePreviewDownload = document.querySelector('[data-drive-preview-download]');
 const runList = document.getElementById('run-list');
 const runDetail = document.getElementById('run-detail');
@@ -1935,6 +2133,7 @@ const pulseTopicFilter = document.getElementById('pulse-topic-filter');
 const pulseItems = document.getElementById('pulse-items');
 const pulseDateTitle = document.getElementById('pulse-date-title');
 const pulseGeneratedAt = document.getElementById('pulse-generated-at');
+const pulseRefreshControl = document.querySelector('[data-pulse-refresh]');
 const pulsePostWindow = document.getElementById('pulse-post-window');
 const pulsePostTitle = document.getElementById('pulse-post-title');
 const pulsePostNote = document.getElementById('pulse-post-note');
@@ -2065,6 +2264,7 @@ function setLanguage(language) {
     renderAccountControls();
     renderRoleSelect();
     renderRoleMemoryList();
+    renderRoleConfig();
     renderDeveloperView();
     renderEvalView();
     renderModelSelect();
@@ -2532,6 +2732,7 @@ async function switchAccount(userId, options = {}) {
     }
 
     stopActiveRunWatcher();
+    invalidatePulseRequests();
     activeConversationRequests.clear();
     currentUserId = nextUserId;
     currentAccountToken = options.token || loadAccountSessionToken(nextUserId);
@@ -2547,6 +2748,13 @@ async function switchAccount(userId, options = {}) {
     chatDrivePathId = loadChatDrivePathId();
     selectedModeIds = loadSelectedModes(currentConversationId);
     currentRoleId = loadCurrentRoleId();
+    roles = [];
+    selectedRoleConfigId = 'default';
+    roleConfigSaving = false;
+    roleConfigStatusText = '';
+    roleConfigStatusType = 'muted';
+    roleConfigDraft = null;
+    roleConfigDirty = false;
     roleMemories = [];
     roleMemoryError = '';
     roleMemoryStatusText = '';
@@ -2626,6 +2834,7 @@ async function switchAccount(userId, options = {}) {
     renderAccountControls();
     renderRoleSelect();
     renderRoleMemoryList();
+    renderRoleConfig();
     renderConversationList();
     renderProjectList();
     renderProjects();
@@ -2842,7 +3051,10 @@ function hasPendingAttachments() {
 }
 
 function isCurrentConversationLoading() {
-    return Boolean(currentConversationId && activeConversationRequests.has(currentConversationId));
+    return Boolean(currentConversationId && (
+        activeConversationRequests.has(currentConversationId)
+        || activeRunWatcher?.conversationId === currentConversationId
+    ));
 }
 
 function updateSendState() {
@@ -4545,15 +4757,372 @@ async function loadRoles() {
             currentRoleId = selectable[0]?.id || 'default';
             saveCurrentRoleId();
         }
+        const previousRoleConfigId = selectedRoleConfigId;
+        if (selectedRoleConfigId && !roles.some((role) => role.id === selectedRoleConfigId)) {
+            selectedRoleConfigId = roles.find((role) => role.id === currentRoleId)?.id
+                || roles.find((role) => role.id === 'default')?.id
+                || roles[0]?.id
+                || '';
+        }
+        if (selectedRoleConfigId !== previousRoleConfigId) clearRoleConfigDraft();
         renderRoleSelect();
+        renderRoleConfig();
         await loadRoleMemories();
     } catch (err) {
         roles = [];
         roleMemories = [];
         roleMemoryError = t('roleMemory.loadFailed', { message: err.message });
+        roleConfigStatusText = t('roleConfig.loadFailed', { message: err.message });
+        roleConfigStatusType = 'error';
         renderRoleSelect();
         renderRoleMemoryList();
+        renderRoleConfig();
         renderDeveloperView();
+    }
+}
+
+function isBuiltInRole(role) {
+    return Boolean(role?.metadata?.built_in);
+}
+
+function roleConfigPreferences(role) {
+    const value = role?.metadata?.preferences;
+    if (Array.isArray(value)) {
+        return value.map((item) => String(item || '').trim()).filter(Boolean);
+    }
+    if (typeof value === 'string') {
+        return parseRoleConfigLines(value);
+    }
+    return [];
+}
+
+function localizedRoleConfigExampleText(example, field) {
+    const value = example?.[field];
+    if (value && typeof value === 'object') {
+        return String(value[currentLanguage] || value.zh || value.en || '').trim();
+    }
+    return String(value || '').trim();
+}
+
+function localizedRoleConfigExampleList(example, field) {
+    const value = example?.[field];
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+        const localized = value[currentLanguage] || value.zh || value.en || [];
+        return Array.isArray(localized) ? localized : [];
+    }
+    return Array.isArray(value) ? value : [];
+}
+
+function parseRoleConfigLines(value) {
+    return String(value || '')
+        .split('\n')
+        .map((line) => line.trim())
+        .filter(Boolean);
+}
+
+function roleConfigInput(id) {
+    return document.getElementById(`role-config-${id}`);
+}
+
+function setRoleConfigValue(id, value) {
+    const input = roleConfigInput(id);
+    if (input) input.value = value || '';
+}
+
+function readRoleConfigValue(id) {
+    return String(roleConfigInput(id)?.value || '').trim();
+}
+
+function setRoleConfigChecked(id, checked) {
+    const input = roleConfigInput(id);
+    if (input) input.checked = Boolean(checked);
+}
+
+function readRoleConfigChecked(id) {
+    return Boolean(roleConfigInput(id)?.checked);
+}
+
+function clearRoleConfigDraft() {
+    roleConfigDraft = null;
+    roleConfigDirty = false;
+}
+
+function captureRoleConfigDraft() {
+    if (!roleConfigInput('id')) return;
+    roleConfigDraft = {
+        roleId: selectedRoleConfigId,
+        values: {
+            id: roleConfigInput('id')?.value || '',
+            name: roleConfigInput('name')?.value || '',
+            description: roleConfigInput('description')?.value || '',
+            basePersona: roleConfigInput('base-persona')?.value || '',
+            instructions: roleConfigInput('instructions')?.value || '',
+            preferences: roleConfigInput('preferences')?.value || '',
+            enabled: readRoleConfigChecked('enabled'),
+            memoryEnabled: readRoleConfigChecked('memory-enabled'),
+        },
+    };
+    roleConfigDirty = true;
+}
+
+function restoreRoleConfigDraftIfDirty() {
+    if (!roleConfigDirty || !roleConfigDraft || roleConfigDraft.roleId !== selectedRoleConfigId) {
+        return false;
+    }
+    const values = roleConfigDraft.values || {};
+    setRoleConfigValue('id', values.id || '');
+    setRoleConfigValue('name', values.name || '');
+    setRoleConfigValue('description', values.description || '');
+    setRoleConfigValue('base-persona', values.basePersona || '');
+    setRoleConfigValue('instructions', values.instructions || '');
+    setRoleConfigValue('preferences', values.preferences || '');
+    setRoleConfigChecked('enabled', values.enabled !== false);
+    setRoleConfigChecked('memory-enabled', values.memoryEnabled !== false);
+    syncRoleConfigEditorControls();
+    return true;
+}
+
+function setRoleConfigStatus(message = '', type = 'muted') {
+    roleConfigStatusText = message;
+    roleConfigStatusType = type;
+    renderRoleConfigStatus();
+}
+
+function renderRoleConfigStatus() {
+    if (!roleConfigStatus) return;
+    roleConfigStatus.textContent = roleConfigStatusText;
+    roleConfigStatus.className = `role-config-status ${roleConfigStatusType || 'muted'}`;
+}
+
+function renderRoleConfig() {
+    if (!roleConfigList) return;
+    if (roleConfigCount) {
+        roleConfigCount.textContent = t('roleConfig.count', { count: roles.length });
+    }
+    if (!roles.length) {
+        roleConfigList.innerHTML = `<div class="role-config-empty">${escapeHtml(t('roleConfig.empty'))}</div>`;
+    } else {
+        roleConfigList.innerHTML = roles.map((role) => {
+            const builtIn = isBuiltInRole(role);
+            const active = role.id === selectedRoleConfigId;
+            const name = roleDisplayName(role);
+            const description = localizedRoleText(role, 'description')
+                || (builtIn ? t('roleConfig.builtIn') : t('roleConfig.custom'));
+            return `
+                <div class="role-config-list-item ${active ? 'active' : ''}">
+                    <button class="role-config-list-select" type="button"
+                            data-role-config-id="${escapeAttr(role.id)}">
+                        <span>${escapeHtml(name)}</span>
+                        <small>${escapeHtml(description)}</small>
+                    </button>
+                    ${builtIn ? `
+                        <span class="role-config-lock" title="${escapeAttr(t('roleConfig.builtIn'))}">
+                            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2">
+                                <rect x="5" y="10" width="14" height="10" rx="2"/>
+                                <path d="M8 10V7a4 4 0 0 1 8 0v3"/>
+                            </svg>
+                        </span>
+                    ` : `
+                        <button class="role-config-list-delete" type="button"
+                                data-role-config-delete-id="${escapeAttr(role.id)}"
+                                title="${escapeAttr(t('roleConfig.delete'))}"
+                                aria-label="${escapeAttr(t('roleConfig.delete'))}"
+                                ${roleConfigSaving ? 'disabled' : ''}>
+                            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2">
+                                <path d="M3 6h18M8 6V4h8v2M10 11v6M14 11v6M6 6l1 15h10l1-15"/>
+                            </svg>
+                        </button>
+                    `}
+                </div>
+            `;
+        }).join('');
+    }
+
+    if (roleConfigTemplateList) {
+        roleConfigTemplateList.innerHTML = ROLE_CONFIG_EXAMPLES.map((example, index) => `
+            <button class="role-config-template" type="button" data-role-config-example="${index}">
+                <strong>${escapeHtml(localizedRoleConfigExampleText(example, 'name'))}</strong>
+                <span>${escapeHtml(localizedRoleConfigExampleText(example, 'description'))}</span>
+            </button>
+        `).join('');
+    }
+
+    renderRoleConfigEditor();
+    renderRoleConfigStatus();
+}
+
+function renderRoleConfigEditor() {
+    if (restoreRoleConfigDraftIfDirty()) return;
+    const role = roles.find((item) => item.id === selectedRoleConfigId);
+
+    setRoleConfigValue('id', role?.id || '');
+    setRoleConfigValue('name', isBuiltInRole(role) ? localizedRoleText(role, 'name') : role?.name || '');
+    setRoleConfigValue('description', isBuiltInRole(role) ? localizedRoleText(role, 'description') : role?.description || '');
+    setRoleConfigValue('base-persona', role?.base_persona || '');
+    setRoleConfigValue('instructions', (role?.instructions || []).join('\n'));
+    setRoleConfigValue('preferences', roleConfigPreferences(role).join('\n'));
+    setRoleConfigChecked('enabled', role ? role.enabled !== false : true);
+    setRoleConfigChecked('memory-enabled', role ? role.memory_enabled !== false : true);
+    syncRoleConfigEditorControls(role);
+}
+
+function syncRoleConfigEditorControls(role = roles.find((item) => item.id === selectedRoleConfigId)) {
+    const isNew = !role;
+    const builtIn = isBuiltInRole(role);
+    const idInput = roleConfigInput('id');
+    if (idInput) idInput.disabled = !isNew || roleConfigSaving;
+    [
+        'name',
+        'description',
+        'base-persona',
+        'instructions',
+        'preferences',
+        'enabled',
+        'memory-enabled',
+    ].forEach((id) => {
+        const input = roleConfigInput(id);
+        if (input) input.disabled = builtIn || roleConfigSaving;
+    });
+
+    const saveButton = document.querySelector('[data-role-config-save]');
+    if (saveButton) {
+        saveButton.disabled = builtIn || roleConfigSaving;
+        const label = saveButton.querySelector('span');
+        if (label) label.textContent = t(roleConfigSaving ? 'roleConfig.saving' : 'roleConfig.save');
+    }
+    const deleteButton = document.querySelector('[data-role-config-delete]');
+    if (deleteButton) deleteButton.disabled = isNew || builtIn || roleConfigSaving;
+    const newButton = document.querySelector('[data-role-config-new]');
+    if (newButton) newButton.disabled = roleConfigSaving;
+
+    const hint = document.getElementById('role-config-editor-hint');
+    if (hint) {
+        hint.textContent = isNew ? '' : t(builtIn ? 'roleConfig.builtInHint' : 'roleConfig.customHint');
+        hint.hidden = !hint.textContent;
+    }
+}
+
+function startRoleConfigDraft() {
+    clearRoleConfigDraft();
+    selectedRoleConfigId = '';
+    setRoleConfigStatus('');
+    renderRoleConfig();
+    roleConfigInput('name')?.focus();
+}
+
+function selectRoleConfig(roleId) {
+    if (!roles.some((role) => role.id === roleId)) return;
+    if (roleId !== selectedRoleConfigId) clearRoleConfigDraft();
+    selectedRoleConfigId = roleId;
+    setRoleConfigStatus('');
+    renderRoleConfig();
+}
+
+function applyRoleConfigExample(index) {
+    const example = ROLE_CONFIG_EXAMPLES[index];
+    if (!example) return;
+    clearRoleConfigDraft();
+    selectedRoleConfigId = '';
+    setRoleConfigStatus('');
+    renderRoleConfig();
+    setRoleConfigValue('id', example.id);
+    setRoleConfigValue('name', localizedRoleConfigExampleText(example, 'name'));
+    setRoleConfigValue('description', localizedRoleConfigExampleText(example, 'description'));
+    setRoleConfigValue('base-persona', localizedRoleConfigExampleText(example, 'basePersona'));
+    setRoleConfigValue('instructions', localizedRoleConfigExampleList(example, 'instructions').join('\n'));
+    setRoleConfigValue('preferences', localizedRoleConfigExampleList(example, 'preferences').join('\n'));
+    setRoleConfigChecked('enabled', true);
+    setRoleConfigChecked('memory-enabled', true);
+    captureRoleConfigDraft();
+    roleConfigInput('name')?.focus();
+}
+
+function collectRoleConfigPayload() {
+    const existing = roles.find((role) => role.id === selectedRoleConfigId);
+    const metadata = { ...(existing?.metadata || {}) };
+    metadata.built_in = false;
+    metadata.preferences = parseRoleConfigLines(readRoleConfigValue('preferences'));
+    return {
+        id: readRoleConfigValue('id'),
+        name: readRoleConfigValue('name'),
+        description: readRoleConfigValue('description'),
+        base_persona: readRoleConfigValue('base-persona'),
+        instructions: parseRoleConfigLines(readRoleConfigValue('instructions')),
+        enabled: readRoleConfigChecked('enabled'),
+        memory_enabled: readRoleConfigChecked('memory-enabled'),
+        metadata,
+    };
+}
+
+async function saveRoleConfig() {
+    if (roleConfigSaving) return;
+    const existing = roles.find((role) => role.id === selectedRoleConfigId);
+    if (isBuiltInRole(existing)) {
+        setRoleConfigStatus(t('roleConfig.builtInHint'), 'error');
+        return;
+    }
+    captureRoleConfigDraft();
+    const payload = collectRoleConfigPayload();
+    if (!payload.name) {
+        setRoleConfigStatus(t('roleConfig.nameRequired'), 'error');
+        roleConfigInput('name')?.focus();
+        return;
+    }
+
+    roleConfigSaving = true;
+    setRoleConfigStatus('');
+    syncRoleConfigEditorControls(existing);
+    try {
+        let saved;
+        if (existing) {
+            const { id: _ignoredId, ...updatePayload } = payload;
+            saved = await apiCall('PUT', `/api/roles/${encodeURIComponent(existing.id)}`, updatePayload);
+        } else {
+            saved = await apiCall('POST', '/api/roles', payload);
+        }
+        selectedRoleConfigId = saved.id;
+        clearRoleConfigDraft();
+        roleConfigStatusText = t('roleConfig.saved');
+        roleConfigStatusType = 'ok';
+        await loadRoles();
+    } catch (err) {
+        setRoleConfigStatus(t('roleConfig.saveFailed', { message: err.message }), 'error');
+    } finally {
+        roleConfigSaving = false;
+        renderRoleConfig();
+    }
+}
+
+async function deleteRoleConfig(roleId = selectedRoleConfigId) {
+    if (!roleId || roleConfigSaving) return;
+    const role = roles.find((item) => item.id === roleId);
+    if (!role || isBuiltInRole(role)) {
+        setRoleConfigStatus(t('roleConfig.builtInHint'), 'error');
+        return;
+    }
+    const confirmed = await confirmAction(t('roleConfig.deleteConfirm', { name: roleDisplayName(role) }), {
+        confirmText: t('roleConfig.delete'),
+    });
+    if (!confirmed) return;
+
+    roleConfigSaving = true;
+    renderRoleConfig();
+    try {
+        await apiCall('DELETE', `/api/roles/${encodeURIComponent(role.id)}`);
+        if (currentRoleId === role.id) {
+            currentRoleId = 'default';
+            saveCurrentRoleId();
+        }
+        selectedRoleConfigId = 'default';
+        clearRoleConfigDraft();
+        roleConfigStatusText = t('roleConfig.deleted');
+        roleConfigStatusType = 'ok';
+        await loadRoles();
+    } catch (err) {
+        setRoleConfigStatus(t('roleConfig.deleteFailed', { message: err.message }), 'error');
+    } finally {
+        roleConfigSaving = false;
+        renderRoleConfig();
     }
 }
 
@@ -7263,30 +7832,96 @@ async function loadRuns() {
     updateCounts();
 }
 
+function invalidatePulseRequests() {
+    pulseRequestEpoch += 1;
+    pulseLatestRequestSequence = 0;
+    pulseRefreshRequestPending = false;
+    if (pulseRefreshPollTimer) {
+        clearTimeout(pulseRefreshPollTimer);
+        pulseRefreshPollTimer = null;
+    }
+    pulseRefreshPollAttempts = 0;
+}
+
+function beginPulseRequest() {
+    const request = {
+        epoch: pulseRequestEpoch,
+        sequence: ++pulseRequestSequence,
+        userId: String(currentUserId || ''),
+    };
+    pulseLatestRequestSequence = request.sequence;
+    return request;
+}
+
+function pulseRequestIsCurrent(request = {}) {
+    return request.epoch === pulseRequestEpoch
+        && request.sequence === pulseLatestRequestSequence
+        && request.userId === String(currentUserId || '');
+}
+
 async function loadPulse() {
+    if (pulseRefreshRequestPending) return false;
+    const request = beginPulseRequest();
     pulseError = '';
     pulseErrorType = 'load';
     try {
-        pulse = await apiCall('GET', '/api/pulse');
+        const nextPulse = await apiCall('GET', '/api/pulse');
+        if (!pulseRequestIsCurrent(request)) return false;
+        setPulseResponse(nextPulse);
     } catch (err) {
+        if (!pulseRequestIsCurrent(request)) return false;
         pulseError = err.message;
         pulseErrorType = 'load';
     }
     renderPulse();
     syncPulseRefreshPolling(false);
+    return true;
 }
 
 async function refreshPulse() {
+    invalidatePulseRequests();
+    const request = beginPulseRequest();
+    pulseRefreshRequestPending = true;
     pulseError = '';
     pulseErrorType = 'load';
     try {
-        pulse = await apiCall('POST', '/api/pulse/refresh', { date: pulse.date || undefined });
+        const nextPulse = await apiCall('POST', '/api/pulse/refresh', { date: pulse.date || undefined });
+        if (!pulseRequestIsCurrent(request)) return false;
+        setPulseResponse(nextPulse);
     } catch (err) {
+        if (!pulseRequestIsCurrent(request)) return false;
         pulseError = err.message;
         pulseErrorType = 'load';
     }
+    pulseRefreshRequestPending = false;
     renderPulse();
     syncPulseRefreshPolling(true);
+    return true;
+}
+
+function setPulseResponse(nextPulse = {}) {
+    const next = nextPulse && typeof nextPulse === 'object' ? nextPulse : {};
+    const previous = pulse && typeof pulse === 'object' ? pulse : {};
+    const sameDate = !previous.date || !next.date || previous.date === next.date;
+    const sameUser = !previous.user_id || !next.user_id || previous.user_id === next.user_id;
+    const previousItems = Array.isArray(previous.items) ? previous.items : [];
+    const preservePreviousFeed = Boolean(next.refreshing && sameDate && sameUser && previousItems.length);
+
+    if (!preservePreviousFeed) {
+        pulse = next;
+        return;
+    }
+
+    pulse = {
+        ...previous,
+        ...next,
+        generated_at: previous.generated_at || next.generated_at || '',
+        items: previousItems,
+        modules: Array.isArray(previous.modules) ? previous.modules : [],
+        candidate_count: previous.candidate_count ?? previousItems.length,
+        recommended_count: previous.recommended_count ?? previousItems.length,
+        filtered_count: previous.filtered_count ?? 0,
+    };
 }
 
 function syncPulseRefreshPolling(resetAttempts = false) {
@@ -7301,14 +7936,21 @@ function syncPulseRefreshPolling(resetAttempts = false) {
         pulseRefreshPollAttempts = 0;
         return;
     }
-    if (pulseRefreshPollTimer || pulseRefreshPollAttempts >= 24) {
+    const slowPolling = pulseRefreshPollAttempts >= PULSE_REFRESH_FAST_MAX_POLLS;
+    if (slowPolling && !pulseError) {
+        pulseError = t('pulse.refreshTimedOut');
+        pulseErrorType = 'refresh_timeout';
+        renderPulse();
+    }
+    if (pulseRefreshPollTimer) {
         return;
     }
+    const pollDelay = slowPolling ? PULSE_REFRESH_SLOW_POLL_MS : PULSE_REFRESH_POLL_MS;
     pulseRefreshPollTimer = setTimeout(async () => {
         pulseRefreshPollTimer = null;
         pulseRefreshPollAttempts += 1;
         await loadPulse();
-    }, 5000);
+    }, pollDelay);
 }
 
 async function loadTodos(scope = todoState.scope || 'today') {
@@ -7820,7 +8462,7 @@ function renderTodoContent(scope, items) {
     if (scope === 'month') {
         return renderTodoMonthView(items);
     }
-    return items.length ? items.map(renderTodoItem).join('') : emptyState(t('todos.noItems'), '');
+    return items.length ? items.map((item) => renderTodoItem(item)).join('') : emptyState(t('todos.noItems'), '');
 }
 
 function todoScopeHint(scope) {
@@ -7957,7 +8599,10 @@ function renderTodoItem(item, occurrenceDateOverride = '') {
     if (todoState.editingId === item.id) {
         return renderTodoEditItem(item);
     }
-    const occurrenceDate = occurrenceDateOverride || item.occurrence_date || todoState.date || todoTodayKey();
+    const explicitOccurrenceDate = typeof occurrenceDateOverride === 'string'
+        ? occurrenceDateOverride
+        : '';
+    const occurrenceDate = explicitOccurrenceDate || item.occurrence_date || todoState.date || todoTodayKey();
     const done = todoItemDoneForDate(item, occurrenceDate);
     const tone = todoItemTone(item);
     const dateLabel = formatTodoScheduleLabel(item);
@@ -8325,13 +8970,13 @@ function minTodoDateKey(left, right) {
     return left < right ? left : right;
 }
 
-function formatTodoDateLabel(dateText = '') {
+function formatTodoDateLabel(dateText = '', { overdue = false } = {}) {
     if (!dateText) return t('todos.noDate');
     const today = todoTodayKey();
     const tomorrow = todoDateKey(new Date(Date.now() + 24 * 60 * 60 * 1000));
     if (dateText === today) return t('todos.todayLabel');
     if (dateText === tomorrow) return t('todos.tomorrow');
-    if (dateText < today) return `${t('todos.overdue')} ${dateText}`;
+    if (overdue && dateText < today) return `${t('todos.overdue')} ${dateText}`;
     return dateText;
 }
 
@@ -8339,21 +8984,21 @@ function formatTodoScheduleLabel(item = {}) {
     const startDate = item.start_date || '';
     const endDate = item.end_date || item.due_date || '';
     const repeatRule = item.repeat_rule || 'once';
+    const endDateLabel = formatTodoDateLabel(endDate, { overdue: todoItemIsOverdue(item) });
     const repeatPrefix = repeatRule === 'daily'
         ? t('todos.dateDaily')
         : repeatRule === 'workdays'
             ? t('todos.dateWorkdays')
             : '';
     if (startDate && endDate) {
-        const label = startDate === endDate ? formatTodoDateLabel(endDate) : t('todos.dateRange', {
+        const label = startDate === endDate ? endDateLabel : t('todos.dateRange', {
             start: formatTodoDateLabel(startDate),
-            end: formatTodoDateLabel(endDate),
+            end: endDateLabel,
         });
         return repeatPrefix ? `${repeatPrefix} · ${label}` : label;
     }
     if (endDate) {
-        const label = formatTodoDateLabel(endDate);
-        return repeatPrefix ? `${repeatPrefix} · ${label}` : label;
+        return repeatPrefix ? `${repeatPrefix} · ${endDateLabel}` : endDateLabel;
     }
     if (startDate) {
         const label = t('todos.starts', { date: formatTodoDateLabel(startDate) });
@@ -8623,6 +9268,7 @@ function setView(view, options = {}) {
 
     updateTopbar();
     if (view === 'trace' && !options.skipLoad) loadRuns();
+    if (view === 'role') renderRoleConfig();
     if (view === 'tools') renderTools();
     if (view === 'agents') renderAgents();
     if (view === 'projects') {
@@ -9628,7 +10274,12 @@ function syncDriveShareFields(updated) {
 
 function setDriveShareStatus(itemId = '', text = '', type = 'muted') {
     driveShareStatus = { itemId, text, type };
+    renderDriveShareSurfaces();
+}
+
+function renderDriveShareSurfaces() {
     renderProjects();
+    if (drivePreviewIsOpen()) renderDriveDocumentPreview();
 }
 
 function toggleDriveSharePanel(itemId = '') {
@@ -9640,7 +10291,7 @@ function toggleDriveSharePanel(itemId = '') {
         driveSharePanelItemId = itemId;
         driveShareStatus = { itemId: '', text: '', type: 'muted' };
     }
-    renderProjects();
+    renderDriveShareSurfaces();
 }
 
 async function updateDriveSharePermission(itemId = '', enabled = false) {
@@ -9648,7 +10299,7 @@ async function updateDriveSharePermission(itemId = '', enabled = false) {
     driveShareBusyItemIds.add(itemId);
     driveSharePanelItemId = itemId;
     driveShareStatus = { itemId: '', text: '', type: 'muted' };
-    renderProjects();
+    renderDriveShareSurfaces();
     try {
         const data = await apiCall('PUT', `/api/drive/items/${encodeURIComponent(itemId)}/share`, { enabled });
         if (data.item) syncDriveShareFields(data.item);
@@ -9665,7 +10316,7 @@ async function updateDriveSharePermission(itemId = '', enabled = false) {
         };
     } finally {
         driveShareBusyItemIds.delete(itemId);
-        renderProjects();
+        renderDriveShareSurfaces();
     }
 }
 
@@ -9849,7 +10500,13 @@ async function openDriveDocumentPreview(itemId = '', returnFocus = null) {
 function closeDriveDocumentPreview() {
     if (!drivePreviewState.open) return;
     const returnFocus = drivePreviewState.returnFocus;
+    const itemId = drivePreviewState.itemId;
     drivePreviewState = createEmptyDrivePreviewState();
+    if (driveSharePanelItemId === itemId) {
+        driveSharePanelItemId = '';
+        driveShareStatus = { itemId: '', text: '', type: 'muted' };
+        renderProjects();
+    }
     renderDriveDocumentPreview();
     requestAnimationFrame(() => {
         if (returnFocus && typeof returnFocus.focus === 'function') {
@@ -9869,6 +10526,12 @@ function renderDriveDocumentPreview() {
         if (drivePreviewMeta) drivePreviewMeta.textContent = '';
         if (drivePreviewStatus) drivePreviewStatus.textContent = '';
         if (drivePreviewContent) drivePreviewContent.textContent = '';
+        if (drivePreviewShareButton) {
+            drivePreviewShareButton.disabled = true;
+            drivePreviewShareButton.dataset.driveSharePanel = '';
+            drivePreviewShareButton.setAttribute('aria-expanded', 'false');
+        }
+        if (drivePreviewShareMenu) drivePreviewShareMenu.innerHTML = '';
         if (drivePreviewDownload) drivePreviewDownload.disabled = true;
         return;
     }
@@ -9892,6 +10555,14 @@ function renderDriveDocumentPreview() {
         } else {
             drivePreviewContent.textContent = item?.content || item?.summary || '';
         }
+    }
+    if (drivePreviewShareButton) {
+        drivePreviewShareButton.disabled = !item?.id;
+        drivePreviewShareButton.dataset.driveSharePanel = item?.id || '';
+        drivePreviewShareButton.setAttribute('aria-expanded', driveSharePanelItemId === item?.id ? 'true' : 'false');
+    }
+    if (drivePreviewShareMenu) {
+        drivePreviewShareMenu.innerHTML = item?.id ? renderDriveSharePanel(item) : '';
     }
     if (drivePreviewDownload) {
         drivePreviewDownload.disabled = !item?.id || drivePreviewState.loading;
@@ -10474,27 +11145,33 @@ function renderPulse() {
     if (!pulseItems || !pulseTopicList) return;
 
     updatePulseTopicSubmitState();
+    const items = Array.isArray(pulse.items) ? pulse.items : [];
 
     if (pulseDateTitle) {
         pulseDateTitle.textContent = pulse.date ? `${t('pulse.todayTitle')} · ${pulse.date}` : t('pulse.todayTitle');
     }
     if (pulseGeneratedAt) {
-        pulseGeneratedAt.textContent = pulse.refreshing
+        pulseGeneratedAt.textContent = pulseError && items.length
+            ? formatPulseError()
+            : pulse.refreshing
             ? t('pulse.refreshing')
             : pulse.generated_at
                 ? t('pulse.generatedAt', { time: formatFullTime(pulse.generated_at) })
                 : t('pulse.neverGenerated');
     }
+    if (pulseRefreshControl) {
+        pulseRefreshControl.disabled = Boolean(pulse.refreshing);
+        pulseRefreshControl.setAttribute('aria-busy', pulse.refreshing ? 'true' : 'false');
+    }
 
     renderPulseTopics();
     renderPulseSuggestedTopics();
 
-    if (pulseError) {
+    if (pulseError && !items.length) {
         pulseItems.innerHTML = emptyState(formatPulseError(), '');
         return;
     }
 
-    const items = Array.isArray(pulse.items) ? pulse.items : [];
     renderPulseTopicFilter(items);
     if (!items.length) {
         const empty = pulseEmptyStateContent();
@@ -10508,7 +11185,7 @@ function renderPulse() {
         return;
     }
 
-    pulseItems.innerHTML = renderPulseFeed(filteredItems);
+    pulseItems.innerHTML = renderPulseModules(filteredItems, pulse.modules);
     renderPulsePostWindow();
     observePulseExposures();
 }
@@ -10535,15 +11212,14 @@ function pulseEmptyStateContent() {
 
 function pulseFallbackModuleDetail() {
     const modules = Array.isArray(pulse.modules) ? pulse.modules : [];
-    const summaries = modules
-        .map((module) => module?.summary || '')
-        .filter((summary) => /搜索|检索|可核验|失败|暂不可用|search|verifiable|failed|unavailable/i.test(summary))
-        .slice(0, 2);
-    if (!summaries.length) return '';
-    return [t('pulse.emptyUnavailableDetail'), ...summaries].join('\n');
+    const hasUnavailableSummary = modules.some((module) => (
+        /搜索|检索|可核验|失败|暂不可用|search|verifiable|failed|unavailable/i.test(module?.summary || '')
+    ));
+    return hasUnavailableSummary ? t('pulse.emptyUnavailableDetail') : '';
 }
 
 function formatPulseError() {
+    if (pulseErrorType === 'refresh_timeout') return pulseError;
     const key = pulseErrorType === 'create'
         ? 'pulse.createFailed'
         : pulseErrorType === 'delete'
@@ -10573,7 +11249,7 @@ function renderPulseModules(items = [], generatedModules = []) {
         const [fallbackTitle, fallbackDetail] = pulseModuleCopy(module.key);
         const title = module.title || fallbackTitle;
         const detail = module.summary || fallbackDetail;
-        const moduleItems = items.filter((item) => item.source === module.key);
+        const moduleItems = items.filter((item) => pulseModuleSourceKey(item.source) === module.key);
         return `
             <section class="pulse-module pulse-module-${escapeAttr(pulseModuleClass(module.key))}">
                 <div class="pulse-module-head">
@@ -10583,7 +11259,7 @@ function renderPulseModules(items = [], generatedModules = []) {
                     </div>
                     <span class="section-count">${moduleItems.length || ''}</span>
                 </div>
-                <div class="pulse-module-items">
+                <div class="pulse-module-items pulse-post-grid">
                     ${moduleItems.length
                         ? moduleItems.map(renderPulseCard).join('')
                         : `<div class="empty-state pulse-module-empty"><strong>${escapeHtml(t('pulse.emptyModule'))}</strong><span>${escapeHtml(detail)}</span></div>`}
@@ -10591,6 +11267,10 @@ function renderPulseModules(items = [], generatedModules = []) {
             </section>
         `;
     }).join('');
+}
+
+function pulseModuleSourceKey(source = '') {
+    return source === 'topic' ? 'topic_hot' : source;
 }
 
 function pulseModuleCopy(key) {
@@ -10720,22 +11400,22 @@ function renderPulseCard(item) {
     const feedback = item.feedback || {};
     const liked = Boolean(feedback.liked);
     const vote = feedback.vote || '';
-    const note = item.recommendation_note || pulseRecommendationNote(item);
-    const featureScore = item.feature_score || item.heat_score || 0;
+    const note = pulseRecommendationNote(item);
+    const evidenceMeta = pulseCardEvidenceMeta(item);
     return `
         <article class="pulse-card pulse-post-card" data-pulse-card-id="${escapeAttr(item.id)}">
             <button class="pulse-card-open" type="button" data-pulse-open-post="${escapeAttr(item.id)}" aria-label="${escapeAttr(t('pulse.openPost'))}">
                 <div class="pulse-card-topline">
                     <span class="status-chip ${pulseSourceTone(item.source)}">${escapeHtml(sourceLabel)}</span>
                     <span class="status-chip neutral">${escapeHtml(topicLabel)}</span>
-                    <span class="pulse-heat">${escapeHtml(t('pulse.featureScore', { score: featureScore }))}</span>
+                    ${evidenceMeta ? `<span class="pulse-heat">${escapeHtml(evidenceMeta)}</span>` : ''}
                 </div>
                 <h3>${escapeHtml(item.title || '')}</h3>
                 <p>${escapeHtml(compactPulsePostSummary(item))}</p>
             </button>
             ${renderPulseCardSources(item)}
             <div class="pulse-card-footer">
-                <span class="pulse-recommend-note">${escapeHtml(note)}</span>
+                <span class="pulse-recommend-note" title="${escapeAttr(note)}">${escapeHtml(note)}</span>
                 <div class="pulse-feedback-actions">
                     ${renderPulseFeedbackButton(item.id, pulseEventLike, liked ? 0 : 1, liked ? t('pulse.liked') : t('pulse.like'), liked, feedback.like_count)}
                     ${renderPulseFeedbackButton(item.id, pulseEventUpvote, vote === 'up' ? 0 : 1, t('pulse.upvote'), vote === 'up', feedback.upvote_count)}
@@ -10793,18 +11473,35 @@ function renderPulseCardSources(item = {}) {
     if (!sources.length) return '';
     return `
         <div class="pulse-card-sources">
-            ${sources.map((source) => `
-                <a class="pulse-card-source" href="${escapeAttr(source.url)}" target="_blank" rel="noopener noreferrer">
-                    <span>${escapeHtml(hostFromUrl(source.url) || source.source || t('pulse.newsSources'))}</span>
-                    <strong>${escapeHtml(truncateText(source.title || source.url, 46))}</strong>
-                </a>
-            `).join('')}
+            ${sources.map((source) => {
+                const meta = [hostFromUrl(source.url), String(source.published_at || '').slice(0, 10)].filter(Boolean);
+                return `
+                    <a class="pulse-card-source" href="${escapeAttr(source.url)}" target="_blank" rel="noopener noreferrer">
+                        <strong>${escapeHtml(truncateText(source.title || source.url, 46))}</strong>
+                        ${meta.length ? `<span>${escapeHtml(meta.join(' · '))}</span>` : ''}
+                    </a>
+                `;
+            }).join('')}
         </div>
     `;
 }
 
+function pulseCardEvidenceMeta(item = {}) {
+    const detail = item.detail || {};
+    const sources = normalizePulseNewsSources(detail.news_sources, detail.sources, detail.related_news);
+    if (!sources.length) return '';
+    const latestDate = sources
+        .map((source) => String(source.published_at || '').trim().slice(0, 10))
+        .filter(Boolean)
+        .sort()
+        .reverse()[0] || '';
+    const sourceCount = t('pulse.sourceCount', { count: sources.length });
+    return latestDate ? `${sourceCount} · ${latestDate}` : sourceCount;
+}
+
 function pulseRecommendationNote(item = {}) {
-    if (item.recommendation_note) return item.recommendation_note;
+    const reason = String(item.detail?.recommendation_reason || item.recommendation_note || '').trim();
+    if (reason) return reason;
     if (item.source === 'topic_hot') return item.topic_name ? `可能对「${item.topic_name}」推荐` : '可能对订阅 Topic 推荐';
     if (item.source === 'memory') return '可能对近期 Memory 推荐';
     return item.topic_name ? `可能对「${item.topic_name}」延伸推荐` : '可能对兴趣外扩推荐';
@@ -10823,81 +11520,52 @@ function pulseSourceTone(source) {
 }
 
 function renderPulseDetail(item = {}, detail = {}) {
-    const keyPoints = Array.isArray(detail.key_points) ? detail.key_points : [];
-    const questions = Array.isArray(detail.suggested_questions) ? detail.suggested_questions : [];
-    const signals = Array.isArray(detail.signals) ? detail.signals : [];
+    const questions = (Array.isArray(detail.suggested_questions) ? detail.suggested_questions : [])
+        .map((question) => String(question || '').trim())
+        .filter(Boolean)
+        .slice(0, 3);
     const newsSources = normalizePulseNewsSources(detail.news_sources, detail.sources, detail.related_news);
-    const relatedClusters = Array.isArray(item.related_clusters) ? item.related_clusters : [];
-    return `
-        <div class="pulse-detail">
-            ${detail.recommendation_reason ? `
-                <section>
-                    <h4>${escapeHtml(t('pulse.reason'))}</h4>
-                    <p>${escapeHtml(detail.recommendation_reason)}</p>
-                </section>
-            ` : ''}
-            ${detail.quick_context ? `
-                <section>
-                    <h4>${escapeHtml(t('pulse.quickContext'))}</h4>
-                    <p>${escapeHtml(detail.quick_context)}</p>
-                </section>
-            ` : ''}
-            ${newsSources.length ? `
-                <section>
-                    <h4>${escapeHtml(t('pulse.newsSources'))}</h4>
-                    ${renderPulseNewsSources(newsSources)}
-                </section>
-            ` : ''}
-            ${keyPoints.length ? `
-                <section>
-                    <h4>${escapeHtml(t('pulse.keyPoints'))}</h4>
-                    <ul>
-                        ${keyPoints.map((point) => `<li>${escapeHtml(point)}</li>`).join('')}
-                    </ul>
-                </section>
-            ` : ''}
-            ${signals.length ? `
-                <section>
-                    <h4>${escapeHtml(t('pulse.signals'))}</h4>
-                    <ul>
-                        ${signals.map((signal) => `<li>${escapeHtml(signal)}</li>`).join('')}
-                    </ul>
-                </section>
-            ` : ''}
-            ${questions.length ? `
-                <section>
-                    <h4>${escapeHtml(t('pulse.suggestedQuestions'))}</h4>
-                    <div class="pulse-question-list">
-                        ${questions.map((question) => `
-                            <button class="pulse-question" type="button" data-pulse-chat="${escapeAttr(buildPulseChatPrompt(item, question))}">
-                                ${escapeHtml(question)}
-                            </button>
-                        `).join('')}
-                    </div>
-                </section>
-            ` : ''}
-            ${relatedClusters.length ? `
-                <section>
-                    <h4>${escapeHtml(t('pulse.relatedClusters'))}</h4>
-                    ${renderPulseRelatedClusters(relatedClusters)}
-                </section>
-            ` : ''}
-        </div>
+    const content = `
+        ${newsSources.length ? `
+            <section>
+                <h4>${escapeHtml(t('pulse.newsSources'))}</h4>
+                ${renderPulseNewsSources(newsSources)}
+            </section>
+        ` : ''}
+        ${questions.length ? `
+            <section>
+                <h4>${escapeHtml(t('pulse.suggestedQuestions'))}</h4>
+                <div class="pulse-question-list">
+                    ${questions.map((question) => `
+                        <button class="pulse-question" type="button" data-pulse-chat="${escapeAttr(buildPulseChatPrompt(item, question))}">
+                            ${escapeHtml(question)}
+                        </button>
+                    `).join('')}
+                </div>
+            </section>
+        ` : ''}
     `;
+    return content.trim() ? `<div class="pulse-detail">${content}</div>` : '';
 }
 
 function renderPulseRelatedClusters(clusters = []) {
     return `
         <div class="pulse-related-list">
-            ${clusters.map((cluster) => `
-                <button class="pulse-related-item" type="button" data-pulse-open-post="${escapeAttr(cluster.id)}">
-                    <span class="pulse-related-main">
-                        <strong>${escapeHtml(cluster.title || '')}</strong>
-                        <small>${escapeHtml(cluster.reason || cluster.summary || '')}</small>
-                    </span>
-                    <span class="pulse-related-action">${escapeHtml(t('pulse.openCluster'))}</span>
-                </button>
-            `).join('')}
+            ${clusters.map((cluster) => {
+                const available = Boolean(cluster?.id && findPulseItem(cluster.id));
+                return `
+                    <button class="pulse-related-item" type="button"
+                            ${available
+                                ? `data-pulse-open-post="${escapeAttr(cluster.id)}"`
+                                : 'disabled aria-disabled="true"'}>
+                        <span class="pulse-related-main">
+                            <strong>${escapeHtml(cluster?.title || '')}</strong>
+                            <small>${escapeHtml(cluster?.reason || cluster?.summary || '')}</small>
+                        </span>
+                        <span class="pulse-related-action">${escapeHtml(t(available ? 'pulse.openCluster' : 'pulse.relatedUnavailable'))}</span>
+                    </button>
+                `;
+            }).join('')}
         </div>
     `;
 }
@@ -10913,11 +11581,12 @@ function findPulseItem(itemId = '') {
 
 function openPulsePost(itemId = '', trigger = null) {
     const item = findPulseItem(itemId);
-    if (!item) return;
+    if (!item) return false;
     selectedPulsePostId = itemId;
     pulsePostReturnFocus = trigger || document.activeElement;
     renderPulsePostWindow();
     recordPulseEvent(itemId, pulseEventOpen, 1, { surface: 'post_window' });
+    return true;
 }
 
 function closePulsePost() {
@@ -10945,7 +11614,11 @@ function renderPulsePostWindow() {
 
     pulsePostWindow.classList.remove('hidden');
     document.body.classList.add('pulse-post-open');
-    if (pulsePostNote) pulsePostNote.textContent = item.recommendation_note || pulseRecommendationNote(item);
+    if (pulsePostNote) {
+        const note = pulseRecommendationNote(item);
+        pulsePostNote.textContent = note;
+        pulsePostNote.title = note;
+    }
     pulsePostTitle.textContent = item.title || '';
     pulsePostBody.innerHTML = renderPulsePostBody(item);
     pulsePostFooter.innerHTML = renderPulsePostFooter(item);
@@ -10953,28 +11626,17 @@ function renderPulsePostWindow() {
 
 function renderPulsePostBody(item = {}) {
     const detail = item.detail || {};
-    const paragraphs = [];
-    const newsSources = normalizePulseNewsSources(detail.news_sources, detail.sources, detail.related_news);
-    paragraphs.push(item.summary || detail.quick_context || '');
-    if (detail.quick_context && detail.quick_context !== item.summary) {
-        paragraphs.push(detail.quick_context);
-    }
-    const keyPoints = Array.isArray(detail.key_points) ? detail.key_points : [];
-    if (keyPoints.length) {
-        paragraphs.push(keyPoints.slice(0, 4).join('\n'));
-    }
-    const body = paragraphs
-        .map((paragraph) => String(paragraph || '').trim())
-        .filter(Boolean)
-        .map((paragraph) => `<p>${escapeHtml(paragraph)}</p>`)
-        .join('') || `<p>${escapeHtml(item.summary || '')}</p>`;
-    if (!newsSources.length) return body;
-    return `
-        ${body}
-        <section class="pulse-post-source-section">
-            <h4>${escapeHtml(t('pulse.newsSources'))}</h4>
-            ${renderPulseNewsSources(newsSources)}
+    const summary = String(item.summary || detail.quick_context || '').trim();
+    const summaryHTML = summary ? `
+        <section class="pulse-post-cluster-content">
+            <h3>${escapeHtml(t('pulse.clusterContent'))}</h3>
+            <p>${escapeHtml(summary)}</p>
         </section>
+    ` : '';
+    const detailHTML = renderPulseDetail(item, detail);
+    return `
+        ${summaryHTML}
+        ${detailHTML}
     `;
 }
 
@@ -10982,7 +11644,6 @@ function renderPulsePostFooter(item = {}) {
     const feedback = item.feedback || {};
     const vote = feedback.vote || '';
     const liked = Boolean(feedback.liked);
-    const relatedClusters = Array.isArray(item.related_clusters) ? item.related_clusters : [];
     const chatPrompt = buildPulseChatPrompt(item);
     return `
         <div class="pulse-post-feedback">
@@ -10996,7 +11657,6 @@ function renderPulsePostFooter(item = {}) {
                 <span>${escapeHtml(t('pulse.ask'))}</span>
             </button>
         </div>
-        ${relatedClusters.length ? renderPulseRelatedClusters(relatedClusters) : ''}
     `;
 }
 
@@ -11076,6 +11736,42 @@ function observePulseExposures() {
     cards.forEach((card) => pulseExposureObserver.observe(card));
 }
 
+function isSafePulseSourceUrl(value = '') {
+    const candidate = String(value || '').trim();
+    if (!/^https?:\/\//i.test(candidate)) return false;
+    try {
+        const parsed = new URL(candidate);
+        if (!['http:', 'https:'].includes(parsed.protocol)
+            || !parsed.hostname
+            || parsed.username
+            || parsed.password) {
+            return false;
+        }
+        const hostname = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+        if (hostname === 'localhost'
+            || hostname === '::1'
+            || hostname.endsWith('.localhost')
+            || hostname.endsWith('.local')) {
+            return false;
+        }
+        const ipv4 = hostname.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+        if (ipv4) {
+            const octets = ipv4.slice(1).map(Number);
+            if (octets.some((value) => value > 255)
+                || octets[0] === 10
+                || octets[0] === 127
+                || (octets[0] === 169 && octets[1] === 254)
+                || (octets[0] === 172 && octets[1] >= 16 && octets[1] <= 31)
+                || (octets[0] === 192 && octets[1] === 168)) {
+                return false;
+            }
+        }
+        return true;
+    } catch {
+        return false;
+    }
+}
+
 function normalizePulseNewsSources(...groups) {
     const sources = [];
     const seen = new Set();
@@ -11084,7 +11780,7 @@ function normalizePulseNewsSources(...groups) {
         group.forEach((source) => {
             if (!source || typeof source !== 'object') return;
             const url = String(source.url || source.link || '').trim();
-            if (!url || seen.has(url)) return;
+            if (!isSafePulseSourceUrl(url) || seen.has(url)) return;
             seen.add(url);
             sources.push({
                 title: String(source.title || hostFromUrl(url) || url).trim(),
@@ -11102,12 +11798,11 @@ function renderPulseNewsSources(sources = []) {
     return `
         <div class="pulse-source-list">
             ${sources.map((source) => {
-                const meta = [source.source, hostFromUrl(source.url), source.published_at].filter(Boolean);
+                const meta = [hostFromUrl(source.url), String(source.published_at || '').slice(0, 10)].filter(Boolean);
                 return `
                     <a class="pulse-source-item" href="${escapeAttr(source.url)}" target="_blank" rel="noopener noreferrer">
                         <span class="pulse-source-link">${escapeHtml(source.title)}</span>
-                        ${meta.length ? `<span class="pulse-source-meta">${escapeHtml(Array.from(new Set(meta)).join(' / '))}</span>` : ''}
-                        ${source.snippet ? `<span class="pulse-source-snippet">${escapeHtml(source.snippet)}</span>` : ''}
+                        ${meta.length ? `<span class="pulse-source-meta">${escapeHtml(Array.from(new Set(meta)).join(' · '))}</span>` : ''}
                     </a>
                 `;
             }).join('')}
@@ -13291,7 +13986,7 @@ async function renderConversationMessages(id, options = {}) {
             scrollToBottom();
         }
         if (options.watchActiveRuns !== false) {
-            watchActiveRunForConversation(id, messages);
+            await watchActiveRunForConversation(id, messages);
         }
         pollLatestAssistantFollowUps(messages, id);
     } catch (err) {
@@ -13824,9 +14519,11 @@ function setCurrentAgent(agentId, { refreshWelcome = false } = {}) {
     return true;
 }
 
-function stopActiveRunWatcher() {
+function stopActiveRunWatcher(expectedWatcher = null) {
+    if (expectedWatcher && activeRunWatcher !== expectedWatcher) return;
     if (activeRunWatcher?.timer) clearTimeout(activeRunWatcher.timer);
     activeRunWatcher = null;
+    updateSendState();
 }
 
 function runIsActive(run) {
@@ -13837,6 +14534,69 @@ function hasAssistantAfterLastUser(messages = []) {
     const lastUserIndex = [...messages].map((msg) => msg.role).lastIndexOf('user');
     if (lastUserIndex < 0) return false;
     return messages.slice(lastUserIndex + 1).some((msg) => msg.role === 'assistant');
+}
+
+function hasAssistantMessageForRun(messages = [], runId = '') {
+    return CHAT_RECOVERY.hasAssistantMessageForRun(messages, runId);
+}
+
+function finalizeRecoveredRunView(streamView, run = {}) {
+    if (run.status === 'cancelled') {
+        streamView.showCancelled(currentLanguage === 'zh' ? '任务已取消' : 'Task cancelled');
+        return;
+    }
+    streamView.finalize(chatResponseFromRun(run));
+}
+
+function startActiveRunWatcher({
+    conversationId,
+    runId = '',
+    streamView = null,
+    pendingQuery = '',
+    run = null,
+    maxAttempts = ACTIVE_RUN_MAX_POLLS,
+} = {}) {
+    if (!conversationId || currentConversationId !== conversationId) return false;
+
+    if (activeRunWatcher) {
+        const sameRun = activeRunWatcher.conversationId === conversationId
+            && (!runId || !activeRunWatcher.runId || activeRunWatcher.runId === runId);
+        if (sameRun) {
+            activeRunWatcher.runId = runId || activeRunWatcher.runId;
+            if (activeRunWatcher.timer) {
+                clearTimeout(activeRunWatcher.timer);
+                activeRunWatcher.timer = null;
+            }
+            void pollActiveRunWatcher();
+            return true;
+        }
+        stopActiveRunWatcher();
+    }
+
+    const recoveryView = streamView || appendStreamingAssistantMessage(pendingQuery, conversationId);
+    recoveryView.setPending(t('chat.resumePending'));
+    if (run?.events?.length) {
+        recoveryView.setTrace(run.events, {
+            runId: run.run_id || runId,
+            runtime: run.runtime || '',
+            modelUsed: run.model_used || '',
+        });
+    }
+    activeRunWatcher = {
+        conversationId,
+        runId: runId || run?.run_id || '',
+        pendingQuery,
+        streamView: recoveryView,
+        attempts: 0,
+        completedChecks: 0,
+        maxAttempts,
+        viewFinalized: false,
+        polling: false,
+        timer: null,
+    };
+    updateSendState();
+    void pollActiveRunWatcher();
+    return true;
 }
 
 async function watchActiveRunForConversation(id, messages = []) {
@@ -13851,34 +14611,30 @@ async function watchActiveRunForConversation(id, messages = []) {
         if (currentConversationId !== id) return;
 
         const availableRuns = data.runs || [];
-        const run = availableRuns.find(runIsActive) || availableRuns.find((item) => (
-            item && item.status === 'completed' && item.output
+        const pendingQuery = [...messages].reverse().find((msg) => msg?.role === 'user')?.content || '';
+        const matchingRuns = pendingQuery
+            ? availableRuns.filter((item) => item?.input === pendingQuery)
+            : availableRuns;
+        const persistedRunIds = new Set(messages
+            .filter((msg) => msg?.role === 'assistant' && msg?.run_id)
+            .map((msg) => msg.run_id));
+        const candidateRuns = matchingRuns.filter((item) => !persistedRunIds.has(item?.run_id));
+        const run = candidateRuns.find(runIsActive) || candidateRuns.find((item) => (
+            item && (
+                (item.status === 'completed' && item.output)
+                || item.status === 'failed'
+                || item.status === 'partial'
+                || item.status === 'cancelled'
+            )
         ));
         if (!run) return;
 
-        if (!runIsActive(run)) {
-            appendRecoveredRunMessage(run);
-            await Promise.allSettled([loadConversations(), loadRuns()]);
-            return;
-        }
-
-        const pendingQuery = [...messages].reverse().find((msg) => msg?.role === 'user')?.content || '';
-        const streamView = appendStreamingAssistantMessage(pendingQuery, id);
-        streamView.setPending(t('chat.resumePending'));
-        streamView.setTrace(run.events || [], {
-            runId: run.run_id || '',
-            runtime: run.runtime || '',
-            modelUsed: run.model_used || '',
-        });
-        activeRunWatcher = {
+        startActiveRunWatcher({
             conversationId: id,
             runId: run.run_id || '',
-            streamView,
-            attempts: 0,
-            completedChecks: 0,
-            timer: null,
-        };
-        pollActiveRunWatcher();
+            pendingQuery,
+            run,
+        });
     } catch {
         // A watcher is best-effort recovery UI; normal conversation rendering should stay quiet.
     }
@@ -13886,12 +14642,25 @@ async function watchActiveRunForConversation(id, messages = []) {
 
 async function pollActiveRunWatcher() {
     const watcher = activeRunWatcher;
-    if (!watcher || currentConversationId !== watcher.conversationId) {
+    if (!watcher || watcher.polling) return;
+    if (currentConversationId !== watcher.conversationId) {
         stopActiveRunWatcher();
         return;
     }
+    if (document.hidden || navigator.onLine === false) {
+        if (!watcher.timer) {
+            watcher.timer = setTimeout(pollActiveRunWatcher, ACTIVE_RUN_POLL_MS);
+        }
+        return;
+    }
 
+    if (watcher.timer) {
+        clearTimeout(watcher.timer);
+        watcher.timer = null;
+    }
+    watcher.polling = true;
     watcher.attempts += 1;
+    let shouldSchedule = true;
     try {
         const [conversationData, runData] = await Promise.all([
             loadConversation(watcher.conversationId),
@@ -13909,47 +14678,84 @@ async function pollActiveRunWatcher() {
             });
         }
 
-        if (hasAssistantAfterLastUser(messages)) {
-            stopActiveRunWatcher();
-            await Promise.allSettled([loadConversations(), loadRuns()]);
-            await renderConversationMessages(watcher.conversationId, { watchActiveRuns: false });
+        const hasPersistedAnswer = watcher.runId
+            ? hasAssistantMessageForRun(messages, watcher.runId)
+            : hasAssistantAfterLastUser(messages);
+        if (hasPersistedAnswer) {
+            shouldSchedule = false;
+            try {
+                await Promise.allSettled([loadConversations(), loadRuns()]);
+                await renderConversationMessages(watcher.conversationId, { watchActiveRuns: false });
+            } finally {
+                stopActiveRunWatcher(watcher);
+            }
             return;
         }
 
         if (run.status && !runIsActive(run)) {
             watcher.completedChecks += 1;
-            if (run.status === 'completed' && run.output) {
-                watcher.streamView.finalize(chatResponseFromRun(run));
-                stopActiveRunWatcher();
-                await Promise.allSettled([loadConversations(), loadRuns()]);
-                return;
+            if ((run.status === 'completed' && run.output) || run.status === 'failed' || run.status === 'partial' || run.status === 'cancelled') {
+                if (!watcher.viewFinalized) {
+                    finalizeRecoveredRunView(watcher.streamView, run);
+                    watcher.viewFinalized = true;
+                    await Promise.allSettled([loadConversations(), loadRuns()]);
+                }
             }
         }
-        if (watcher.attempts >= ACTIVE_RUN_MAX_POLLS || watcher.completedChecks >= 3) {
-            stopActiveRunWatcher();
-            await renderConversationMessages(watcher.conversationId, { watchActiveRuns: false });
+        if (watcher.viewFinalized && watcher.completedChecks >= 3) {
+            shouldSchedule = false;
+            stopActiveRunWatcher(watcher);
+            return;
+        }
+        if (watcher.attempts >= watcher.maxAttempts) {
+            shouldSchedule = false;
+            watcher.streamView.showError(t('chat.resumeFailed'));
+            stopActiveRunWatcher(watcher);
             return;
         }
     } catch {
-        if (watcher.attempts >= ACTIVE_RUN_MAX_POLLS) {
-            stopActiveRunWatcher();
+        if (watcher.attempts >= watcher.maxAttempts) {
+            shouldSchedule = false;
+            watcher.streamView.showError(t('chat.resumeFailed'));
+            stopActiveRunWatcher(watcher);
             return;
         }
+    } finally {
+        watcher.polling = false;
     }
 
-    if (activeRunWatcher === watcher) {
+    if (shouldSchedule && activeRunWatcher === watcher) {
         watcher.timer = setTimeout(pollActiveRunWatcher, ACTIVE_RUN_POLL_MS);
     }
 }
 
-function appendRecoveredRunMessage(run) {
-    const streamView = appendStreamingAssistantMessage(run?.input || '', run?.conversation_id || currentConversationId);
-    streamView.finalize(chatResponseFromRun(run));
+function reconcileChatAfterPageResume() {
+    if (document.hidden || !currentUserId || !currentAccountToken || activeView !== 'chat' || !currentConversationId) {
+        return;
+    }
+    if (activeRunWatcher) {
+        if (activeRunWatcher.timer) {
+            clearTimeout(activeRunWatcher.timer);
+            activeRunWatcher.timer = null;
+        }
+        void pollActiveRunWatcher();
+        return;
+    }
+    if (activeConversationRequests.has(currentConversationId) || chatResumeReconcilePromise) {
+        return;
+    }
+
+    const conversationId = currentConversationId;
+    chatResumeReconcilePromise = renderConversationMessages(conversationId)
+        .finally(() => {
+            chatResumeReconcilePromise = null;
+        });
 }
 
 function chatResponseFromRun(run = {}) {
     return {
-        response: run.output || '',
+        response: run.output || run.error_message || '',
+        error_type: run.error_type || (run.status === 'failed' ? 'run_failed' : ''),
         events: run.events || [],
         run_id: run.run_id || '',
         runtime: run.runtime || '',
@@ -14062,6 +14868,47 @@ async function startNewTopic() {
     focusMessageInput();
 }
 
+function createChatRunId() {
+    return CHAT_RECOVERY.createRunId();
+}
+
+function markChatStreamTransportError(error, runId = '', responseStarted = false, explicitlyAborted = false) {
+    const normalized = error instanceof Error
+        ? error
+        : new Error(String(error || t('errors.streamFailed')));
+    normalized.streamTransportError = true;
+    normalized.responseStarted = responseStarted;
+    normalized.userCancelled = explicitlyAborted;
+    normalized.runId = normalized.runId || runId || '';
+    return normalized;
+}
+
+function isRecoverableChatStreamError(error) {
+    return CHAT_RECOVERY.isRecoverableStreamError(error);
+}
+
+function recoverInterruptedChatStream({
+    conversationId,
+    runId = '',
+    query = '',
+    streamView,
+    error,
+} = {}) {
+    if (!isRecoverableChatStreamError(error)) return false;
+    if (currentConversationId !== conversationId) {
+        return true;
+    }
+    return startActiveRunWatcher({
+        conversationId,
+        runId: error?.runId || runId,
+        pendingQuery: query,
+        streamView,
+        maxAttempts: error?.responseStarted === false
+            ? ACTIVE_RUN_START_MAX_POLLS
+            : ACTIVE_RUN_MAX_POLLS,
+    });
+}
+
 async function handleSend(queryOverride = '') {
     if (!currentUserId) {
         showAccountLogin();
@@ -14105,10 +14952,14 @@ async function handleSend(queryOverride = '') {
     const streamView = appendStreamingAssistantMessage(query, conversationId);
     clearAttachments();
     scrollToBottom();
+    let streamRunId = '';
 
     try {
         const resp = await sendMessageStream(conversationId, query, streamView, '', attachmentPayload, {
             context_blocks: [],
+            onRunId: (runId) => {
+                streamRunId = runId;
+            },
         });
         streamView.finalize(resp);
         captureMemoryDebug(resp, conversationId);
@@ -14118,7 +14969,16 @@ async function handleSend(queryOverride = '') {
             if (currentConversationId === conversationId) updateTopbar();
         });
     } catch (err) {
-        streamView.showError(`Error: ${err.message}`);
+        const recovering = recoverInterruptedChatStream({
+            conversationId,
+            runId: streamRunId,
+            query,
+            streamView,
+            error: err,
+        });
+        if (!recovering) {
+            streamView.showError(`Error: ${err.message}`);
+        }
     } finally {
         activeConversationRequests.delete(conversationId);
         updateSendState();
@@ -14160,9 +15020,15 @@ async function regenerateAssistantAnswer(button) {
 
     const streamView = appendStreamingAssistantMessage(query, conversationId);
     scrollToBottom();
+    let streamRunId = '';
 
     try {
-        const resp = await sendMessageStream(conversationId, query, streamView, '', [], { regenerate: true });
+        const resp = await sendMessageStream(conversationId, query, streamView, '', [], {
+            regenerate: true,
+            onRunId: (runId) => {
+                streamRunId = runId;
+            },
+        });
         streamView.finalize(resp);
         captureMemoryDebug(resp, conversationId);
         if (driveWriteToolsUsed(resp)) void loadProjects();
@@ -14171,7 +15037,16 @@ async function regenerateAssistantAnswer(button) {
             if (currentConversationId === conversationId) updateTopbar();
         });
     } catch (err) {
-        streamView.showError(`Error: ${err.message}`);
+        const recovering = recoverInterruptedChatStream({
+            conversationId,
+            runId: streamRunId,
+            query,
+            streamView,
+            error: err,
+        });
+        if (!recovering) {
+            streamView.showError(`Error: ${err.message}`);
+        }
     } finally {
         activeConversationRequests.delete(conversationId);
         updateSendState();
@@ -14209,33 +15084,46 @@ async function sendMessageStream(conversationId, query, streamView, attachmentCo
     const effectiveAgentId = extraPayload.agent_id || targetAgentId;
     const driveContext = drivePromptContext(effectiveAgentId);
     const { signal, onRunId, ...requestPayload } = extraPayload || {};
-    const resp = await fetch(API_BASE + '/api/chat', {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            ...(currentAccountToken ? { 'X-Account-Session': currentAccountToken } : {}),
-            ...(currentUserId ? { 'X-User-ID': currentUserId } : {}),
-        },
-        signal,
-        body: JSON.stringify({
-            conversation_id: conversationId,
-            user_id: currentUserId,
-            query,
-            stream: true,
-            model_preference: model || undefined,
-            agent_id: targetAgentId,
-            role_id: currentRoleId || undefined,
-            context_blocks: attachmentContext ? [attachmentContext] : [],
-            drive_context: driveContext || undefined,
-            attachments,
-            ...modePayload,
-            ...requestPayload,
-        }),
-    });
+    let runId = String(requestPayload.run_id || createChatRunId());
+    if (typeof onRunId === 'function') onRunId(runId);
+    streamView.setMeta({ runId });
+
+    let resp;
+    try {
+        resp = await fetch(API_BASE + '/api/chat', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                ...(currentAccountToken ? { 'X-Account-Session': currentAccountToken } : {}),
+                ...(currentUserId ? { 'X-User-ID': currentUserId } : {}),
+            },
+            signal,
+            body: JSON.stringify({
+                conversation_id: conversationId,
+                user_id: currentUserId,
+                query,
+                stream: true,
+                model_preference: model || undefined,
+                agent_id: targetAgentId,
+                role_id: currentRoleId || undefined,
+                context_blocks: attachmentContext ? [attachmentContext] : [],
+                drive_context: driveContext || undefined,
+                attachments,
+                ...modePayload,
+                ...requestPayload,
+                run_id: runId,
+            }),
+        });
+    } catch (error) {
+        throw markChatStreamTransportError(error, runId, false, signal?.aborted === true);
+    }
 
     if (!resp.ok || !resp.body) {
         const err = await resp.json().catch(() => ({ error: resp.statusText }));
-        throw new Error(err.error || t('errors.requestFailed'));
+        const error = new Error(err.error || t('errors.requestFailed'));
+        error.httpStatus = resp.status;
+        error.runId = runId;
+        throw error;
     }
 
     const reader = resp.body.getReader();
@@ -14244,62 +15132,65 @@ async function sendMessageStream(conversationId, query, streamView, attachmentCo
     let streamedText = '';
     let finalResponse = null;
     const traceEvents = [];
-    let runId = '';
     let runtime = '';
     let modelUsed = '';
 
-    while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
+    try {
+        while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
 
-        const parts = buffer.split('\n\n');
-        buffer = parts.pop() || '';
+            const parts = buffer.split('\n\n');
+            buffer = parts.pop() || '';
 
-        for (const part of parts) {
-            const parsed = parseSseBlock(part);
-            if (!parsed) continue;
-            const { event, data } = parsed;
+            for (const part of parts) {
+                const parsed = parseSseBlock(part);
+                if (!parsed) continue;
+                const { event, data } = parsed;
 
-            if (event === 'meta') {
-                runId = data.run_id || runId;
-                if (runId && typeof onRunId === 'function') onRunId(runId);
-                streamView.setMeta({ runId, runtime, modelUsed });
-            } else if (event === 'trace') {
-                traceEvents.push(data);
-                runId = data.run_id || runId;
-                streamView.setTrace(traceEvents, { runId, runtime, modelUsed });
-            } else if (event === 'token') {
-                streamedText += data.text || '';
-                streamView.setContent(streamedText);
-            } else if (event === 'response') {
-                finalResponse = data;
-                runId = data.run_id || runId;
-                runtime = data.runtime || runtime;
-                modelUsed = data.model_used || modelUsed;
-                if (!streamedText) {
-                    streamedText = data.response || '';
+                if (event === 'meta') {
+                    runId = data.run_id || runId;
+                    if (runId && typeof onRunId === 'function') onRunId(runId);
+                    streamView.setMeta({ runId, runtime, modelUsed });
+                } else if (event === 'trace') {
+                    traceEvents.push(data);
+                    runId = data.run_id || runId;
+                    streamView.setTrace(traceEvents, { runId, runtime, modelUsed });
+                } else if (event === 'token') {
+                    streamedText += data.text || '';
                     streamView.setContent(streamedText);
+                } else if (event === 'response') {
+                    finalResponse = data;
+                    runId = data.run_id || runId;
+                    runtime = data.runtime || runtime;
+                    modelUsed = data.model_used || modelUsed;
+                    if (!streamedText) {
+                        streamedText = data.response || '';
+                        streamView.setContent(streamedText);
+                    }
+                    streamView.setTrace(traceEvents.length ? traceEvents : (data.events || []), { runId, runtime, modelUsed });
+                } else if (event === 'error') {
+                    const error = new Error(data.error || t('errors.streamFailed'));
+                    error.errorType = data.error_type || '';
+                    error.runId = data.run_id || runId || '';
+                    error.streamEventError = true;
+                    throw error;
                 }
-                streamView.setTrace(traceEvents.length ? traceEvents : (data.events || []), { runId, runtime, modelUsed });
-            } else if (event === 'error') {
-                const error = new Error(data.error || t('errors.streamFailed'));
-                error.errorType = data.error_type || '';
-                error.runId = data.run_id || runId || '';
-                throw error;
             }
         }
+    } catch (error) {
+        if (finalResponse) return finalResponse;
+        if (error?.streamEventError || signal?.aborted === true || error?.errorType === 'cancelled' || error?.cancelled === true) {
+            throw error;
+        }
+        throw markChatStreamTransportError(error, runId, true, false);
     }
 
-    return finalResponse || {
-        response: streamedText,
-        events: traceEvents,
-        run_id: runId,
-        runtime,
-        model_used: modelUsed,
-        skills_used: [],
-        citations: [],
-    };
+    if (!finalResponse) {
+        throw markChatStreamTransportError(new Error(t('errors.streamFailed')), runId, true);
+    }
+    return finalResponse;
 }
 
 function appendStreamingAssistantMessage(regenerateQuery = '', conversationId = currentConversationId, options = {}) {
@@ -15002,11 +15893,32 @@ function renderCitationPanel(citations = []) {
     const rows = normalized.map((citation) => {
         const host = hostFromUrl(citation.url);
         const title = citation.title || host || citation.url;
+        const sourceMeta = [host, citation.source && citation.source !== host ? citation.source : '']
+            .filter(Boolean)
+            .join(' · ');
+        const image = citation.imageUrl
+            ? `
+                <span class="citation-thumbnail-wrap" aria-hidden="true">
+                    <img class="citation-thumbnail"
+                         src="${escapeAttr(citation.imageUrl)}"
+                         alt=""
+                         width="72"
+                         height="52"
+                         loading="lazy"
+                         decoding="async"
+                         referrerpolicy="no-referrer">
+                </span>
+            `
+            : '';
         return `
-            <li class="citation-item">
+            <li class="citation-item${citation.imageUrl ? ' has-image' : ''}">
                 <a class="citation-link" href="${escapeAttr(citation.url)}" target="_blank" rel="noopener noreferrer" title="${escapeAttr(citation.url)}">
-                    <span class="citation-link-title">${escapeHtml(title)}</span>
-                    ${host ? `<span class="citation-link-host">${escapeHtml(host)}</span>` : ''}
+                    ${image}
+                    <span class="citation-link-copy">
+                        <span class="citation-link-title">${escapeHtml(title)}</span>
+                        ${sourceMeta ? `<span class="citation-link-host">${escapeHtml(sourceMeta)}</span>` : ''}
+                        ${citation.snippet ? `<span class="citation-link-snippet">${escapeHtml(truncateText(citation.snippet, 180))}</span>` : ''}
+                    </span>
                 </a>
             </li>
         `;
@@ -15021,6 +15933,88 @@ function renderCitationPanel(citations = []) {
             <ol class="citation-list">${rows}</ol>
         </details>
     `;
+}
+
+function firstCitationImageUrl(value) {
+    if (Array.isArray(value)) {
+        for (const item of value) {
+            const url = firstCitationImageUrl(item);
+            if (url) return url;
+        }
+        return '';
+    }
+    if (value && typeof value === 'object') {
+        for (const key of ['url', 'src', 'thumbnail_url', 'thumbnailUrl', 'image_url', 'imageUrl']) {
+            const url = firstCitationImageUrl(value[key]);
+            if (url) return url;
+        }
+        return '';
+    }
+
+    const candidate = String(value || '').trim();
+    if (!/^https?:\/\//i.test(candidate)) return '';
+    try {
+        const parsed = new URL(candidate);
+        return ['http:', 'https:'].includes(parsed.protocol) && parsed.hostname ? candidate : '';
+    } catch {
+        return '';
+    }
+}
+
+function citationImageUrl(item = {}, metadata = {}) {
+    const pageMetadata = metadata?.page?.metadata;
+    const mediaType = String(
+        item.media_type
+        || item.mediaType
+        || metadata.media_type
+        || metadata.mediaType
+        || ''
+    ).trim().toLowerCase();
+    const candidates = [
+        item.thumbnail_url,
+        item.thumbnailUrl,
+        item.thumbnail,
+        metadata.thumbnail_url,
+        metadata.thumbnailUrl,
+        metadata.thumbnail,
+        item.image_url,
+        item.imageUrl,
+        item.image,
+        metadata.image_url,
+        metadata.imageUrl,
+        metadata.image,
+        metadata.og_image,
+        metadata['og:image'],
+        pageMetadata?.thumbnail_url,
+        pageMetadata?.thumbnailUrl,
+        pageMetadata?.image_url,
+        pageMetadata?.imageUrl,
+    ];
+    if (mediaType !== 'video') {
+        candidates.push(
+            item.media_url,
+            item.mediaUrl,
+            metadata.media_url,
+            metadata.mediaUrl,
+            pageMetadata?.media_url,
+            pageMetadata?.mediaUrl,
+        );
+    }
+    return firstCitationImageUrl(candidates);
+}
+
+function handleCitationImageError(event) {
+    const image = event?.target;
+    if (!image?.matches?.('.citation-thumbnail')) return;
+    const citationItem = image.closest('.citation-item');
+    image.closest('.citation-thumbnail-wrap')?.remove();
+    citationItem?.classList.remove('has-image');
+}
+
+function handleMessageImageError(event) {
+    const image = event?.target;
+    if (!image?.matches?.('.message-media img')) return;
+    image.closest('.message-media')?.remove();
 }
 
 function renderArtifactPanel(artifacts = []) {
@@ -15075,13 +16069,15 @@ function normalizeCitations(citations = []) {
         if (!url || !isSafeContentUrl(url) || seen.has(url)) return;
         seen.add(url);
         const metadata = (item.metadata || item.Metadata || {});
+        const normalizedMetadata = metadata && typeof metadata === 'object' ? metadata : {};
         normalized.push({
             index: Number(item.index || item.Index || normalized.length + 1),
             title: String(item.title || item.Title || '').trim(),
             url,
             snippet: String(item.snippet || item.Snippet || '').trim(),
             source: String(item.source || item.Source || '').trim(),
-            metadata: metadata && typeof metadata === 'object' ? metadata : {},
+            metadata: normalizedMetadata,
+            imageUrl: citationImageUrl(item, normalizedMetadata),
         });
     });
     return normalized;
@@ -15563,7 +16559,11 @@ function renderImageBlock(url, alt = '') {
                     data-media-download-name="${escapeAttr(downloadName)}"
                     aria-label="${escapeAttr(t('media.preview'))}: ${escapeAttr(label)}"
                     title="${escapeAttr(t('media.preview'))}">
-                <img src="${escapeAttr(url)}" alt="${escapeAttr(alt)}" loading="lazy">
+                <img src="${escapeAttr(url)}"
+                     alt="${escapeAttr(alt)}"
+                     loading="lazy"
+                     decoding="async"
+                     referrerpolicy="no-referrer">
             </button>
             ${alt ? `<figcaption>${escapeHtml(alt)}</figcaption>` : ''}
         </figure>
@@ -16446,6 +17446,46 @@ document.addEventListener('click', async (event) => {
 
     closeModePopover();
 
+    const roleConfigDeleteButton = event.target.closest('[data-role-config-delete-id]');
+    if (roleConfigDeleteButton) {
+        event.preventDefault();
+        event.stopPropagation();
+        await deleteRoleConfig(roleConfigDeleteButton.dataset.roleConfigDeleteId);
+        return;
+    }
+
+    const roleConfigSelectButton = event.target.closest('[data-role-config-id]');
+    if (roleConfigSelectButton) {
+        event.preventDefault();
+        selectRoleConfig(roleConfigSelectButton.dataset.roleConfigId);
+        return;
+    }
+
+    const roleConfigExampleButton = event.target.closest('[data-role-config-example]');
+    if (roleConfigExampleButton) {
+        event.preventDefault();
+        applyRoleConfigExample(Number(roleConfigExampleButton.dataset.roleConfigExample));
+        return;
+    }
+
+    if (event.target.closest('[data-role-config-new]')) {
+        event.preventDefault();
+        startRoleConfigDraft();
+        return;
+    }
+
+    if (event.target.closest('[data-role-config-save]')) {
+        event.preventDefault();
+        await saveRoleConfig();
+        return;
+    }
+
+    if (event.target.closest('[data-role-config-delete]')) {
+        event.preventDefault();
+        await deleteRoleConfig();
+        return;
+    }
+
     const navGroupToggle = event.target.closest('[data-toggle-nav-group]');
     if (navGroupToggle) {
         event.preventDefault();
@@ -16836,8 +17876,11 @@ document.addEventListener('click', async (event) => {
     const pulseRefreshButton = event.target.closest('[data-pulse-refresh]');
     if (pulseRefreshButton) {
         pulseRefreshButton.disabled = true;
-        await refreshPulse();
-        pulseRefreshButton.disabled = false;
+        try {
+            await refreshPulse();
+        } finally {
+            pulseRefreshButton.disabled = Boolean(pulse?.refreshing);
+        }
         return;
     }
 
@@ -17180,11 +18223,15 @@ document.addEventListener('click', async (event) => {
 
 document.addEventListener('click', (event) => {
     if (!driveSharePanelItemId) return;
+    const clickedInsideShareMenu = event.composedPath().some(
+        (node) => node instanceof Element && node.matches('.drive-share-menu-wrap'),
+    );
+    if (clickedInsideShareMenu) return;
     const target = event.target instanceof Element ? event.target : event.target?.parentElement;
     if (target?.closest('.drive-share-menu-wrap')) return;
     driveSharePanelItemId = '';
     driveShareStatus = { itemId: '', text: '', type: 'muted' };
-    renderProjects();
+    renderDriveShareSurfaces();
 });
 
 document.addEventListener('pointerdown', startDriveSelectionBox);
@@ -17197,6 +18244,14 @@ document.addEventListener('drop', handleDriveDrop);
 document.addEventListener('dragend', clearDriveDragState);
 
 document.addEventListener('change', async (event) => {
+    const roleConfigControl = event.target.closest?.(
+        '.role-config-input, #role-config-enabled, #role-config-memory-enabled',
+    );
+    if (roleConfigControl) {
+        captureRoleConfigDraft();
+        return;
+    }
+
     const todoDateModeSelect = event.target.closest?.('[data-todo-date-mode]');
     if (todoDateModeSelect) {
         setTodoDateMode(todoDateModeSelect.value || 'today');
@@ -17301,6 +18356,14 @@ document.addEventListener('change', async (event) => {
 });
 
 document.addEventListener('input', (event) => {
+    const roleConfigControl = event.target.closest?.(
+        '.role-config-input, #role-config-enabled, #role-config-memory-enabled',
+    );
+    if (roleConfigControl) {
+        captureRoleConfigDraft();
+        return;
+    }
+
     const projectSearch = event.target.closest('[data-project-search]');
     if (projectSearch) {
         scheduleProjectSearch(projectSearch);
@@ -17670,7 +18733,16 @@ btnRefresh.addEventListener('click', async () => {
 });
 
 messagesContainer?.addEventListener('scroll', scheduleChatHistoryControlsUpdate, { passive: true });
+document.addEventListener('error', handleCitationImageError, true);
+document.addEventListener('error', handleMessageImageError, true);
 window.addEventListener('resize', scheduleChatHistoryControlsUpdate);
+document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') reconcileChatAfterPageResume();
+});
+window.addEventListener('pageshow', (event) => {
+    if (event.persisted) reconcileChatAfterPageResume();
+});
+window.addEventListener('online', reconcileChatAfterPageResume);
 
 if (window.ResizeObserver && inputArea) {
     const chatNavigationResizeObserver = new ResizeObserver(scheduleChatHistoryControlsUpdate);

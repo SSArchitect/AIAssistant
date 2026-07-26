@@ -296,9 +296,14 @@ class TestSearchSkill:
             "sources",
             "limit",
             "open_results",
+            "include_images",
+            "image_limit",
             "open_limit",
             "page_chars",
         }
+        parameters = {parameter.name: parameter for parameter in meta.parameters}
+        assert parameters["include_images"].default is True
+        assert parameters["image_limit"].default == 3
 
     @pytest.mark.asyncio
     async def test_static_search_provider(self):
@@ -1766,14 +1771,29 @@ class TestSearchSkill:
         class FakeService:
             provider_names = ["fake"]
 
-            async def search(self, query, *, sources=None, limit=5):
-                seen["limit"] = limit
+            async def search(
+                self,
+                query,
+                *,
+                sources=None,
+                limit=5,
+                include_images=False,
+                image_limit=3,
+            ):
+                seen.update(
+                    {
+                        "limit": limit,
+                        "include_images": include_images,
+                        "image_limit": image_limit,
+                    }
+                )
                 return [
                     SearchResult(
                         title="Result",
                         snippet=query,
                         url="https://example.com",
                         source="fake",
+                        metadata={"thumbnail_url": "https://example.com/result-thumb.jpg"},
                     )
                 ]
 
@@ -1787,8 +1807,18 @@ class TestSearchSkill:
 
         assert result.success is True
         assert result.data["results"][0]["title"] == "Result"
+        assert result.data["results"][0]["thumbnail_url"] == "https://example.com/result-thumb.jpg"
+        assert result.data["results"][0]["image_url"] == "https://example.com/result-thumb.jpg"
+        assert result.data["results"][0]["media_url"] == "https://example.com/result-thumb.jpg"
+        assert result.data["results"][0]["media_type"] == "image"
+        assert result.data["image_count"] == 1
+        assert result.data["opened_results"] == 0
         assert "Result" in result.display_text
-        assert seen["limit"] == 20
+        assert seen == {
+            "limit": 20,
+            "include_images": True,
+            "image_limit": 3,
+        }
 
     @pytest.mark.asyncio
     async def test_search_skill_opens_pure_url_without_search_provider(self, monkeypatch):
@@ -1801,9 +1831,19 @@ class TestSearchSkill:
                 content="01 指板清洁与预备剂。02 指板深度护养剂。",
                 content_type="text/html",
                 status_code=200,
+                metadata={
+                    "thumbnail_url": "https://news.guitarschina.com/images/dunlop.jpg",
+                    "image_url": "https://news.guitarschina.com/images/dunlop.jpg",
+                    "media_url": "https://news.guitarschina.com/images/dunlop.jpg",
+                    "media_type": "image",
+                },
             )
 
+        async def fake_validate_image(self, url):
+            return url
+
         monkeypatch.setattr(SearchService, "open_url", fake_open_url)
+        monkeypatch.setattr(WebPageReader, "validate_image", fake_validate_image)
 
         result = await self.skill.execute(
             query="【https://news.guitarschina.com/?p=7569】",
@@ -1815,7 +1855,92 @@ class TestSearchSkill:
         assert result.data["sources"] == ["direct-url"]
         assert result.data["opened_results"] == 1
         assert result.data["results"][0]["url"] == "https://news.guitarschina.com/?p=7569"
+        assert result.data["results"][0]["image_url"] == (
+            "https://news.guitarschina.com/images/dunlop.jpg"
+        )
+        assert result.data["results"][0]["media_type"] == "image"
+        assert result.data["image_count"] == 1
         assert "dunlop" in result.data["results"][0]["title"].lower()
+
+    @pytest.mark.asyncio
+    async def test_search_skill_direct_url_removes_unreachable_page_image(self, monkeypatch):
+        bad_image = "https://cdn.example.com/unreachable-direct.jpg"
+
+        async def fake_open_url(self, url, *, max_chars=6000):
+            return WebPageContent(
+                url=url,
+                final_url=url,
+                title="Direct URL validation",
+                description=f"Description before {bad_image} description after.",
+                content=f"Content before {bad_image} content after.",
+                content_type="text/html",
+                status_code=200,
+                metadata={
+                    "thumbnail_url": bad_image,
+                    "image_url": bad_image,
+                    "media_url": bad_image,
+                    "media_type": "image",
+                },
+            )
+
+        async def reject_image(self, url):
+            raise ValueError("image returned 404")
+
+        monkeypatch.setattr(SearchService, "open_url", fake_open_url)
+        monkeypatch.setattr(WebPageReader, "validate_image", reject_image)
+
+        result = await self.skill.execute(query="https://example.com/direct")
+
+        assert result.success is True
+        assert result.data["image_count"] == 0
+        assert result.data["results"][0]["image_url"] == ""
+        serialized = json.dumps(result.data)
+        assert bad_image not in serialized
+        assert "Description before  description after." in result.data[
+            "results"
+        ][0]["snippet"]
+        assert result.data["search_trace"][-1]["invalid_count"] == 1
+
+    @pytest.mark.asyncio
+    async def test_search_skill_direct_url_omits_images_when_disabled(self, monkeypatch):
+        page_image = "https://cdn.example.com/direct-disabled.jpg"
+
+        async def fake_open_url(self, url, *, max_chars=6000):
+            return WebPageContent(
+                url=url,
+                final_url=url,
+                title="Direct image disabled",
+                description=f"Keep before {page_image} keep after.",
+                content="Readable direct page.",
+                content_type="text/html",
+                status_code=200,
+                metadata={
+                    "thumbnail_url": page_image,
+                    "image_url": page_image,
+                    "media_url": page_image,
+                    "media_type": "image",
+                },
+            )
+
+        async def should_not_validate(self, url):
+            raise AssertionError("include_images=false should not fetch the image")
+
+        monkeypatch.setattr(SearchService, "open_url", fake_open_url)
+        monkeypatch.setattr(WebPageReader, "validate_image", should_not_validate)
+
+        result = await self.skill.execute(
+            query="https://example.com/direct-disabled",
+            include_images=False,
+        )
+
+        assert result.success is True
+        assert result.data["image_count"] == 0
+        assert page_image not in json.dumps(result.data)
+        assert "Keep before  keep after." in result.data["results"][0]["snippet"]
+        assert all(
+            node["node"] != "image_enrichment"
+            for node in result.data["search_trace"]
+        )
 
     @pytest.mark.asyncio
     async def test_search_skill_normalizes_sources_and_open_options(self, monkeypatch):
@@ -1852,6 +1977,8 @@ class TestSearchSkill:
                 open_results=False,
                 open_limit=3,
                 page_chars=6000,
+                include_images=False,
+                image_limit=3,
             ):
                 seen.update(
                     {
@@ -1861,6 +1988,8 @@ class TestSearchSkill:
                         "open_results": open_results,
                         "open_limit": open_limit,
                         "page_chars": page_chars,
+                        "include_images": include_images,
+                        "image_limit": image_limit,
                     }
                 )
                 return [
@@ -1884,6 +2013,8 @@ class TestSearchSkill:
             sources=[" WEB ", "bing-rss"],
             limit=999,
             open_results="yes",
+            include_images="off",
+            image_limit=99,
             open_limit=99,
             page_chars=20,
         )
@@ -1896,6 +2027,8 @@ class TestSearchSkill:
             "open_results": True,
             "open_limit": 3,
             "page_chars": 500,
+            "include_images": False,
+            "image_limit": 5,
         }
         assert result.data["query_variants"] == ["agent search"]
         assert [node["node"] for node in result.data["search_trace"]] == [
@@ -1911,7 +2044,15 @@ class TestSearchSkill:
             last_provider_errors = ["web: blocked"]
             last_query_variants = ["original query", "variant query"]
 
-            async def search(self, query, *, sources=None, limit=5):
+            async def search(
+                self,
+                query,
+                *,
+                sources=None,
+                limit=5,
+                include_images=False,
+                image_limit=3,
+            ):
                 raise RuntimeError("network blocked")
 
         monkeypatch.setattr(
@@ -1934,7 +2075,15 @@ class TestSearchSkill:
             provider_names = ["web", "bing-rss"]
             last_provider_errors = ["web: blocked"]
 
-            async def search(self, query, *, sources=None, limit=5):
+            async def search(
+                self,
+                query,
+                *,
+                sources=None,
+                limit=5,
+                include_images=False,
+                image_limit=3,
+            ):
                 return [
                     SearchResult(
                         title="Fallback Result",
@@ -1966,6 +2115,7 @@ class TestSearchSkill:
                   <head>
                     <title>Example Article</title>
                     <meta name="description" content="Short summary.">
+                    <meta property="article:published_time" content="2026-07-26T08:30:00Z">
                     <script>ignoreMe()</script>
                   </head>
                   <body>
@@ -1985,8 +2135,162 @@ class TestSearchSkill:
 
         assert page.title == "Example Article"
         assert page.description == "Short summary."
+        assert page.metadata["published_at"] == "2026-07-26T08:30:00Z"
         assert "First paragraph with useful details." in page.content
         assert "ignoreMe" not in page.content
+
+    @pytest.mark.asyncio
+    async def test_web_page_reader_extracts_json_ld_published_date(self):
+        def handler(request):
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/html"},
+                text="""
+                <html>
+                  <head>
+                    <title>JSON-LD Article</title>
+                    <script type="application/ld+json">
+                      {"@type":"NewsArticle","datePublished":"2026-07-25T09:15:00Z"}
+                    </script>
+                  </head>
+                  <body><article>Verified article body.</article></body>
+                </html>
+                """,
+            )
+
+        reader = WebPageReader(transport=httpx.MockTransport(handler))
+        page = await reader.open("https://example.com/json-ld-article")
+
+        assert page.metadata["published_at"] == "2026-07-25T09:15:00Z"
+        assert "datePublished" not in page.content
+
+    @pytest.mark.parametrize(
+        ("head_markup", "expected_image_url"),
+        [
+            (
+                """
+                <meta name="twitter:image" content="/fallback/twitter.jpg">
+                <base href="/article-assets/">
+                <meta property="og:image" content="hero.webp">
+                """,
+                "https://example.com/article-assets/hero.webp",
+            ),
+            (
+                '<meta name="twitter:image" content="../images/twitter-card.png">',
+                "https://example.com/images/twitter-card.png",
+            ),
+            (
+                '<link rel="alternate image_src" href="//cdn.example.com/cards/link-card.jpg">',
+                "https://cdn.example.com/cards/link-card.jpg",
+            ),
+            (
+                """
+                <meta property="og:image" content="data:image/png;base64,invalid">
+                <meta name="twitter:image" content="/fallback/valid.jpg">
+                """,
+                "https://example.com/fallback/valid.jpg",
+            ),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_web_page_reader_extracts_and_resolves_page_images(
+        self,
+        head_markup,
+        expected_image_url,
+    ):
+        def handler(request):
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/html"},
+                text=f"""
+                <html>
+                  <head>
+                    <title>Image metadata</title>
+                    {head_markup}
+                  </head>
+                  <body><p>Readable body.</p></body>
+                </html>
+                """,
+            )
+
+        reader = WebPageReader(transport=httpx.MockTransport(handler))
+
+        page = await reader.open("https://example.com/articles/story", max_chars=1000)
+        media = await reader.open_media("https://example.com/articles/story")
+
+        assert page.metadata["thumbnail_url"] == expected_image_url
+        assert page.metadata["image_url"] == expected_image_url
+        assert page.metadata["media_url"] == expected_image_url
+        assert page.metadata["media_type"] == "image"
+        assert media["thumbnail_url"] == expected_image_url
+        assert media["image_url"] == expected_image_url
+        assert media["media_url"] == expected_image_url
+        assert media["media_type"] == "image"
+        assert media["_image_candidates"][0] == expected_image_url
+
+    @pytest.mark.asyncio
+    async def test_web_page_media_reader_rejects_private_redirects(self):
+        seen_urls = []
+
+        def handler(request):
+            seen_urls.append(str(request.url))
+            return httpx.Response(
+                302,
+                headers={"location": "http://127.0.0.1/private-preview"},
+            )
+
+        reader = WebPageReader(transport=httpx.MockTransport(handler))
+
+        with pytest.raises(ValueError, match="Private or local"):
+            await reader.open_media("https://example.com/article")
+
+        assert seen_urls == ["https://example.com/article"]
+
+    @pytest.mark.asyncio
+    async def test_web_page_image_validator_accepts_octet_stream_jpeg(self):
+        def handler(request):
+            return httpx.Response(
+                200,
+                headers={"content-type": "application/octet-stream"},
+                content=b"\xff\xd8\xff\xe0validated-jpeg",
+            )
+
+        reader = WebPageReader(transport=httpx.MockTransport(handler))
+
+        validated_url = await reader.validate_image(
+            "https://cdn.example.com/signed-image?id=123"
+        )
+
+        assert validated_url == "https://cdn.example.com/signed-image?id=123"
+
+    @pytest.mark.asyncio
+    async def test_web_page_image_validator_rejects_non_image_and_private_redirect(self):
+        seen_urls = []
+
+        def handler(request):
+            seen_urls.append(str(request.url))
+            if request.url.path == "/redirect":
+                return httpx.Response(
+                    302,
+                    headers={"location": "http://127.0.0.1/private-image"},
+                )
+            return httpx.Response(
+                200,
+                headers={"content-type": "application/xml"},
+                content=b"<?xml version='1.0'?><Error>missing</Error>",
+            )
+
+        reader = WebPageReader(transport=httpx.MockTransport(handler))
+
+        with pytest.raises(ValueError, match="Unsupported image content type"):
+            await reader.validate_image("https://example.com/not-an-image")
+        with pytest.raises(ValueError, match="Private or local"):
+            await reader.validate_image("https://example.com/redirect")
+
+        assert seen_urls == [
+            "https://example.com/not-an-image",
+            "https://example.com/redirect",
+        ]
 
     @pytest.mark.asyncio
     async def test_search_service_opens_result_pages(self):
@@ -2000,14 +2304,28 @@ class TestSearchSkill:
                         snippet="",
                         url="https://example.com/article",
                         source=self.name,
+                        metadata={
+                            "thumbnail_url": "https://example.com/search-thumb.jpg",
+                        },
                     )
                 ]
 
         def handler(request):
+            if request.url.path.endswith((".jpg", ".webp", ".png")):
+                return httpx.Response(
+                    200,
+                    headers={"content-type": "image/jpeg"},
+                    content=b"\xff\xd8\xff\xe0validated-image",
+                )
             return httpx.Response(
                 200,
                 headers={"content-type": "text/html"},
-                text="<html><head><title>Opened</title></head><body><p>Opened page body.</p></body></html>",
+                text=(
+                    "<html><head><title>Opened</title>"
+                    '<meta property="og:image" content="/images/opened-hero.jpg">'
+                    '<meta property="article:published_time" content="2026-07-26T08:30:00Z">'
+                    "</head><body><p>Opened page body.</p></body></html>"
+                ),
             )
 
         service = SearchService(
@@ -2019,16 +2337,435 @@ class TestSearchSkill:
 
         assert results[0].metadata["page"]["title"] == "Opened"
         assert "Opened page body." in results[0].metadata["page"]["content"]
+        assert results[0].metadata["published_at"] == "2026-07-26T08:30:00Z"
+        assert results[0].thumbnail_url == "https://example.com/images/opened-hero.jpg"
+        assert results[0].image_url == "https://example.com/images/opened-hero.jpg"
+        assert results[0].media_url == "https://example.com/images/opened-hero.jpg"
+        assert results[0].media_type == "image"
+        assert results[0].metadata["image_url"] == "https://example.com/images/opened-hero.jpg"
         assert [node["node"] for node in service.last_trace_nodes] == [
             "query_rewrite",
             "recall",
             "ranking",
             "llm_rerank",
             "open_results",
+            "image_enrichment",
         ]
-        open_node = service.last_trace_nodes[-1]
+        open_node = service.last_trace_nodes[-2]
         assert open_node["opened_count"] == 1
         assert open_node["error_count"] == 0
+        image_node = service.last_trace_nodes[-1]
+        assert image_node["probed_count"] == 1
+        assert image_node["validated_count"] == 1
+        assert image_node["invalid_count"] == 0
+
+    @pytest.mark.asyncio
+    async def test_search_service_enriches_only_missing_images_with_bounded_concurrency(self):
+        class Provider:
+            name = "web"
+
+            async def search(self, query, *, limit=5):
+                return [
+                    SearchResult(
+                        title="Agent image existing",
+                        snippet="Agent image result.",
+                        url="https://example.com/existing",
+                        source=self.name,
+                        thumbnail_url="https://example.com/existing.jpg",
+                    ),
+                    SearchResult(
+                        title="Agent image first missing",
+                        snippet="Agent image result.",
+                        url="https://example.com/first",
+                        source=self.name,
+                    ),
+                    SearchResult(
+                        title="Agent image second missing",
+                        snippet="Agent image result.",
+                        url="https://example.com/second",
+                        source=self.name,
+                    ),
+                    SearchResult(
+                        title="Agent image beyond limit",
+                        snippet="Agent image result.",
+                        url="https://example.com/beyond",
+                        source=self.name,
+                    ),
+                ]
+
+        class MediaReader:
+            def __init__(self):
+                self.requested = []
+                self.validated = []
+                self.active = 0
+                self.max_active = 0
+
+            async def open_media(self, url):
+                self.requested.append(url)
+                self.active += 1
+                self.max_active = max(self.max_active, self.active)
+                await asyncio.sleep(0)
+                self.active -= 1
+                if url.endswith("/first"):
+                    return {
+                        "thumbnail_url": "https://example.com/first.jpg",
+                        "image_url": "https://example.com/first.jpg",
+                        "media_url": "https://example.com/first.jpg",
+                        "media_type": "image",
+                    }
+                return {}
+
+            async def validate_image(self, url):
+                self.validated.append(url)
+                self.active += 1
+                self.max_active = max(self.max_active, self.active)
+                await asyncio.sleep(0)
+                self.active -= 1
+                return url
+
+        reader = MediaReader()
+        service = SearchService(
+            providers=[Provider()],
+            page_reader=reader,
+        )
+
+        results = await service.search(
+            "agent image",
+            limit=4,
+            include_images=True,
+            image_limit=2,
+        )
+
+        by_url = {result.url: result for result in results}
+        assert reader.requested == ["https://example.com/first"]
+        assert reader.validated == [
+            "https://example.com/existing.jpg",
+            "https://example.com/first.jpg",
+        ]
+        assert reader.max_active == 2
+        assert by_url["https://example.com/existing"].thumbnail_url.endswith("existing.jpg")
+        assert by_url["https://example.com/first"].image_url.endswith("first.jpg")
+        assert by_url["https://example.com/second"].image_url == ""
+        assert by_url["https://example.com/beyond"].image_url == ""
+        assert all("page" not in result.metadata for result in results)
+
+        image_node = service.last_trace_nodes[-1]
+        assert image_node["node"] == "image_enrichment"
+        assert image_node["candidate_count"] == 4
+        assert image_node["probed_count"] == 2
+        assert image_node["enriched_count"] == 2
+        assert image_node["validated_count"] == 2
+        assert image_node["invalid_count"] == 0
+        assert image_node["image_count"] == 2
+        assert image_node["error_count"] == 0
+
+    @pytest.mark.asyncio
+    async def test_search_service_validates_images_and_continues_until_target(self):
+        bad_provider = "https://cdn.example.com/bad-provider.jpg"
+        bad_og = "https://cdn.example.com/bad-og.jpg"
+        bad_second = "https://cdn.example.com/bad-second.jpg"
+        good_first = "https://cdn.example.com/good-first"
+        good_third = "https://cdn.example.com/good-third"
+
+        class Provider:
+            name = "web"
+
+            async def search(self, query, *, limit=5):
+                return [
+                    SearchResult(
+                        title="Image validation first",
+                        snippet=f"Keep before {bad_provider} keep after.",
+                        url="https://example.com/first",
+                        source=self.name,
+                        thumbnail_url=bad_provider,
+                        metadata={
+                            "page": {
+                                "content": f"Nested before {bad_provider} nested after.",
+                                "metadata": {
+                                    "pagemap": {
+                                        "cse_thumbnail": [{"src": bad_provider}]
+                                    }
+                                },
+                            }
+                        },
+                    ),
+                    SearchResult(
+                        title="Image validation second",
+                        snippet="Image validation candidate.",
+                        url="https://example.com/second",
+                        source=self.name,
+                    ),
+                    SearchResult(
+                        title="Image validation third",
+                        snippet="Image validation candidate.",
+                        url="https://example.com/third",
+                        source=self.name,
+                    ),
+                ]
+
+        def handler(request):
+            path = request.url.path
+            if path == "/first":
+                return httpx.Response(
+                    200,
+                    headers={"content-type": "text/html"},
+                    text=(
+                        "<html><head>"
+                        f'<meta property="og:image" content="{bad_og}">'
+                        f'<meta name="twitter:image" content="{good_first}">'
+                        "</head></html>"
+                    ),
+                )
+            if path == "/second":
+                return httpx.Response(
+                    200,
+                    headers={"content-type": "text/html"},
+                    text=(
+                        "<html><head>"
+                        f'<meta property="og:image" content="{bad_second}">'
+                        "</head></html>"
+                    ),
+                )
+            if path == "/third":
+                return httpx.Response(
+                    200,
+                    headers={"content-type": "text/html"},
+                    text=(
+                        "<html><head>"
+                        f'<meta property="og:image" content="{good_third}">'
+                        "</head></html>"
+                    ),
+                )
+            if path in {
+                "/bad-provider.jpg",
+                "/bad-og.jpg",
+                "/bad-second.jpg",
+            }:
+                return httpx.Response(
+                    404,
+                    headers={"content-type": "application/xml"},
+                    content=b"<Error>missing</Error>",
+                )
+            if path == "/good-first":
+                return httpx.Response(
+                    200,
+                    headers={"content-type": "image/png"},
+                    content=b"\x89PNG\r\n\x1a\nvalidated-png",
+                )
+            if path == "/good-third":
+                return httpx.Response(
+                    200,
+                    headers={"content-type": "application/octet-stream"},
+                    content=b"\xff\xd8\xff\xe0validated-jpeg",
+                )
+            raise AssertionError(f"Unexpected URL: {request.url}")
+
+        service = SearchService(
+            providers=[Provider()],
+            page_reader=WebPageReader(transport=httpx.MockTransport(handler)),
+        )
+
+        results = await service.search(
+            "image validation",
+            limit=3,
+            include_images=True,
+            image_limit=2,
+        )
+
+        by_url = {result.url: result for result in results}
+        assert by_url["https://example.com/first"].image_url == good_first
+        assert by_url["https://example.com/second"].image_url == ""
+        assert by_url["https://example.com/third"].image_url == good_third
+        serialized = json.dumps(
+            [result.model_dump(mode="json") for result in results]
+        )
+        assert bad_provider not in serialized
+        assert "Keep before  keep after." in by_url[
+            "https://example.com/first"
+        ].snippet
+        assert "Nested before  nested after." in by_url[
+            "https://example.com/first"
+        ].metadata["page"]["content"]
+
+        image_node = service.last_trace_nodes[-1]
+        assert image_node["candidate_count"] == 3
+        assert image_node["probed_count"] == 3
+        assert image_node["validated_count"] == 2
+        assert image_node["enriched_count"] == 2
+        assert image_node["invalid_count"] == 3
+        assert image_node["validation_attempt_count"] == 5
+        assert image_node["image_count"] == 2
+
+    @pytest.mark.asyncio
+    async def test_search_service_scrubs_unselected_initial_image_candidates(self):
+        valid_image = "https://cdn.example.com/selected.jpg"
+        unselected_image = "https://cdn.example.com/unselected.jpg"
+
+        class Provider:
+            name = "web"
+
+            async def search(self, query, *, limit=5):
+                return [
+                    SearchResult(
+                        title="Initial image candidates",
+                        snippet=f"Keep before {unselected_image} keep after.",
+                        url="https://example.com/candidates",
+                        source=self.name,
+                        metadata={
+                            "images": [valid_image, unselected_image],
+                            "rich_snippet": {"top": unselected_image},
+                        },
+                    )
+                ]
+
+        class MediaReader:
+            async def validate_image(self, url):
+                assert url == valid_image
+                return url
+
+            async def open_media(self, url):
+                raise AssertionError("A valid provider image should skip page discovery")
+
+        service = SearchService(
+            providers=[Provider()],
+            page_reader=MediaReader(),
+        )
+
+        results = await service.search(
+            "initial image candidates",
+            limit=1,
+            include_images=True,
+            image_limit=1,
+        )
+
+        serialized = json.dumps(results[0].model_dump(mode="json"))
+        assert results[0].image_url == valid_image
+        assert valid_image in serialized
+        assert unselected_image not in serialized
+        assert "Keep before  keep after." in results[0].snippet
+
+    @pytest.mark.asyncio
+    async def test_search_service_validates_and_scrubs_images_found_only_in_text(self):
+        bad_image = "https://cdn.example.com/signed-preview?id=dead"
+        article_url = "https://example.com/ordinary-article.html"
+
+        class Provider:
+            name = "web"
+
+            async def search(self, query, *, limit=5):
+                return [
+                    SearchResult(
+                        title="Text image validation",
+                        snippet=(
+                            f"Keep markdown ![preview]({bad_image}) and "
+                            f"ordinary article {article_url}."
+                        ),
+                        url="https://example.com/text-image",
+                        source=self.name,
+                        metadata={
+                            "page": {
+                                "description": "Keep this page description.",
+                                "content": (
+                                    f"Keep HTML <img src='{bad_image}'> content."
+                                ),
+                            }
+                        },
+                    )
+                ]
+
+        class MediaReader:
+            def __init__(self):
+                self.validated = []
+
+            async def validate_image(self, url):
+                self.validated.append(url)
+                raise ValueError("image returned 404")
+
+            async def open_media(self, url):
+                return {}
+
+        reader = MediaReader()
+        service = SearchService(
+            providers=[Provider()],
+            page_reader=reader,
+        )
+
+        results = await service.search(
+            "text image validation",
+            limit=1,
+            include_images=True,
+            image_limit=1,
+        )
+
+        serialized = json.dumps(results[0].model_dump(mode="json"))
+        assert reader.validated == [bad_image]
+        assert bad_image not in serialized
+        assert article_url in serialized
+        assert "Keep markdown  and ordinary article" in results[0].snippet
+        assert "![preview]" not in results[0].snippet
+        assert "Keep HTML  content." in results[0].metadata[
+            "page"
+        ]["content"]
+        assert "<img" not in results[0].metadata["page"]["content"]
+        assert service.last_trace_nodes[-1]["invalid_count"] == 1
+
+    @pytest.mark.asyncio
+    async def test_open_results_removes_rejected_image_urls_from_page_content(self):
+        bad_image = "https://cdn.example.com/dead-preview.jpg"
+
+        class Provider:
+            name = "web"
+
+            async def search(self, query, *, limit=5):
+                return [
+                    SearchResult(
+                        title="Open image validation",
+                        snippet=f"Summary before {bad_image} summary after.",
+                        url="https://example.com/open-result",
+                        source=self.name,
+                    )
+                ]
+
+        def handler(request):
+            if request.url.path == "/open-result":
+                return httpx.Response(
+                    200,
+                    headers={"content-type": "text/html"},
+                    text=(
+                        "<html><head>"
+                        f'<meta property="og:image" content="{bad_image}">'
+                        "</head><body><article>"
+                        f"Page before {bad_image} page after."
+                        "</article></body></html>"
+                    ),
+                )
+            if request.url.path == "/dead-preview.jpg":
+                return httpx.Response(
+                    404,
+                    headers={"content-type": "application/xml"},
+                    content=b"<Error>missing</Error>",
+                )
+            raise AssertionError(f"Unexpected URL: {request.url}")
+
+        service = SearchService(
+            providers=[Provider()],
+            page_reader=WebPageReader(transport=httpx.MockTransport(handler)),
+        )
+
+        results = await service.search(
+            "open image validation",
+            limit=1,
+            open_results=True,
+            include_images=False,
+        )
+
+        result = results[0]
+        serialized = json.dumps(result.model_dump(mode="json"))
+        assert bad_image not in serialized
+        assert "Summary before  summary after." in result.snippet
+        assert "Page before  page after." in result.metadata["page"]["content"]
+        assert result.image_url == ""
+        assert service.last_trace_nodes[-1]["invalid_count"] == 1
 
     @pytest.mark.asyncio
     async def test_search_service_records_open_errors_and_skips_private_urls(self):
@@ -2114,6 +2851,10 @@ class TestSearchSkill:
         assert results[0].metadata["image_url"] == "https://example.com/thumb.jpg"
         assert results[0].metadata["video_url"] == "https://example.com/demo.mp4"
         assert results[0].metadata["media_type"] == "video"
+        assert results[0].thumbnail_url == "https://example.com/thumb.jpg"
+        assert results[0].image_url == "https://example.com/thumb.jpg"
+        assert results[0].media_url == "https://example.com/demo.mp4"
+        assert results[0].media_type == "video"
 
     def test_search_service_registers_minimax_mcp_provider(self):
         keys = [

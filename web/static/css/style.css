@@ -225,10 +225,13 @@ video {
 }
 
 .workbench-nav {
+    min-height: 0;
     display: grid;
     gap: 4px;
     padding: 0 10px 10px;
-    overflow: visible;
+    overflow-x: hidden;
+    overflow-y: auto;
+    overscroll-behavior: contain;
 }
 
 .nav-item {
@@ -301,6 +304,10 @@ video {
     font-size: 12px;
 }
 
+.nav-external-link {
+    text-decoration: none;
+}
+
 .nav-subitem.active {
     box-shadow: inset 2px 0 0 var(--primary);
 }
@@ -331,7 +338,9 @@ video {
 }
 
 .nav-section {
-    flex: 0 0 auto;
+    flex: 0 1 auto;
+    max-height: min(56vh, 520px);
+    max-height: min(56dvh, 520px);
     border-bottom: 1px solid var(--line);
 }
 
@@ -2269,7 +2278,7 @@ video {
 
 .citation-list {
     display: grid;
-    gap: 5px;
+    gap: 7px;
     margin: 0 10px 10px;
     padding: 8px 0 0 18px;
     border-top: 1px solid var(--line);
@@ -2277,7 +2286,7 @@ video {
 
 .citation-item {
     min-width: 0;
-    padding-left: 0;
+    padding-left: 2px;
     color: var(--text-muted);
     font-size: 12px;
     line-height: 1.35;
@@ -2290,14 +2299,54 @@ video {
 }
 
 .citation-link {
+    width: 100%;
     max-width: 100%;
-    display: inline-flex;
-    align-items: baseline;
-    gap: 7px;
+    min-height: 38px;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 9px;
+    align-items: center;
+    padding: 6px;
+    border-radius: var(--radius-sm);
+    color: inherit;
     font-size: 12px;
     font-weight: 600;
     line-height: 1.35;
+    text-decoration: none;
     vertical-align: top;
+}
+
+.citation-item.has-image .citation-link {
+    grid-template-columns: 72px minmax(0, 1fr);
+}
+
+.citation-link:hover,
+.citation-link:focus-visible {
+    background: var(--surface);
+    text-decoration: none;
+}
+
+.citation-thumbnail-wrap {
+    width: 72px;
+    height: 52px;
+    display: block;
+    overflow: hidden;
+    border: 1px solid var(--line);
+    border-radius: 7px;
+    background: var(--surface-muted);
+}
+
+.citation-thumbnail {
+    width: 100%;
+    height: 100%;
+    display: block;
+    object-fit: cover;
+}
+
+.citation-link-copy {
+    min-width: 0;
+    display: grid;
+    gap: 2px;
 }
 
 .citation-link-title {
@@ -2308,10 +2357,23 @@ video {
 }
 
 .citation-link-host {
-    flex: 0 0 auto;
     color: var(--text-soft);
-    font-size: 12px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 11px;
     font-weight: 500;
+}
+
+.citation-link-snippet {
+    display: -webkit-box;
+    overflow: hidden;
+    color: var(--text-muted);
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    font-size: 11px;
+    font-weight: 400;
+    line-height: 1.35;
 }
 
 .skill-badges,
@@ -3131,6 +3193,7 @@ button.mode-chip:focus-visible {
 
 #view-agents,
 #view-tools,
+#view-role,
 #view-pulse,
 #view-todos,
 #view-developer,
@@ -3159,6 +3222,314 @@ button.mode-chip:focus-visible {
 .tools-workbench {
     display: grid;
     gap: 12px;
+}
+
+.role-config-workbench {
+    width: min(1180px, 100%);
+    margin: 0 auto;
+    display: grid;
+    grid-template-columns: minmax(230px, 0.72fr) minmax(0, 2fr);
+    gap: 14px;
+    align-items: start;
+}
+
+.role-config-list-panel,
+.role-config-editor-panel {
+    min-width: 0;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    background: var(--surface);
+    box-shadow: 0 2px 8px rgba(16, 24, 40, 0.04);
+}
+
+.role-config-list-panel {
+    display: grid;
+    gap: 10px;
+    padding: 12px;
+}
+
+.role-config-panel-head,
+.role-config-section-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.role-config-panel-head h2,
+.role-config-section-head h2 {
+    color: var(--text);
+    font-size: 15px;
+    line-height: 1.3;
+}
+
+.role-config-panel-head p,
+.role-config-section-head p {
+    margin-top: 3px;
+    color: var(--text-muted);
+    font-size: 11px;
+    line-height: 1.45;
+}
+
+.role-config-list {
+    display: grid;
+    gap: 6px;
+}
+
+.role-config-empty {
+    padding: 24px 10px;
+    color: var(--text-muted);
+    font-size: 12px;
+    text-align: center;
+}
+
+.role-config-list-item {
+    min-width: 0;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 30px;
+    align-items: center;
+    gap: 4px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    background: var(--surface-muted);
+}
+
+.role-config-list-item.active {
+    border-color: #b8cdfd;
+    background: var(--primary-soft);
+    box-shadow: inset 3px 0 0 var(--primary);
+}
+
+.role-config-list-select {
+    min-width: 0;
+    padding: 9px 10px;
+    border: 0;
+    background: transparent;
+    color: var(--text);
+    cursor: pointer;
+    display: grid;
+    gap: 3px;
+    text-align: left;
+}
+
+.role-config-list-select span,
+.role-config-list-select small {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.role-config-list-select span {
+    font-size: 12px;
+    font-weight: 800;
+}
+
+.role-config-list-select small {
+    color: var(--text-muted);
+    font-size: 10px;
+}
+
+.role-config-lock,
+.role-config-list-delete {
+    width: 28px;
+    height: 28px;
+    margin-right: 3px;
+    border: 0;
+    border-radius: 7px;
+    background: transparent;
+    color: var(--text-soft);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.role-config-list-delete {
+    cursor: pointer;
+}
+
+.role-config-list-delete:hover:not(:disabled) {
+    color: var(--red);
+    background: var(--red-soft);
+}
+
+.role-config-new {
+    width: 100%;
+}
+
+.role-config-editor-panel {
+    padding: 16px;
+}
+
+.role-config-templates {
+    padding-bottom: 14px;
+    border-bottom: 1px solid var(--line);
+}
+
+.role-config-template-list {
+    margin-top: 10px;
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 8px;
+}
+
+.role-config-template {
+    min-width: 0;
+    min-height: 76px;
+    padding: 10px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    background: var(--surface-muted);
+    color: var(--text);
+    cursor: pointer;
+    display: grid;
+    align-content: start;
+    gap: 5px;
+    text-align: left;
+}
+
+.role-config-template:hover {
+    border-color: var(--primary);
+    background: var(--primary-soft);
+}
+
+.role-config-template strong {
+    font-size: 12px;
+}
+
+.role-config-template span {
+    display: -webkit-box;
+    overflow: hidden;
+    color: var(--text-muted);
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    font-size: 11px;
+    line-height: 1.4;
+}
+
+.role-config-form-grid {
+    margin-top: 14px;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+}
+
+.role-config-field {
+    min-width: 0;
+    display: grid;
+    align-content: start;
+    gap: 6px;
+}
+
+.role-config-field-wide {
+    grid-column: 1 / -1;
+}
+
+.role-config-field > span {
+    color: var(--text-muted);
+    font-size: 11px;
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.role-config-input {
+    min-width: 0;
+    width: 100%;
+    min-height: 38px;
+    padding: 9px 10px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    background: var(--surface-muted);
+    color: var(--text);
+    outline: none;
+    font: inherit;
+    font-size: 12px;
+}
+
+.role-config-input:focus {
+    border-color: var(--primary);
+    box-shadow: 0 0 0 3px rgba(57, 106, 255, 0.1);
+}
+
+.role-config-input:disabled {
+    cursor: not-allowed;
+    opacity: 0.66;
+}
+
+.role-config-textarea {
+    min-height: 116px;
+    resize: vertical;
+    line-height: 1.5;
+}
+
+.role-config-editor-hint {
+    margin-top: 12px;
+    padding: 9px 10px;
+    border: 1px solid #d7e3ff;
+    border-radius: var(--radius-sm);
+    background: var(--primary-soft);
+    color: var(--text-muted);
+    font-size: 11px;
+    line-height: 1.45;
+}
+
+.role-config-editor-hint[hidden] {
+    display: none;
+}
+
+.role-config-options,
+.role-config-actions {
+    margin-top: 14px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+
+.role-config-options label {
+    color: var(--text-muted);
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    font-weight: 700;
+}
+
+.role-config-actions {
+    padding-top: 14px;
+    border-top: 1px solid var(--line);
+}
+
+.role-config-actions .btn-primary {
+    width: auto;
+}
+
+.role-config-delete:not(:disabled) {
+    color: var(--red);
+    border-color: #fecaca;
+}
+
+.role-config-delete:hover:not(:disabled) {
+    color: #fff;
+    border-color: var(--red);
+    background: var(--red);
+}
+
+.role-config-status {
+    flex: 1 1 220px;
+    min-width: 0;
+    color: var(--text-muted);
+    font-size: 12px;
+    line-height: 1.4;
+}
+
+.role-config-status.ok {
+    color: var(--green);
+}
+
+.role-config-status.error {
+    color: var(--red);
 }
 
 .tools-toolbar,
@@ -6204,12 +6575,14 @@ button.mode-chip:focus-visible {
 }
 
 .pulse-recommend-note {
-    min-width: 120px;
+    min-width: 0;
     flex: 1 1 120px;
     color: var(--text-subtle);
     font-size: 11px;
     line-height: 1.35;
-    overflow-wrap: anywhere;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 .pulse-feedback-actions,
@@ -6323,13 +6696,6 @@ button.mode-chip:focus-visible {
     overflow-wrap: anywhere;
 }
 
-.pulse-source-snippet {
-    color: var(--text-muted);
-    font-size: 12px;
-    line-height: 1.45;
-    overflow-wrap: anywhere;
-}
-
 .pulse-post-source-section {
     margin-top: 10px;
     display: grid;
@@ -6389,9 +6755,14 @@ button.mode-chip:focus-visible {
     text-align: left;
 }
 
-.pulse-related-item:hover {
+.pulse-related-item:not(:disabled):hover {
     border-color: var(--primary);
     background: var(--surface);
+}
+
+.pulse-related-item:disabled {
+    cursor: default;
+    opacity: 0.62;
 }
 
 .pulse-related-main {
@@ -6473,11 +6844,15 @@ body.pulse-post-open {
 
 .pulse-post-note {
     display: block;
+    max-width: 100%;
     margin-bottom: 7px;
     color: var(--text-subtle);
     font-size: 12px;
     font-weight: 750;
     line-height: 1.35;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 .pulse-post-head h2 {
@@ -6508,6 +6883,17 @@ body.pulse-post-open {
     line-height: 1.72;
     white-space: pre-line;
     overflow-wrap: anywhere;
+}
+
+.pulse-post-cluster-content {
+    display: grid;
+    gap: 7px;
+}
+
+.pulse-post-cluster-content h3 {
+    color: var(--text);
+    font-size: 13px;
+    line-height: 1.3;
 }
 
 .pulse-post-footer {
@@ -9218,6 +9604,14 @@ body.drive-selecting {
         width: fit-content;
     }
 
+    .role-config-workbench {
+        grid-template-columns: 1fr;
+    }
+
+    .role-config-list {
+        grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+    }
+
     .eval-layout,
     .eval-report-summary,
     .eval-dimension-grid {
@@ -9308,6 +9702,20 @@ body.drive-selecting {
         width: 100%;
     }
 
+    .drive-preview-actions .drive-share-menu-wrap {
+        position: static;
+        width: auto;
+        display: inline-flex;
+    }
+
+    .drive-preview-actions .drive-share-trigger {
+        width: auto;
+    }
+
+    .drive-preview-panel > .drive-save-head {
+        position: relative;
+    }
+
     .eval-toolbar {
         align-items: stretch;
         flex-direction: column;
@@ -9386,6 +9794,12 @@ body.drive-selecting {
 
     .drive-share-menu::before {
         display: none;
+    }
+
+    .drive-preview-actions .drive-share-menu {
+        position: absolute;
+        width: min(390px, 100%);
+        margin-top: 0;
     }
 
     .drive-share-link-row {
@@ -9510,12 +9924,22 @@ body.drive-selecting {
     .messages,
     #view-agents,
     #view-tools,
+    #view-role,
     #view-pulse,
     #view-trace,
     #view-developer,
     #view-eval {
         padding: 12px 10px;
         -webkit-overflow-scrolling: touch;
+    }
+
+    .role-config-template-list,
+    .role-config-form-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .role-config-field-wide {
+        grid-column: auto;
     }
 
     .chat-history-tools {
@@ -9930,6 +10354,15 @@ body.drive-selecting {
     .attachment-name,
     .attachment-image-chip .attachment-name {
         max-width: 50vw;
+    }
+
+    .citation-item.has-image .citation-link {
+        grid-template-columns: 58px minmax(0, 1fr);
+    }
+
+    .citation-thumbnail-wrap {
+        width: 58px;
+        height: 44px;
     }
 
     .topbar-actions .model-pill {

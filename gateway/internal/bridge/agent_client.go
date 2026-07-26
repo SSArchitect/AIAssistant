@@ -39,9 +39,12 @@ type ChatRequest struct {
 }
 
 type SearchRequest struct {
-	Query   string   `json:"query"`
-	Sources []string `json:"sources,omitempty"`
-	Limit   int      `json:"limit,omitempty"`
+	Query       string   `json:"query"`
+	Sources     []string `json:"sources,omitempty"`
+	Limit       int      `json:"limit,omitempty"`
+	OpenResults bool     `json:"open_results,omitempty"`
+	OpenLimit   int      `json:"open_limit,omitempty"`
+	PageChars   int      `json:"page_chars,omitempty"`
 }
 
 type SearchResult struct {

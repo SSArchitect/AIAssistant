@@ -63,14 +63,24 @@ echo "--- Web UI Checks ---"
 
 if command -v node >/dev/null 2>&1; then
     echo "[Web] Checking JavaScript syntax..."
-    if node --check web/static/js/app.js 2>&1; then
-        echo "  PASS: app.js syntax"
+    if node --check web/static/js/chat-recovery.js 2>&1 && \
+       node --check web/static/js/app.js 2>&1 && \
+       node --check web/static/js/admin.js 2>&1; then
+        echo "  PASS: web JavaScript syntax"
     else
-        echo "  FAIL: app.js syntax"
+        echo "  FAIL: web JavaScript syntax"
+        FAILED=1
+    fi
+
+    echo "[Web] Running JavaScript tests..."
+    if node --test tests/test_*_web.js 2>&1; then
+        echo "  PASS: JavaScript tests"
+    else
+        echo "  FAIL: JavaScript tests"
         FAILED=1
     fi
 else
-    echo "  SKIP: node not found, skipping JavaScript syntax check"
+    echo "  SKIP: node not found, skipping JavaScript checks"
 fi
 
 echo ""

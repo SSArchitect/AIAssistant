@@ -63,6 +63,26 @@ class SearchSkill(Skill):
                     default=False,
                 ),
                 SkillParameter(
+                    name="include_images",
+                    type="boolean",
+                    description=(
+                        "是否为缺少图片的搜索结果补充网页预览图。默认 true；仅提取页面图片 metadata，"
+                        "不会把网页正文计入 opened_results。"
+                    ),
+                    required=False,
+                    default=True,
+                ),
+                SkillParameter(
+                    name="image_limit",
+                    type="integer",
+                    description=(
+                        "include_images=true 时希望返回的有效图片数。默认 3，最多 5；"
+                        "失效图片会被丢弃并继续探测后续结果。"
+                    ),
+                    required=False,
+                    default=3,
+                ),
+                SkillParameter(
                     name="open_limit",
                     type="integer",
                     description="open_results=true 时打开的结果数量，最多 3。默认 3。",
@@ -101,6 +121,12 @@ class SearchSkill(Skill):
             limit = 5
         limit = max(1, min(limit, 20))
         open_results = _coerce_bool(kwargs.get("open_results"), default=False)
+        include_images = _coerce_bool(kwargs.get("include_images"), default=True)
+        try:
+            image_limit = int(kwargs.get("image_limit", 3))
+        except (TypeError, ValueError):
+            image_limit = 3
+        image_limit = max(1, min(image_limit, 5))
         try:
             open_limit = int(kwargs.get("open_limit") or 3)
         except (TypeError, ValueError):
@@ -127,8 +153,9 @@ class SearchSkill(Skill):
         if direct_url:
             query_rewrite = _direct_url_query_rewrite(query)
             search_trace = _direct_url_search_trace(query_rewrite, direct_url)
+            service = SearchService()
             try:
-                page = await SearchService().open_url(direct_url, max_chars=page_chars)
+                page = await service.open_url(direct_url, max_chars=page_chars)
             except Exception as e:
                 return SkillResult(
                     success=False,
@@ -142,6 +169,28 @@ class SearchSkill(Skill):
                     },
                 )
             result = search_result_from_page(page)
+            if include_images:
+                image_stats = await service.attach_page_media(
+                    [result],
+                    image_limit=1,
+                    discover_missing=False,
+                )
+                search_trace.append(
+                    {
+                        "node": "image_enrichment",
+                        "status": (
+                            "partial"
+                            if image_stats.get("error_count")
+                            or image_stats.get("invalid_count")
+                            else "completed"
+                        ),
+                        "image_limit": 1,
+                        **image_stats,
+                    }
+                )
+            else:
+                service.discard_result_images([result])
+            image_count = int(bool(result.thumbnail_url or result.image_url))
             return SkillResult(
                 success=True,
                 data={
@@ -153,6 +202,7 @@ class SearchSkill(Skill):
                     "sources": ["direct-url"],
                     "provider_errors": [],
                     "opened_results": 1,
+                    "image_count": image_count,
                     "direct_url_open": True,
                 },
                 display_text=f"1. {result.title} - {result.url}",
@@ -178,9 +228,17 @@ class SearchSkill(Skill):
                     open_results=True,
                     open_limit=open_limit,
                     page_chars=page_chars,
+                    include_images=include_images,
+                    image_limit=image_limit,
                 )
             else:
-                results = await service.search(query, sources=sources, limit=limit)
+                results = await service.search(
+                    query,
+                    sources=sources,
+                    limit=limit,
+                    include_images=include_images,
+                    image_limit=image_limit,
+                )
         except Exception as e:
             return SkillResult(
                 success=False,
@@ -192,6 +250,7 @@ class SearchSkill(Skill):
                     "query_variants": getattr(service, "last_query_variants", None) or [query],
                     "sources": service.provider_names,
                     "provider_errors": getattr(service, "last_provider_errors", provider_errors),
+                    "image_count": 0,
                 },
             )
         provider_errors = getattr(service, "last_provider_errors", provider_errors)
@@ -207,6 +266,11 @@ class SearchSkill(Skill):
             and isinstance(item["metadata"].get("page"), dict)
             and not item["metadata"]["page"].get("error")
         )
+        image_count = sum(
+            1
+            for item in data
+            if item.get("thumbnail_url") or item.get("image_url")
+        )
         if not results:
             return SkillResult(
                 success=True,
@@ -219,6 +283,7 @@ class SearchSkill(Skill):
                     "sources": service.provider_names,
                     "provider_errors": provider_errors,
                     "opened_results": 0,
+                    "image_count": 0,
                 },
                 display_text=f"No search results for: {query}",
             )
@@ -239,6 +304,7 @@ class SearchSkill(Skill):
                 "sources": service.provider_names,
                 "provider_errors": provider_errors,
                 "opened_results": opened_count,
+                "image_count": image_count,
             },
             display_text="\n".join(display_lines),
         )

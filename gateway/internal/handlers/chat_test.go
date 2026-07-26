@@ -699,6 +699,199 @@ func TestRoleMemoryCreateSessionUserOverridesBodyUserID(t *testing.T) {
 	}
 }
 
+func TestRoleCRUDRequiresAccountSessionAndUsesSessionOwner(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	if err := database.Init(filepath.Join(t.TempDir(), "assistant.db")); err != nil {
+		t.Fatalf("init database: %v", err)
+	}
+	const (
+		validToken    = "session-token-role-crud"
+		sessionUserID = "session-role-owner"
+	)
+	now := time.Now()
+	if err := database.DB.Create(&models.AccountSession{
+		TokenHash:  accountSessionTokenHash(validToken),
+		UserID:     sessionUserID,
+		CreatedAt:  now,
+		LastUsedAt: now,
+	}).Error; err != nil {
+		t.Fatalf("create account session: %v", err)
+	}
+
+	type capturedRoleCall struct {
+		method      string
+		path        string
+		queryUserID string
+		bodyUserID  string
+	}
+	upstreamCalls := make(chan capturedRoleCall, 32)
+	agentServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		call := capturedRoleCall{
+			method:      r.Method,
+			path:        r.URL.Path,
+			queryUserID: r.URL.Query().Get("user_id"),
+		}
+		if r.Method == http.MethodPost || r.Method == http.MethodPut {
+			var body bridge.RoleWriteRequest
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				http.Error(w, "invalid role request", http.StatusBadRequest)
+				return
+			}
+			call.bodyUserID = body.UserID
+		}
+		upstreamCalls <- call
+
+		w.Header().Set("Content-Type", "application/json")
+		switch r.Method {
+		case http.MethodGet:
+			_, _ = w.Write([]byte(`{"roles":[]}`))
+		case http.MethodPost, http.MethodPut:
+			_, _ = w.Write([]byte(`{
+				"id": "private_helper",
+				"name": "Private Helper",
+				"description": "",
+				"base_persona": "",
+				"instructions": [],
+				"enabled": true,
+				"memory_enabled": true,
+				"metadata": {"built_in": false}
+			}`))
+		case http.MethodDelete:
+			_, _ = w.Write([]byte(`{"status":"ok"}`))
+		default:
+			http.Error(w, "unexpected method", http.StatusMethodNotAllowed)
+		}
+	}))
+	defer agentServer.Close()
+
+	router := gin.New()
+	handler := NewChatHandler(bridge.NewAgentClient(agentServer.URL, time.Second))
+	router.GET("/api/roles", handler.ListRoles)
+	router.POST("/api/roles", handler.CreateRole)
+	router.PUT("/api/roles/:id", handler.UpdateRole)
+	router.DELETE("/api/roles/:id", handler.DeleteRole)
+
+	type roleRequestCase struct {
+		name   string
+		method string
+		path   string
+		body   string
+	}
+	requests := []roleRequestCase{
+		{
+			name:   "list",
+			method: http.MethodGet,
+			path:   "/api/roles?user_id=forged-query-user",
+		},
+		{
+			name:   "create",
+			method: http.MethodPost,
+			path:   "/api/roles?user_id=forged-query-user",
+			body:   `{"user_id":"forged-body-user","id":"private_helper","name":"Private Helper"}`,
+		},
+		{
+			name:   "update",
+			method: http.MethodPut,
+			path:   "/api/roles/private_helper?user_id=forged-query-user",
+			body:   `{"user_id":"forged-body-user","name":"Updated Helper"}`,
+		},
+		{
+			name:   "delete",
+			method: http.MethodDelete,
+			path:   "/api/roles/private_helper?user_id=forged-query-user",
+		},
+	}
+
+	for _, session := range []struct {
+		name  string
+		token string
+	}{
+		{name: "missing_session"},
+		{name: "invalid_session", token: "invalid-role-session"},
+	} {
+		for _, requestCase := range requests {
+			t.Run(session.name+"/"+requestCase.name, func(t *testing.T) {
+				req := httptest.NewRequest(
+					requestCase.method,
+					requestCase.path,
+					strings.NewReader(requestCase.body),
+				)
+				if requestCase.body != "" {
+					req.Header.Set("Content-Type", "application/json")
+				}
+				req.Header.Set("X-User-ID", "forged-header-user")
+				if session.token != "" {
+					req.Header.Set("X-Account-Session", session.token)
+				}
+				recorder := httptest.NewRecorder()
+
+				router.ServeHTTP(recorder, req)
+
+				if recorder.Code != http.StatusUnauthorized {
+					t.Errorf(
+						"expected %s without a valid session to return %d, got %d: %s",
+						requestCase.name,
+						http.StatusUnauthorized,
+						recorder.Code,
+						recorder.Body.String(),
+					)
+				}
+				select {
+				case call := <-upstreamCalls:
+					t.Errorf("unauthorized %s reached agent: %#v", requestCase.name, call)
+				default:
+				}
+			})
+		}
+	}
+
+	for _, requestCase := range requests {
+		t.Run("valid_session/"+requestCase.name, func(t *testing.T) {
+			req := httptest.NewRequest(
+				requestCase.method,
+				requestCase.path,
+				strings.NewReader(requestCase.body),
+			)
+			if requestCase.body != "" {
+				req.Header.Set("Content-Type", "application/json")
+			}
+			req.Header.Set("X-Account-Session", validToken)
+			req.Header.Set("X-User-ID", "forged-header-user")
+			recorder := httptest.NewRecorder()
+
+			router.ServeHTTP(recorder, req)
+
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("expected valid %s request to succeed, got %d: %s", requestCase.name, recorder.Code, recorder.Body.String())
+			}
+			select {
+			case call := <-upstreamCalls:
+				if call.method != requestCase.method {
+					t.Fatalf("unexpected upstream method for %s: %#v", requestCase.name, call)
+				}
+				if requestCase.method == http.MethodPost || requestCase.method == http.MethodPut {
+					if call.bodyUserID != sessionUserID {
+						t.Fatalf("expected session user in %s body, got %#v", requestCase.name, call)
+					}
+					if call.queryUserID != "" {
+						t.Fatalf("did not expect query user for %s, got %#v", requestCase.name, call)
+					}
+				} else {
+					if call.queryUserID != sessionUserID {
+						t.Fatalf("expected session user in %s query, got %#v", requestCase.name, call)
+					}
+					if call.bodyUserID != "" {
+						t.Fatalf("did not expect body user for %s, got %#v", requestCase.name, call)
+					}
+				}
+			default:
+				t.Fatalf("valid %s request did not reach agent", requestCase.name)
+			}
+		})
+	}
+}
+
 func TestNormalizedUserIDDefaultsToZero(t *testing.T) {
 	if got := normalizedUserID(""); got != "0" {
 		t.Fatalf("expected empty user id to default to 0, got %q", got)
@@ -1037,9 +1230,16 @@ func TestStreamChatRecoversCompletedRunWithoutResponseEvent(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	recoveredRun := false
+	forwardedRunID := ""
 	agentServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/agent/chat/stream":
+			var upstreamRequest bridge.ChatRequest
+			if err := json.NewDecoder(r.Body).Decode(&upstreamRequest); err != nil {
+				http.Error(w, "invalid upstream request", http.StatusBadRequest)
+				return
+			}
+			forwardedRunID = upstreamRequest.RunID
 			w.Header().Set("Content-Type", "text/event-stream")
 			_, _ = w.Write([]byte("event: meta\ndata: {\"run_id\":\"run_recover\"}\n\n"))
 			_, _ = w.Write([]byte("event: trace\ndata: {\"id\":\"evt_1\",\"run_id\":\"run_recover\",\"type\":\"run.completed\",\"status\":\"success\",\"title\":\"Run completed\",\"payload\":{},\"created_at\":\"2026-06-18T00:00:00Z\"}\n\n"))
@@ -1090,7 +1290,8 @@ func TestStreamChatRecoversCompletedRunWithoutResponseEvent(t *testing.T) {
 		"conversation_id": "conv-stream-recover",
 		"query": "generate timeline image",
 		"stream": true,
-		"agent_id": "super_chat"
+		"agent_id": "super_chat",
+		"run_id": "run_recover"
 	}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/chat", body)
 	req.Header.Set("Content-Type", "application/json")
@@ -1103,6 +1304,9 @@ func TestStreamChatRecoversCompletedRunWithoutResponseEvent(t *testing.T) {
 	}
 	if !recoveredRun {
 		t.Fatal("expected gateway to recover completed run output")
+	}
+	if forwardedRunID != "run_recover" {
+		t.Fatalf("expected client run_id to reach agent, got %q", forwardedRunID)
 	}
 
 	var messages []models.Message

@@ -98,7 +98,7 @@ func TestPulseUsesAgentGeneratedModules(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{
 			"conversation_id": "pulse-2026-06-20",
-			"response": "{\"modules\":[{\"key\":\"topic_hot\",\"title\":\"你的机器人订阅今日追踪\",\"summary\":\"围绕具身智能订阅生成。\",\"items\":[{\"topic_name\":\"机器人\",\"category\":\"关注 Topic\",\"title\":\"具身智能项目今天该看什么\",\"summary\":\"一条来自 Agent 的个性化 topic 推荐。\",\"heat_score\":88,\"recommendation_reason\":\"因为你订阅了机器人。\",\"signals\":[\"搜索来源：机器人与具身智能出现新进展 - https://example.com/robotics-latest\"],\"quick_context\":\"先看产业化落地。\",\"key_points\":[\"供应链\",\"场景\",\"成本\"],\"suggested_questions\":[\"具身智能近期有什么变化？\",\"我该看哪些公司？\",\"有哪些风险？\"],\"explore_prompt\":\"展开具身智能今日推荐\"}]},{\"key\":\"memory\",\"title\":\"延续你的最近对话\",\"summary\":\"根据最近 memory 生成。\",\"items\":[{\"category\":\"近日 Memory\",\"title\":\"继续整理 AI 工作台想法\",\"summary\":\"一条 memory 推荐。\",\"heat_score\":77,\"recommendation_reason\":\"最近多次讨论工作台。\",\"signals\":[\"搜索来源：机器人与具身智能出现新进展 - https://example.com/robotics-latest\"],\"quick_context\":\"把想法落为功能。\",\"key_points\":[\"结构\",\"验证\",\"迭代\"],\"suggested_questions\":[\"下一步做什么？\",\"怎么验证？\",\"如何排优先级？\"],\"explore_prompt\":\"继续整理工作台想法\"}]},{\"key\":\"interest_hot\",\"title\":\"你可能会关心的热门延伸\",\"summary\":\"结合订阅和 memory 生成。\",\"items\":[{\"category\":\"可能兴趣\",\"title\":\"AI 硬件生态为什么值得跟踪\",\"summary\":\"一条兴趣热门推荐。\",\"heat_score\":74,\"recommendation_reason\":\"由机器人和 AI 信号外扩。\",\"signals\":[\"搜索来源：机器人与具身智能出现新进展 - https://example.com/robotics-latest\"],\"quick_context\":\"关注硬件生态。\",\"key_points\":[\"芯片\",\"终端\",\"应用\"],\"suggested_questions\":[\"为什么值得跟？\",\"有哪些公司？\",\"有什么风险？\"],\"explore_prompt\":\"展开 AI 硬件生态\"}]}]}",
+			"response": "{\"modules\":[{\"key\":\"topic_hot\",\"title\":\"你的机器人订阅今日追踪\",\"summary\":\"围绕具身智能订阅生成。\",\"items\":[{\"topic_name\":\"机器人\",\"category\":\"关注 Topic\",\"title\":\"具身智能机器人项目发布新控制系统\",\"summary\":\"具身智能机器人项目发布新控制系统，并开放供应链试点。\",\"heat_score\":88,\"recommendation_reason\":\"因为你订阅了机器人。\",\"signals\":[\"搜索来源：机器人与具身智能出现新进展 - https://example.com/robotics-latest\"],\"quick_context\":\"先看产业化落地。\",\"key_points\":[\"供应链\",\"场景\",\"成本\"],\"suggested_questions\":[\"具身智能近期有什么变化？\",\"我该看哪些公司？\",\"有哪些风险？\"],\"explore_prompt\":\"展开具身智能今日推荐\"}]},{\"key\":\"memory\",\"title\":\"延续你的最近对话\",\"summary\":\"根据最近 memory 生成。\",\"items\":[{\"category\":\"近日 Memory\",\"title\":\"Pulse 预计算服务完成上线\",\"summary\":\"Pulse 预计算服务完成上线，并新增资讯簇推荐能力。\",\"heat_score\":77,\"recommendation_reason\":\"最近多次讨论工作台。\",\"signals\":[\"搜索来源：机器人与具身智能出现新进展 - https://example.com/robotics-latest\"],\"quick_context\":\"把想法落为功能。\",\"key_points\":[\"结构\",\"验证\",\"迭代\"],\"suggested_questions\":[\"下一步做什么？\",\"怎么验证？\",\"如何排优先级？\"],\"explore_prompt\":\"继续整理工作台想法\"}]},{\"key\":\"interest_hot\",\"title\":\"你可能会关心的热门延伸\",\"summary\":\"结合订阅和 memory 生成。\",\"items\":[{\"category\":\"可能兴趣\",\"title\":\"AI 硬件厂商推出具身智能终端\",\"summary\":\"AI 硬件厂商推出具身智能终端，并开放首批应用测试。\",\"heat_score\":74,\"recommendation_reason\":\"由机器人和 AI 信号外扩。\",\"signals\":[\"搜索来源：机器人与具身智能出现新进展 - https://example.com/robotics-latest\"],\"quick_context\":\"关注硬件生态。\",\"key_points\":[\"芯片\",\"终端\",\"应用\"],\"suggested_questions\":[\"为什么值得跟？\",\"有哪些公司？\",\"有什么风险？\"],\"explore_prompt\":\"展开 AI 硬件生态\"}]}]}",
 			"skills_used": [],
 			"model_used": "test",
 			"tokens_used": {},
@@ -143,7 +143,7 @@ func TestPulseUsesAgentGeneratedModules(t *testing.T) {
 	if payload.Modules[0].Title != "你的机器人订阅今日追踪" {
 		t.Fatalf("expected agent-generated module title, got %#v", payload.Modules[0])
 	}
-	if len(payload.Modules[0].Items) != 1 || payload.Modules[0].Items[0].Title != "具身智能项目今天该看什么" {
+	if len(payload.Modules[0].Items) != 1 || payload.Modules[0].Items[0].Title != "具身智能机器人项目发布新控制系统" {
 		t.Fatalf("expected agent-generated topic item, got %#v", payload.Modules[0].Items)
 	}
 	if got := payload.Modules[0].Items[0].Detail.SuggestedQuestions; len(got) < 3 || got[0] == "" || !strings.Contains(strings.Join(got, "\n"), "具身智能") {
@@ -283,7 +283,7 @@ func TestPulseSyncsSettingsBeforeGeneration(t *testing.T) {
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(bridge.ChatResponse{
 				ConversationID: "pulse-2026-06-20",
-				Response:       `{"modules":[{"key":"topic_hot","title":"同步后的 Topic","summary":"已同步配置后生成。","items":[{"topic_name":"机器人","category":"关注 Topic","title":"同步后生成 topic 推荐","summary":"配置同步后，Agent 可以正常生成。","heat_score":88,"recommendation_reason":"因为你订阅了机器人。","signals":["搜索来源：机器人与具身智能出现新进展 - https://example.com/robotics-latest"],"quick_context":"先看配置同步是否生效。","key_points":["配置","检索","生成"],"suggested_questions":["机器人这条来源说了什么？","怎么核验具身智能进展？","后续跟踪哪些公司？"],"explore_prompt":"展开同步测试"}]},{"key":"memory","title":"同步后的 Memory","summary":"保持模块完整。","items":[{"category":"近日 Memory","title":"同步后生成 memory 推荐","summary":"配置同步后继续生成。","heat_score":76,"recommendation_reason":"最近在看 Pulse。","signals":["搜索来源：机器人与具身智能出现新进展 - https://example.com/robotics-latest"],"quick_context":"确认模块完整。","key_points":["配置","候选","过滤"],"suggested_questions":["Pulse 配置同步怎么验证？","候选池怎么补满？","过滤逻辑怎么评估？"],"explore_prompt":"展开 memory"}]},{"key":"interest_hot","title":"同步后的兴趣延伸","summary":"保持模块完整。","items":[{"category":"可能兴趣","title":"同步后生成兴趣推荐","summary":"配置同步后兴趣延伸可生成。","heat_score":72,"recommendation_reason":"机器人与 AI 相关。","signals":["搜索来源：机器人与具身智能出现新进展 - https://example.com/robotics-latest"],"quick_context":"确认兴趣模块完整。","key_points":["兴趣","外扩","来源"],"suggested_questions":["这条兴趣推荐依据是什么？","有哪些外部来源？","下一步追什么？"],"explore_prompt":"展开兴趣"}]}]}`,
+				Response:       `{"modules":[{"key":"topic_hot","title":"同步后的 Topic","summary":"已同步配置后生成。","items":[{"topic_name":"机器人","category":"关注 Topic","title":"具身智能机器人项目发布控制系统","summary":"具身智能机器人项目发布控制系统，并开放首批场景测试。","heat_score":88,"recommendation_reason":"因为你订阅了机器人。","signals":["搜索来源：机器人与具身智能出现新进展 - https://example.com/robotics-latest"],"quick_context":"先看配置同步是否生效。","key_points":["配置","检索","生成"],"suggested_questions":["机器人这条来源说了什么？","怎么核验具身智能进展？","后续跟踪哪些公司？"],"explore_prompt":"展开同步测试"}]},{"key":"memory","title":"同步后的 Memory","summary":"保持模块完整。","items":[{"category":"近日 Memory","title":"Pulse 服务完成配置同步","summary":"Pulse 服务完成配置同步，并恢复资讯簇生成。","heat_score":76,"recommendation_reason":"最近在看 Pulse。","signals":["搜索来源：机器人与具身智能出现新进展 - https://example.com/robotics-latest"],"quick_context":"确认模块完整。","key_points":["配置","候选","过滤"],"suggested_questions":["Pulse 配置同步怎么验证？","候选池怎么补满？","过滤逻辑怎么评估？"],"explore_prompt":"展开 memory"}]},{"key":"interest_hot","title":"同步后的兴趣延伸","summary":"保持模块完整。","items":[{"category":"可能兴趣","title":"AI 硬件厂商推出机器人终端","summary":"AI 硬件厂商推出机器人终端，并新增供应链合作方。","heat_score":72,"recommendation_reason":"机器人与 AI 相关。","signals":["搜索来源：机器人与具身智能出现新进展 - https://example.com/robotics-latest"],"quick_context":"确认兴趣模块完整。","key_points":["兴趣","外扩","来源"],"suggested_questions":["这条兴趣推荐依据是什么？","有哪些外部来源？","下一步追什么？"],"explore_prompt":"展开兴趣"}]}]}`,
 				ModelUsed:      "test",
 				TokensUsed:     map[string]int{},
 				AgentID:        "super_chat",
@@ -441,10 +441,10 @@ func TestPulseEventsUpdateFeedbackAndRanking(t *testing.T) {
 			Date:       date,
 			Source:     pulseSourceTopicHot,
 			Category:   "关注 Topic",
-			Title:      "高热但未反馈的信息簇",
-			Summary:    "基础热度更高。",
+			Title:      "OpenAI 发布 AgentGuard-2 权限控制",
+			Summary:    "OpenAI 发布 AgentGuard-2，并新增企业权限控制。",
 			HeatScore:  90,
-			DetailJSON: mustJSON(pulseItemDetail{KeyPoints: []string{"高热"}}),
+			DetailJSON: pulseTestVerifiedDetail(date),
 			CreatedAt:  now,
 			UpdatedAt:  now,
 		},
@@ -454,10 +454,10 @@ func TestPulseEventsUpdateFeedbackAndRanking(t *testing.T) {
 			Date:       date,
 			Source:     pulseSourceTopicHot,
 			Category:   "关注 Topic",
-			Title:      "用户点赞的信息簇",
-			Summary:    "基础热度略低，但用户反馈更强。",
+			Title:      "OpenAI 开放 AgentGuard-2 审计日志",
+			Summary:    "OpenAI 开放 AgentGuard-2 审计日志，并支持企业客户接入。",
 			HeatScore:  70,
-			DetailJSON: mustJSON(pulseItemDetail{KeyPoints: []string{"点赞"}}),
+			DetailJSON: pulseTestVerifiedDetail(date),
 			CreatedAt:  now.Add(time.Second),
 			UpdatedAt:  now.Add(time.Second),
 		},
@@ -542,10 +542,10 @@ func TestPulseEventsBoostFutureItemsByTopic(t *testing.T) {
 			TopicName:  "AI 应用开发",
 			Source:     pulseSourceTopicHot,
 			Category:   "关注 Topic",
-			Title:      "新的同 Topic 信息簇",
-			Summary:    "基础热度略低，但应继承 topic 偏好。",
+			Title:      "OpenAI 发布 AgentGuard-2 权限控制",
+			Summary:    "OpenAI 发布 AgentGuard-2，并新增企业权限控制。",
 			HeatScore:  70,
-			DetailJSON: mustJSON(pulseItemDetail{KeyPoints: []string{"同 topic"}}),
+			DetailJSON: pulseTestVerifiedDetail("2026-06-20"),
 			CreatedAt:  now,
 			UpdatedAt:  now,
 		},
@@ -557,10 +557,10 @@ func TestPulseEventsBoostFutureItemsByTopic(t *testing.T) {
 			TopicName:  "其他方向",
 			Source:     pulseSourceTopicHot,
 			Category:   "关注 Topic",
-			Title:      "新的其他信息簇",
-			Summary:    "基础热度更高。",
+			Title:      "Anthropic 发布 Claude 企业审计功能",
+			Summary:    "Anthropic 发布 Claude 企业审计功能，并开放管理员接入。",
 			HeatScore:  78,
-			DetailJSON: mustJSON(pulseItemDetail{KeyPoints: []string{"其他 topic"}}),
+			DetailJSON: pulseTestVerifiedDetail("2026-06-20"),
 			CreatedAt:  now.Add(time.Second),
 			UpdatedAt:  now.Add(time.Second),
 		},
@@ -605,21 +605,23 @@ func TestPulseEventsBoostFutureItemsByTopic(t *testing.T) {
 func TestPulseRecommendedItemsFiltersConsumedClusters(t *testing.T) {
 	sameCluster := models.PulseItem{
 		ID:         "same-cluster",
-		Title:      "同一资讯簇",
+		Date:       "2026-06-20",
+		Title:      "OpenAI 发布 AgentGuard-2 权限控制",
+		Summary:    "OpenAI 发布 AgentGuard-2，并新增企业权限控制。",
 		Source:     pulseSourceTopicHot,
 		TopicName:  "AI",
 		HeatScore:  96,
-		DetailJSON: mustJSON(pulseItemDetail{NewsSources: []pulseNewsSource{{Title: "来源", URL: "https://example.com/a"}}}),
+		DetailJSON: pulseTestVerifiedDetail("2026-06-20"),
 	}
 	clusterKey := pulseClusterKey(sameCluster)
 	if clusterKey == "" {
 		t.Fatal("expected cluster key")
 	}
 	items := []models.PulseItem{
-		{ID: "fresh", Title: "新候选", HeatScore: 80},
-		{ID: "opened", Title: "已打开", HeatScore: 99},
-		{ID: "seen", Title: "多次曝光", HeatScore: 98},
-		{ID: "down", Title: "点踩", HeatScore: 97},
+		{ID: "fresh", Date: "2026-06-20", Source: pulseSourceTopicHot, Title: "OpenAI 发布 AgentGuard-2 审计日志", Summary: "OpenAI 发布 AgentGuard-2 审计日志，并开放企业接入。", HeatScore: 80, DetailJSON: pulseTestVerifiedDetail("2026-06-20")},
+		{ID: "opened", Date: "2026-06-20", Source: pulseSourceTopicHot, Title: "OpenAI 推出 AgentGuard-2 管理后台", Summary: "OpenAI 推出 AgentGuard-2 管理后台，并新增权限配置。", HeatScore: 99, DetailJSON: pulseTestVerifiedDetail("2026-06-20")},
+		{ID: "seen", Date: "2026-06-20", Source: pulseSourceTopicHot, Title: "OpenAI 更新 AgentGuard-2 企业策略", Summary: "OpenAI 更新 AgentGuard-2 企业策略，并扩展管理员控制。", HeatScore: 98, DetailJSON: pulseTestVerifiedDetail("2026-06-20")},
+		{ID: "down", Date: "2026-06-20", Source: pulseSourceTopicHot, Title: "OpenAI 开放 AgentGuard-2 团队权限", Summary: "OpenAI 开放 AgentGuard-2 团队权限，并支持成员分组。", HeatScore: 97, DetailJSON: pulseTestVerifiedDetail("2026-06-20")},
 		sameCluster,
 	}
 	state := pulseFeatureState{
@@ -644,11 +646,11 @@ func TestPulseRecommendedItemsFiltersConsumedClusters(t *testing.T) {
 }
 
 func TestPulseRecommendedItemsDedupesVisibleClusters(t *testing.T) {
-	detail := mustJSON(pulseItemDetail{NewsSources: []pulseNewsSource{{Title: "来源", URL: "https://example.com/a"}}})
+	detail := pulseTestVerifiedDetail("2026-06-20")
 	items := []models.PulseItem{
-		{ID: "lower", Title: "同一资讯簇", Source: pulseSourceTopicHot, TopicName: "AI", HeatScore: 80, DetailJSON: detail},
-		{ID: "higher", Title: "同一资讯簇", Source: pulseSourceTopicHot, TopicName: "AI", HeatScore: 96, DetailJSON: detail},
-		{ID: "other", Title: "另一个资讯簇", Source: pulseSourceTopicHot, TopicName: "AI", HeatScore: 70},
+		{ID: "lower", Date: "2026-06-20", Title: "OpenAI 发布 AgentGuard-2 权限控制", Summary: "OpenAI 发布 AgentGuard-2，并新增企业权限控制。", Source: pulseSourceTopicHot, TopicName: "AI", HeatScore: 80, DetailJSON: detail},
+		{ID: "higher", Date: "2026-06-20", Title: "OpenAI 发布 AgentGuard-2 权限控制", Summary: "OpenAI 发布 AgentGuard-2，并新增企业权限控制。", Source: pulseSourceTopicHot, TopicName: "AI", HeatScore: 96, DetailJSON: detail},
+		{ID: "other", Date: "2026-06-20", Title: "Anthropic 发布 Claude 企业审计功能", Summary: "Anthropic 发布 Claude 企业审计功能，并开放管理员接入。", Source: pulseSourceTopicHot, TopicName: "AI", HeatScore: 70, DetailJSON: detail},
 	}
 
 	recommended := recommendedPulseItems(items, pulseFeatureState{
@@ -684,13 +686,13 @@ func TestPulseRecommendedItemsHideLowInformationSingleSource(t *testing.T) {
 		RecommendationReason: "多来源共同指向同一更新。",
 		QuickContext:         "两条来源互相印证。",
 		NewsSources: []pulseNewsSource{
-			{Title: "官方发布", URL: "https://example.com/official"},
-			{Title: "开发者文档", URL: "https://example.com/docs"},
+			{Title: "OpenAI 发布 AgentGuard-2 权限控制", URL: "https://openai.com/official", PublishedAt: "2026-06-19"},
+			{Title: "独立报道确认 AgentGuard-2 权限控制发布", URL: "https://reuters.com/report", PublishedAt: "2026-06-18"},
 		},
 	})
 	items := []models.PulseItem{
-		{ID: "low-info", Title: "AI 模型进展：GPT-RAG、Claude Code、Gemini CLI 待核验线索", Summary: "单一来源提到AI 模型进展，但不足以判断为热点或趋势。", Source: pulseSourceTopicHot, TopicName: "AI", HeatScore: 99, DetailJSON: lowInfoDetail},
-		{ID: "strong", Title: "AI 模型进展：官方发布多来源确认", Summary: "官方发布和文档同步更新。", Source: pulseSourceTopicHot, TopicName: "AI", HeatScore: 70, DetailJSON: strongDetail},
+		{ID: "low-info", Date: "2026-06-20", Title: "AI 模型进展：GPT-RAG、Claude Code、Gemini CLI 待核验线索", Summary: "单一来源提到AI 模型进展，但不足以判断为热点或趋势。", Source: pulseSourceTopicHot, TopicName: "AI", HeatScore: 99, DetailJSON: lowInfoDetail},
+		{ID: "strong", Date: "2026-06-20", Title: "OpenAI 发布 AgentGuard-2 权限控制", Summary: "OpenAI 发布 AgentGuard-2，并新增企业权限控制。", Source: pulseSourceTopicHot, TopicName: "AI", HeatScore: 70, DetailJSON: strongDetail},
 	}
 
 	recommended := recommendedPulseItems(items, pulseFeatureState{
@@ -757,7 +759,7 @@ func TestPulseRepairsMalformedAgentJSON(t *testing.T) {
 			if !strings.Contains(req.Message, "解析错误") {
 				t.Fatalf("expected repair prompt, got %s", req.Message)
 			}
-			response = `{"modules":[{"key":"topic_hot","title":"修复后的机器人订阅","summary":"根据订阅 topic 生成。","items":[{"topic_name":"机器人","category":"关注 Topic","title":"机器人产业链今日入口","summary":"修复后的 topic 推荐。","heat_score":86,"recommendation_reason":"你订阅了机器人。","signals":["搜索来源：机器人与具身智能出现新进展 - https://example.com/robotics-latest"],"quick_context":"从产业链进展切入。","key_points":["供应链","场景","成本"],"suggested_questions":["最近有哪些进展？","哪些公司值得看？","风险是什么？"],"explore_prompt":"展开机器人产业链"}]},{"key":"memory","title":"修复后的近日记忆","summary":"根据近期工程化对话生成。","items":[{"category":"近日 Memory","title":"继续推进 Pulse 预计算","summary":"修复后的 memory 推荐。","heat_score":78,"recommendation_reason":"最近正在做 Pulse。","signals":["搜索来源：机器人与具身智能出现新进展 - https://example.com/robotics-latest"],"quick_context":"把推荐链路产品化。","key_points":["定时","可解释","追问"],"suggested_questions":["怎么设计定时任务？","如何解释推荐？","怎么评估点击？"],"explore_prompt":"继续推进 Pulse 预计算"}]},{"key":"interest_hot","title":"修复后的兴趣延伸","summary":"结合机器人与 AI 外扩。","items":[{"category":"可能兴趣","title":"具身智能 Agent 值得跟踪","summary":"修复后的兴趣推荐。","heat_score":74,"recommendation_reason":"由机器人和 AI 信号外扩。","signals":["搜索来源：机器人与具身智能出现新进展 - https://example.com/robotics-latest"],"quick_context":"关注具身智能产品化。","key_points":["模型","硬件","数据"],"suggested_questions":["为什么值得跟？","有什么落地场景？","成本瓶颈在哪？"],"explore_prompt":"展开具身智能 Agent"}]}]}`
+			response = `{"modules":[{"key":"topic_hot","title":"修复后的机器人订阅","summary":"根据订阅 topic 生成。","items":[{"topic_name":"机器人","category":"关注 Topic","title":"机器人项目发布新控制系统","summary":"机器人项目发布新控制系统，并开放首批供应链试点。","heat_score":86,"recommendation_reason":"你订阅了机器人。","signals":["搜索来源：机器人与具身智能出现新进展 - https://example.com/robotics-latest"],"quick_context":"从产业链进展切入。","key_points":["供应链","场景","成本"],"suggested_questions":["最近有哪些进展？","哪些公司值得看？","风险是什么？"],"explore_prompt":"展开机器人产业链"}]},{"key":"memory","title":"修复后的近日记忆","summary":"根据近期工程化对话生成。","items":[{"category":"近日 Memory","title":"Pulse 预计算服务完成上线","summary":"Pulse 预计算服务完成上线，并新增定时资讯簇生成。","heat_score":78,"recommendation_reason":"最近正在做 Pulse。","signals":["搜索来源：机器人与具身智能出现新进展 - https://example.com/robotics-latest"],"quick_context":"把推荐链路产品化。","key_points":["定时","可解释","追问"],"suggested_questions":["怎么设计定时任务？","如何解释推荐？","怎么评估点击？"],"explore_prompt":"继续推进 Pulse 预计算"}]},{"key":"interest_hot","title":"修复后的兴趣延伸","summary":"结合机器人与 AI 外扩。","items":[{"category":"可能兴趣","title":"具身智能厂商推出 Agent 控制器","summary":"具身智能厂商推出 Agent 控制器，并开放首批机器人测试。","heat_score":74,"recommendation_reason":"由机器人和 AI 信号外扩。","signals":["搜索来源：机器人与具身智能出现新进展 - https://example.com/robotics-latest"],"quick_context":"关注具身智能产品化。","key_points":["模型","硬件","数据"],"suggested_questions":["为什么值得跟？","有什么落地场景？","成本瓶颈在哪？"],"explore_prompt":"展开具身智能 Agent"}]}]}`
 		}
 
 		w.Header().Set("Content-Type", "application/json")
@@ -816,7 +818,7 @@ func TestPulseRepairsMalformedAgentJSON(t *testing.T) {
 	}
 }
 
-func TestPulseFallsBackToPerModuleGeneration(t *testing.T) {
+func TestPulseGenerationRepairFailureUsesVerifiedSearchFallback(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	if err := database.Init(filepath.Join(t.TempDir(), "assistant.db")); err != nil {
 		t.Fatalf("init database: %v", err)
@@ -837,25 +839,26 @@ func TestPulseFallsBackToPerModuleGeneration(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			t.Fatalf("decode request: %v", err)
 		}
-		if strings.Contains(req.Message, "修复 Broken Pulse JSON") {
+		if strings.Contains(req.Message, "key=topic_hot") ||
+			strings.Contains(req.Message, "key=memory") ||
+			strings.Contains(req.Message, "key=interest_hot") {
+			t.Fatalf("generation must not fan out into per-module model calls: %s", req.Message)
+		}
+		if callCount > 2 {
+			t.Fatalf("expected at most two model calls, got call %d", callCount)
+		}
+		if callCount == 2 {
+			if !strings.Contains(req.Message, "修复 Broken Pulse JSON") {
+				t.Fatalf("expected the second model call to be JSON repair, got %s", req.Message)
+			}
 			http.Error(w, "repair unavailable", http.StatusInternalServerError)
 			return
-		}
-
-		response := `{"modules":[{"key":"topic_hot","title":"坏 JSON" "summary":"缺逗号","items":[]}]}`
-		switch {
-		case strings.Contains(req.Message, "key=topic_hot"):
-			response = `{"key":"topic_hot","title":"单模块 Topic 生成","summary":"围绕机器人订阅生成。","items":[{"topic_name":"机器人","category":"关注 Topic","title":"机器人 topic 单模块推荐","summary":"来自单模块路径。","heat_score":86,"recommendation_reason":"你订阅了机器人。","signals":["搜索来源：机器人与具身智能出现新进展 - https://example.com/robotics-latest"],"quick_context":"从产业链切入。","key_points":["供应链","场景","成本"],"suggested_questions":["最近有哪些进展？","哪些公司值得看？","风险是什么？"],"explore_prompt":"展开机器人 topic"}]}`
-		case strings.Contains(req.Message, "key=memory"):
-			response = `{"key":"memory","title":"单模块 Memory 生成","summary":"根据近期 Pulse 对话生成。","items":[{"category":"近日 Memory","title":"Pulse 单模块链路","summary":"继续推进预计算。","heat_score":78,"recommendation_reason":"最近正在改 Pulse。","signals":["搜索来源：机器人与具身智能出现新进展 - https://example.com/robotics-latest"],"quick_context":"把推荐链路产品化。","key_points":["定时","可解释","追问"],"suggested_questions":["怎么设计定时？","如何解释推荐？","怎么评估点击？"],"explore_prompt":"展开 Pulse 单模块链路"}]}`
-		case strings.Contains(req.Message, "key=interest_hot"):
-			response = `{"key":"interest_hot","title":"单模块兴趣延伸","summary":"结合机器人与 AI 外扩。","items":[{"category":"可能兴趣","title":"具身智能 Agent 跟踪","summary":"由兴趣信号外扩。","heat_score":74,"recommendation_reason":"机器人和 AI 信号相关。","signals":["搜索来源：机器人与具身智能出现新进展 - https://example.com/robotics-latest"],"quick_context":"关注具身智能产品化。","key_points":["模型","硬件","数据"],"suggested_questions":["为什么值得跟？","有什么落地场景？","成本瓶颈在哪？"],"explore_prompt":"展开具身智能 Agent"}]}`
 		}
 
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(bridge.ChatResponse{
 			ConversationID: req.ConversationID,
-			Response:       response,
+			Response:       `{"modules":[{"key":"topic_hot","title":"坏 JSON" "summary":"缺逗号","items":[]}]}`,
 			SkillsUsed:     []string{},
 			ModelUsed:      "test",
 			TokensUsed:     map[string]int{},
@@ -887,12 +890,14 @@ func TestPulseFallsBackToPerModuleGeneration(t *testing.T) {
 	if refreshRecorder.Code != http.StatusOK {
 		t.Fatalf("unexpected refresh status %d: %s", refreshRecorder.Code, refreshRecorder.Body.String())
 	}
-	if callCount != 5 {
-		t.Fatalf("expected full generation, repair, and 3 module calls; got %d", callCount)
+	if callCount != 2 {
+		t.Fatalf("expected generation plus one repair call, got %d", callCount)
 	}
 
 	var payload struct {
-		Modules []pulseModuleResponse `json:"modules"`
+		CandidateCount   int                   `json:"candidate_count"`
+		RecommendedCount int                   `json:"recommended_count"`
+		Modules          []pulseModuleResponse `json:"modules"`
 	}
 	if err := json.Unmarshal(refreshRecorder.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("decode pulse response: %v", err)
@@ -900,15 +905,15 @@ func TestPulseFallsBackToPerModuleGeneration(t *testing.T) {
 	if len(payload.Modules) != 3 {
 		t.Fatalf("expected 3 modules, got %#v", payload.Modules)
 	}
-	if payload.Modules[0].Title != "单模块 Topic 生成" {
-		t.Fatalf("expected per-module topic title, got %#v", payload.Modules[0])
+	if payload.Modules[0].Title != "订阅 Topic 的外网新动向" {
+		t.Fatalf("expected deterministic search fallback module, got %#v", payload.Modules[0])
 	}
-	if payload.Modules[2].Title != "单模块兴趣延伸" {
-		t.Fatalf("expected per-module interest title, got %#v", payload.Modules[2])
+	if payload.CandidateCount == 0 || payload.RecommendedCount == 0 || len(payload.Modules[0].Items) == 0 {
+		t.Fatalf("expected verified deterministic fallback items, got %#v", payload)
 	}
 }
 
-func TestPulseHidesLowInformationSearchFallbackWhenGenerationFails(t *testing.T) {
+func TestPulseUsesVerifiedSearchFallbackWhenGenerationFails(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	if err := database.Init(filepath.Join(t.TempDir(), "assistant.db")); err != nil {
 		t.Fatalf("init database: %v", err)
@@ -967,8 +972,8 @@ func TestPulseHidesLowInformationSearchFallbackWhenGenerationFails(t *testing.T)
 	if payload.CandidateCount == 0 {
 		t.Fatalf("expected search fallback candidates to be retained in the pool, got %#v", payload)
 	}
-	if payload.RecommendedCount != 0 || len(payload.Items) != 0 || len(payload.Modules[0].Items) != 0 {
-		t.Fatalf("expected low-information single-source fallback to stay out of visible recommendations, got %#v", payload)
+	if payload.RecommendedCount == 0 || len(payload.Items) == 0 || len(payload.Modules[0].Items) == 0 {
+		t.Fatalf("expected corroborated recent fallback to remain visible, got %#v", payload)
 	}
 }
 
@@ -1094,8 +1099,8 @@ func TestSearchFallbackClusterSummarizesNewsCluster(t *testing.T) {
 	if strings.Contains(item.Title, "近期资讯聚合") || strings.Contains(strings.ToLower(item.Title), "latest news") {
 		t.Fatalf("expected Chinese editorial title, got %q", item.Title)
 	}
-	if !strings.Contains(item.Title, "AI 模型进展") || !strings.Contains(item.Title, "GPT") {
-		t.Fatalf("expected model-focused fallback title, got %q", item.Title)
+	if !strings.Contains(item.Title, "GPT") || !strings.Contains(item.Title, "发布计划") {
+		t.Fatalf("expected a subject-and-event fallback title, got %q", item.Title)
 	}
 	if strings.HasPrefix(item.Summary, "聚合 ") || strings.Contains(item.Summary, "关键线索是") {
 		t.Fatalf("expected integrated summary, got %q", item.Summary)
@@ -1103,7 +1108,7 @@ func TestSearchFallbackClusterSummarizesNewsCluster(t *testing.T) {
 	if strings.Contains(item.Summary, "GPT-5.6 reportedly supports") {
 		t.Fatalf("summary should not concatenate source titles/snippets, got %q", item.Summary)
 	}
-	if !strings.Contains(item.Summary, "发布时间") || !strings.Contains(item.Summary, "版本") {
+	if !strings.Contains(item.Summary, "发布") || !strings.Contains(item.Summary, "版本") {
 		t.Fatalf("expected summary to explain the actionable news angle, got %q", item.Summary)
 	}
 
@@ -1111,8 +1116,10 @@ func TestSearchFallbackClusterSummarizesNewsCluster(t *testing.T) {
 	if err := json.Unmarshal([]byte(item.DetailJSON), &detail); err != nil {
 		t.Fatalf("decode detail: %v", err)
 	}
-	if !strings.HasPrefix(detail.QuickContext, "综合判断：") {
-		t.Fatalf("expected synthesized quick context, got %q", detail.QuickContext)
+	if !strings.Contains(detail.QuickContext, "独立来源互证") ||
+		strings.Contains(detail.QuickContext, "Several reports say") ||
+		strings.Contains(detail.QuickContext, "来源线索：") {
+		t.Fatalf("expected compact evidence context without source snippets, got %q", detail.QuickContext)
 	}
 }
 
@@ -1162,15 +1169,15 @@ func TestSearchFallbackMarksWeakSourceClusters(t *testing.T) {
 		},
 	}, 0)
 
-	if !strings.Contains(item.Title, "待核验线索") {
-		t.Fatalf("expected weak-source title to be cautious, got %q", item.Title)
+	if item.Title != "" || item.Summary != "" {
+		t.Fatalf("weak opinion sources must not produce placeholder news copy, got %q / %q", item.Title, item.Summary)
 	}
-	if !strings.Contains(item.Summary, "弱证据") || !strings.Contains(item.Summary, "不足以判断") {
-		t.Fatalf("expected weak-source summary to avoid trend framing, got %q", item.Summary)
+	if pulseNewsCopyMeetsQualityGate(item.Title, item.Summary) {
+		t.Fatalf("weak-source fallback unexpectedly passed copy quality gate: %#v", item)
 	}
 }
 
-func TestPulseSearchFallbackClustersExposeIndividualResults(t *testing.T) {
+func TestPulseSearchFallbackClustersRejectUncorroboratedResults(t *testing.T) {
 	evidence := pulseSearchEvidence{
 		Module:    pulseSourceTopicHot,
 		Query:     "Agent RAG recent update 2026",
@@ -1184,13 +1191,8 @@ func TestPulseSearchFallbackClustersExposeIndividualResults(t *testing.T) {
 	}
 
 	clusters := pulseSearchFallbackClusters(evidence)
-	if len(clusters) != len(evidence.Results) {
-		t.Fatalf("expected one fallback candidate per search result, got %#v", clusters)
-	}
-	for index, cluster := range clusters {
-		if len(cluster) != 1 || cluster[0].URL != evidence.Results[index].URL {
-			t.Fatalf("expected singleton cluster at %d, got %#v", index, cluster)
-		}
+	if len(clusters) != 0 {
+		t.Fatalf("expected uncorroborated results to produce no fallback clusters, got %#v", clusters)
 	}
 }
 
@@ -1201,16 +1203,18 @@ func TestPulseSearchFallbackClustersGroupsCorroboratedResultsFirst(t *testing.T)
 		TopicName: "AI",
 		Results: []pulseSearchResult{
 			{
-				Title:   "Claude Code and Gemini CLI agent harness trends",
-				Snippet: "Agent harness patterns for Claude Code, Codex and Gemini CLI are gaining traction.",
-				URL:     "https://github.com/duanyytop/agents-radar/issues/1280",
-				Source:  "github",
+				Title:       "Anthropic launches Agent Harness 2.0 for Claude Code",
+				Snippet:     "The Agent Harness 2.0 release adds shared controls for Claude Code and Gemini CLI.",
+				URL:         "https://github.com/duanyytop/agents-radar/issues/1280",
+				Source:      "github",
+				PublishedAt: "2026-06-19",
 			},
 			{
-				Title:   "Agent harness adoption for Claude Code and Gemini CLI",
-				Snippet: "A separate analysis tracks Claude Code and Gemini CLI performance optimization layers.",
-				URL:     "https://research.example.org/agent-harness-claude-gemini",
-				Source:  "web",
+				Title:       "Agent Harness 2.0 launch adds Claude Code controls",
+				Snippet:     "An independent report confirms the new Agent Harness 2.0 release for Claude Code.",
+				URL:         "https://research.example.org/agent-harness-claude-gemini",
+				Source:      "web",
+				PublishedAt: "2026-06-18",
 			},
 			{
 				Title:   "机器人供应链跟踪",
@@ -1294,8 +1298,8 @@ func TestPulseSearchEvidenceFollowupAddsCorroboratingResults(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		results := []bridge.SearchResult{
 			{
-				Title:   "Claude Code and Gemini CLI agent harness trends",
-				Snippet: "Agent harness patterns for Claude Code, Codex and Gemini CLI are gaining traction.",
+				Title:   "Anthropic launches Agent Harness 2.0 for Claude Code",
+				Snippet: "The Agent Harness 2.0 release adds shared controls for Claude Code and Gemini CLI.",
 				URL:     "https://github.com/duanyytop/agents-radar/issues/1280",
 				Source:  "github",
 			},
@@ -1303,8 +1307,8 @@ func TestPulseSearchEvidenceFollowupAddsCorroboratingResults(t *testing.T) {
 		if req.Limit == pulseSearchFollowupResultLimit {
 			results = []bridge.SearchResult{
 				{
-					Title:   "Agent harness adoption for Claude Code and Gemini CLI",
-					Snippet: "A separate analysis tracks Claude Code and Gemini CLI performance optimization layers.",
+					Title:   "Agent Harness 2.0 launch adds Claude Code controls",
+					Snippet: "An independent report confirms the new Agent Harness 2.0 release for Claude Code.",
 					URL:     "https://research.example.org/agent-harness-claude-gemini",
 					Source:  "web",
 				},
@@ -1348,11 +1352,8 @@ func TestSearchFallbackMarksSingleSourceAsUnverified(t *testing.T) {
 		},
 	}, 0)
 
-	if !strings.Contains(item.Title, "待核验线索") {
-		t.Fatalf("expected single-source title to be cautious, got %q", item.Title)
-	}
-	if !strings.Contains(item.Summary, "单一来源") || !strings.Contains(item.Summary, "不足以判断") {
-		t.Fatalf("expected single-source summary to avoid trend framing, got %q", item.Summary)
+	if item.Title != "" || item.Summary != "" {
+		t.Fatalf("single-source fallback must not produce placeholder news copy, got %q / %q", item.Title, item.Summary)
 	}
 	var detail pulseItemDetail
 	if err := json.Unmarshal([]byte(item.DetailJSON), &detail); err != nil {
@@ -1407,8 +1408,10 @@ func TestGeneratedPulseRewritesSearchDumpCopy(t *testing.T) {
 	if strings.HasPrefix(items[0].Summary, "聚合 ") || strings.Contains(items[0].Summary, "关键线索是") {
 		t.Fatalf("expected rewritten summary, got %q", items[0].Summary)
 	}
-	if !strings.Contains(items[0].Summary, "核验") {
-		t.Fatalf("expected rewritten summary to mention verification, got %q", items[0].Summary)
+	if strings.Contains(items[0].Summary, "核验") ||
+		strings.Contains(items[0].Summary, "推荐") ||
+		strings.Count(items[0].Summary, "。") > 2 {
+		t.Fatalf("expected summary to contain only one or two news-content sentences, got %q", items[0].Summary)
 	}
 }
 
@@ -1424,13 +1427,48 @@ func writePulseTestSearchResponse(w http.ResponseWriter, r *http.Request) {
 		Sources: []string{"web"},
 		Results: []bridge.SearchResult{
 			{
-				Title:   "机器人与具身智能出现新进展",
-				Snippet: "测试搜索结果摘要，用于验证 Pulse 生成链路会接收外网检索证据。",
+				Title:   "机器人与具身智能 RoboControl-7 控制器发布",
+				Snippet: "RoboControl-7 控制器完成发布，用于验证 Pulse 生成链路会接收同一事件的外网检索证据。",
 				URL:     "https://example.com/robotics-latest",
 				Source:  "web",
 				Metadata: map[string]interface{}{
-					"rank": 1,
+					"rank":         1,
+					"published_at": "2026-06-19",
 				},
+			},
+			{
+				Title:   "独立报道确认 RoboControl-7 机器人控制器发布",
+				Snippet: "另一家独立来源确认 RoboControl-7 控制器完成同一次发布，用于交叉核验。",
+				URL:     "https://industry.example.org/robotics-latest",
+				Source:  "web",
+				Metadata: map[string]interface{}{
+					"rank":         2,
+					"published_at": "2026-06-18",
+				},
+			},
+		},
+	})
+}
+
+func pulseTestVerifiedDetail(date string) string {
+	reference, err := time.Parse("2006-01-02", date)
+	if err != nil {
+		reference = time.Now().UTC()
+	}
+	return mustJSON(pulseItemDetail{
+		RecommendationReason: "两个近期独立来源共同确认。",
+		QuickContext:         "官方来源与独立报道可以交叉核验。",
+		KeyPoints:            []string{"近期更新", "独立互证"},
+		NewsSources: []pulseNewsSource{
+			{
+				Title:       "OpenAI releases AgentGuard-2 permission controls",
+				URL:         "https://openai.com/news/verified-update",
+				PublishedAt: reference.Add(-24 * time.Hour).Format("2006-01-02"),
+			},
+			{
+				Title:       "Report confirms AgentGuard-2 permission controls release",
+				URL:         "https://reuters.com/technology/verified-update",
+				PublishedAt: reference.Add(-48 * time.Hour).Format("2006-01-02"),
 			},
 		},
 	})

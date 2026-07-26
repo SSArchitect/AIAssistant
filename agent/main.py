@@ -62,6 +62,8 @@ skill_registry = SkillRegistry()
 trace_store = TraceStore()
 engine: AgentEngine | None = None
 active_stream_tasks: dict[str, asyncio.Task[ChatResponse]] = {}
+SSE_HEARTBEAT_SECONDS = 15.0
+SSE_POLL_INTERVAL_SECONDS = 0.08
 
 
 class SearchRequest(BaseModel):
@@ -69,6 +71,8 @@ class SearchRequest(BaseModel):
     sources: list[str] | None = None
     limit: int = 5
     open_results: bool = False
+    include_images: bool = True
+    image_limit: int = 3
     open_limit: int = 3
     page_chars: int = 6000
 
@@ -440,20 +444,44 @@ async def search(request: SearchRequest):
     sources = [item.strip() for item in (request.sources or []) if item.strip()] or None
     direct_url = single_public_http_url(query)
     if direct_url:
+        service = SearchService()
         try:
-            page = await SearchService().open_url(
+            page = await service.open_url(
                 direct_url,
                 max_chars=max(500, min(int(request.page_chars or 6000), 12000)),
             )
         except Exception as e:
             logger.exception("Open URL from search request failed")
             raise HTTPException(status_code=502, detail=f"open url failed: {e}") from e
+        result = search_result_from_page(page)
+        trace_nodes: list[dict] = []
+        if request.include_images:
+            image_stats = await service.attach_page_media(
+                [result],
+                image_limit=1,
+                discover_missing=False,
+            )
+            trace_nodes.append(
+                {
+                    "node": "image_enrichment",
+                    "status": (
+                        "partial"
+                        if image_stats.get("error_count")
+                        or image_stats.get("invalid_count")
+                        else "completed"
+                    ),
+                    "image_limit": 1,
+                    **image_stats,
+                }
+            )
+        else:
+            service.discard_result_images([result])
         return SearchResponse(
             query=query,
             sources=["direct-url"],
             provider_errors=[],
-            results=[search_result_from_page(page)],
-            trace_nodes=[],
+            results=[result],
+            trace_nodes=trace_nodes,
         )
 
     service = SearchService.from_runtime_config()
@@ -466,6 +494,8 @@ async def search(request: SearchRequest):
             sources=sources,
             limit=limit,
             open_results=bool(request.open_results),
+            include_images=bool(request.include_images),
+            image_limit=max(1, min(int(request.image_limit or 3), 5)),
             open_limit=max(1, min(int(request.open_limit or 3), 3)),
             page_chars=max(500, min(int(request.page_chars or 6000), 12000)),
         )
@@ -513,6 +543,10 @@ def _sse(event: str, payload: dict) -> str:
     return f"event: {event}\ndata: {data}\n\n"
 
 
+def _sse_comment(comment: str = "keep-alive") -> str:
+    return f": {comment}\n\n"
+
+
 def _jsonable_model(model: BaseModel) -> dict:
     return json.loads(model.model_dump_json())
 
@@ -550,19 +584,30 @@ async def chat_stream(request: ChatRequest):
 
         task = asyncio.create_task(engine.process(stream_request, on_token=on_token))
         active_stream_tasks[run_id] = task
+        loop = asyncio.get_running_loop()
+        last_stream_output_at = loop.time()
         try:
             while not task.done():
+                emitted_output = False
                 run = trace_store.get_run(run_id)
                 if run is not None:
                     events = run.events[yielded_events:]
                     yielded_events += len(events)
                     for event in events:
                         yield _sse("trace", _jsonable_model(event))
+                        emitted_output = True
                 while not token_queue.empty():
                     token = token_queue.get_nowait()
                     streamed_text += token
                     yield _sse("token", {"text": token})
-                await asyncio.sleep(0.08)
+                    emitted_output = True
+                now = loop.time()
+                if emitted_output:
+                    last_stream_output_at = now
+                elif now - last_stream_output_at >= SSE_HEARTBEAT_SECONDS:
+                    yield _sse_comment()
+                    last_stream_output_at = loop.time()
+                await asyncio.sleep(SSE_POLL_INTERVAL_SECONDS)
 
             response = await task
             run = trace_store.get_run(run_id)

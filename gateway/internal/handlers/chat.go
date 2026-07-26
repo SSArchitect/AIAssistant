@@ -977,7 +977,11 @@ func (h *ChatHandler) ListAgents(c *gin.Context) {
 }
 
 func (h *ChatHandler) ListRoles(c *gin.Context) {
-	roles, err := h.agent.ListRoles(requestUserID(c))
+	userID, ok := requireAccountSessionUserID(c)
+	if !ok {
+		return
+	}
+	roles, err := h.agent.ListRoles(userID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "agent error: " + err.Error()})
 		return
@@ -986,12 +990,16 @@ func (h *ChatHandler) ListRoles(c *gin.Context) {
 }
 
 func (h *ChatHandler) CreateRole(c *gin.Context) {
+	userID, ok := requireAccountSessionUserID(c)
+	if !ok {
+		return
+	}
 	var req bridge.RoleWriteRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request: " + err.Error()})
 		return
 	}
-	req.UserID = requestUserIDWithBody(c, req.UserID)
+	req.UserID = userID
 	role, err := h.agent.CreateRole(req)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "agent error: " + err.Error()})
@@ -1001,12 +1009,16 @@ func (h *ChatHandler) CreateRole(c *gin.Context) {
 }
 
 func (h *ChatHandler) UpdateRole(c *gin.Context) {
+	userID, ok := requireAccountSessionUserID(c)
+	if !ok {
+		return
+	}
 	var req bridge.RoleWriteRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request: " + err.Error()})
 		return
 	}
-	req.UserID = requestUserIDWithBody(c, req.UserID)
+	req.UserID = userID
 	role, err := h.agent.UpdateRole(c.Param("id"), req)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "agent error: " + err.Error()})
@@ -1016,7 +1028,11 @@ func (h *ChatHandler) UpdateRole(c *gin.Context) {
 }
 
 func (h *ChatHandler) DeleteRole(c *gin.Context) {
-	if err := h.agent.DeleteRole(c.Param("id"), requestUserID(c)); err != nil {
+	userID, ok := requireAccountSessionUserID(c)
+	if !ok {
+		return
+	}
+	if err := h.agent.DeleteRole(c.Param("id"), userID); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "agent error: " + err.Error()})
 		return
 	}

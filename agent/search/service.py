@@ -11,11 +11,11 @@ import shutil
 import shlex
 from time import perf_counter
 import xml.etree.ElementTree as ET
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, unquote, urljoin, urlparse
 from typing import Any, Protocol
 
 import httpx
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from agent.config import runtime_config
 from agent.search.recall import DEFAULT_RECALL_MAX_QUERIES, build_query_rewrite_plan
@@ -33,7 +33,19 @@ SEARCH_SNIPPET_MAX_CHARS = 900
 WEB_PAGE_DEFAULT_CHARS = 6000
 WEB_PAGE_HARD_MAX_CHARS = 12000
 WEB_PAGE_OPEN_RESULT_LIMIT = 3
+SEARCH_IMAGE_ENRICH_DEFAULT_LIMIT = 3
+SEARCH_IMAGE_ENRICH_MAX_LIMIT = 5
+SEARCH_IMAGE_ENRICH_TIMEOUT_SECONDS = 8.0
+SEARCH_IMAGE_ENRICH_MAX_REDIRECTS = 5
+SEARCH_IMAGE_ENRICH_MAX_PROBES = 10
+SEARCH_IMAGE_ENRICH_PROBE_MULTIPLIER = 3
+SEARCH_IMAGE_ENRICH_CONCURRENCY = 3
+SEARCH_IMAGE_CANDIDATE_MAX_PER_RESULT = 4
+SEARCH_IMAGE_VALIDATE_MAX_BYTES = 64_000
+SEARCH_IMAGE_TEXT_SCAN_MAX_CHARS = 100_000
+SEARCH_IMAGE_TEXT_CANDIDATE_MAX = 16
 WEB_PAGE_PARSE_MAX_CHARS = 1_000_000
+WEB_PAGE_MEDIA_PARSE_MAX_BYTES = 512_000
 SEARCH_PROVIDER_LIMIT_MULTIPLIER = 2
 SEARCH_PROVIDER_LIMIT_MAX = 20
 SEARCH_MIN_PROVIDER_COVERAGE = 2
@@ -54,6 +66,14 @@ WEB_USER_AGENT = (
     "Chrome/124.0 Safari/537.36"
 )
 PUBLIC_HTTP_URL_RE = re.compile(r"https?://[^\s<>\[\]{}\"'`，。！？；、【】]+", re.IGNORECASE)
+MARKDOWN_IMAGE_URL_RE = re.compile(
+    r"!\[[^\]\r\n]{0,500}\]\(\s*(?:<([^>\r\n]+)>|([^\s)\r\n]+))",
+    re.IGNORECASE,
+)
+HTML_IMAGE_SRC_RE = re.compile(
+    r"""<img\b[^>]{0,2000}?\bsrc\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+))""",
+    re.IGNORECASE,
+)
 URL_SURROUNDING_CHARS = " \t\r\n【】[]()（）<>\"'`.,，。!?！？;；:：、"
 
 
@@ -62,7 +82,34 @@ class SearchResult(BaseModel):
     snippet: str = ""
     url: str = ""
     source: str = ""
+    thumbnail_url: str = ""
+    image_url: str = ""
+    media_url: str = ""
+    media_type: str = ""
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def populate_media_fields(self) -> "SearchResult":
+        media = _extract_media_metadata(
+            {
+                "thumbnail_url": self.thumbnail_url,
+                "image_url": self.image_url,
+                "media_url": self.media_url,
+                "media_type": self.media_type,
+                "metadata": self.metadata,
+            }
+        )
+        self.thumbnail_url = media["thumbnail_url"]
+        self.image_url = media["image_url"]
+        self.media_url = media["media_url"]
+        self.media_type = media["media_type"]
+
+        metadata = dict(self.metadata)
+        for key, value in media.items():
+            if value and not metadata.get(key):
+                metadata[key] = value
+        self.metadata = metadata
+        return self
 
 
 class WebPageContent(BaseModel):
@@ -107,15 +154,22 @@ def search_result_from_page(
 ) -> SearchResult:
     title = page.title or page.final_url or page.url
     snippet = page.description or page.content
+    media = _extract_media_metadata(page.metadata)
+    metadata = {
+        "direct_url_open": True,
+        "page": page.model_dump(mode="json"),
+    }
+    metadata.update({key: value for key, value in media.items() if value})
     return SearchResult(
         title=title,
         snippet=snippet[:snippet_chars],
         url=page.final_url or page.url,
         source=source,
-        metadata={
-            "direct_url_open": True,
-            "page": page.model_dump(mode="json"),
-        },
+        thumbnail_url=media["thumbnail_url"],
+        image_url=media["image_url"],
+        media_url=media["media_url"],
+        media_type=media["media_type"],
+        metadata=metadata,
     )
 
 
@@ -439,7 +493,7 @@ class WebPageReader:
         self._transport = transport
 
     async def open(self, url: str, *, max_chars: int = WEB_PAGE_DEFAULT_CHARS) -> WebPageContent:
-        normalized_url = _validate_public_http_url(url)
+        normalized_url, response = await self._fetch(url)
         max_chars = _bounded_int(
             max_chars,
             default=WEB_PAGE_DEFAULT_CHARS,
@@ -447,17 +501,11 @@ class WebPageReader:
             maximum=WEB_PAGE_HARD_MAX_CHARS,
         )
 
-        async with httpx.AsyncClient(
-            timeout=self._timeout,
-            follow_redirects=True,
-            transport=self._transport,
-            headers={"User-Agent": WEB_USER_AGENT},
-        ) as client:
-            response = await client.get(normalized_url)
-            response.raise_for_status()
-
         raw_content_type = response.headers.get("content-type", "")
         content_type = raw_content_type.split(";", 1)[0].strip().lower()
+        page_metadata = {
+            "content_length": response.headers.get("content-length", ""),
+        }
         if _is_html_content_type(content_type):
             parser = _ReadableHTMLParser()
             parser.feed(response.text[:WEB_PAGE_PARSE_MAX_CHARS])
@@ -465,6 +513,11 @@ class WebPageReader:
             title = parser.title
             description = parser.description
             content = parser.content(max_chars=max_chars)
+            page_metadata.update(
+                _html_page_media_metadata(parser, page_url=str(response.url))
+            )
+            if parser.published_at:
+                page_metadata["published_at"] = parser.published_at
         elif _is_text_content_type(content_type):
             title = ""
             description = ""
@@ -480,10 +533,150 @@ class WebPageReader:
             content=content,
             content_type=content_type,
             status_code=response.status_code,
-            metadata={
-                "content_length": response.headers.get("content-length", ""),
-            },
+            metadata=page_metadata,
         )
+
+    async def open_media(self, url: str) -> dict[str, Any]:
+        """Fetch only enough page structure to discover preview media."""
+        normalized_url = _validate_public_http_url(url)
+        document = bytearray()
+        final_url = normalized_url
+        encoding = "utf-8"
+        async with httpx.AsyncClient(
+            timeout=min(self._timeout, SEARCH_IMAGE_ENRICH_TIMEOUT_SECONDS),
+            follow_redirects=False,
+            transport=self._transport,
+            headers={"User-Agent": WEB_USER_AGENT},
+        ) as client:
+            current_url = normalized_url
+            for redirect_count in range(SEARCH_IMAGE_ENRICH_MAX_REDIRECTS + 1):
+                async with client.stream("GET", current_url) as response:
+                    if response.is_redirect:
+                        location = response.headers.get("location", "").strip()
+                        if not location:
+                            response.raise_for_status()
+                        if redirect_count >= SEARCH_IMAGE_ENRICH_MAX_REDIRECTS:
+                            raise ValueError("Too many redirects while discovering page media")
+                        current_url = _validate_public_http_url(
+                            urljoin(str(response.url), location)
+                        )
+                        continue
+
+                    response.raise_for_status()
+                    raw_content_type = response.headers.get("content-type", "")
+                    content_type = raw_content_type.split(";", 1)[0].strip().lower()
+                    if not _is_html_content_type(content_type):
+                        return {}
+                    final_url = str(response.url)
+                    encoding = response.encoding or "utf-8"
+                    tail = b""
+                    async for chunk in response.aiter_bytes():
+                        remaining = WEB_PAGE_MEDIA_PARSE_MAX_BYTES - len(document)
+                        if remaining <= 0:
+                            break
+                        chunk = chunk[:remaining]
+                        document.extend(chunk)
+                        probe = (tail + chunk).lower()
+                        if b"</head" in probe:
+                            break
+                        tail = probe[-16:]
+                    break
+
+        parser = _ReadableHTMLParser(capture_content=False)
+        try:
+            html = bytes(document).decode(encoding, errors="replace")
+        except LookupError:
+            html = bytes(document).decode("utf-8", errors="replace")
+        parser.feed(html)
+        parser.close()
+        return _html_page_media_metadata(parser, page_url=final_url)
+
+    async def validate_image(self, url: str) -> str:
+        """Return the final public URL only when the response is a real image."""
+        return await asyncio.wait_for(
+            self._validate_image(url),
+            timeout=min(self._timeout, SEARCH_IMAGE_ENRICH_TIMEOUT_SECONDS),
+        )
+
+    async def _validate_image(self, url: str) -> str:
+        normalized_url = _validate_public_http_url(url)
+        async with httpx.AsyncClient(
+            timeout=min(self._timeout, SEARCH_IMAGE_ENRICH_TIMEOUT_SECONDS),
+            follow_redirects=False,
+            transport=self._transport,
+            headers={
+                "User-Agent": WEB_USER_AGENT,
+                "Accept": "image/avif,image/webp,image/*,*/*;q=0.5",
+                "Range": f"bytes=0-{SEARCH_IMAGE_VALIDATE_MAX_BYTES - 1}",
+            },
+        ) as client:
+            current_url = normalized_url
+            for redirect_count in range(SEARCH_IMAGE_ENRICH_MAX_REDIRECTS + 1):
+                prefix = bytearray()
+                async with client.stream("GET", current_url) as response:
+                    if response.is_redirect:
+                        location = response.headers.get("location", "").strip()
+                        if not location:
+                            response.raise_for_status()
+                        if redirect_count >= SEARCH_IMAGE_ENRICH_MAX_REDIRECTS:
+                            raise ValueError("Too many redirects while validating image")
+                        current_url = _validate_public_http_url(
+                            urljoin(str(response.url), location)
+                        )
+                        continue
+
+                    response.raise_for_status()
+                    final_url = _validate_public_http_url(str(response.url))
+                    raw_content_type = response.headers.get("content-type", "")
+                    content_type = raw_content_type.split(";", 1)[0].strip().lower()
+                    if not (
+                        content_type.startswith("image/")
+                        or content_type == "application/octet-stream"
+                    ):
+                        raise ValueError(
+                            f"Unsupported image content type: {content_type or 'unknown'}"
+                        )
+
+                    async for chunk in response.aiter_bytes():
+                        remaining = SEARCH_IMAGE_VALIDATE_MAX_BYTES - len(prefix)
+                        if remaining <= 0:
+                            break
+                        prefix.extend(chunk[:remaining])
+                        if len(prefix) >= SEARCH_IMAGE_VALIDATE_MAX_BYTES:
+                            break
+
+                    image_bytes = bytes(prefix)
+                    if not image_bytes:
+                        raise ValueError("Image response was empty")
+                    if content_type == "application/octet-stream":
+                        if not _sniff_common_image_type(image_bytes):
+                            raise ValueError(
+                                "application/octet-stream response was not a recognized image"
+                            )
+                    elif content_type == "image/svg+xml":
+                        if not _looks_like_svg_image(image_bytes):
+                            raise ValueError("SVG image response did not contain an SVG document")
+                    elif not _sniff_common_image_type(image_bytes):
+                        if _looks_like_html_or_xml(image_bytes):
+                            raise ValueError("Image response contained HTML or XML")
+                        raise ValueError(
+                            "Image response did not contain a recognized raster image"
+                        )
+                    return final_url
+
+            raise ValueError("Too many redirects while validating image")
+
+    async def _fetch(self, url: str) -> tuple[str, httpx.Response]:
+        normalized_url = _validate_public_http_url(url)
+        async with httpx.AsyncClient(
+            timeout=self._timeout,
+            follow_redirects=True,
+            transport=self._transport,
+            headers={"User-Agent": WEB_USER_AGENT},
+        ) as client:
+            response = await client.get(normalized_url)
+            response.raise_for_status()
+        return normalized_url, response
 
 
 class StaticSearchProvider:
@@ -1011,6 +1204,26 @@ class BingRSSSearchProvider:
 
 
 class _ReadableHTMLParser(HTMLParser):
+    _IMAGE_META_KEYS = (
+        "og:image:secure_url",
+        "og:image:url",
+        "og:image",
+        "twitter:image",
+        "twitter:image:src",
+        "image_src",
+        "image",
+        "thumbnailurl",
+        "thumbnail",
+    )
+    _PUBLISHED_META_KEYS = {
+        "article:published_time",
+        "og:published_time",
+        "datepublished",
+        "date",
+        "publishdate",
+        "publish_date",
+        "published_at",
+    }
     _BLOCK_TAGS = {
         "address",
         "article",
@@ -1053,34 +1266,63 @@ class _ReadableHTMLParser(HTMLParser):
         "template",
     }
 
-    def __init__(self):
+    def __init__(self, *, capture_content: bool = True):
         super().__init__(convert_charrefs=True)
+        self._capture_content = capture_content
         self._body_depth = 0
         self._capture_title = False
         self._skip_depth = 0
         self._title_parts: list[str] = []
         self._description = ""
+        self._published_at = ""
+        self._capture_json_ld = False
+        self._json_ld_parts: list[str] = []
+        self._json_ld_chars = 0
+        self._base_href = ""
+        self._image_candidates: dict[str, list[str]] = {}
         self._text_parts: list[str] = []
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         tag = tag.lower()
+        attr = {key.lower(): value or "" for key, value in attrs}
+        if tag == "script" and (
+            attr.get("type", "").split(";", 1)[0].strip().lower()
+            == "application/ld+json"
+        ):
+            self._capture_json_ld = True
+            self._json_ld_parts = []
+            self._json_ld_chars = 0
+            self._skip_depth += 1
+            return
         if tag in self._SKIP_TAGS:
             self._skip_depth += 1
             return
 
-        attr = {key.lower(): value or "" for key, value in attrs}
         if tag == "body":
             self._body_depth += 1
         elif tag == "title":
             self._capture_title = True
         elif tag == "meta":
             self._handle_meta(attr)
+        elif tag == "time" and not self._published_at:
+            self._published_at = attr.get("datetime", "").strip()
+        elif tag == "base" and not self._base_href:
+            self._base_href = attr.get("href", "").strip()
+        elif tag == "link":
+            self._handle_link(attr)
 
-        if self._body_depth > 0 and tag in self._BLOCK_TAGS:
+        if self._capture_content and self._body_depth > 0 and tag in self._BLOCK_TAGS:
             self._append_separator()
 
     def handle_endtag(self, tag: str) -> None:
         tag = tag.lower()
+        if tag == "script" and self._capture_json_ld:
+            self._capture_json_ld = False
+            self._skip_depth = max(0, self._skip_depth - 1)
+            self._handle_json_ld("".join(self._json_ld_parts))
+            self._json_ld_parts = []
+            self._json_ld_chars = 0
+            return
         if tag in self._SKIP_TAGS:
             self._skip_depth = max(0, self._skip_depth - 1)
             return
@@ -1089,10 +1331,17 @@ class _ReadableHTMLParser(HTMLParser):
         elif tag == "body":
             self._body_depth = max(0, self._body_depth - 1)
 
-        if self._body_depth > 0 and tag in self._BLOCK_TAGS:
+        if self._capture_content and self._body_depth > 0 and tag in self._BLOCK_TAGS:
             self._append_separator()
 
     def handle_data(self, data: str) -> None:
+        if self._capture_json_ld:
+            remaining = 64_000 - self._json_ld_chars
+            if remaining > 0:
+                part = data[:remaining]
+                self._json_ld_parts.append(part)
+                self._json_ld_chars += len(part)
+            return
         if self._skip_depth > 0:
             return
         text = " ".join(data.split())
@@ -1101,7 +1350,7 @@ class _ReadableHTMLParser(HTMLParser):
         if self._capture_title:
             self._title_parts.append(text)
             return
-        if self._body_depth > 0:
+        if self._capture_content and self._body_depth > 0:
             self._text_parts.append(text)
 
     @property
@@ -1112,18 +1361,93 @@ class _ReadableHTMLParser(HTMLParser):
     def description(self) -> str:
         return " ".join(self._description.split())
 
+    @property
+    def base_href(self) -> str:
+        return self._base_href
+
+    @property
+    def published_at(self) -> str:
+        return self._published_at
+
+    @property
+    def image_url(self) -> str:
+        urls = self.image_urls
+        return urls[0] if urls else ""
+
+    @property
+    def image_urls(self) -> list[str]:
+        urls: list[str] = []
+        for key in self._IMAGE_META_KEYS:
+            urls.extend(
+                value
+                for value in self._image_candidates.get(key, [])
+                if value
+            )
+        return urls
+
     def content(self, *, max_chars: int) -> str:
         return _normalize_page_text(self._joined_text(), max_chars=max_chars)
 
     def _handle_meta(self, attr: dict[str, str]) -> None:
-        key = (attr.get("name") or attr.get("property") or "").lower()
         content = attr.get("content", "").strip()
-        if content and not self._description and key in {
-            "description",
-            "og:description",
-            "twitter:description",
-        }:
+        if not content:
+            return
+        keys = {
+            value.strip().lower()
+            for value in (
+                attr.get("property", ""),
+                attr.get("name", ""),
+                attr.get("itemprop", ""),
+            )
+            if value.strip()
+        }
+        if not self._description and keys.intersection(
+            {"description", "og:description", "twitter:description"}
+        ):
             self._description = content
+        if not self._published_at and keys.intersection(self._PUBLISHED_META_KEYS):
+            self._published_at = content
+        for key in self._IMAGE_META_KEYS:
+            if key not in keys:
+                continue
+            candidates = self._image_candidates.setdefault(key, [])
+            if content not in candidates:
+                candidates.append(content)
+
+    def _handle_link(self, attr: dict[str, str]) -> None:
+        rel = {
+            value.strip().lower()
+            for value in attr.get("rel", "").split()
+            if value.strip()
+        }
+        href = attr.get("href", "").strip()
+        if href and "image_src" in rel:
+            candidates = self._image_candidates.setdefault("image_src", [])
+            if href not in candidates:
+                candidates.append(href)
+
+    def _handle_json_ld(self, value: str) -> None:
+        if self._published_at or not value.strip():
+            return
+        try:
+            payload = json.loads(value)
+        except (TypeError, ValueError):
+            return
+
+        pending = [payload]
+        visited = 0
+        while pending and visited < 2_000:
+            node = pending.pop()
+            visited += 1
+            if isinstance(node, dict):
+                for key in ("datePublished", "datepublished"):
+                    candidate = node.get(key)
+                    if isinstance(candidate, str) and candidate.strip():
+                        self._published_at = candidate.strip()
+                        return
+                pending.extend(node.values())
+            elif isinstance(node, list):
+                pending.extend(node)
 
     def _append_separator(self) -> None:
         if self._text_parts and self._text_parts[-1] != "\n":
@@ -1324,6 +1648,8 @@ class SearchService:
         open_results: bool = False,
         open_limit: int = WEB_PAGE_OPEN_RESULT_LIMIT,
         page_chars: int = WEB_PAGE_DEFAULT_CHARS,
+        include_images: bool = False,
+        image_limit: int = SEARCH_IMAGE_ENRICH_DEFAULT_LIMIT,
     ) -> list[SearchResult]:
         selected, generic_web_requested = self._normalize_sources(sources)
         providers = [
@@ -1428,6 +1754,22 @@ class SearchService:
                     duration_ms=int((perf_counter() - open_started) * 1000),
                 )
             )
+        if open_results or include_images:
+            image_started = perf_counter()
+            image_stats = await self.attach_page_media(
+                limited_results,
+                image_limit=image_limit,
+                discover_missing=include_images,
+            )
+            self._last_trace_nodes.append(
+                _image_enrichment_trace_node(
+                    stats=image_stats,
+                    image_limit=image_limit,
+                    duration_ms=int((perf_counter() - image_started) * 1000),
+                )
+            )
+        else:
+            self.discard_result_images(limited_results)
         return limited_results
 
     async def _build_query_rewrite(self, query: str) -> dict[str, Any]:
@@ -1713,12 +2055,201 @@ class SearchService:
                 }
             else:
                 metadata["page"] = page.model_dump(mode="json")
+                published_at = str(page.metadata.get("published_at") or "").strip()
+                if published_at and not metadata.get("published_at"):
+                    metadata["published_at"] = published_at
                 if page.title and (not result.title or result.title == result.url):
                     result.title = page.title
                 if page.description and not result.snippet:
                     result.snippet = page.description[:SEARCH_SNIPPET_MAX_CHARS]
             result.metadata = metadata
+            if not isinstance(page, Exception):
+                _merge_search_result_media(
+                    result,
+                    _extract_media_metadata(page.metadata),
+                )
         return results
+
+    async def attach_page_media(
+        self,
+        results: list[SearchResult],
+        *,
+        image_limit: int = SEARCH_IMAGE_ENRICH_DEFAULT_LIMIT,
+        discover_missing: bool = True,
+    ) -> dict[str, int]:
+        image_limit = _bounded_int(
+            image_limit,
+            default=SEARCH_IMAGE_ENRICH_DEFAULT_LIMIT,
+            minimum=1,
+            maximum=SEARCH_IMAGE_ENRICH_MAX_LIMIT,
+        )
+        captured_candidates = {
+            id(result): _search_result_image_candidates(result)
+            for result in results
+        }
+        for result in results:
+            _clear_search_result_image_media(result)
+
+        eligible = [
+            result
+            for result in results
+            if (
+                captured_candidates[id(result)]
+                or (
+                    discover_missing
+                    and result.url
+                    and _is_public_http_url(result.url)
+                )
+            )
+        ]
+        max_probe_count = min(
+            SEARCH_IMAGE_ENRICH_MAX_PROBES,
+            max(image_limit, image_limit * SEARCH_IMAGE_ENRICH_PROBE_MULTIPLIER),
+        )
+        candidates = eligible[:max_probe_count]
+        if not candidates:
+            return {
+                "candidate_count": 0,
+                "probed_count": 0,
+                "enriched_count": 0,
+                "validated_count": 0,
+                "invalid_count": 0,
+                "validation_attempt_count": 0,
+                "error_count": 0,
+                "image_count": 0,
+            }
+
+        probed_count = 0
+        validated_count = 0
+        invalid_count = 0
+        validation_attempt_count = 0
+        error_count = 0
+        accepted_candidates: dict[int, str] = {}
+        cursor = 0
+        while cursor < len(candidates) and validated_count < image_limit:
+            remaining_target = image_limit - validated_count
+            batch_size = min(
+                SEARCH_IMAGE_ENRICH_CONCURRENCY,
+                remaining_target,
+                len(candidates) - cursor,
+            )
+            batch = candidates[cursor : cursor + batch_size]
+            cursor += batch_size
+            probe_results = await asyncio.gather(
+                *[
+                    asyncio.wait_for(
+                        self._probe_result_image(
+                            result,
+                            initial_candidates=captured_candidates[id(result)],
+                            discover_missing=discover_missing,
+                        ),
+                        timeout=SEARCH_IMAGE_ENRICH_TIMEOUT_SECONDS,
+                    )
+                    for result in batch
+                ],
+                return_exceptions=True,
+            )
+            probed_count += len(batch)
+            for result, probe in zip(batch, probe_results):
+                if isinstance(probe, Exception):
+                    error_count += 1
+                    continue
+                invalid_count += int(probe.get("invalid_count", 0))
+                validation_attempt_count += int(
+                    probe.get("validation_attempt_count", 0)
+                )
+                error_count += int(probe.get("error_count", 0))
+                validated_url = str(probe.get("validated_url") or "")
+                if not validated_url:
+                    continue
+                _set_validated_search_result_image(result, validated_url)
+                accepted_candidates[id(result)] = str(
+                    probe.get("accepted_candidate") or validated_url
+                )
+                validated_count += 1
+
+        for result in results:
+            rejected_urls = set(captured_candidates[id(result)])
+            accepted_candidate = accepted_candidates.get(id(result), "")
+            if accepted_candidate:
+                rejected_urls.discard(accepted_candidate)
+            _remove_rejected_media_urls(result, rejected_urls)
+
+        return {
+            "candidate_count": len(candidates),
+            "probed_count": probed_count,
+            "enriched_count": validated_count,
+            "validated_count": validated_count,
+            "invalid_count": invalid_count,
+            "validation_attempt_count": validation_attempt_count,
+            "error_count": error_count,
+            "image_count": _search_result_image_count(results),
+        }
+
+    def discard_result_images(self, results: list[SearchResult]) -> None:
+        """Remove unvalidated image media and every occurrence of its URLs."""
+        for result in results:
+            rejected_urls = set(_search_result_image_candidates(result))
+            _clear_search_result_image_media(result)
+            _remove_rejected_media_urls(result, rejected_urls)
+
+    async def _probe_result_image(
+        self,
+        result: SearchResult,
+        *,
+        initial_candidates: list[str],
+        discover_missing: bool,
+    ) -> dict[str, Any]:
+        attempted: set[str] = set()
+        invalid_count = 0
+        validation_attempt_count = 0
+        error_count = 0
+
+        async def validate(candidates: list[str]) -> tuple[str, str]:
+            nonlocal invalid_count, validation_attempt_count
+            for candidate in candidates:
+                if (
+                    candidate in attempted
+                    or len(attempted) >= SEARCH_IMAGE_CANDIDATE_MAX_PER_RESULT
+                ):
+                    continue
+                attempted.add(candidate)
+                validation_attempt_count += 1
+                try:
+                    validated = await self._page_reader.validate_image(candidate)
+                except Exception:
+                    invalid_count += 1
+                    continue
+                validated = str(validated or "").strip()
+                if validated and _is_public_http_url(validated):
+                    return validated, candidate
+                invalid_count += 1
+            return "", ""
+
+        validated_url, accepted_candidate = await validate(initial_candidates)
+        if (
+            not validated_url
+            and discover_missing
+            and result.url
+            and _is_public_http_url(result.url)
+            and len(attempted) < SEARCH_IMAGE_CANDIDATE_MAX_PER_RESULT
+        ):
+            try:
+                media = await self._page_reader.open_media(result.url)
+            except Exception:
+                error_count += 1
+            else:
+                validated_url, accepted_candidate = await validate(
+                    _image_candidates_from_mapping(media)
+                )
+
+        return {
+            "validated_url": validated_url,
+            "accepted_candidate": accepted_candidate,
+            "invalid_count": invalid_count,
+            "validation_attempt_count": validation_attempt_count,
+            "error_count": error_count,
+        }
 
     def _normalize_sources(self, sources: list[str] | None) -> tuple[set[str], bool]:
         selected: set[str] = set()
@@ -2012,6 +2543,39 @@ def _open_results_trace_node(
     }
 
 
+def _image_enrichment_trace_node(
+    *,
+    stats: dict[str, int],
+    image_limit: int,
+    duration_ms: int,
+) -> dict[str, Any]:
+    error_count = int(stats.get("error_count", 0))
+    invalid_count = int(stats.get("invalid_count", 0))
+    return {
+        "node": "image_enrichment",
+        "status": "partial" if error_count or invalid_count else "completed",
+        "image_limit": _bounded_int(
+            image_limit,
+            default=SEARCH_IMAGE_ENRICH_DEFAULT_LIMIT,
+            minimum=1,
+            maximum=SEARCH_IMAGE_ENRICH_MAX_LIMIT,
+        ),
+        "candidate_count": int(stats.get("candidate_count", 0)),
+        "probed_count": int(
+            stats.get("probed_count", stats.get("candidate_count", 0))
+        ),
+        "enriched_count": int(stats.get("enriched_count", 0)),
+        "validated_count": int(
+            stats.get("validated_count", stats.get("enriched_count", 0))
+        ),
+        "invalid_count": invalid_count,
+        "validation_attempt_count": int(stats.get("validation_attempt_count", 0)),
+        "image_count": int(stats.get("image_count", 0)),
+        "error_count": error_count,
+        "duration_ms": duration_ms,
+    }
+
+
 def _search_result_trace_preview(
     result: SearchResult,
     *,
@@ -2032,6 +2596,14 @@ def _search_result_metadata_value(result: SearchResult, key: str) -> Any:
     metadata = result.metadata if isinstance(result.metadata, dict) else {}
     value = metadata.get(key)
     return "" if value is None else value
+
+
+def _search_result_image_count(results: list[SearchResult]) -> int:
+    return sum(
+        1
+        for result in results
+        if result.thumbnail_url or result.image_url
+    )
 
 
 def _merge_provider_outputs(
@@ -2429,6 +3001,60 @@ def _is_text_content_type(content_type: str) -> bool:
     )
 
 
+def _sniff_common_image_type(data: bytes) -> str:
+    prefix = bytes(data[:64])
+    if prefix.startswith(b"\xff\xd8\xff"):
+        return "jpeg"
+    if prefix.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "png"
+    if prefix.startswith((b"GIF87a", b"GIF89a")):
+        return "gif"
+    if len(prefix) >= 12 and prefix.startswith(b"RIFF") and prefix[8:12] == b"WEBP":
+        return "webp"
+    if prefix.startswith(b"BM"):
+        return "bmp"
+    if prefix.startswith((b"II*\x00", b"MM\x00*")):
+        return "tiff"
+    if prefix.startswith((b"\x00\x00\x01\x00", b"\x00\x00\x02\x00")):
+        return "ico"
+    if len(prefix) >= 12 and prefix[4:8] == b"ftyp":
+        brand = prefix[8:12]
+        if brand in {
+            b"avif",
+            b"avis",
+            b"heic",
+            b"heix",
+            b"hevc",
+            b"hevx",
+            b"mif1",
+            b"msf1",
+        }:
+            return "avif" if brand in {b"avif", b"avis"} else "heif"
+    return ""
+
+
+def _looks_like_html_or_xml(data: bytes) -> bool:
+    prefix = bytes(data[:4096]).lstrip(b"\xef\xbb\xbf \t\r\n").lower()
+    return prefix.startswith(
+        (
+            b"<!doctype html",
+            b"<html",
+            b"<?xml",
+            b"<error",
+            b"<errors",
+        )
+    )
+
+
+def _looks_like_svg_image(data: bytes) -> bool:
+    prefix = bytes(data[:16_384]).lstrip(b"\xef\xbb\xbf \t\r\n").lower()
+    if prefix.startswith(b"<svg"):
+        return True
+    if prefix.startswith(b"<?xml"):
+        return b"<svg" in prefix
+    return False
+
+
 def _normalize_page_text(text: str, *, max_chars: int) -> str:
     lines: list[str] = []
     for raw_line in str(text or "").splitlines():
@@ -2515,8 +3141,6 @@ def _extract_media_metadata(item: dict[str, Any]) -> dict[str, str]:
             "video",
             "videos",
             "video_urls",
-            "media_url",
-            "mediaUrl",
             "embed_url",
             "embedUrl",
             "contentUrl",
@@ -2524,6 +3148,9 @@ def _extract_media_metadata(item: dict[str, Any]) -> dict[str, str]:
             "player_url",
         ),
     )
+
+    generic_media_url = _first_media_field(item, ("media_url", "mediaUrl"))
+    media_type_hint = _normalize_media_type(item.get("media_type") or item.get("mediaType"))
 
     nested_metadata = item.get("metadata")
     if isinstance(nested_metadata, dict):
@@ -2537,7 +3164,14 @@ def _extract_media_metadata(item: dict[str, Any]) -> dict[str, str]:
         )
         video_url = video_url or _first_media_field(
             nested_metadata,
-            ("video_url", "videoUrl", "video", "videos", "video_urls", "media_url", "embed_url"),
+            ("video_url", "videoUrl", "video", "videos", "video_urls", "embed_url"),
+        )
+        generic_media_url = generic_media_url or _first_media_field(
+            nested_metadata,
+            ("media_url", "mediaUrl"),
+        )
+        media_type_hint = media_type_hint or _normalize_media_type(
+            nested_metadata.get("media_type") or nested_metadata.get("mediaType")
         )
 
     pagemap = item.get("pagemap")
@@ -2550,12 +3184,21 @@ def _extract_media_metadata(item: dict[str, Any]) -> dict[str, str]:
     if isinstance(rich_snippet, dict):
         image_url = image_url or _first_media_url(rich_snippet.get("top"))
 
-    media_url = video_url or image_url or thumbnail_url
+    if generic_media_url:
+        generic_media_type = media_type_hint or _media_type_from_url(generic_media_url)
+        if generic_media_type == "video":
+            video_url = video_url or generic_media_url
+        elif generic_media_type == "image":
+            image_url = image_url or generic_media_url
+
+    media_url = video_url or image_url or thumbnail_url or generic_media_url
     media_type = ""
     if video_url:
         media_type = "video"
     elif image_url or thumbnail_url:
         media_type = "image"
+    elif media_url:
+        media_type = media_type_hint or _media_type_from_url(media_url)
 
     return {
         "thumbnail_url": thumbnail_url,
@@ -2564,6 +3207,339 @@ def _extract_media_metadata(item: dict[str, Any]) -> dict[str, str]:
         "media_url": media_url,
         "media_type": media_type,
     }
+
+
+_IMAGE_METADATA_KEYS = {
+    "_image_candidates",
+    "cover",
+    "cse_image",
+    "cse_thumbnail",
+    "image",
+    "image_src",
+    "image_url",
+    "image_urls",
+    "imageurl",
+    "imageurls",
+    "images",
+    "og:image",
+    "og_image",
+    "poster",
+    "thumb",
+    "thumbnail",
+    "thumbnail_url",
+    "thumbnailurl",
+}
+
+
+def _search_result_image_candidates(result: SearchResult) -> list[str]:
+    candidates: list[str] = []
+    seen: set[str] = set()
+
+    def add(value: Any) -> None:
+        for candidate in _all_media_urls(value):
+            if candidate in seen or not _is_public_http_url(candidate):
+                continue
+            seen.add(candidate)
+            candidates.append(candidate)
+
+    add(result.image_url)
+    add(result.thumbnail_url)
+    if result.media_type == "image":
+        add(result.media_url)
+    if isinstance(result.metadata, dict):
+        for candidate in _image_candidates_from_mapping(result.metadata):
+            add(candidate)
+    for candidate in _text_image_candidates(
+        result.title,
+        result.snippet,
+        result.metadata,
+    ):
+        add(candidate)
+    return candidates
+
+
+def _text_image_candidates(*values: Any) -> list[str]:
+    candidates: list[str] = []
+    seen: set[str] = set()
+    remaining_chars = SEARCH_IMAGE_TEXT_SCAN_MAX_CHARS
+
+    def add(candidate: Any) -> None:
+        value = str(candidate or "").strip().strip("<>")
+        if (
+            not value
+            or value in seen
+            or len(candidates) >= SEARCH_IMAGE_TEXT_CANDIDATE_MAX
+            or not _is_public_http_url(value)
+        ):
+            return
+        seen.add(value)
+        candidates.append(value)
+
+    def scan_text(text: str) -> None:
+        nonlocal remaining_chars
+        if (
+            remaining_chars <= 0
+            or len(candidates) >= SEARCH_IMAGE_TEXT_CANDIDATE_MAX
+        ):
+            return
+        fragment = text[:remaining_chars]
+        remaining_chars -= len(fragment)
+        for match in MARKDOWN_IMAGE_URL_RE.finditer(fragment):
+            add(match.group(1) or match.group(2))
+        for match in HTML_IMAGE_SRC_RE.finditer(fragment):
+            add(match.group(1) or match.group(2) or match.group(3))
+        for url in extract_public_http_urls(fragment):
+            if _media_type_from_url(url) == "image":
+                add(url)
+
+    def walk(value: Any, *, depth: int = 0) -> None:
+        if (
+            remaining_chars <= 0
+            or len(candidates) >= SEARCH_IMAGE_TEXT_CANDIDATE_MAX
+            or depth > 12
+        ):
+            return
+        if isinstance(value, str):
+            scan_text(value)
+            return
+        if isinstance(value, list):
+            for nested in value[:100]:
+                walk(nested, depth=depth + 1)
+            return
+        if isinstance(value, dict):
+            for nested in list(value.values())[:100]:
+                walk(nested, depth=depth + 1)
+
+    for value in values:
+        walk(value)
+    return candidates
+
+
+def _image_candidates_from_mapping(item: Any) -> list[str]:
+    candidates: list[str] = []
+    seen: set[str] = set()
+
+    def add(value: Any) -> None:
+        for candidate in _all_media_urls(value):
+            if candidate in seen or not _is_public_http_url(candidate):
+                continue
+            seen.add(candidate)
+            candidates.append(candidate)
+
+    def walk(value: Any) -> None:
+        if isinstance(value, list):
+            for nested in value:
+                walk(nested)
+            return
+        if not isinstance(value, dict):
+            return
+        media_type = _normalize_media_type(
+            value.get("media_type") or value.get("mediaType")
+        )
+        for key, nested in value.items():
+            normalized_key = str(key).strip().lower()
+            if normalized_key in _IMAGE_METADATA_KEYS:
+                add(nested)
+            elif normalized_key == "rich_snippet" and isinstance(nested, dict):
+                add(nested.get("top"))
+            elif normalized_key in {"media_url", "mediaurl"}:
+                media_url = _first_media_url(nested)
+                if media_type == "image" or _media_type_from_url(media_url) == "image":
+                    add(nested)
+            if isinstance(nested, (dict, list)):
+                walk(nested)
+
+    walk(item)
+    return candidates
+
+
+def _all_media_urls(value: Any) -> list[str]:
+    if isinstance(value, str):
+        candidate = value.strip()
+        return [candidate] if candidate else []
+    if isinstance(value, list):
+        urls: list[str] = []
+        for nested in value:
+            urls.extend(_all_media_urls(nested))
+        return urls
+    if isinstance(value, dict):
+        urls: list[str] = []
+        preferred_keys = (
+            "url",
+            "src",
+            "link",
+            "contentUrl",
+            "content_url",
+            "image_url",
+            "imageUrl",
+            "thumbnail_url",
+            "thumbnailUrl",
+            "poster",
+        )
+        for key in preferred_keys:
+            urls.extend(_all_media_urls(value.get(key)))
+        return urls
+    return []
+
+
+def _clear_search_result_image_media(result: SearchResult) -> None:
+    image_urls = set(_search_result_image_candidates(result))
+    result.thumbnail_url = ""
+    result.image_url = ""
+    if result.media_type == "image" or result.media_url in image_urls:
+        result.media_url = ""
+        result.media_type = ""
+    result.metadata = _strip_image_metadata(result.metadata)
+
+
+def _remove_rejected_media_urls(
+    result: SearchResult,
+    rejected_urls: set[str],
+) -> None:
+    rejected = {url for url in rejected_urls if url}
+    if not rejected:
+        return
+
+    def scrub(value: Any) -> Any:
+        if isinstance(value, str):
+            for rejected_url in rejected:
+                escaped_url = re.escape(rejected_url)
+                value = re.sub(
+                    (
+                        rf"!\[[^\]\r\n]{{0,500}}\]\(\s*"
+                        rf"(?:<{escaped_url}>|{escaped_url})"
+                        rf"(?:\s+[^)\r\n]*)?\)"
+                    ),
+                    "",
+                    value,
+                    flags=re.IGNORECASE,
+                )
+                value = re.sub(
+                    rf"<img\b(?=[^>]{{0,4000}}{escaped_url})[^>]{{0,4000}}>",
+                    "",
+                    value,
+                    flags=re.IGNORECASE,
+                )
+                value = value.replace(rejected_url, "")
+            return value
+        if isinstance(value, list):
+            return [scrub(item) for item in value]
+        if isinstance(value, dict):
+            return {key: scrub(nested) for key, nested in value.items()}
+        return value
+
+    result.title = scrub(result.title)
+    result.snippet = scrub(result.snippet)
+    result.url = scrub(result.url)
+    result.source = scrub(result.source)
+    result.metadata = scrub(result.metadata)
+
+
+def _strip_image_metadata(value: Any) -> Any:
+    if isinstance(value, list):
+        return [_strip_image_metadata(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+
+    media_type = _normalize_media_type(
+        value.get("media_type") or value.get("mediaType")
+    )
+    stripped: dict[str, Any] = {}
+    for key, nested in value.items():
+        normalized_key = str(key).strip().lower()
+        if normalized_key in _IMAGE_METADATA_KEYS:
+            continue
+        if normalized_key == "rich_snippet" and isinstance(nested, dict):
+            nested = {
+                nested_key: nested_value
+                for nested_key, nested_value in nested.items()
+                if str(nested_key).strip().lower() != "top"
+            }
+        if normalized_key in {"media_url", "mediaurl"}:
+            media_url = _first_media_url(nested)
+            if media_type == "image" or _media_type_from_url(media_url) == "image":
+                continue
+        if normalized_key in {"media_type", "mediatype"} and media_type == "image":
+            continue
+        stripped[key] = _strip_image_metadata(nested)
+    return stripped
+
+
+def _set_validated_search_result_image(
+    result: SearchResult,
+    validated_url: str,
+) -> None:
+    result.thumbnail_url = validated_url
+    result.image_url = validated_url
+    if result.media_type != "video":
+        result.media_url = validated_url
+        result.media_type = "image"
+
+    metadata = dict(result.metadata)
+    metadata["thumbnail_url"] = validated_url
+    metadata["image_url"] = validated_url
+    if result.media_type != "video":
+        metadata["media_url"] = validated_url
+        metadata["media_type"] = "image"
+    result.metadata = metadata
+
+
+def _merge_search_result_media(
+    result: SearchResult,
+    incoming: dict[str, str],
+) -> None:
+    if not any(incoming.values()):
+        return
+
+    previous_thumbnail = result.thumbnail_url
+    previous_image = result.image_url
+    previous_media = result.media_url
+    previous_type = result.media_type
+    previous_image_was_thumbnail = bool(
+        previous_image
+        and previous_thumbnail
+        and previous_image == previous_thumbnail
+    )
+
+    incoming_thumbnail = incoming.get("thumbnail_url", "")
+    incoming_image = incoming.get("image_url", "")
+    incoming_media = incoming.get("media_url", "")
+    incoming_type = incoming.get("media_type", "")
+
+    if not result.thumbnail_url:
+        result.thumbnail_url = incoming_thumbnail or incoming_image
+
+    replaced_fallback_image = False
+    if incoming_image and (not previous_image or previous_image_was_thumbnail):
+        result.image_url = incoming_image
+        replaced_fallback_image = True
+    elif not result.image_url and incoming_thumbnail:
+        result.image_url = incoming_thumbnail
+
+    if not previous_type:
+        result.media_type = incoming_type
+    if previous_type != "video":
+        previous_media_was_fallback = (
+            not previous_media
+            or not previous_type
+            or previous_media in {previous_thumbnail, previous_image}
+        )
+        if replaced_fallback_image and previous_media_was_fallback:
+            result.media_url = result.image_url
+            result.media_type = incoming_type or "image"
+        elif not result.media_url:
+            result.media_url = incoming_media or result.image_url or result.thumbnail_url
+            result.media_type = result.media_type or incoming_type
+
+    metadata = dict(result.metadata)
+    for key in ("thumbnail_url", "image_url", "media_url", "media_type"):
+        value = getattr(result, key)
+        if value:
+            metadata[key] = value
+    video_url = incoming.get("video_url", "")
+    if video_url and not metadata.get("video_url"):
+        metadata["video_url"] = video_url
+    result.metadata = metadata
 
 
 def _first_media_field(item: dict[str, Any], keys: tuple[str, ...]) -> str:
@@ -2604,3 +3580,66 @@ def _first_media_url(value: Any) -> str:
             if nested:
                 return nested
     return ""
+
+
+def _normalize_media_type(value: Any) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized.startswith("image") or normalized in {"photo", "picture"}:
+        return "image"
+    if normalized.startswith("video") or normalized in {"movie", "clip"}:
+        return "video"
+    return ""
+
+
+def _media_type_from_url(url: str) -> str:
+    path = urlparse(str(url or "")).path.lower()
+    if path.endswith(
+        (".avif", ".bmp", ".gif", ".heic", ".jpeg", ".jpg", ".png", ".svg", ".webp")
+    ):
+        return "image"
+    if path.endswith((".avi", ".m4v", ".mkv", ".mov", ".mp4", ".mpeg", ".mpg", ".webm")):
+        return "video"
+    return ""
+
+
+def _resolve_page_media_url(
+    raw_url: str,
+    *,
+    page_url: str,
+    base_href: str = "",
+) -> str:
+    value = str(raw_url or "").strip()
+    if not value:
+        return ""
+    base_url = urljoin(page_url, str(base_href or "").strip()) if base_href else page_url
+    resolved = urljoin(base_url, value)
+    return resolved if _is_public_http_url(resolved) else ""
+
+
+def _html_page_media_metadata(
+    parser: _ReadableHTMLParser,
+    *,
+    page_url: str,
+) -> dict[str, Any]:
+    image_candidates: list[str] = []
+    seen: set[str] = set()
+    for candidate in parser.image_urls:
+        image_url = _resolve_page_media_url(
+            candidate,
+            page_url=page_url,
+            base_href=parser.base_href,
+        )
+        if not image_url or image_url in seen:
+            continue
+        seen.add(image_url)
+        image_candidates.append(image_url)
+    if not image_candidates:
+        return {}
+    image_url = image_candidates[0]
+    return {
+        "thumbnail_url": image_url,
+        "image_url": image_url,
+        "media_url": image_url,
+        "media_type": "image",
+        "_image_candidates": image_candidates,
+    }

@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"net/http"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -59,4 +60,19 @@ func requestUserIDWithBody(c *gin.Context, bodyUserID string) string {
 		}
 	}
 	return "0"
+}
+
+func requireAccountSessionUserID(c *gin.Context) (string, bool) {
+	for _, token := range []string{
+		c.GetHeader("X-Account-Session"),
+		c.Query("account_session"),
+	} {
+		if userID, ok := accountSessionUserID(token); ok {
+			return userID, true
+		}
+	}
+	c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
+		"error": "valid account session required",
+	})
+	return "", false
 }

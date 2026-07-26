@@ -1,6 +1,8 @@
 """Integration tests for FastAPI endpoints (no LLM calls)."""
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
@@ -9,6 +11,7 @@ from unittest.mock import AsyncMock, patch
 import agent.main as main_module
 from agent.llm.base import LLMResponse
 from agent.main import app, skill_registry, lifespan, trace_store
+from agent.search import SearchResult, SearchService, WebPageContent
 
 
 @pytest_asyncio.fixture
@@ -30,6 +33,103 @@ async def test_health(client):
     data = resp.json()
     assert data["status"] == "ok"
     assert data["skills_count"] >= 3  # echo, datetime, calculator
+
+
+@pytest.mark.asyncio
+async def test_search_endpoint_forwards_image_validation_options(client, monkeypatch):
+    seen = {}
+
+    class FakeService:
+        provider_names = ["fake"]
+        last_provider_errors = []
+        last_trace_nodes = []
+
+        async def search(self, query, **kwargs):
+            seen.update({"query": query, **kwargs})
+            return [
+                SearchResult(
+                    title="Validated result",
+                    url="https://example.com/article",
+                    source="fake",
+                    image_url="https://cdn.example.com/validated.jpg",
+                )
+            ]
+
+    monkeypatch.setattr(
+        SearchService,
+        "from_runtime_config",
+        classmethod(lambda cls: FakeService()),
+    )
+
+    response = await client.post(
+        "/agent/search",
+        json={
+            "query": "validated images",
+            "limit": 2,
+            "include_images": True,
+            "image_limit": 4,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["results"][0]["image_url"].endswith("validated.jpg")
+    assert seen["include_images"] is True
+    assert seen["image_limit"] == 4
+
+
+@pytest.mark.asyncio
+async def test_direct_url_search_removes_rejected_page_image(client, monkeypatch):
+    bad_image = "https://cdn.example.com/dead.jpg"
+
+    async def fake_open_url(self, url, *, max_chars=6000):
+        return WebPageContent(
+            url=url,
+            final_url=url,
+            title="Direct page",
+            description=f"Before {bad_image} after.",
+            content=f"Body before {bad_image} after.",
+            content_type="text/html",
+            status_code=200,
+            metadata={
+                "thumbnail_url": bad_image,
+                "image_url": bad_image,
+                "media_url": bad_image,
+                "media_type": "image",
+            },
+        )
+
+    async def reject_images(
+        self,
+        results,
+        *,
+        image_limit=3,
+        discover_missing=True,
+    ):
+        self.discard_result_images(results)
+        return {
+            "candidate_count": 1,
+            "probed_count": 1,
+            "enriched_count": 0,
+            "validated_count": 0,
+            "invalid_count": 1,
+            "validation_attempt_count": 1,
+            "image_count": 0,
+            "error_count": 0,
+        }
+
+    monkeypatch.setattr(SearchService, "open_url", fake_open_url)
+    monkeypatch.setattr(SearchService, "attach_page_media", reject_images)
+
+    response = await client.post(
+        "/agent/search",
+        json={"query": "https://example.com/direct"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["results"][0]["image_url"] == ""
+    assert bad_image not in response.text
+    assert payload["trace_nodes"][0]["invalid_count"] == 1
 
 
 @pytest.mark.asyncio
@@ -420,6 +520,43 @@ async def test_chat_stream_flushes_failed_trace_before_error(client):
     run = trace_store.get_run(run_id)
     assert run is not None
     assert run.status == "failed"
+
+
+@pytest.mark.asyncio
+async def test_chat_stream_sends_keep_alive_during_silent_model_wait(client):
+    """Long silent model calls should keep the SSE proxy connection active."""
+    assert main_module.engine is not None
+    provider = AsyncMock()
+
+    async def slow_chat(*args, **kwargs):
+        await asyncio.sleep(0.06)
+        return LLMResponse(
+            content="heartbeat response",
+            tool_calls=[],
+            model="heartbeat-test-model",
+            usage={"input": 2, "output": 3},
+        )
+
+    provider.chat = AsyncMock(side_effect=slow_chat)
+    with (
+        patch.object(main_module.engine, "_get_provider", return_value=provider),
+        patch.object(main_module, "SSE_HEARTBEAT_SECONDS", 0.01),
+        patch.object(main_module, "SSE_POLL_INTERVAL_SECONDS", 0.005),
+    ):
+        resp = await client.post(
+            "/agent/chat/stream",
+            json={
+                "conversation_id": "api-stream-heartbeat-conv",
+                "message": "wait quietly",
+                "agent_id": "general_assistant",
+                "run_id": "run_stream_heartbeat",
+            },
+        )
+
+    assert resp.status_code == 200
+    assert ": keep-alive\n\n" in resp.text
+    assert "event: response" in resp.text
+    assert "event: done" in resp.text
 
 
 @pytest.mark.asyncio
