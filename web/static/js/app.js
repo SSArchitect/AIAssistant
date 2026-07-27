@@ -140,6 +140,7 @@ const I18N = {
             generate: '生成图片',
             generating: '生成中...',
             regenerateAnswer: '重新回答',
+            shareAsCard: '分享卡片',
             copyAnswer: '复制回答',
             copyMessage: '复制消息',
             copyCode: '复制代码',
@@ -160,6 +161,29 @@ const I18N = {
             downloaded: '已开始下载。',
             downloadFailed: '下载失败：图片地址已失效或当前服务无法保存这张图片。',
             close: '关闭',
+        },
+        shareCard: {
+            title: '分享回答',
+            subtitle: '已将这条 AI 回答排版为高清卡片',
+            previewAlt: 'AI 回答分享卡片',
+            generating: '正在生成高清卡片…',
+            ready: '卡片已生成 · {size}px',
+            truncated: '回答较长，图片已展示可安全生成的部分。',
+            imageLoadFailed: '图片未能加载',
+            imagePartial: '卡片已生成，但有 {count} 张图片未能载入，已使用占位提示。',
+            copy: '复制图片',
+            copying: '正在复制…',
+            copied: '图片已复制，可以直接粘贴分享。',
+            copyUnsupported: '当前浏览器不支持直接复制图片，请下载后分享。',
+            copyFailed: '复制失败，请改用下载图片。',
+            download: '下载图片',
+            downloaded: '图片已下载。',
+            generateFailed: '卡片生成失败，请稍后重试。',
+            questionLabel: '提问',
+            answerLabel: 'AI 回答',
+            footer: '由 Super Chat 生成',
+            truncatedInImage: '回答较长，图片已展示前半部分',
+            close: '关闭分享卡片',
         },
         views: {
             chat: { title: 'Super Chat', subtitle: '意图识别、Agent 调用与汇总回答入口' },
@@ -970,6 +994,7 @@ const I18N = {
             generate: 'Generate Image',
             generating: 'Generating...',
             regenerateAnswer: 'Regenerate Answer',
+            shareAsCard: 'Share Card',
             copyAnswer: 'Copy Answer',
             copyMessage: 'Copy Message',
             copyCode: 'Copy Code',
@@ -990,6 +1015,29 @@ const I18N = {
             downloaded: 'Download started.',
             downloadFailed: 'Download failed: the image URL expired or this service could not save it.',
             close: 'Close',
+        },
+        shareCard: {
+            title: 'Share answer',
+            subtitle: 'This AI answer has been laid out as a high-resolution card',
+            previewAlt: 'AI answer share card',
+            generating: 'Creating the high-resolution card…',
+            ready: 'Card ready · {size}px',
+            truncated: 'This answer is long, so the image shows the portion that can be generated safely.',
+            imageLoadFailed: 'Image unavailable',
+            imagePartial: 'Card ready, but {count} image(s) could not be loaded and were replaced with placeholders.',
+            copy: 'Copy image',
+            copying: 'Copying…',
+            copied: 'Image copied. Paste it anywhere to share.',
+            copyUnsupported: 'This browser cannot copy images directly. Download the image instead.',
+            copyFailed: 'Copy failed. Please download the image instead.',
+            download: 'Download image',
+            downloaded: 'Image downloaded.',
+            generateFailed: 'Could not create the card. Please try again.',
+            questionLabel: 'Question',
+            answerLabel: 'AI Answer',
+            footer: 'Created with Super Chat',
+            truncatedInImage: 'This answer is too long to fit in one image',
+            close: 'Close share card',
         },
         views: {
             chat: { title: 'Super Chat', subtitle: 'Intent routing, agent calls, and final answers' },
@@ -2033,6 +2081,8 @@ let drivePreviewState = createEmptyDrivePreviewState();
 let driveSharePanelItemId = '';
 let driveShareBusyItemIds = new Set();
 let driveShareStatus = { itemId: '', text: '', type: 'muted' };
+let shareCardState = createEmptyShareCardState();
+let shareCardRenderSequence = 0;
 
 const sidebar = document.getElementById('sidebar');
 const sidebarBackdrop = document.getElementById('sidebar-backdrop');
@@ -2119,6 +2169,14 @@ const drivePreviewContent = document.getElementById('drive-preview-content');
 const drivePreviewShareButton = document.getElementById('drive-preview-share-button');
 const drivePreviewShareMenu = document.getElementById('drive-preview-share-menu');
 const drivePreviewDownload = document.querySelector('[data-drive-preview-download]');
+const shareCardDialog = document.getElementById('share-card-dialog');
+const shareCardPanel = document.getElementById('share-card-panel');
+const shareCardImage = document.getElementById('share-card-image');
+const shareCardLoading = document.getElementById('share-card-loading');
+const shareCardStatus = document.getElementById('share-card-status');
+const shareCardCopyButton = document.querySelector('[data-share-card-copy]');
+const shareCardDownloadButton = document.querySelector('[data-share-card-download]');
+const shareCardCloseButton = document.querySelector('[data-share-card-close].share-card-close');
 const runList = document.getElementById('run-list');
 const runDetail = document.getElementById('run-detail');
 const developerWorkbench = document.getElementById('developer-workbench');
@@ -2237,6 +2295,7 @@ function applyI18n() {
     document.querySelectorAll('[data-copy-answer], [data-copy-code], [data-copy-trace-id]').forEach(resetCopyButtonFeedback);
     if (languageToggle) languageToggle.textContent = currentLanguage === 'zh' ? 'EN' : '中';
     setGuestLoginBusy(guestLoginBusy);
+    renderShareCardDialog();
 }
 
 function setLanguage(language) {
@@ -15661,6 +15720,7 @@ function renderAssistantActionButtons(options = {}) {
     return `
         ${renderTraceActionButton(traceEvents, runId, runtime, modelUsed)}
         ${renderRegenerateActionButton(regenerateQuery, regenerateEnabled)}
+        ${renderShareCardActionButton(copyEnabled)}
         ${renderSaveToDriveActionButton(copyEnabled)}
         ${renderCopyActionButton(copyEnabled, label)}
     `;
@@ -15686,6 +15746,25 @@ function renderCopyActionButton(copyEnabled = true, label = t('actions.copyAnswe
                 <path d="M5 15H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v1"/>
             </svg>
             ${renderAssistantActionLabel(label)}
+        </button>
+    `;
+}
+
+function renderShareCardActionButton(enabled = true) {
+    const label = t('actions.shareAsCard');
+    const disabled = enabled ? '' : 'disabled aria-disabled="true"';
+    return `
+        <button class="assistant-action-button assistant-share-card" type="button" data-share-answer-card ${disabled}
+                data-i18n-title="actions.shareAsCard" data-i18n-aria-label="actions.shareAsCard"
+                title="${escapeAttr(label)}" aria-label="${escapeAttr(label)}">
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2">
+                <rect x="3" y="3" width="14" height="16" rx="2"/>
+                <path d="m7 14 2.7-3 2.1 2.2 1.6-1.7 2.6 3"/>
+                <circle cx="8" cy="8" r="1"/>
+                <path d="M17 8h4M19 6v8M16.5 16.5 19 19l2.5-2.5"/>
+            </svg>
+            <span class="assistant-action-label" aria-hidden="true" data-i18n="actions.shareAsCard">${escapeHtml(label)}</span>
+            <span class="visually-hidden" data-i18n="actions.shareAsCard">${escapeHtml(label)}</span>
         </button>
     `;
 }
@@ -15843,6 +15922,211 @@ async function copyTextToClipboard(text) {
     const copied = document.execCommand('copy');
     textarea.remove();
     if (!copied) throw new Error('copy failed');
+}
+
+function createEmptyShareCardState() {
+    return {
+        open: false,
+        busy: false,
+        blob: null,
+        objectUrl: '',
+        filename: '',
+        width: 0,
+        height: 0,
+        truncated: false,
+        statusKey: '',
+        statusVars: {},
+        statusType: '',
+        returnFocus: null,
+        renderId: 0,
+    };
+}
+
+function shareCardIsOpen() {
+    return Boolean(shareCardState.open && shareCardDialog && !shareCardDialog.classList.contains('hidden'));
+}
+
+async function openAssistantShareCard(button) {
+    const message = button?.closest?.('.message.assistant[data-copy-text]');
+    const answer = String(message?.dataset.copyText || '').trim();
+    if (!answer || !window.ShareCardRenderer?.renderShareCardBlob) return;
+
+    if (shareCardState.open) closeShareCardDialog({ restoreFocus: false });
+    const renderId = ++shareCardRenderSequence;
+    shareCardState = {
+        ...createEmptyShareCardState(),
+        open: true,
+        busy: true,
+        statusKey: 'shareCard.generating',
+        returnFocus: button,
+        renderId,
+    };
+    renderShareCardDialog();
+    requestAnimationFrame(() => shareCardCloseButton?.focus({ preventScroll: true }));
+
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+    try {
+        const question = assistantQuestionForDrive(message);
+        const rendered = await window.ShareCardRenderer.renderShareCardBlob({
+            answer,
+            question,
+            fallbackTitle: t('shareCard.answerLabel'),
+            brand: t('app.name'),
+            product: t('views.chat.title'),
+            questionLabel: t('shareCard.questionLabel'),
+            answerLabel: t('shareCard.answerLabel'),
+            truncatedLabel: t('shareCard.truncatedInImage'),
+            imageFallbackLabel: t('shareCard.imageLoadFailed'),
+            imageProxyPath: '/api/media/download?url=',
+            footer: `${t('shareCard.footer')} · ${shareCardFormattedDate()}`,
+        });
+        if (!shareCardState.open || shareCardState.renderId !== renderId) return;
+
+        const objectUrl = URL.createObjectURL(rendered.blob);
+        const imageFailed = Number(rendered.imageFailedCount) || 0;
+        shareCardState = {
+            ...shareCardState,
+            busy: false,
+            blob: rendered.blob,
+            objectUrl,
+            filename: window.ShareCardRenderer.buildShareCardFilename(question || answer),
+            width: rendered.width,
+            height: rendered.height,
+            truncated: Boolean(rendered.truncated),
+            statusKey: imageFailed
+                ? 'shareCard.imagePartial'
+                : (rendered.truncated ? 'shareCard.truncated' : 'shareCard.ready'),
+            statusVars: imageFailed
+                ? { count: imageFailed }
+                : { size: `${rendered.width} × ${rendered.height}` },
+            statusType: imageFailed || rendered.truncated ? 'warning' : '',
+        };
+    } catch {
+        if (!shareCardState.open || shareCardState.renderId !== renderId) return;
+        shareCardState = {
+            ...shareCardState,
+            busy: false,
+            statusKey: 'shareCard.generateFailed',
+            statusVars: {},
+            statusType: 'error',
+        };
+    }
+    renderShareCardDialog();
+}
+
+function closeShareCardDialog(options = {}) {
+    if (!shareCardState.open) return;
+    const returnFocus = shareCardState.returnFocus;
+    const objectUrl = shareCardState.objectUrl;
+    shareCardRenderSequence += 1;
+    shareCardState = createEmptyShareCardState();
+    renderShareCardDialog();
+    if (objectUrl) URL.revokeObjectURL(objectUrl);
+    if (options.restoreFocus === false) return;
+    requestAnimationFrame(() => {
+        if (returnFocus && document.contains(returnFocus)) {
+            returnFocus.focus({ preventScroll: true });
+        }
+    });
+}
+
+function renderShareCardDialog() {
+    if (!shareCardDialog) return;
+    const open = Boolean(shareCardState.open);
+    shareCardDialog.classList.toggle('hidden', !open);
+    document.body.classList.toggle('share-card-open', open);
+    if (!open) {
+        if (shareCardImage) shareCardImage.removeAttribute('src');
+        if (shareCardStatus) {
+            shareCardStatus.textContent = '';
+            shareCardStatus.className = 'share-card-status';
+        }
+        if (shareCardLoading) shareCardLoading.hidden = false;
+        return;
+    }
+
+    const ready = Boolean(shareCardState.blob && shareCardState.objectUrl);
+    if (shareCardPanel) shareCardPanel.setAttribute('aria-busy', shareCardState.busy ? 'true' : 'false');
+    if (shareCardImage) {
+        shareCardImage.alt = t('shareCard.previewAlt');
+        if (ready && shareCardImage.src !== shareCardState.objectUrl) {
+            shareCardImage.src = shareCardState.objectUrl;
+        } else if (!ready) {
+            shareCardImage.removeAttribute('src');
+        }
+    }
+    if (shareCardLoading) {
+        shareCardLoading.hidden = ready || !shareCardState.busy;
+        shareCardLoading.textContent = t('shareCard.generating');
+    }
+    if (shareCardStatus) {
+        shareCardStatus.textContent = shareCardState.statusKey
+            ? t(shareCardState.statusKey, shareCardState.statusVars)
+            : '';
+        shareCardStatus.className = `share-card-status ${shareCardState.statusType || ''}`.trim();
+    }
+    if (shareCardCopyButton) {
+        shareCardCopyButton.disabled = !ready || shareCardState.busy;
+        shareCardCopyButton.setAttribute('aria-busy', shareCardState.busy ? 'true' : 'false');
+    }
+    if (shareCardDownloadButton) {
+        shareCardDownloadButton.disabled = !ready || shareCardState.busy;
+    }
+}
+
+function shareCardFormattedDate(date = new Date()) {
+    try {
+        return new Intl.DateTimeFormat(currentLanguage === 'zh' ? 'zh-CN' : 'en', {
+            year: 'numeric',
+            month: 'short',
+            day: 'numeric',
+        }).format(date);
+    } catch {
+        return '';
+    }
+}
+
+async function copyShareCardImage() {
+    const blob = shareCardState.blob;
+    const renderId = shareCardState.renderId;
+    if (!blob || shareCardState.busy) return;
+    if (!navigator.clipboard?.write || typeof window.ClipboardItem !== 'function') {
+        shareCardState.statusKey = 'shareCard.copyUnsupported';
+        shareCardState.statusVars = {};
+        shareCardState.statusType = 'error';
+        renderShareCardDialog();
+        return;
+    }
+
+    shareCardState.busy = true;
+    shareCardState.statusKey = 'shareCard.copying';
+    shareCardState.statusType = '';
+    renderShareCardDialog();
+    try {
+        await navigator.clipboard.write([
+            new window.ClipboardItem({ 'image/png': blob }),
+        ]);
+        if (!shareCardState.open || shareCardState.renderId !== renderId) return;
+        shareCardState.statusKey = 'shareCard.copied';
+        shareCardState.statusType = 'success';
+    } catch {
+        if (!shareCardState.open || shareCardState.renderId !== renderId) return;
+        shareCardState.statusKey = 'shareCard.copyFailed';
+        shareCardState.statusType = 'error';
+    } finally {
+        if (!shareCardState.open || shareCardState.renderId !== renderId) return;
+        shareCardState.busy = false;
+        renderShareCardDialog();
+    }
+}
+
+function downloadShareCardImage() {
+    if (!shareCardState.objectUrl || !shareCardState.blob || shareCardState.busy) return;
+    triggerDownload(shareCardState.objectUrl, shareCardState.filename || 'super-chat-answer.png');
+    shareCardState.statusKey = 'shareCard.downloaded';
+    shareCardState.statusVars = {};
+    shareCardState.statusType = 'success';
+    renderShareCardDialog();
 }
 
 function renderInputMeta(meta) {
@@ -17222,6 +17506,27 @@ document.addEventListener('click', async (event) => {
         return;
     }
 
+    const shareCardCloseTarget = event.target.closest('[data-share-card-close]');
+    if (shareCardCloseTarget) {
+        event.preventDefault();
+        closeShareCardDialog();
+        return;
+    }
+
+    const shareCardCopyTarget = event.target.closest('[data-share-card-copy]');
+    if (shareCardCopyTarget && !shareCardCopyTarget.disabled) {
+        event.preventDefault();
+        await copyShareCardImage();
+        return;
+    }
+
+    const shareCardDownloadTarget = event.target.closest('[data-share-card-download]');
+    if (shareCardDownloadTarget && !shareCardDownloadTarget.disabled) {
+        event.preventDefault();
+        downloadShareCardImage();
+        return;
+    }
+
     const streamingCancelButton = event.target.closest('[data-cancel-streaming-task]');
     if (streamingCancelButton) {
         event.preventDefault();
@@ -18062,6 +18367,14 @@ document.addEventListener('click', async (event) => {
         return;
     }
 
+    const shareAnswerCardButton = event.target.closest('[data-share-answer-card]');
+    if (shareAnswerCardButton) {
+        event.stopPropagation();
+        if (shareAnswerCardButton.disabled) return;
+        await openAssistantShareCard(shareAnswerCardButton);
+        return;
+    }
+
     const copyAnswerButton = event.target.closest('[data-copy-answer]');
     if (copyAnswerButton) {
         event.stopPropagation();
@@ -18417,6 +18730,12 @@ document.addEventListener('compositionend', (event) => {
 });
 
 document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && shareCardIsOpen()) {
+        event.preventDefault();
+        closeShareCardDialog();
+        return;
+    }
+
     if (event.key === 'Escape' && driveSelectionBoxState.active) {
         event.preventDefault();
         cancelDriveSelectionBox();

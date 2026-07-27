@@ -64,6 +64,7 @@ echo "--- Web UI Checks ---"
 if command -v node >/dev/null 2>&1; then
     echo "[Web] Checking JavaScript syntax..."
     if node --check web/static/js/chat-recovery.js 2>&1 && \
+       node --check web/static/js/share-card.js 2>&1 && \
        node --check web/static/js/app.js 2>&1 && \
        node --check web/static/js/admin.js 2>&1; then
         echo "  PASS: web JavaScript syntax"
