@@ -5433,7 +5433,7 @@ button.mode-chip:focus-visible {
 }
 
 .todo-workbench {
-    width: min(1180px, 100%);
+    width: 100%;
     height: min(760px, calc(100vh - 136px));
     min-height: 520px;
     min-height: min(520px, calc(100dvh - 98px));
@@ -6149,7 +6149,7 @@ button.mode-chip:focus-visible {
 }
 
 .pulse-workbench {
-    width: min(1320px, 100%);
+    width: 100%;
     display: grid;
     grid-template-columns: minmax(0, 1fr) minmax(260px, 320px);
     gap: 14px;
