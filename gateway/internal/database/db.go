@@ -35,6 +35,7 @@ func Init(dbPath string) error {
 		&models.TokenUsage{},
 		&models.Setting{},
 		&models.UserSetting{},
+		&models.ConversationToolPolicy{},
 		&models.PulseTopic{},
 		&models.PulseItem{},
 		&models.PulseModule{},

@@ -87,7 +87,7 @@ class SearchResponse(BaseModel):
 
 class ToolApprovalResolveRequest(BaseModel):
     user_id: str = "0"
-    decision: Literal["allow_once", "allow_always", "deny"]
+    decision: Literal["allow_once", "allow_conversation", "allow_always", "deny"]
 
 
 def _memory_storage_path() -> Path:
@@ -648,6 +648,7 @@ async def chat_stream(request: ChatRequest):
             yield _sse("done", {"run_id": run_id})
         except asyncio.CancelledError:
             logger.info("Streaming chat cancelled", extra={"run_id": run_id})
+            engine.tool_governance.cancel_run_approvals(run_id, reason="user_cancelled")
             trace_store.cancel_run(run_id, reason="user_cancelled")
             run = trace_store.get_run(run_id)
             if run is not None:
@@ -745,6 +746,8 @@ async def cancel_run(run_id: str):
     task = active_stream_tasks.get(run_id)
     run = trace_store.get_run(run_id)
     if task is not None and not task.done():
+        if engine is not None:
+            engine.tool_governance.cancel_run_approvals(run_id, reason="user_cancelled")
         trace_store.cancel_run(run_id, reason="user_cancelled")
         task.cancel()
         return {"status": "cancelling", "run_id": run_id}

@@ -596,7 +596,8 @@ flowchart LR
 - 工具结果统一包装为 `ToolResult`。
 - Skill 元数据声明 `risk_level`、`access`、`default_policy`、`max_calls_per_run`、`timeout_seconds` 和敏感参数。
 - 用户可按工具设置 `auto / confirm / deny`；当前个人版的 `confirm` 会优先识别本轮明确指令，无法可靠确认时则冻结原始工具参数并生成聊天内授权卡片。
-- 授权卡片展示工具、风险、访问类型和具体操作，支持“仅本次允许”“始终允许”和“拒绝”；允许后执行冻结的精确调用，不再依赖模型重新理解用户措辞。
+- 授权卡片展示工具、风险、访问类型和具体操作，支持“仅本次允许”“此会话始终允许”和“拒绝”；会话级持续授权按帐号、会话和工具隔离。
+- 授权属于 Trace/UI 控制面事件，不作为自然语言消息写入模型上下文。原 run 在卡片处保持等待；允许后执行冻结的精确调用，把结构化 Tool Result 接回原消息序列，并继续同一 Agent 循环生成最终回答。
 - 所有 Skill 调用统一经过 Tool Governance，执行前鉴权/限次、执行中超时、执行后通过 `tool.governance.*` 与 `tool.*` 事件审计。
 - 高风险删除和公开分享默认使用 `confirm`；可撤销的网页归档和普通业务写入默认 `auto`。用户 `deny` 对内部工作流同样生效。
 - MCP server 可以作为一等工具来源，但不要求所有 Agent 都先转换成同一个 `ToolSpec`。

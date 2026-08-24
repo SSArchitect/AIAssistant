@@ -40,7 +40,7 @@ func TestToolPoliciesFromSettings(t *testing.T) {
 	}
 }
 
-func TestResolveToolApprovalPersistsTraceAndAlwaysAllowPolicy(t *testing.T) {
+func TestResolveToolApprovalPersistsTraceAndConversationPolicy(t *testing.T) {
 	agentServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/agent/tool-approvals/approval_test" {
 			t.Fatalf("unexpected path: %s", r.URL.Path)
@@ -51,7 +51,7 @@ func TestResolveToolApprovalPersistsTraceAndAlwaysAllowPolicy(t *testing.T) {
 			"run_id":"run_approval",
 			"conversation_id":"conv-approval",
 			"tool_name":"upsert_pulse_topic",
-			"decision":"allow_always",
+			"decision":"allow_conversation",
 			"status":"approved",
 			"request_count":1,
 			"succeeded_count":1,
@@ -63,7 +63,7 @@ func TestResolveToolApprovalPersistsTraceAndAlwaysAllowPolicy(t *testing.T) {
 				"type":"approval.resolved",
 				"status":"completed",
 				"title":"Approval resolved",
-				"payload":{"approval_id":"approval_test","tool_name":"upsert_pulse_topic","decision":"allow_always","request_count":1,"succeeded_count":1,"failed_count":0},
+				"payload":{"approval_id":"approval_test","tool_name":"upsert_pulse_topic","decision":"allow_conversation","request_count":1,"succeeded_count":1,"failed_count":0},
 				"created_at":"2026-08-24T00:00:00Z"
 			}],
 			"skills_used":["upsert_pulse_topic"]
@@ -89,7 +89,7 @@ func TestResolveToolApprovalPersistsTraceAndAlwaysAllowPolicy(t *testing.T) {
 	router := gin.New()
 	handler := NewChatHandler(bridge.NewAgentClient(agentServer.URL, time.Second))
 	router.POST("/api/tool-approvals/:id", handler.ResolveToolApproval)
-	body := bytes.NewBufferString(`{"user_id":"alice","decision":"allow_always"}`)
+	body := bytes.NewBufferString(`{"user_id":"alice","decision":"allow_conversation"}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/tool-approvals/approval_test", body)
 	req.Header.Set("Content-Type", "application/json")
 	recorder := httptest.NewRecorder()
@@ -98,12 +98,25 @@ func TestResolveToolApprovalPersistsTraceAndAlwaysAllowPolicy(t *testing.T) {
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("unexpected status %d: %s", recorder.Code, recorder.Body.String())
 	}
+	var policy models.ConversationToolPolicy
+	if err := database.DB.First(
+		&policy,
+		"user_id = ? AND conversation_id = ? AND tool_name = ?",
+		"alice",
+		"conv-approval",
+		"upsert_pulse_topic",
+	).Error; err != nil {
+		t.Fatalf("load conversation policy: %v", err)
+	}
+	if policy.Policy != "auto" {
+		t.Fatalf("expected conversation auto policy, got %#v", policy)
+	}
 	settings, err := loadUserSettings("alice")
 	if err != nil {
-		t.Fatalf("load settings: %v", err)
+		t.Fatalf("load user settings: %v", err)
 	}
-	if settings["tool.upsert_pulse_topic.policy"] != "auto" {
-		t.Fatalf("expected always-allow policy, got %#v", settings)
+	if _, exists := settings["tool.upsert_pulse_topic.policy"]; exists {
+		t.Fatalf("conversation approval must not create an account-wide policy: %#v", settings)
 	}
 	var stored models.Message
 	if err := database.DB.First(&stored, message.ID).Error; err != nil {
@@ -113,5 +126,34 @@ func TestResolveToolApprovalPersistsTraceAndAlwaysAllowPolicy(t *testing.T) {
 		if !strings.Contains(stored.TraceSummary, fragment) {
 			t.Fatalf("expected trace summary to contain %q, got %s", fragment, stored.TraceSummary)
 		}
+	}
+}
+
+func TestConversationToolPolicyOnlyAppliesToMatchingConversation(t *testing.T) {
+	if err := database.Init(filepath.Join(t.TempDir(), "assistant.db")); err != nil {
+		t.Fatalf("init database: %v", err)
+	}
+	if err := saveConversationToolPolicy(
+		"alice",
+		"conv-a",
+		"upsert_pulse_topic",
+		"auto",
+	); err != nil {
+		t.Fatalf("save conversation policy: %v", err)
+	}
+
+	_, policiesA, err := toolRuntimeSettingsForConversation("alice", "conv-a")
+	if err != nil {
+		t.Fatalf("load conv-a policies: %v", err)
+	}
+	if policiesA["upsert_pulse_topic"] != "auto" {
+		t.Fatalf("expected conv-a policy, got %#v", policiesA)
+	}
+	_, policiesB, err := toolRuntimeSettingsForConversation("alice", "conv-b")
+	if err != nil {
+		t.Fatalf("load conv-b policies: %v", err)
+	}
+	if _, exists := policiesB["upsert_pulse_topic"]; exists {
+		t.Fatalf("conversation policy leaked into conv-b: %#v", policiesB)
 	}
 }

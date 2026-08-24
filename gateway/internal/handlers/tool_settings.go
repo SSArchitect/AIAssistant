@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"sort"
@@ -37,7 +38,10 @@ func (h *ChatHandler) ResolveToolApproval(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request: " + err.Error()})
 		return
 	}
-	if req.Decision != "allow_once" && req.Decision != "allow_always" && req.Decision != "deny" {
+	if req.Decision == "allow_always" {
+		req.Decision = "allow_conversation"
+	}
+	if req.Decision != "allow_once" && req.Decision != "allow_conversation" && req.Decision != "deny" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid approval decision"})
 		return
 	}
@@ -47,11 +51,14 @@ func (h *ChatHandler) ResolveToolApproval(c *gin.Context) {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "agent approval error: " + err.Error()})
 		return
 	}
-	if req.Decision == "allow_always" {
-		if err := saveUserSettings(userID, map[string]string{
-			toolPolicySettingKey(resolution.ToolName): "auto",
-		}); err != nil {
-			resolution.Warning = "approval succeeded but the always-allow policy could not be saved"
+	if req.Decision == "allow_conversation" {
+		if err := saveConversationToolPolicy(
+			userID,
+			resolution.ConversationID,
+			resolution.ToolName,
+			"auto",
+		); err != nil {
+			resolution.Warning = "approval succeeded but the conversation policy could not be saved"
 		} else {
 			resolution.PolicyUpdated = true
 		}
@@ -210,6 +217,51 @@ func toolRuntimeSettingsForUser(userID string) ([]string, map[string]string, err
 		return nil, nil, err
 	}
 	return disabledToolsFromSettings(settings), toolPoliciesFromSettings(settings), nil
+}
+
+func toolRuntimeSettingsForConversation(
+	userID string,
+	conversationID string,
+) ([]string, map[string]string, error) {
+	disabled, policies, err := toolRuntimeSettingsForUser(userID)
+	if err != nil {
+		return nil, nil, err
+	}
+	var conversationPolicies []models.ConversationToolPolicy
+	if err := database.DB.Where(
+		"user_id = ? AND conversation_id = ?",
+		normalizedUserID(userID),
+		strings.TrimSpace(conversationID),
+	).Find(&conversationPolicies).Error; err != nil {
+		return nil, nil, err
+	}
+	for _, policy := range conversationPolicies {
+		toolName := strings.TrimSpace(policy.ToolName)
+		normalizedPolicy := strings.ToLower(strings.TrimSpace(policy.Policy))
+		if toolName != "" && isValidToolPolicy(normalizedPolicy) {
+			policies[toolName] = normalizedPolicy
+		}
+	}
+	return disabled, policies, nil
+}
+
+func saveConversationToolPolicy(
+	userID string,
+	conversationID string,
+	toolName string,
+	policy string,
+) error {
+	record := models.ConversationToolPolicy{
+		UserID:         normalizedUserID(userID),
+		ConversationID: strings.TrimSpace(conversationID),
+		ToolName:       strings.TrimSpace(toolName),
+		Policy:         strings.ToLower(strings.TrimSpace(policy)),
+		UpdatedAt:      time.Now(),
+	}
+	if record.ConversationID == "" || record.ToolName == "" || !isValidToolPolicy(record.Policy) {
+		return fmt.Errorf("invalid conversation tool policy")
+	}
+	return database.DB.Save(&record).Error
 }
 
 func disabledToolsFromSettings(settings map[string]string) []string {

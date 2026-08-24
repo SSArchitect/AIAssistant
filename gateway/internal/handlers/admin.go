@@ -412,6 +412,7 @@ func (h *AdminHandler) DeleteAccount(c *gin.Context) {
 			&models.Conversation{},
 			&models.TokenUsage{},
 			&models.UserSetting{},
+			&models.ConversationToolPolicy{},
 			&models.PulseEvent{},
 			&models.PulseItem{},
 			&models.PulseModule{},

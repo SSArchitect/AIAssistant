@@ -39,6 +39,21 @@ def engine(registry):
     return AgentEngine(registry)
 
 
+async def wait_for_ready_approval(engine, conversation_id: str):
+    for _ in range(200):
+        runs = engine.trace_store.list_runs(conversation_id=conversation_id)
+        if runs:
+            approvals = [
+                event
+                for event in runs[0].events
+                if event.type == "approval.required" and event.payload.get("ready")
+            ]
+            if approvals:
+                return approvals[-1]
+        await asyncio.sleep(0.005)
+    raise AssertionError("approval did not become ready")
+
+
 def agent_tool_response(
     tool_name: str,
     task: str,
@@ -1017,21 +1032,36 @@ async def test_skill_arguments_are_prepared_before_governance(engine):
         model="test-model",
         usage={},
     )
+    final_response = LLMResponse(
+        content="The prepared item was updated.",
+        tool_calls=[],
+        model="test-model",
+        usage={},
+    )
 
     with patch.object(engine, "_get_provider") as mock_provider:
         provider = AsyncMock()
-        provider.chat = AsyncMock(return_value=tool_response)
+        provider.chat = AsyncMock(side_effect=[tool_response, final_response])
         mock_provider.return_value = provider
-        result = await engine.process(
+        process_task = asyncio.create_task(engine.process(
             ChatRequest(
                 conversation_id="prepared-tool-arguments",
                 user_id="alice",
                 message="Review the item.",
             )
+        ))
+        approval = await wait_for_ready_approval(engine, "prepared-tool-arguments")
+
+        assert process_task.done() is False
+        resolution = await engine.tool_governance.resolve_approval(
+            approval.payload["approval_id"],
+            user_id="alice",
+            decision="allow_once",
         )
+        result = await process_task
 
     assert prepared_calls == [{"item_id": "item-1"}]
-    assert executed_calls == []
+    assert executed_calls == [{"item_id": "item-1-full", "name": "Readable item"}]
     blocked = next(
         event for event in result.events
         if event.type == "tool.governance.blocked"
@@ -1041,7 +1071,6 @@ async def test_skill_arguments_are_prepared_before_governance(engine):
         "item_id": "item-1-full",
         "name": "Readable item",
     }
-    approval = next(event for event in result.events if event.type == "approval.required")
     assert approval.payload["operations"] == [
         {
             "step_id": "call_prepared",
@@ -1052,15 +1081,14 @@ async def test_skill_arguments_are_prepared_before_governance(engine):
         }
     ]
 
-    resolution = await engine.tool_governance.resolve_approval(
-        approval.payload["approval_id"],
-        user_id="alice",
-        decision="allow_once",
-    )
-
     assert resolution["status"] == "approved"
-    assert executed_calls == [{"item_id": "item-1-full", "name": "Readable item"}]
-    assert provider.chat.await_count == 1
+    assert result.response == "The prepared item was updated."
+    assert result.plan[0].status == "completed"
+    assert provider.chat.await_count == 2
+    memory_messages = engine.memory.get(
+        "user:alice:conversation:prepared-tool-arguments"
+    )
+    assert all("授权卡片" not in str(message.content) for message in memory_messages)
 
 
 @pytest.mark.asyncio
@@ -1100,24 +1128,101 @@ async def test_tool_governance_blocks_unconfirmed_high_risk_call(engine):
         model="test-model",
         usage={"input": 10, "output": 5},
     )
+    final_response = LLMResponse(
+        content="Deleted item-1.",
+        tool_calls=[],
+        model="test-model",
+        usage={"input": 12, "output": 4},
+    )
     with patch.object(engine, "_get_provider") as mock_provider:
         provider = AsyncMock()
-        provider.chat = AsyncMock(return_value=tool_response)
+        provider.chat = AsyncMock(side_effect=[tool_response, final_response])
         mock_provider.return_value = provider
-        result = await engine.process(
+        process_task = asyncio.create_task(engine.process(
             ChatRequest(
                 conversation_id="governance-confirm",
                 message="查看测试项 item-1",
             )
-        )
+        ))
+        approval = await wait_for_ready_approval(engine, "governance-confirm")
 
-    assert skill.calls == 0
-    assert "授权" in result.response
-    assert result.plan[0].status == "approval_required"
+        assert process_task.done() is False
+        await engine.tool_governance.resolve_approval(
+            approval.payload["approval_id"],
+            user_id="0",
+            decision="allow_once",
+        )
+        result = await process_task
+
+    assert skill.calls == 1
+    assert result.response == "Deleted item-1."
+    assert result.plan[0].status == "completed"
     assert any(event.type == "tool.governance.blocked" for event in result.events)
     assert any(event.type == "approval.required" for event in result.events)
     assert any(event.type == "tool.awaiting_approval" for event in result.events)
-    assert provider.chat.await_count == 1
+    assert any(event.type == "approval.resolved" for event in result.events)
+    assert provider.chat.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_denied_tool_approval_returns_structured_result_and_resumes_model(engine):
+    class ConfirmedWriteSkill(Skill):
+        def __init__(self):
+            self.calls = 0
+
+        def metadata(self) -> SkillMetadata:
+            return SkillMetadata(
+                name="confirmed_write",
+                description="Write a test item.",
+                parameters=[SkillParameter(name="name", type="string", description="Name")],
+                risk_level="medium",
+                access="write",
+                default_policy="confirm",
+            )
+
+        async def execute(self, **kwargs) -> SkillResult:
+            self.calls += 1
+            return SkillResult(success=True, data=kwargs)
+
+    skill = ConfirmedWriteSkill()
+    engine.skill_registry.register(skill)
+    with patch.object(engine, "_get_provider") as mock_provider:
+        provider = AsyncMock()
+        provider.chat = AsyncMock(side_effect=[
+            LLMResponse(
+                content="",
+                tool_calls=[ToolCall(id="call_write", name="confirmed_write", arguments={"name": "item"})],
+                model="test-model",
+                usage={},
+            ),
+            LLMResponse(
+                content="The operation was cancelled.",
+                tool_calls=[],
+                model="test-model",
+                usage={},
+            ),
+        ])
+        mock_provider.return_value = provider
+        process_task = asyncio.create_task(engine.process(ChatRequest(
+            conversation_id="governance-deny",
+            user_id="alice",
+            message="Review this write first.",
+        )))
+        approval = await wait_for_ready_approval(engine, "governance-deny")
+        await engine.tool_governance.resolve_approval(
+            approval.payload["approval_id"],
+            user_id="alice",
+            decision="deny",
+        )
+        result = await process_task
+
+    assert skill.calls == 0
+    assert result.response == "The operation was cancelled."
+    assert result.plan[0].status == "error"
+    assert provider.chat.await_count == 2
+    resumed_messages = provider.chat.await_args_list[1].args[0]
+    tool_message = next(message for message in resumed_messages if message.role == "tool")
+    assert "approval_denied" in str(tool_message.content)
 
 
 @pytest.mark.asyncio

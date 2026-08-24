@@ -87,6 +87,7 @@ class PendingToolApproval:
     expires_at: datetime
     status: str
     items: list[PendingToolApprovalItem]
+    sealed: bool = False
 
 
 class ToolGovernance:
@@ -96,6 +97,9 @@ class ToolGovernance:
         self.trace_store = trace_store
         self._pending_approvals: dict[str, PendingToolApproval] = {}
         self._approval_groups: dict[tuple[str, str], str] = {}
+        self._approval_events: dict[str, asyncio.Event] = {}
+        self._resolved_step_results: dict[tuple[str, str], SkillResult] = {}
+        self._conversation_grants: set[tuple[str, str, str]] = set()
         self._approval_lock = Lock()
 
     def authorize(
@@ -110,7 +114,19 @@ class ToolGovernance:
     ) -> ToolGovernanceDecision:
         meta = skill.metadata()
         configured_policy = str((request.tool_policies or {}).get(meta.name) or "").strip().lower()
-        policy = configured_policy if configured_policy in TOOL_POLICIES else meta.default_policy
+        grant_key = (
+            str(request.user_id or "0"),
+            str(request.conversation_id or ""),
+            meta.name,
+        )
+        with self._approval_lock:
+            conversation_granted = grant_key in self._conversation_grants
+        if configured_policy == "deny":
+            policy = "deny"
+        elif conversation_granted:
+            policy = "auto"
+        else:
+            policy = configured_policy if configured_policy in TOOL_POLICIES else meta.default_policy
         call_count = self._allowed_call_count(run_id, meta.name)
         max_calls = max(
             meta.max_calls_per_run,
@@ -119,7 +135,7 @@ class ToolGovernance:
         pending_count = self._pending_call_count(run_id, meta.name)
 
         allowed = True
-        reason = "policy_auto"
+        reason = "conversation_policy_auto" if conversation_granted else "policy_auto"
         approval_id: str | None = None
         if policy == "deny":
             allowed = False
@@ -331,6 +347,7 @@ class ToolGovernance:
             if (
                 pending is None
                 or pending.status != "pending"
+                or pending.sealed
                 or pending.expires_at <= now
             ):
                 pending = PendingToolApproval(
@@ -348,6 +365,8 @@ class ToolGovernance:
                 )
                 self._pending_approvals[pending.approval_id] = pending
                 self._approval_groups[group_key] = pending.approval_id
+            approval_event = self._approval_events.setdefault(run_id, asyncio.Event())
+            approval_event.clear()
             if not any(item.step_id == step_id and step_id for item in pending.items):
                 pending.items.append(
                     PendingToolApprovalItem(
@@ -363,23 +382,7 @@ class ToolGovernance:
             pending = self._pending_approvals.get(approval_id)
             if pending is None:
                 return
-            items = list(pending.items)
-            payload = {
-                "approval_id": pending.approval_id,
-                "tool_name": pending.tool_name,
-                "policy": "confirm",
-                "risk_level": pending.risk_level,
-                "access": pending.access,
-                "request_count": len(items),
-                "operations": [
-                    {
-                        "step_id": item.step_id,
-                        "arguments": self.redact_arguments(item.skill, item.arguments),
-                    }
-                    for item in items
-                ],
-                "expires_at": pending.expires_at.isoformat(),
-            }
+            payload = self._approval_event_payload(pending)
         self.trace_store.append_event(
             pending.run_id,
             type="approval.required",
@@ -388,6 +391,92 @@ class ToolGovernance:
             payload=payload,
         )
 
+    def seal_run_approvals(self, run_id: str) -> int:
+        """Freeze all approvals collected for a model round and expose their actions."""
+        with self._approval_lock:
+            approvals = [
+                pending
+                for pending in self._pending_approvals.values()
+                if pending.run_id == run_id and pending.status == "pending"
+            ]
+            for pending in approvals:
+                pending.sealed = True
+            payloads = [
+                (pending, self._approval_event_payload(pending))
+                for pending in approvals
+            ]
+        for pending, payload in payloads:
+            self.trace_store.append_event(
+                run_id,
+                type="approval.required",
+                status="pending",
+                title=f"Approval ready for {pending.tool_name}",
+                payload={**payload, "ready": True},
+            )
+        return len(approvals)
+
+    async def wait_for_run_approvals(self, run_id: str) -> dict[str, SkillResult]:
+        """Wait until every sealed approval for a run is resolved, denied, or expired."""
+        while True:
+            with self._approval_lock:
+                outstanding = [
+                    pending
+                    for pending in self._pending_approvals.values()
+                    if pending.run_id == run_id
+                    and pending.status in {"pending", "resolving"}
+                ]
+                if not outstanding:
+                    results = {
+                        step_id: result
+                        for (result_run_id, step_id), result in list(self._resolved_step_results.items())
+                        if result_run_id == run_id
+                    }
+                    for step_id in results:
+                        self._resolved_step_results.pop((run_id, step_id), None)
+                    self._approval_events.pop(run_id, None)
+                    return results
+                event = self._approval_events.setdefault(run_id, asyncio.Event())
+                event.clear()
+                pending_expirations = [
+                    pending.expires_at
+                    for pending in outstanding
+                    if pending.status == "pending"
+                ]
+
+            timeout_seconds: float | None = None
+            if pending_expirations:
+                timeout_seconds = max(
+                    0.0,
+                    (min(pending_expirations) - datetime.now(timezone.utc)).total_seconds(),
+                )
+            try:
+                if timeout_seconds is None:
+                    await event.wait()
+                else:
+                    await asyncio.wait_for(event.wait(), timeout=timeout_seconds)
+            except (TimeoutError, asyncio.TimeoutError):
+                self._expire_run_approvals(run_id)
+
+    def _approval_event_payload(self, pending: PendingToolApproval) -> dict[str, Any]:
+        items = list(pending.items)
+        return {
+            "approval_id": pending.approval_id,
+            "tool_name": pending.tool_name,
+            "policy": "confirm",
+            "risk_level": pending.risk_level,
+            "access": pending.access,
+            "request_count": len(items),
+            "operations": [
+                {
+                    "step_id": item.step_id,
+                    "arguments": self.redact_arguments(item.skill, item.arguments),
+                }
+                for item in items
+            ],
+            "expires_at": pending.expires_at.isoformat(),
+            "ready": pending.sealed,
+        }
+
     async def resolve_approval(
         self,
         approval_id: str,
@@ -395,9 +484,12 @@ class ToolGovernance:
         user_id: str,
         decision: str,
     ) -> dict[str, Any]:
-        if decision not in {"allow_once", "allow_always", "deny"}:
+        if decision == "allow_always":
+            decision = "allow_conversation"
+        if decision not in {"allow_once", "allow_conversation", "deny"}:
             raise ValueError("invalid approval decision")
         now = datetime.now(timezone.utc)
+        expired = False
         with self._approval_lock:
             pending = self._pending_approvals.get(approval_id)
             if pending is None:
@@ -406,15 +498,63 @@ class ToolGovernance:
                 raise PermissionError("approval not found")
             if pending.status != "pending":
                 raise RuntimeError("approval has already been resolved")
+            if not pending.sealed:
+                raise RuntimeError("approval operations are still being collected")
             if pending.expires_at <= now:
-                pending.status = "expired"
-                raise TimeoutError("approval has expired")
-            pending.status = "resolving" if decision != "deny" else "denied"
+                expired = True
+            else:
+                pending.status = "resolving" if decision != "deny" else "denied"
             items = list(pending.items)
+
+        if expired:
+            self._expire_run_approvals(pending.run_id)
+            raise TimeoutError("approval has expired")
+
+        if decision != "deny":
+            self.trace_store.append_event(
+                pending.run_id,
+                type="approval.resolving",
+                status="running",
+                title=f"Approval resolving for {pending.tool_name}",
+                payload={
+                    "approval_id": approval_id,
+                    "tool_name": pending.tool_name,
+                    "decision": decision,
+                    "request_count": len(items),
+                },
+            )
+
+        if decision == "allow_conversation":
+            with self._approval_lock:
+                self._conversation_grants.add(
+                    (pending.user_id, pending.conversation_id, pending.tool_name)
+                )
 
         if decision == "deny":
             with self._approval_lock:
                 self._approval_groups.pop((pending.run_id, pending.tool_name), None)
+                for item in items:
+                    if item.step_id:
+                        self._resolved_step_results[(pending.run_id, item.step_id)] = SkillResult(
+                            success=False,
+                            error=f"User denied approval for {pending.tool_name}",
+                            error_code="approval_denied",
+                            data={"approval_id": approval_id, "decision": decision},
+                            display_text="用户拒绝了该操作。",
+                        )
+            for item in items:
+                self.trace_store.append_event(
+                    pending.run_id,
+                    type="tool.cancelled",
+                    status="cancelled",
+                    title=f"Tool {pending.tool_name} denied by user",
+                    step_id=item.step_id,
+                    payload={
+                        "name": pending.tool_name,
+                        "approval_id": approval_id,
+                        "approval_resume": True,
+                    },
+                )
             self.trace_store.append_event(
                 pending.run_id,
                 type="approval.resolved",
@@ -429,12 +569,32 @@ class ToolGovernance:
                     "failed_count": 0,
                 },
             )
+            self._notify_run_if_resolved(pending.run_id)
             return self._approval_resolution_payload(pending, decision, [], "denied")
 
         results: list[dict[str, Any]] = []
         for item in items:
             meta = item.skill.metadata()
             started_at = datetime.now(timezone.utc)
+            self.trace_store.append_event(
+                pending.run_id,
+                type="tool.governance.allowed",
+                status="completed",
+                title=f"Tool governance allowed {pending.tool_name} after approval",
+                step_id=item.step_id,
+                payload={
+                    "allowed": True,
+                    "tool_name": pending.tool_name,
+                    "policy": "confirm",
+                    "reason": "conversation_approval" if decision == "allow_conversation" else "one_time_approval",
+                    "call_count": self._allowed_call_count(pending.run_id, pending.tool_name) + 1,
+                    "max_calls": meta.max_calls_per_run,
+                    "approval_id": approval_id,
+                    "risk_level": meta.risk_level,
+                    "access": meta.access,
+                    "arguments": self.redact_arguments(item.skill, item.arguments),
+                },
+            )
             self.trace_store.append_event(
                 pending.run_id,
                 type="tool.started",
@@ -473,6 +633,9 @@ class ToolGovernance:
                 "error_code": result.error_code or "",
             }
             results.append(result_summary)
+            if item.step_id:
+                with self._approval_lock:
+                    self._resolved_step_results[(pending.run_id, item.step_id)] = result
             self.trace_store.append_event(
                 pending.run_id,
                 type="tool.completed" if result.success else "tool.failed",
@@ -515,7 +678,114 @@ class ToolGovernance:
                 "failed_count": failed,
             },
         )
+        self._notify_run_if_resolved(pending.run_id)
         return self._approval_resolution_payload(pending, decision, results, status)
+
+    def _expire_run_approvals(self, run_id: str) -> None:
+        now = datetime.now(timezone.utc)
+        expired: list[tuple[PendingToolApproval, list[PendingToolApprovalItem]]] = []
+        with self._approval_lock:
+            for pending in self._pending_approvals.values():
+                if (
+                    pending.run_id != run_id
+                    or pending.status != "pending"
+                    or pending.expires_at > now
+                ):
+                    continue
+                pending.status = "expired"
+                self._approval_groups.pop((pending.run_id, pending.tool_name), None)
+                items = list(pending.items)
+                expired.append((pending, items))
+                for item in items:
+                    if item.step_id:
+                        self._resolved_step_results[(run_id, item.step_id)] = SkillResult(
+                            success=False,
+                            error=f"Approval expired for {pending.tool_name}",
+                            error_code="approval_expired",
+                            data={"approval_id": pending.approval_id, "decision": "expired"},
+                            display_text="授权已过期。",
+                        )
+        for pending, items in expired:
+            self.trace_store.append_event(
+                run_id,
+                type="approval.resolved",
+                status="error",
+                title=f"Approval expired for {pending.tool_name}",
+                payload={
+                    "approval_id": pending.approval_id,
+                    "tool_name": pending.tool_name,
+                    "decision": "expired",
+                    "request_count": len(items),
+                    "succeeded_count": 0,
+                    "failed_count": len(items),
+                },
+            )
+        self._notify_run_if_resolved(run_id)
+
+    def _notify_run_if_resolved(self, run_id: str) -> None:
+        with self._approval_lock:
+            outstanding = any(
+                pending.run_id == run_id
+                and pending.status in {"pending", "resolving"}
+                for pending in self._pending_approvals.values()
+            )
+            event = self._approval_events.get(run_id)
+            if not outstanding and event is not None:
+                event.set()
+
+    def cancel_run_approvals(self, run_id: str, *, reason: str = "run_cancelled") -> int:
+        cancelled: list[tuple[PendingToolApproval, list[PendingToolApprovalItem]]] = []
+        with self._approval_lock:
+            for pending in self._pending_approvals.values():
+                if pending.run_id != run_id or pending.status not in {"pending", "resolving"}:
+                    continue
+                pending.status = "cancelled"
+                self._approval_groups.pop((pending.run_id, pending.tool_name), None)
+                items = list(pending.items)
+                cancelled.append((pending, items))
+                for item in items:
+                    if item.step_id:
+                        self._resolved_step_results[(run_id, item.step_id)] = SkillResult(
+                            success=False,
+                            error=f"Approval cancelled for {pending.tool_name}: {reason}",
+                            error_code="approval_cancelled",
+                            data={"approval_id": pending.approval_id, "decision": "cancelled"},
+                        )
+        for pending, items in cancelled:
+            self.trace_store.append_event(
+                run_id,
+                type="approval.resolved",
+                status="cancelled",
+                title=f"Approval cancelled for {pending.tool_name}",
+                payload={
+                    "approval_id": pending.approval_id,
+                    "tool_name": pending.tool_name,
+                    "decision": "cancelled",
+                    "request_count": len(items),
+                    "succeeded_count": 0,
+                    "failed_count": 0,
+                    "reason": reason,
+                },
+            )
+        self._notify_run_if_resolved(run_id)
+        return len(cancelled)
+
+    def purge_user(self, user_id: str) -> None:
+        normalized_user_id = str(user_id or "0").strip() or "0"
+        with self._approval_lock:
+            run_ids = {
+                pending.run_id
+                for pending in self._pending_approvals.values()
+                if pending.user_id == normalized_user_id
+                and pending.status in {"pending", "resolving"}
+            }
+            self._conversation_grants = {
+                grant
+                for grant in self._conversation_grants
+                if grant[0] != normalized_user_id
+            }
+        for run_id in run_ids:
+            self.cancel_run_approvals(run_id, reason="user_data_purged")
 
     def _approval_resolution_payload(
         self,

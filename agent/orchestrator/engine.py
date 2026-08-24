@@ -189,6 +189,7 @@ class AgentEngine:
 
     def purge_user_data(self, user_id: str) -> dict[str, int]:
         normalized_user_id = str(user_id or "0").strip() or "0"
+        self.tool_governance.purge_user(normalized_user_id)
         role_counts = self.role_memory.purge_user(normalized_user_id)
         return {
             **role_counts,
@@ -3614,6 +3615,10 @@ class AgentEngine:
         plan: list[SkillCallInfo],
         messages: list[LLMMessage],
         all_new_messages: list[LLMMessage],
+        record_trace: bool = True,
+        plan_index: int | None = None,
+        message_index: int | None = None,
+        new_message_index: int | None = None,
     ) -> None:
         tc = execution.tool_call
         trace_result_text = self._skill_result_for_trace(
@@ -3702,35 +3707,44 @@ class AgentEngine:
             else "tool.failed"
         )
         completion_status = "pending" if execution.status == "approval_required" else execution.status
-        self.trace_store.append_event(
-            run_id,
-            type=completion_type,
-            status=completion_status,
-            title=(
-                f"Tool {tc.name} awaiting approval"
-                if execution.status == "approval_required"
-                else f"Tool {tc.name} {execution.status}"
-            ),
-            step_id=tc.id,
-            payload=tool_completed_payload,
-            duration_ms=execution.duration_ms,
-        )
-
-        plan.append(
-            SkillCallInfo(
-                skill=tc.name,
-                action=str(tc.arguments),
-                status=execution.status,
-                result_summary=trace_result_text[:200],
+        if record_trace:
+            self.trace_store.append_event(
+                run_id,
+                type=completion_type,
+                status=completion_status,
+                title=(
+                    f"Tool {tc.name} awaiting approval"
+                    if execution.status == "approval_required"
+                    else f"Tool {tc.name} {execution.status}"
+                ),
+                step_id=tc.id,
+                payload=tool_completed_payload,
+                duration_ms=execution.duration_ms,
             )
+
+        plan_item = SkillCallInfo(
+            skill=tc.name,
+            action=str(tc.arguments),
+            status=execution.status,
+            result_summary=trace_result_text[:200],
         )
+        if plan_index is None:
+            plan.append(plan_item)
+        else:
+            plan[plan_index] = plan_item
         tool_msg = LLMMessage(
             role="tool",
             content=execution.result_text,
             tool_call_id=tc.id,
         )
-        messages.append(tool_msg)
-        all_new_messages.append(tool_msg)
+        if message_index is None:
+            messages.append(tool_msg)
+        else:
+            messages[message_index] = tool_msg
+        if new_message_index is None:
+            all_new_messages.append(tool_msg)
+        else:
+            all_new_messages[new_message_index] = tool_msg
 
     async def _process_target_agent(
         self,
@@ -12006,6 +12020,9 @@ class AgentEngine:
 
             # Execute read-only web tools in bounded batches, then merge results in call order.
             tool_call_index = 0
+            pending_execution_slots: list[
+                tuple[_AgentLoopToolExecution, int, int, int]
+            ] = []
             while tool_call_index < len(response.tool_calls):
                 batch = self._parallel_read_only_tool_batch(response.tool_calls, tool_call_index)
                 tool_call_index += len(batch)
@@ -12057,6 +12074,14 @@ class AgentEngine:
                         failed_tool_call_count += 1
                     if execution.status == "approval_required":
                         approval_pending = True
+                        pending_execution_slots.append(
+                            (
+                                execution,
+                                len(plan),
+                                len(messages),
+                                len(all_new_messages),
+                            )
+                        )
                     self._finalize_agent_loop_tool_execution(
                         run_id=run.run_id,
                         execution=execution,
@@ -12129,14 +12154,57 @@ class AgentEngine:
                                 },
                             )
             if approval_pending:
-                approval_message = (
-                    "这项操作需要你的授权。请在消息卡片中核对影响范围，"
-                    "然后选择仅本次允许、始终允许或拒绝。"
+                self.tool_governance.seal_run_approvals(run.run_id)
+                resolved_results = await self.tool_governance.wait_for_run_approvals(
+                    run.run_id
                 )
-                all_new_messages.append(
-                    LLMMessage(role="assistant", content=approval_message)
-                )
-                break
+                for (
+                    pending_execution,
+                    plan_index,
+                    message_index,
+                    new_message_index,
+                ) in pending_execution_slots:
+                    resolved = resolved_results.get(pending_execution.tool_call.id)
+                    if resolved is None:
+                        resolved = SkillResult(
+                            success=False,
+                            error=(
+                                "Approval finished without a tool result: "
+                                f"{pending_execution.tool_call.name}"
+                            ),
+                            error_code="approval_result_missing",
+                        )
+                    resumed_execution = _AgentLoopToolExecution(
+                        tool_call=pending_execution.tool_call,
+                        tool_arguments=pending_execution.tool_arguments,
+                        result_text=self._skill_result_json(resolved),
+                        status="completed" if resolved.success else "error",
+                        result_data=resolved.data,
+                        duration_ms=pending_execution.duration_ms,
+                    )
+                    if resumed_execution.status == "error":
+                        failed_tool_call_count += 1
+                    self._finalize_agent_loop_tool_execution(
+                        run_id=run.run_id,
+                        execution=resumed_execution,
+                        agent_loop_enabled=agent_loop_enabled,
+                        workflow_name=workflow_name,
+                        workflow_node=workflow_node,
+                        workflow_source=workflow_source,
+                        legacy_workflow=legacy_workflow,
+                        skills_used=skills_used,
+                        citations=citations,
+                        citation_urls=citation_urls,
+                        artifacts=artifacts,
+                        plan=plan,
+                        messages=messages,
+                        all_new_messages=all_new_messages,
+                        record_trace=False,
+                        plan_index=plan_index,
+                        message_index=message_index,
+                        new_message_index=new_message_index,
+                    )
+                approval_pending = False
             if failed_tool_call_count >= MAX_FAILED_TOOL_CALLS:
                 budget_exhausted = True
                 budget_reason = "max_failed_tool_calls_reached"

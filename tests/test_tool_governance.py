@@ -121,15 +121,19 @@ async def test_pending_approval_groups_calls_and_executes_exact_arguments_once()
     required = [event for event in store.get_run(run_id).events if event.type == "approval.required"]
     assert required[-1].payload["request_count"] == 2
     assert required[-1].payload["operations"][0]["arguments"]["secret"] == "<redacted>"
+    assert governance.seal_run_approvals(run_id) == 1
+    waiter = asyncio.create_task(governance.wait_for_run_approvals(run_id))
 
     resolution = await governance.resolve_approval(
         approval_id,
         user_id="alice",
         decision="allow_once",
     )
+    resumed = await waiter
 
     assert resolution["status"] == "approved"
     assert resolution["succeeded_count"] == 2
+    assert set(resumed) == {"call-1", "call-2"}
     assert skill.calls == 2
     assert store.get_run(run_id).skills_used == ["dangerous"]
     assert any(event.type == "approval.resolved" for event in store.get_run(run_id).events)
@@ -153,6 +157,7 @@ async def test_pending_approval_rejects_wrong_user_and_supports_deny():
         arguments={"todo_id": "todo-1"},
     )
     approval_id = blocked.data["governance"]["approval_id"]
+    governance.seal_run_approvals(run_id)
 
     with pytest.raises(PermissionError):
         await governance.resolve_approval(
@@ -168,6 +173,70 @@ async def test_pending_approval_rejects_wrong_user_and_supports_deny():
     )
     assert resolution["status"] == "denied"
     assert skill.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_conversation_approval_resumes_waiter_and_only_grants_same_conversation():
+    governance, store, run_id = governance_run()
+    skill = GovernedSkill(max_calls=3)
+    blocked = await governance.execute(
+        skill=skill,
+        request=request("看看这条待办"),
+        run_id=run_id,
+        arguments={"todo_id": "todo-1"},
+        step_id="call-1",
+    )
+    approval_id = blocked.data["governance"]["approval_id"]
+    assert governance.seal_run_approvals(run_id) == 1
+
+    waiter = asyncio.create_task(governance.wait_for_run_approvals(run_id))
+    await asyncio.sleep(0)
+    resolution = await governance.resolve_approval(
+        approval_id,
+        user_id="alice",
+        decision="allow_conversation",
+    )
+    resumed = await waiter
+
+    assert resolution["decision"] == "allow_conversation"
+    assert resumed["call-1"].success is True
+    assert skill.calls == 1
+
+    same_conversation_run = store.start_run(
+        conversation_id="conv-1",
+        user_id="alice",
+        input_text="same conversation",
+        agent_id="super_chat",
+        runtime="self",
+    )
+    same_conversation = await governance.execute(
+        skill=skill,
+        request=request("看看另一条待办"),
+        run_id=same_conversation_run.run_id,
+        arguments={"todo_id": "todo-2"},
+    )
+    assert same_conversation.success is True
+
+    other_conversation_run = store.start_run(
+        conversation_id="conv-2",
+        user_id="alice",
+        input_text="other conversation",
+        agent_id="super_chat",
+        runtime="self",
+    )
+    other_conversation = await governance.execute(
+        skill=skill,
+        request=ChatRequest(
+            conversation_id="conv-2",
+            user_id="alice",
+            message="看看另一条待办",
+            agent_id="super_chat",
+        ),
+        run_id=other_conversation_run.run_id,
+        arguments={"todo_id": "todo-3"},
+    )
+    assert other_conversation.success is False
+    assert other_conversation.error_code == "explicit_confirmation_required"
 
 
 @pytest.mark.asyncio

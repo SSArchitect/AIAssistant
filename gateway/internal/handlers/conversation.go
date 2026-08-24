@@ -223,6 +223,10 @@ func (h *ConversationHandler) Delete(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "conversation deleted, but messages cleanup failed"})
 		return
 	}
+	if err := database.DB.Where("conversation_id = ? AND user_id = ?", id, userID).Delete(&models.ConversationToolPolicy{}).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "conversation deleted, but tool policy cleanup failed"})
+		return
+	}
 
 	c.JSON(http.StatusOK, gin.H{"status": "deleted"})
 }

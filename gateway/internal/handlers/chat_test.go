@@ -135,7 +135,6 @@ func TestChatSyncsSettingsBeforeAgentRequest(t *testing.T) {
 	if err := database.DB.Create(&conv).Error; err != nil {
 		t.Fatalf("create conversation: %v", err)
 	}
-
 	synced := false
 	agentServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -1514,6 +1513,15 @@ func TestChatPassesDisabledToolsForUser(t *testing.T) {
 	if err := database.DB.Create(&conv).Error; err != nil {
 		t.Fatalf("create conversation: %v", err)
 	}
+	if err := database.DB.Save(&models.ConversationToolPolicy{
+		UserID:         "user-a",
+		ConversationID: conv.ID,
+		ToolName:       "delete_drive",
+		Policy:         "auto",
+		UpdatedAt:      time.Now(),
+	}).Error; err != nil {
+		t.Fatalf("save conversation tool policy: %v", err)
+	}
 
 	agentServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/agent/chat" {
@@ -1526,8 +1534,8 @@ func TestChatPassesDisabledToolsForUser(t *testing.T) {
 		if len(payload.DisabledTools) != 1 || payload.DisabledTools[0] != "search" {
 			t.Fatalf("expected disabled search in agent payload, got %#v", payload.DisabledTools)
 		}
-		if payload.ToolPolicies["delete_drive"] != "confirm" {
-			t.Fatalf("expected delete_drive policy in agent payload, got %#v", payload.ToolPolicies)
+		if payload.ToolPolicies["delete_drive"] != "auto" {
+			t.Fatalf("expected conversation delete_drive policy in agent payload, got %#v", payload.ToolPolicies)
 		}
 		_, _ = w.Write([]byte(`{
 			"conversation_id": "conv-disabled-tools",

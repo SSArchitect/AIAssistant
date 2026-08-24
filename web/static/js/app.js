@@ -382,7 +382,7 @@ const I18N = {
             tool: '工具',
             operations: '查看 {count} 项操作',
             allowOnce: '仅本次允许',
-            allowAlways: '始终允许',
+            allowAlways: '此会话始终允许',
             deny: '拒绝',
             waiting: '正在汇总待授权操作…',
             resolving: '正在处理授权…',
@@ -392,8 +392,8 @@ const I18N = {
             failed: '授权后的操作执行失败',
             expired: '授权已过期，请重新发起操作。',
             succeeded: '已完成 {succeeded}/{total} 项操作。',
-            alwaysConfirmTitle: '始终允许这个工具？',
-            alwaysConfirm: '以后模型调用 {tool} 时将不再逐次询问。当前卡片中的操作也会立即执行。',
+            alwaysConfirmTitle: '在此会话中始终允许这个工具？',
+            alwaysConfirm: '在当前会话后续调用 {tool} 时将不再逐次询问；其他会话不受影响。当前卡片中的操作也会立即执行。',
             resolveFailed: '授权处理失败：{message}',
             risk: '风险：{risk}',
             access: '访问：{access}',
@@ -1281,7 +1281,7 @@ const I18N = {
             tool: 'Tool',
             operations: 'Review {count} operation(s)',
             allowOnce: 'Allow once',
-            allowAlways: 'Always allow',
+            allowAlways: 'Always allow in this chat',
             deny: 'Deny',
             waiting: 'Collecting operations for approval…',
             resolving: 'Resolving approval…',
@@ -1291,8 +1291,8 @@ const I18N = {
             failed: 'Approved operations failed',
             expired: 'This approval expired. Start the operation again.',
             succeeded: 'Completed {succeeded}/{total} operation(s).',
-            alwaysConfirmTitle: 'Always allow this tool?',
-            alwaysConfirm: 'Future model calls to {tool} will run without asking each time. The operations in this card will also run now.',
+            alwaysConfirmTitle: 'Always allow this tool in this chat?',
+            alwaysConfirm: 'Later calls to {tool} in this chat will run without asking again. Other chats are unaffected. The operations in this card will also run now.',
             resolveFailed: 'Approval failed: {message}',
             risk: 'Risk: {risk}',
             access: 'Access: {access}',
@@ -1958,7 +1958,8 @@ const ROLE_CONFIG_EXAMPLES = [
 const MAX_ATTACHMENT_CHARS = 12000;
 const MAX_TOTAL_ATTACHMENT_CHARS = 24000;
 const ACTIVE_RUN_POLL_MS = 1500;
-const ACTIVE_RUN_MAX_POLLS = 240;
+// Keep recovery alive beyond the 15-minute approval-ticket window.
+const ACTIVE_RUN_MAX_POLLS = 720;
 const ACTIVE_RUN_START_MAX_POLLS = 40;
 const CONVERSATION_RENDER_CACHE_LIMIT = 20;
 const FOLLOW_UP_QUESTION_COUNT = 3;
@@ -14488,7 +14489,7 @@ function approvalStatesFromEvents(events = []) {
         if (type === 'run.completed' || type === 'run.partial' || type === 'run.failed' || type === 'run.cancelled') {
             runFinished = true;
         }
-        if (type !== 'approval.required' && type !== 'approval.resolved') return;
+        if (type !== 'approval.required' && type !== 'approval.resolving' && type !== 'approval.resolved') return;
         const payload = event.payload && typeof event.payload === 'object' ? event.payload : {};
         const approvalId = String(payload.approval_id || '');
         if (!approvalId) return;
@@ -14500,6 +14501,8 @@ function approvalStatesFromEvents(events = []) {
             requestCount: 0,
             operations: [],
             expiresAt: '',
+            ready: false,
+            resolving: false,
             resolution: null,
         };
         if (type === 'approval.required') {
@@ -14509,7 +14512,11 @@ function approvalStatesFromEvents(events = []) {
             current.requestCount = Number(payload.request_count || current.requestCount || 0);
             current.operations = Array.isArray(payload.operations) ? payload.operations : current.operations;
             current.expiresAt = String(payload.expires_at || current.expiresAt || '');
+            current.ready = Boolean(payload.ready || current.ready);
+        } else if (type === 'approval.resolving') {
+            current.resolving = true;
         } else {
+            current.resolving = false;
             current.resolution = {
                 decision: String(payload.decision || ''),
                 requestCount: Number(payload.request_count || current.requestCount || 0),
@@ -14526,11 +14533,13 @@ function approvalStatesFromEvents(events = []) {
 function approvalCardStatus(approval) {
     const resolution = approval.resolution;
     if (resolution) {
+        if (resolution.decision === 'expired') return 'expired';
         if (resolution.decision === 'deny') return 'denied';
         if (resolution.failedCount > 0 && resolution.succeededCount > 0) return 'partial';
         if (resolution.failedCount > 0 || resolution.eventStatus === 'error') return 'failed';
         return 'approved';
     }
+    if (approval.resolving) return 'resolving';
     const expiresAt = Date.parse(approval.expiresAt || '');
     if (Number.isFinite(expiresAt) && expiresAt <= Date.now()) return 'expired';
     return 'pending';
@@ -14561,7 +14570,7 @@ function renderApprovalCards(events = [], options = {}) {
         const status = approvalCardStatus(approval);
         const count = approval.requestCount || approval.operations.length || 1;
         const pending = status === 'pending';
-        const ready = pending && approval.runFinished && interactive;
+        const ready = pending && (approval.ready || approval.runFinished) && interactive;
         const statusLabel = status === 'pending'
             ? (ready ? t('approval.title') : t('approval.waiting'))
             : t(`approval.${status}`);
@@ -14590,7 +14599,7 @@ function renderApprovalCards(events = [], options = {}) {
                         data-approval-decision="allow_once">${escapeHtml(t('approval.allowOnce'))}</button>
                 <button class="btn-secondary" type="button"
                         data-resolve-tool-approval="${escapeAttr(approval.approvalId)}"
-                        data-approval-decision="allow_always">${escapeHtml(t('approval.allowAlways'))}</button>
+                        data-approval-decision="allow_conversation">${escapeHtml(t('approval.allowAlways'))}</button>
                 <button class="btn-secondary danger" type="button"
                         data-resolve-tool-approval="${escapeAttr(approval.approvalId)}"
                         data-approval-decision="deny">${escapeHtml(t('approval.deny'))}</button>
@@ -14604,7 +14613,7 @@ function renderApprovalCards(events = [], options = {}) {
                         <h3>${escapeHtml(t('approval.title'))}</h3>
                         <p>${escapeHtml(t('approval.detail', { count }))}</p>
                     </div>
-                    <span class="status-chip ${status === 'approved' ? 'ok' : status === 'pending' ? 'warn' : status === 'denied' ? 'neutral' : 'error'}">${escapeHtml(statusLabel)}</span>
+                    <span class="status-chip ${status === 'approved' ? 'ok' : status === 'pending' || status === 'resolving' ? 'warn' : status === 'denied' ? 'neutral' : 'error'}">${escapeHtml(statusLabel)}</span>
                 </div>
                 <div class="tool-approval-meta">
                     <span>${escapeHtml(t('approval.tool'))}: <code>${escapeHtml(approval.toolName || '-')}</code></span>
@@ -14634,9 +14643,9 @@ async function resolveToolApproval(button) {
     const approvalId = button?.dataset?.resolveToolApproval || '';
     const decision = button?.dataset?.approvalDecision || '';
     const card = button?.closest?.('[data-tool-approval-card]');
-    if (!approvalId || !card || !['allow_once', 'allow_always', 'deny'].includes(decision)) return;
+    if (!approvalId || !card || !['allow_once', 'allow_conversation', 'deny'].includes(decision)) return;
     const toolName = card.querySelector('code')?.textContent || '';
-    if (decision === 'allow_always') {
+    if (decision === 'allow_conversation') {
         const confirmed = await confirmAction(t('approval.alwaysConfirm', { tool: toolName }), {
             title: t('approval.alwaysConfirmTitle'),
             confirmText: t('approval.allowAlways'),
@@ -14657,9 +14666,6 @@ async function resolveToolApproval(button) {
             `/api/tool-approvals/${encodeURIComponent(approvalId)}`,
             { decision, user_id: currentUserId },
         );
-        if (data.policy_updated && data.tool_name) {
-            toolUserSettings[toolPolicySettingKey(data.tool_name)] = 'auto';
-        }
         const message = card.closest('.message');
         const list = card.closest('[data-approval-list]');
         if (list) {
@@ -15888,7 +15894,7 @@ function appendStreamingAssistantMessage(regenerateQuery = '', conversationId = 
             lastEvents = events;
             lastMeta = { ...lastMeta, ...meta };
             approvalsEl.innerHTML = renderApprovalCards(lastEvents, {
-                interactive: Boolean(lastContent),
+                interactive: true,
             });
             const shouldExpand = processTouched ? processExpanded : !lastContent;
             const processPanel = renderProcessPanel(lastEvents, {

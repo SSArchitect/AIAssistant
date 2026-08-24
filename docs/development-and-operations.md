@@ -291,7 +291,9 @@ Tool UI 展示 `/api/tools` 返回的 skill 元数据，包括 `source`、`enabl
 - `confirm`：当前用户消息已经明确要求该高风险动作时可直接执行；否则暂停精确的工具调用并在聊天内展示授权卡片。受控内部工作流可复用已经成立的流程确认。
 - `deny`：无论普通调用还是内部工作流都禁止执行。
 
-`AgentEngine` 的所有 Skill 执行统一经过 `ToolGovernance`，执行前检查策略与每次 run 调用上限，执行时应用超时，并写入 `tool.governance.allowed`、`tool.governance.blocked` 或 `tool.governance.timeout` Trace 事件。敏感参数按 Skill 元数据在治理事件和通用工具事件中脱敏。未获得明确确认时，同一 run 内同一工具的调用会合并为一个 15 分钟有效的 approval ticket，并通过 `approval.required`、`tool.awaiting_approval` 事件展示聊天内授权卡片。用户可选择“仅本次允许”“始终允许”或“拒绝”；允许后只执行 ticket 中冻结的原始参数，不重新让模型解释或生成参数，并通过 `approval.resolved` 记录结果。“始终允许”还会把该用户的工具策略更新为 `auto`。
+`AgentEngine` 的所有 Skill 执行统一经过 `ToolGovernance`，执行前检查策略与每次 run 调用上限，执行时应用超时，并写入 `tool.governance.allowed`、`tool.governance.blocked` 或 `tool.governance.timeout` Trace 事件。敏感参数按 Skill 元数据在治理事件和通用工具事件中脱敏。未获得明确确认时，同一 run 内同一工具的调用会合并为一个 15 分钟有效的 approval ticket；本轮操作收集完成后以带 `ready` 标记的 `approval.required` 事件开放聊天内授权卡片，避免用户在操作尚未汇总完成时过早批准。
+
+用户可选择“仅本次允许”“此会话始终允许”或“拒绝”。“仅本次允许”只执行 ticket 中冻结的精确参数；“此会话始终允许”还会在 Gateway 的 `conversation_tool_policies` 表中按帐号、会话和工具保存 `auto` 策略，不影响其他会话。原 Agent run 在 `approval.required` 后保持运行并等待，批准后由治理层执行冻结调用、把真实 Tool Result 替换回原模型消息序列，再继续同一轮 Agent 循环直至最终回答。授权卡片及批准决定只作为 Trace/UI 控制面事件，不写成 assistant/system 对话消息；模型上下文只接收执行所必需的结构化工具结果。
 
 Drive 内置工具：
 
