@@ -880,12 +880,18 @@ const I18N = {
         welcome: {
             prompt: '把问题或任务发给我就好。',
             suggestions: '你可能想问',
-            pulseSource: 'Pulse 推荐',
+            sourceLabel: '推荐来源：',
+            pulseSource: 'Pulse',
             recentSource: '最近对话',
+            todoRecentSource: 'Todo · 最近对话',
+            pulseRecentSource: 'Pulse · 最近对话',
+            recentPreferenceSource: '最近对话 · 长期偏好',
             todayPulse: '今天有什么值得关注？',
             unfinished: '最近还有什么问题没解决？',
             priorities: '我今天最该先做什么？',
             explore: '推荐一个值得深入的方向',
+            planDay: '帮我整理今天的行动清单',
+            reviewGoals: '回顾一下我最近的目标进展',
             imageCreate: '直接生图',
             imagePolish: '专业修饰生图',
             imageReference: '参考素材生图',
@@ -1750,12 +1756,18 @@ const I18N = {
         welcome: {
             prompt: 'Send me a question or task to get started.',
             suggestions: 'You might ask',
-            pulseSource: 'From Pulse',
+            sourceLabel: 'Source: ',
+            pulseSource: 'Pulse',
             recentSource: 'Recent chats',
+            todoRecentSource: 'Todo · recent chats',
+            pulseRecentSource: 'Pulse · recent chats',
+            recentPreferenceSource: 'Recent chats · preferences',
             todayPulse: 'What is worth following today?',
             unfinished: 'What recent questions remain unresolved?',
             priorities: 'What should I prioritize today?',
             explore: 'Suggest a topic worth exploring',
+            planDay: 'Organize today into an action list',
+            reviewGoals: 'Review my recent goal progress',
             imageCreate: 'Generate Image',
             imagePolish: 'Polished Prompt',
             imageReference: 'Use References',
@@ -1905,7 +1917,7 @@ const ACTIVE_RUN_START_MAX_POLLS = 40;
 const CONVERSATION_RENDER_CACHE_LIMIT = 20;
 const FOLLOW_UP_QUESTION_COUNT = 3;
 const FOLLOW_UP_POLL_DELAYS_MS = [500, 1000, 1500, 2000, 3000, 4000];
-const SUPER_CHAT_WELCOME_ACTION_LIMIT = 4;
+const SUPER_CHAT_WELCOME_ACTION_LIMIT = 6;
 const SUPER_CHAT_PULSE_ACTION_LIMIT = 3;
 const PULSE_REFRESH_POLL_MS = 5000;
 const PULSE_REFRESH_SLOW_POLL_MS = 30000;
@@ -14103,6 +14115,7 @@ function superChatWelcomeActions() {
         if (/为什么值得关注|有哪些风险|最近有哪些进展|下一步做什么|怎么验证|如何排优先级/u.test(text)) return '';
         return text;
     };
+    const sourceMeta = (source) => source ? `${t('welcome.sourceLabel')}${source}` : '';
 
     const pulseItems = Array.isArray(pulse?.suggestion_items) && pulse.suggestion_items.length
         ? pulse.suggestion_items
@@ -14123,7 +14136,8 @@ function superChatWelcomeActions() {
             const question = pulsePrompts[itemIndex]?.[round] || '';
             if (!question) return;
             const itemTitle = truncateText(String(item?.title || '').trim(), 24);
-            const meta = itemTitle ? `${t('welcome.pulseSource')} · ${itemTitle}` : t('welcome.pulseSource');
+            const source = itemTitle ? `${t('welcome.pulseSource')} · ${itemTitle}` : t('welcome.pulseSource');
+            const meta = sourceMeta(source);
             if (addAction(question, buildPulseChatPrompt(item, question), 'pulse', meta)) {
                 pulseActionCount += 1;
             }
@@ -14141,23 +14155,27 @@ function superChatWelcomeActions() {
         const query = currentLanguage === 'zh'
             ? '请回顾我最近的对话，找出尚未解决但最值得继续推进的一个问题，先说明你选择它的原因，再直接帮我往下做。'
             : 'Review my recent chats, identify the most valuable unresolved question, briefly explain why you chose it, and help me move it forward.';
-        addAction(t('welcome.unfinished'), query, 'conversation', t('welcome.recentSource'));
+        addAction(t('welcome.unfinished'), query, 'conversation', sourceMeta(t('welcome.recentSource')));
     }
 
     const fallbackActions = currentLanguage === 'zh'
         ? [
-            [t('welcome.todayPulse'), '请读取我的今日 Pulse，推荐 3 个最值得关注、可以继续追问的问题。'],
-            [t('welcome.unfinished'), '请结合最近对话，找出尚未解决且最值得继续推进的 3 个问题。'],
-            [t('welcome.priorities'), '请结合我的 Todo、最近对话和长期偏好，告诉我今天最应该先推进什么。'],
-            [t('welcome.explore'), '请结合我的 Pulse 和最近对话，推荐一个今天值得深入研究的方向。'],
+            [t('welcome.priorities'), '请结合我的 Todo、最近对话和长期偏好，告诉我今天最应该先推进什么。', t('welcome.todoRecentSource')],
+            [t('welcome.explore'), '请结合我的 Pulse 和最近对话，推荐一个今天值得深入研究的方向。', t('welcome.pulseRecentSource')],
+            [t('welcome.todayPulse'), '请读取我的今日 Pulse，推荐 3 个最值得关注、可以继续追问的问题。', t('welcome.pulseSource')],
+            [t('welcome.unfinished'), '请结合最近对话，找出尚未解决且最值得继续推进的 3 个问题。', t('welcome.recentSource')],
+            [t('welcome.planDay'), '请结合我的 Todo 和最近对话，把今天值得推进的事项整理成一份简洁、可执行的行动清单。', t('welcome.todoRecentSource')],
+            [t('welcome.reviewGoals'), '请结合最近对话和长期偏好，回顾我近期目标的进展、阻塞点和下一步。', t('welcome.recentPreferenceSource')],
         ]
         : [
-            [t('welcome.todayPulse'), 'Read my Pulse and suggest three timely questions worth following up on today.'],
-            [t('welcome.unfinished'), 'Use my recent conversations to identify three valuable unresolved questions.'],
-            [t('welcome.priorities'), 'Use my todos, recent conversations, and preferences to identify today\'s top priority.'],
-            [t('welcome.explore'), 'Use my Pulse and recent conversations to suggest one topic worth exploring today.'],
+            [t('welcome.priorities'), 'Use my todos, recent conversations, and preferences to identify today\'s top priority.', t('welcome.todoRecentSource')],
+            [t('welcome.explore'), 'Use my Pulse and recent conversations to suggest one topic worth exploring today.', t('welcome.pulseRecentSource')],
+            [t('welcome.todayPulse'), 'Read my Pulse and suggest three timely questions worth following up on today.', t('welcome.pulseSource')],
+            [t('welcome.unfinished'), 'Use my recent conversations to identify three valuable unresolved questions.', t('welcome.recentSource')],
+            [t('welcome.planDay'), 'Use my todos and recent chats to turn today into a concise, actionable plan.', t('welcome.todoRecentSource')],
+            [t('welcome.reviewGoals'), 'Use my recent chats and preferences to review progress, blockers, and next steps for my goals.', t('welcome.recentPreferenceSource')],
         ];
-    fallbackActions.forEach(([label, query]) => addAction(label, query, 'fallback'));
+    fallbackActions.forEach(([label, query, source]) => addAction(label, query, 'fallback', sourceMeta(source)));
     return actions;
 }
 
@@ -14197,8 +14215,8 @@ function showWelcome() {
                                 data-suggestion-source="${escapeAttr(item.source || '')}"
                                 ${item.modeId ? `data-quick-mode="${escapeAttr(item.modeId)}"` : ''}
                                 ${item.autoSend ? 'data-quick-send="true"' : ''}>
-                            ${item.meta ? `<small class="quick-action-meta">${escapeHtml(item.meta)}</small>` : ''}
                             <span class="quick-action-label">${escapeHtml(item.label)}</span>
+                            ${item.meta ? `<small class="quick-action-meta">${escapeHtml(item.meta)}</small>` : ''}
                         </button>
                     `).join('')}
                 </div>

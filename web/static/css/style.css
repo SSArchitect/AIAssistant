@@ -1614,11 +1614,14 @@ video {
 }
 
 .super-chat-suggestions .quick-action {
-    min-height: 46px;
+    min-height: 62px;
     height: auto;
     padding: 9px 12px;
     line-height: 1.35;
     text-align: left;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
 }
 
 .super-chat-suggestions .quick-action[data-suggestion-source="pulse"] {
@@ -1632,11 +1635,15 @@ video {
 }
 
 .quick-action-meta {
-    margin-bottom: 4px;
-    color: var(--primary);
+    margin-top: 5px;
+    color: var(--text-soft);
     font-size: 10px;
-    font-weight: 800;
+    font-weight: 600;
     letter-spacing: 0.02em;
+}
+
+.quick-action[data-suggestion-source="pulse"] .quick-action-meta {
+    color: var(--primary);
 }
 
 .quick-action-label {

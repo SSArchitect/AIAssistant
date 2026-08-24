@@ -251,10 +251,10 @@ test('a stale Pulse load cannot overwrite a newer refresh response', async () =>
     assert.deepEqual(state.syncCalls, [true]);
 });
 
-test('Super Chat welcome shows three quality-filtered Pulse actions before one aggregated recent action', () => {
+test('Super Chat welcome shows six sourced actions with at most three from Pulse', () => {
     const source = extractFunctionDeclaration('superChatWelcomeActions');
     const actions = vm.runInNewContext(`
-        const SUPER_CHAT_WELCOME_ACTION_LIMIT = 4;
+        const SUPER_CHAT_WELCOME_ACTION_LIMIT = 6;
         const SUPER_CHAT_PULSE_ACTION_LIMIT = 3;
         const SUPER_CHAT_AGENT_ID = 'super_chat';
         const currentConversationId = '';
@@ -288,25 +288,28 @@ test('Super Chat welcome shows three quality-filtered Pulse actions before one a
         t: (key) => key,
     });
 
-    assert.equal(actions.length, 4);
-    assert.deepEqual(Array.from(actions, (action) => action.source), ['pulse', 'pulse', 'pulse', 'conversation']);
+    assert.equal(actions.length, 6);
+    assert.deepEqual(Array.from(actions, (action) => action.source), ['pulse', 'pulse', 'pulse', 'conversation', 'fallback', 'fallback']);
     assert.deepEqual(Array.from(actions, (action) => action.label), [
         'V4 Pro agent 能力强在哪？',
         '峰谷定价后哪个时段调用最划算？',
         '对比 DeepSeek V4 Pro 与 Flash 的能力和成本',
         'welcome.unfinished',
+        'welcome.priorities',
+        'welcome.explore',
     ]);
     assert.equal(actions[0].query, 'pulse:pulse-1:V4 Pro agent 能力强在哪？');
-    assert.match(actions[0].meta, /^welcome\.pulseSource/);
-    assert.equal(actions[3].meta, 'welcome.recentSource');
+    assert.match(actions[0].meta, /^welcome\.sourceLabelwelcome\.pulseSource/);
+    assert.equal(actions[3].meta, 'welcome.sourceLabelwelcome.recentSource');
     assert.doesNotMatch(actions[3].query, /截断乱码|继续解决/);
+    assert.ok(actions.every((action) => action.meta.startsWith('welcome.sourceLabel')));
     assert.ok(actions.every((action) => action.autoSend === false));
 });
 
-test('Super Chat welcome always has four fallback questions when Pulse is empty', () => {
+test('Super Chat welcome always has six sourced fallback questions when Pulse and history are empty', () => {
     const source = extractFunctionDeclaration('superChatWelcomeActions');
     const actions = vm.runInNewContext(`
-        const SUPER_CHAT_WELCOME_ACTION_LIMIT = 4;
+        const SUPER_CHAT_WELCOME_ACTION_LIMIT = 6;
         const SUPER_CHAT_PULSE_ACTION_LIMIT = 3;
         const SUPER_CHAT_AGENT_ID = 'super_chat';
         const currentConversationId = '';
@@ -322,14 +325,17 @@ test('Super Chat welcome always has four fallback questions when Pulse is empty'
         t: (key) => key,
     });
 
-    assert.equal(actions.length, 4);
+    assert.equal(actions.length, 6);
     assert.ok(actions.every((action) => action.source === 'fallback'));
     assert.deepEqual(Array.from(actions, (action) => action.label), [
-        'welcome.todayPulse',
-        'welcome.unfinished',
         'welcome.priorities',
         'welcome.explore',
+        'welcome.todayPulse',
+        'welcome.unfinished',
+        'welcome.planDay',
+        'welcome.reviewGoals',
     ]);
+    assert.ok(actions.every((action) => action.meta.startsWith('welcome.sourceLabel')));
 });
 
 test('invalidating Pulse requests clears polling and rejects the old account token', () => {
