@@ -89,6 +89,7 @@ class TestSkillRegistry:
         assert "get_pulse" in names
         assert "refresh_pulse" in names
         assert "list_pulse_topics" in names
+        assert "optimize_pulse_topics" in names
         assert "upsert_pulse_topic" in names
         assert "image_generation_v1" in names
         assert "deep_research_v1" not in names

@@ -15,6 +15,7 @@ PULSE_TOOL_NAMES = {
     "get_pulse",
     "refresh_pulse",
     "list_pulse_topics",
+    "optimize_pulse_topics",
     "upsert_pulse_topic",
 }
 _DEFAULT_GATEWAY_BASE_URL = "http://localhost:8080"
@@ -105,6 +106,19 @@ class PulseGatewayClient:
     async def list_topics(self, user_id: str) -> list[dict[str, Any]]:
         payload = await self._request("GET", "/pulse/topics", user_id=user_id)
         return _dict_list(payload.get("topics"))
+
+    async def topic_optimization_context(
+        self,
+        user_id: str,
+        *,
+        lookback_days: int = 30,
+    ) -> dict[str, Any]:
+        return await self._request(
+            "GET",
+            "/pulse/topic-optimization",
+            user_id=user_id,
+            params={"lookback_days": lookback_days},
+        )
 
     async def create_topic(self, user_id: str, body: dict[str, Any]) -> dict[str, Any]:
         payload = await self._request(
@@ -314,6 +328,68 @@ class PulseListTopicsSkill(_PulseTool):
             return SkillResult(success=False, error=str(exc))
 
 
+class PulseOptimizeTopicsSkill(_PulseTool):
+    auto_discover = True
+
+    def metadata(self) -> SkillMetadata:
+        return SkillMetadata(
+            name="optimize_pulse_topics",
+            description=(
+                "读取当前用户的 Pulse Topic 优化证据：现有订阅、近 30 天对话意图、Topic 重叠、"
+                "历史信息簇质量与内容、检索查询/结果质量以及互动反馈。用户要求优化信息簇、"
+                "整理订阅或改善 Pulse 召回时调用。工具只提供分析上下文，不会修改 Topic；"
+                "Super Chat 必须结合当前会话总结保留、合并、改名和关键词方案，先展示给用户确认。"
+            ),
+            parameters=[
+                SkillParameter(
+                    name="lookback_days",
+                    type="integer",
+                    description="历史分析天数，默认 30；范围 7-90。",
+                    required=False,
+                    default=30,
+                    minimum=7,
+                    maximum=90,
+                ),
+            ],
+            tags=["pulse", "topic", "optimization", "read"],
+            source="builtin",
+            domains=["pulse"],
+            routing_keywords=[
+                "优化信息簇",
+                "优化订阅",
+                "整理 pulse topic",
+                "改善 pulse 关键词",
+            ],
+            allowed_agents=["super_chat"],
+            parallel_safe=True,
+            idempotent=True,
+            risk_level="low",
+            access="read",
+            max_calls_per_run=3,
+            timeout_seconds=30,
+        )
+
+    async def execute(self, **kwargs) -> SkillResult:
+        try:
+            lookback_days = _coerce_int(
+                kwargs.get("lookback_days"),
+                default=30,
+                minimum=7,
+                maximum=90,
+            )
+            payload = await self._client().topic_optimization_context(
+                self._user_id(kwargs),
+                lookback_days=lookback_days,
+            )
+            return SkillResult(
+                success=True,
+                data=payload,
+                display_text=_format_topic_optimization_context(payload),
+            )
+        except (PulseGatewayError, ValueError) as exc:
+            return SkillResult(success=False, error=str(exc))
+
+
 class PulseUpsertTopicSkill(_PulseTool):
     auto_discover = True
 
@@ -323,6 +399,7 @@ class PulseUpsertTopicSkill(_PulseTool):
             description=(
                 "新增或更新当前用户的 Pulse Topic。没有 topic_id 时按名称新增或覆盖同名 Topic；"
                 "提供 topic_id 时更新指定 Topic。适合订阅关注方向、修改关键词或启停 Topic。"
+                "批量优化前应先调用 optimize_pulse_topics，并先向用户展示方案；只有用户当前消息明确确认后才能执行。"
             ),
             parameters=[
                 SkillParameter(
@@ -357,8 +434,19 @@ class PulseUpsertTopicSkill(_PulseTool):
             allowed_agents=["super_chat"],
             risk_level="medium",
             access="write",
-            default_policy="auto",
-            max_calls_per_run=6,
+            default_policy="confirm",
+            max_calls_per_run=12,
+            confirmation_keywords=[
+                "订阅主题",
+                "新增 topic",
+                "修改 topic",
+                "停用 topic",
+                "优化订阅",
+                "应用优化方案",
+                "应用这个方案",
+                "按这个方案",
+                "确认修改订阅",
+            ],
         )
 
     async def execute(self, **kwargs) -> SkillResult:
@@ -594,3 +682,20 @@ def _format_topics(topics: list[dict[str, Any]]) -> str:
     for index, topic in enumerate(topics, start=1):
         lines.append(f"{index}. {_format_topic_line(topic)}")
     return "\n".join(lines)
+
+
+def _format_topic_optimization_context(payload: dict[str, Any]) -> str:
+    topics = _dict_list(payload.get("topics"))
+    history = payload.get("history") if isinstance(payload.get("history"), dict) else {}
+    summary = history.get("summary") if isinstance(history.get("summary"), dict) else {}
+    overlaps = _dict_list(history.get("overlap_candidates"))
+    runs = _dict_list(history.get("retrieval_runs"))
+    return (
+        "Pulse topic optimization context loaded: "
+        f"{len(topics)} topics, "
+        f"{int(summary.get('sampled_cluster_count') or 0)} historical clusters, "
+        f"{len(overlaps)} overlap candidates, "
+        f"{len(runs)} retrieval runs. "
+        "Use the structured evidence with the current conversation to propose a plan; "
+        "do not modify topics until the user explicitly confirms it."
+    )

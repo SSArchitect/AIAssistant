@@ -68,3 +68,23 @@ def test_activated_domain_suppresses_cross_domain_description_noise():
     route = ToolRouter().route(catalog, query="今天有什么值得关注")
 
     assert [tool.name for tool in route.tools] == ["get_pulse"]
+
+
+def test_pulse_information_cluster_optimization_routes_to_analysis_tool():
+    catalog = [
+        _tool(
+            "optimize_pulse_topics",
+            domains=["pulse"],
+            routing_keywords=["优化信息簇", "优化订阅"],
+        ),
+        _tool(
+            "list_todos",
+            domains=["todo"],
+            routing_keywords=["今日待办"],
+        ),
+    ]
+
+    route = ToolRouter().route(catalog, query="帮我优化 Pulse 信息簇和订阅关键词")
+
+    assert route.activated_domains == ["pulse"]
+    assert [tool.name for tool in route.tools] == ["optimize_pulse_topics"]

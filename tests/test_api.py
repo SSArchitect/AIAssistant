@@ -166,6 +166,7 @@ async def test_list_skills(client):
     assert "calculator" in names
     assert "search" in names
     assert "get_pulse" in names
+    assert "optimize_pulse_topics" in names
     assert "upsert_pulse_topic" in names
 
 

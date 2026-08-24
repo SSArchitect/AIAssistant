@@ -173,6 +173,103 @@ func TestPulseMemorySignalsOnlyUseMessagesFromLastThirtyDays(t *testing.T) {
 	}
 }
 
+func TestPulseTopicOptimizationContextCombinesHistoryAndRetrievalQuality(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	if err := database.Init(filepath.Join(t.TempDir(), "assistant.db")); err != nil {
+		t.Fatalf("init database: %v", err)
+	}
+	now := time.Now()
+	date := now.Format("2006-01-02")
+	userID := "optimization-user"
+	topics := []models.PulseTopic{
+		{ID: "topic-product", UserID: userID, Name: "Agent 产品", Keywords: encodeKeywords([]string{"Agent", "RAG", "工作流"}), Enabled: true, CreatedAt: now, UpdatedAt: now},
+		{ID: "topic-engineering", UserID: userID, Name: "Agent 工程", Keywords: encodeKeywords([]string{"Agent", "RAG", "评测"}), Enabled: true, CreatedAt: now, UpdatedAt: now},
+	}
+	if err := database.DB.Create(&topics).Error; err != nil {
+		t.Fatalf("seed topics: %v", err)
+	}
+	if err := database.DB.Create(&models.Message{
+		ConversationID: "optimization-conversation",
+		UserID:         userID,
+		Role:           "user",
+		Content:        "最近在研究 Agent、RAG 和评测体系",
+		CreatedAt:      now.Add(-time.Hour),
+	}).Error; err != nil {
+		t.Fatalf("seed message: %v", err)
+	}
+	item := qualityTestPulseItem(date, "optimization-item", []pulseNewsSource{
+		{Title: "OpenAI releases agent controls", URL: "https://openai.com/news/agent-controls", Snippet: "OpenAI released agent controls for enterprise customers.", PublishedAt: date},
+		{Title: "OpenAI agent controls launch", URL: "https://reuters.com/technology/agent-controls", Snippet: "OpenAI launched new agent controls for enterprise customers.", PublishedAt: date},
+	})
+	item.UserID = userID
+	item.TopicID = topics[0].ID
+	item.TopicName = topics[0].Name
+	item.CreatedAt = now
+	item.UpdatedAt = now
+	if err := database.DB.Create(&item).Error; err != nil {
+		t.Fatalf("seed item: %v", err)
+	}
+	if err := database.DB.Create(&models.PulseEvent{
+		ID: "optimization-open", UserID: userID, Date: date, ItemID: item.ID,
+		TopicID: item.TopicID, TopicName: item.TopicName, Source: item.Source,
+		EventType: pulseEventOpen, Value: 1, CreatedAt: now,
+	}).Error; err != nil {
+		t.Fatalf("seed event: %v", err)
+	}
+	evidence := []pulseSearchEvidence{
+		{
+			QueryID: "q1", Module: pulseSourceTopicHot, Query: "Agent RAG latest news", Intent: "recent updates",
+			TopicID: topics[0].ID, TopicName: topics[0].Name,
+			Results: []pulseSearchResult{{Title: "OpenAI releases agent controls", URL: "https://openai.com/news/agent-controls", PublishedAt: date}},
+		},
+	}
+	if err := persistPulseRetrievalRun(date, userID, evidence, nil, 1, 1, false, nil); err != nil {
+		t.Fatalf("persist retrieval run: %v", err)
+	}
+
+	router := gin.New()
+	router.GET("/api/pulse/topic-optimization", NewPulseHandler().TopicOptimizationContext)
+	req := httptest.NewRequest(http.MethodGet, "/api/pulse/topic-optimization?lookback_days=30", nil)
+	req.Header.Set("X-User-ID", userID)
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("unexpected status %d: %s", recorder.Code, recorder.Body.String())
+	}
+	var payload map[string]interface{}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if payload["lookback_days"] != float64(30) {
+		t.Fatalf("unexpected lookback: %#v", payload["lookback_days"])
+	}
+	if intents, ok := payload["recent_user_intents"].([]interface{}); !ok || len(intents) != 1 {
+		t.Fatalf("expected recent user intent, got %#v", payload["recent_user_intents"])
+	}
+	history, ok := payload["history"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected history object, got %#v", payload["history"])
+	}
+	if overlaps, ok := history["overlap_candidates"].([]interface{}); !ok || len(overlaps) != 1 {
+		t.Fatalf("expected overlapping topics, got %#v", history["overlap_candidates"])
+	}
+	if runs, ok := history["retrieval_runs"].([]interface{}); !ok || len(runs) != 1 {
+		t.Fatalf("expected retrieval diagnostics, got %#v", history["retrieval_runs"])
+	}
+	metrics, ok := history["topic_metrics"].([]interface{})
+	if !ok || len(metrics) != 2 {
+		t.Fatalf("expected per-topic metrics, got %#v", history["topic_metrics"])
+	}
+	firstMetric, _ := metrics[0].(map[string]interface{})
+	if firstMetric["stored_clusters"] != float64(1) {
+		t.Fatalf("expected topic cluster history, got %#v", firstMetric)
+	}
+	engagement, _ := firstMetric["engagement"].(map[string]interface{})
+	if engagement[pulseEventOpen] != float64(1) {
+		t.Fatalf("expected topic engagement, got %#v", engagement)
+	}
+}
+
 func TestPulseUsesAgentGeneratedModules(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	if err := database.Init(filepath.Join(t.TempDir(), "assistant.db")); err != nil {

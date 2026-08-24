@@ -67,3 +67,22 @@ type PulseScheduleState struct {
 	LastError           string     `json:"last_error,omitempty" gorm:"type:text"`
 	UpdatedAt           time.Time  `json:"updated_at"`
 }
+
+// PulseRetrievalRun keeps a compact audit of the search stage so topic
+// optimization can learn from retrieval quality instead of only the final
+// published cards. DiagnosticsJSON contains bounded query/result summaries.
+type PulseRetrievalRun struct {
+	ID                   string    `json:"id" gorm:"primaryKey"`
+	UserID               string    `json:"user_id" gorm:"index;not null;default:0"`
+	Date                 string    `json:"date" gorm:"index"`
+	QueryCount           int       `json:"query_count"`
+	SuccessfulQueryCount int       `json:"successful_query_count"`
+	ResultCount          int       `json:"result_count"`
+	GeneratedItemCount   int       `json:"generated_item_count"`
+	PublishedItemCount   int       `json:"published_item_count"`
+	UsedFallback         bool      `json:"used_fallback"`
+	SearchErrorsJSON     string    `json:"search_errors_json,omitempty" gorm:"type:text"`
+	DiagnosticsJSON      string    `json:"diagnostics_json,omitempty" gorm:"type:text"`
+	GenerationError      string    `json:"generation_error,omitempty" gorm:"type:text"`
+	CreatedAt            time.Time `json:"created_at" gorm:"index"`
+}

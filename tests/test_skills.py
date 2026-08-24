@@ -32,6 +32,7 @@ from agent.skills.builtin.pulse import (
     PulseGatewayClient,
     PulseGetSkill,
     PulseListTopicsSkill,
+    PulseOptimizeTopicsSkill,
     PulseRefreshSkill,
     PulseUpsertTopicSkill,
 )
@@ -3684,6 +3685,42 @@ class TestPulseSkills:
         assert updated.data["topic"]["enabled"] is False
         assert requests[0][0:2] == ("POST", "/api/pulse/topics")
         assert requests[1][0:2] == ("PUT", "/api/pulse/topics/topic-1")
+
+    @pytest.mark.asyncio
+    async def test_optimize_pulse_topics_returns_read_only_analysis_context(self):
+        def handler(request: httpx.Request) -> httpx.Response:
+            assert request.method == "GET"
+            assert request.url.path == "/api/pulse/topic-optimization"
+            assert request.url.params.get("lookback_days") == "45"
+            assert request.headers["X-User-ID"] == "alice"
+            return httpx.Response(
+                200,
+                json={
+                    "lookback_days": 45,
+                    "topics": [
+                        {"id": "topic-1", "name": "AI Agent", "keywords": ["Agent"], "enabled": True}
+                    ],
+                    "memory_signals": [{"theme": "AI 应用与 Agent", "count": 3}],
+                    "recent_user_intents": [{"text": "最近在研究 Agent 评测"}],
+                    "history": {
+                        "summary": {"sampled_cluster_count": 4},
+                        "overlap_candidates": [{"left_topic_id": "topic-1", "right_topic_id": "topic-2"}],
+                        "retrieval_runs": [{"id": "run-1", "query_count": 8}],
+                    },
+                    "workflow": {"analysis_only": True},
+                },
+            )
+
+        skill = PulseOptimizeTopicsSkill(client_factory=lambda: self.client(handler))
+        result = await skill.execute(lookback_days=45, _user_id="alice")
+
+        assert result.success is True
+        assert result.data["workflow"]["analysis_only"] is True
+        assert result.data["history"]["summary"]["sampled_cluster_count"] == 4
+        assert "do not modify topics" in result.display_text
+        assert skill.metadata().access == "read"
+        assert skill.metadata().default_policy == "auto"
+        assert PulseUpsertTopicSkill().metadata().default_policy == "confirm"
 
 
 class TestTodoSkills:

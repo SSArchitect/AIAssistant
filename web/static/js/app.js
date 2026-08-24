@@ -659,6 +659,7 @@ const I18N = {
             subscribe: '订阅',
             subscribing: '订阅中...',
             refresh: '刷新 Pulse',
+            optimizeTopics: 'AI 优化订阅',
             todayTitle: '今日 Pulse',
             generatedAt: '已预计算：{time}',
             neverGenerated: '等待生成',
@@ -1535,6 +1536,7 @@ const I18N = {
             subscribe: 'Subscribe',
             subscribing: 'Subscribing...',
             refresh: 'Refresh Pulse',
+            optimizeTopics: 'AI Optimize Topics',
             todayTitle: "Today's Pulse",
             generatedAt: 'Precomputed: {time}',
             neverGenerated: 'Waiting to generate',
@@ -11410,6 +11412,21 @@ function pulseNewsFallbackPrompt() {
     ].join('\n\n');
 }
 
+function pulseTopicOptimizationPrompt() {
+    if (currentLanguage === 'en') {
+        return [
+            'Call optimize_pulse_topics with a 30-day lookback to load my Pulse subscriptions, recent conversation intents, historical retrieval quality, and cluster content.',
+            'Use that evidence and this conversation to propose which Topics to keep, merge, rename, disable, or improve, including a focused keyword set for each resulting Topic.',
+            'Show the proposed before/after plan and reasons first. Do not modify any Topic until I explicitly confirm the plan.',
+        ].join('\n\n');
+    }
+    return [
+        '请调用 optimize_pulse_topics，回溯 30 天读取我的 Pulse 订阅、近期对话意图、历史检索质量和信息簇内容。',
+        '请结合这些证据和当前会话，分析哪些 Topic 应保留、合并、改名、停用或调整关键词，并为优化后的每个 Topic 给出聚焦的关键词集合。',
+        '先展示优化前后方案和理由，不要修改任何 Topic；等我明确确认方案后再应用。',
+    ].join('\n\n');
+}
+
 function pulseEmptyStateContent() {
     if (pulse.refreshing) {
         return {
@@ -15153,6 +15170,16 @@ function openPulseChat(query = '') {
 	focusMessageInput();
 }
 
+async function startPulseTopicOptimization() {
+    if (!currentUserId) {
+        showAccountLogin();
+        return;
+    }
+    const query = pulseTopicOptimizationPrompt();
+    openPulseChat(query);
+    await handleSend(query);
+}
+
 async function startNewTopic() {
 	stopActiveRunWatcher();
 	setView('chat', { restore: false });
@@ -18430,6 +18457,18 @@ document.addEventListener('click', async (event) => {
     if (saveMcpButton && !saveMcpButton.disabled) {
         event.preventDefault();
         await saveMcpSettings();
+        return;
+    }
+
+    const pulseOptimizeTopicsButton = event.target.closest('[data-pulse-optimize-topics]');
+    if (pulseOptimizeTopicsButton && !pulseOptimizeTopicsButton.disabled) {
+        event.preventDefault();
+        pulseOptimizeTopicsButton.disabled = true;
+        try {
+            await startPulseTopicOptimization();
+        } finally {
+            pulseOptimizeTopicsButton.disabled = false;
+        }
         return;
     }
 

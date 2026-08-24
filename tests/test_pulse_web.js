@@ -14,6 +14,10 @@ const styleSource = fs.readFileSync(
     path.resolve(__dirname, '../web/static/css/style.css'),
     'utf8',
 );
+const indexSource = fs.readFileSync(
+    path.resolve(__dirname, '../web/index.html'),
+    'utf8',
+);
 
 function extractFunctionDeclaration(name) {
     const asyncMarker = `async function ${name}(`;
@@ -594,4 +598,52 @@ test('related Pulse clusters are only clickable when present in the current feed
     assert.match(html, /disabled aria-disabled="true"/);
     assert.match(html, /pulse\.relatedUnavailable/);
     assert.doesNotMatch(html, /data-pulse-open-post="filtered-out"/);
+});
+
+test('Pulse exposes an AI subscription optimization action', () => {
+    assert.match(indexSource, /data-pulse-optimize-topics/);
+    assert.match(indexSource, /data-i18n="pulse\.optimizeTopics"/);
+    assert.match(appSource, /optimizeTopics:\s*'AI 优化订阅'/);
+    assert.match(appSource, /optimizeTopics:\s*'AI Optimize Topics'/);
+});
+
+test('Pulse AI optimization delegates read-only planning to Super Chat', () => {
+    const source = extractFunctionDeclaration('pulseTopicOptimizationPrompt');
+    const zhPrompt = vm.runInNewContext(`
+        const currentLanguage = 'zh';
+        ${source}
+        pulseTopicOptimizationPrompt();
+    `);
+    const enPrompt = vm.runInNewContext(`
+        const currentLanguage = 'en';
+        ${source}
+        pulseTopicOptimizationPrompt();
+    `);
+
+    assert.match(zhPrompt, /optimize_pulse_topics/);
+    assert.match(zhPrompt, /回溯 30 天/);
+    assert.match(zhPrompt, /不要修改任何 Topic/);
+    assert.match(enPrompt, /30-day lookback/);
+    assert.match(enPrompt, /Do not modify any Topic/);
+});
+
+test('Pulse AI optimization opens Super Chat and submits the generated task', async () => {
+    const source = [
+        extractFunctionDeclaration('pulseTopicOptimizationPrompt'),
+        extractFunctionDeclaration('startPulseTopicOptimization'),
+    ].join('\n');
+    const result = await vm.runInNewContext(`
+        const currentLanguage = 'zh';
+        const currentUserId = 'alice';
+        let opened = '';
+        let sent = '';
+        function showAccountLogin() {}
+        function openPulseChat(query) { opened = query; }
+        async function handleSend(query) { sent = query; }
+        ${source}
+        startPulseTopicOptimization().then(() => ({ opened, sent }));
+    `);
+
+    assert.equal(result.opened, result.sent);
+    assert.match(result.sent, /optimize_pulse_topics/);
 });

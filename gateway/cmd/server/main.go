@@ -123,6 +123,7 @@ func main() {
 		api.POST("/pulse/refresh", pulseHandler.Refresh)
 		api.POST("/pulse/events", pulseHandler.RecordEvent)
 		api.GET("/pulse/topics", pulseHandler.ListTopics)
+		api.GET("/pulse/topic-optimization", pulseHandler.TopicOptimizationContext)
 		api.POST("/pulse/topics", pulseHandler.CreateTopic)
 		api.PUT("/pulse/topics/:id", pulseHandler.UpdateTopic)
 		api.DELETE("/pulse/topics/:id", pulseHandler.DeleteTopic)

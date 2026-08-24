@@ -101,6 +101,17 @@ class ContextBuilder:
                     "暂不排期待办，或先向用户确认。",
                 ]
             )
+        if agent_id == "super_chat" and "optimize_pulse_topics" in normalized_tool_names:
+            tool_policy_lines.extend(
+                [
+                    "- 用户要求优化 Pulse 信息簇、订阅 Topic 或关键词时，先调用 optimize_pulse_topics。"
+                    "结合工具返回的近 30 天意图、Topic 重叠、历史检索质量和内容，以及当前会话，"
+                    "给出保留、合并、改名、关键词调整的明确方案与依据。",
+                    "- optimize_pulse_topics 只分析、不修改。先把变更前后方案展示给用户；"
+                    "只有用户当前消息明确确认应用方案后，才能调用 upsert_pulse_topic。"
+                    "合并 Topic 时优先停用被合并项，保留历史记录，不要直接删除。",
+                ]
+            )
         system_config = (
             "系统级配置：\n"
             f"- 当前 Agent：{agent_id}。\n"

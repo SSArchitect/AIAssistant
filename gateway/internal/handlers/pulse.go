@@ -230,6 +230,54 @@ type pulseSearchResult struct {
 	PublishedAt string `json:"published_at,omitempty"`
 }
 
+type pulseRetrievalDiagnostics struct {
+	Queries []pulseRetrievalQueryDiagnostic `json:"queries"`
+}
+
+type pulseRetrievalQueryDiagnostic struct {
+	QueryID        string                           `json:"query_id"`
+	Module         string                           `json:"module"`
+	Query          string                           `json:"query"`
+	Intent         string                           `json:"intent"`
+	TopicID        string                           `json:"topic_id,omitempty"`
+	TopicName      string                           `json:"topic_name,omitempty"`
+	ResultCount    int                              `json:"result_count"`
+	Error          string                           `json:"error,omitempty"`
+	ProviderErrors []string                         `json:"provider_errors,omitempty"`
+	Results        []pulseRetrievalResultDiagnostic `json:"results,omitempty"`
+}
+
+type pulseRetrievalResultDiagnostic struct {
+	Title       string `json:"title"`
+	URL         string `json:"url,omitempty"`
+	Source      string `json:"source,omitempty"`
+	PublishedAt string `json:"published_at,omitempty"`
+	Snippet     string `json:"snippet,omitempty"`
+}
+
+type pulseTopicOptimizationMetric struct {
+	TopicID                   string          `json:"topic_id"`
+	TopicName                 string          `json:"topic_name"`
+	Enabled                   bool            `json:"enabled"`
+	StoredClusters            int             `json:"stored_clusters"`
+	QualityPassedAtGeneration int             `json:"quality_passed_at_generation"`
+	QualityFailedAtGeneration int             `json:"quality_failed_at_generation"`
+	SourceCount               int             `json:"source_count"`
+	UniqueSourceDomains       []string        `json:"unique_source_domains"`
+	LastClusterAt             string          `json:"last_cluster_at,omitempty"`
+	Engagement                map[string]int  `json:"engagement"`
+	sourceDomainSet           map[string]bool `json:"-"`
+}
+
+type pulseTopicOverlapCandidate struct {
+	LeftTopicID    string   `json:"left_topic_id"`
+	LeftTopicName  string   `json:"left_topic_name"`
+	RightTopicID   string   `json:"right_topic_id"`
+	RightTopicName string   `json:"right_topic_name"`
+	SharedKeywords []string `json:"shared_keywords"`
+	OverlapScore   int      `json:"overlap_score"`
+}
+
 type scoredPulseSearchResult struct {
 	Result pulseSearchResult
 	Score  int
@@ -278,6 +326,7 @@ const (
 	pulseTopicFreshnessWindow       = 72 * time.Hour
 	pulseMemoryFreshnessWindow      = 30 * 24 * time.Hour
 	pulseWelcomeSuggestionMaxAge    = 7 * 24 * time.Hour
+	pulseRetrievalHistoryRetention  = 90 * 24 * time.Hour
 	pulseFutureDateTolerance        = 48 * time.Hour
 	pulseSuggestedQuestionLimit     = 3
 	pulseSuggestedQuestionMaxRunes  = 32
@@ -301,6 +350,7 @@ var pulseBackgroundDisabledTools = []string{
 	"get_pulse",
 	"refresh_pulse",
 	"list_pulse_topics",
+	"optimize_pulse_topics",
 	"upsert_pulse_topic",
 }
 
@@ -493,6 +543,84 @@ func (h *PulseHandler) ListTopics(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"topics": topicResponses(topics)})
+}
+
+func (h *PulseHandler) TopicOptimizationContext(c *gin.Context) {
+	userID := requestUserID(c)
+	lookbackDays := pulseTopicOptimizationLookbackDays(c.Query("lookback_days"))
+	cutoff := time.Now().Add(-time.Duration(lookbackDays) * 24 * time.Hour)
+
+	topics, err := h.loadTopics(userID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load topics"})
+		return
+	}
+	memorySignals, err := h.loadMemorySignals(userID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load recent memory signals"})
+		return
+	}
+
+	var messages []models.Message
+	if err := database.DB.
+		Where("user_id = ? AND role = ? AND created_at >= ?", normalizedUserID(userID), "user", cutoff).
+		Order(messageReverseChronologicalOrder).
+		Limit(80).
+		Find(&messages).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load recent user context"})
+		return
+	}
+
+	cutoffDate := cutoff.Format("2006-01-02")
+	var items []models.PulseItem
+	if err := database.DB.
+		Where("user_id = ? AND date >= ?", normalizedUserID(userID), cutoffDate).
+		Order("created_at desc").
+		Limit(200).
+		Find(&items).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load pulse history"})
+		return
+	}
+	var modules []models.PulseModule
+	if err := database.DB.
+		Where("user_id = ? AND date >= ?", normalizedUserID(userID), cutoffDate).
+		Order("created_at desc").
+		Limit(60).
+		Find(&modules).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load pulse module history"})
+		return
+	}
+	var events []models.PulseEvent
+	if err := database.DB.
+		Where("user_id = ? AND created_at >= ?", normalizedUserID(userID), cutoff).
+		Order("created_at desc").
+		Limit(pulseFeatureEventLimit).
+		Find(&events).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load pulse feedback history"})
+		return
+	}
+	var retrievalRuns []models.PulseRetrievalRun
+	if err := database.DB.
+		Where("user_id = ? AND created_at >= ?", normalizedUserID(userID), cutoff).
+		Order("created_at desc").
+		Limit(12).
+		Find(&retrievalRuns).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load pulse retrieval history"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"generated_at":        time.Now().Format(time.RFC3339),
+		"lookback_days":       lookbackDays,
+		"topics":              topicResponses(topics),
+		"memory_signals":      pulseTopicOptimizationMemorySignals(memorySignals),
+		"recent_user_intents": pulseTopicOptimizationRecentIntents(messages),
+		"history":             buildPulseTopicOptimizationHistory(topics, items, modules, events, retrievalRuns),
+		"workflow": gin.H{
+			"analysis_only": true,
+			"instruction":   "结合当前会话与本工具证据提出 Topic 合并、保留、改名和关键词调整方案；先向用户展示理由与变更，再在用户明确确认后调用 upsert_pulse_topic。",
+		},
+	})
 }
 
 func (h *PulseHandler) CreateTopic(c *gin.Context) {
@@ -1052,6 +1180,8 @@ func (h *PulseHandler) ensureDailyPulse(date string, userID string, force bool) 
 	searchEvidence, searchErrors := h.collectPulseSearchEvidence(date, topics, memorySignals)
 	h.updatePulseGenerationStage(date, userID, pulseGenerationStageSummarizing)
 	modules, items, err := h.generatePulse(date, userID, topics, memorySignals, searchEvidence, searchErrors)
+	agentGenerationErr := err
+	usedFallback := err != nil
 	if err != nil {
 		slog.Warn("Pulse agent generation failed; using signal fallback", "date", date, "error", err)
 		if hasSearchResults(searchEvidence) {
@@ -1071,6 +1201,18 @@ func (h *PulseHandler) ensureDailyPulse(date string, userID string, force bool) 
 			"removed", originalItemCount-len(items),
 			"remaining", len(items),
 		)
+	}
+	if err := persistPulseRetrievalRun(
+		date,
+		userID,
+		searchEvidence,
+		searchErrors,
+		originalItemCount,
+		len(items),
+		usedFallback,
+		agentGenerationErr,
+	); err != nil {
+		slog.Warn("Pulse retrieval diagnostics persistence failed", "date", date, "user_id", userID, "error", err)
 	}
 	var existingItems []models.PulseItem
 	if replaceExisting {
@@ -1205,6 +1347,422 @@ func (h *PulseHandler) loadMemorySignals(userID string) ([]memoryPulseSignal, er
 		return nil, err
 	}
 	return inferMemorySignals(messages), nil
+}
+
+func pulseTopicOptimizationLookbackDays(value string) int {
+	days, err := strconv.Atoi(strings.TrimSpace(value))
+	if err != nil {
+		return 30
+	}
+	return maxInt(7, minInt(days, 90))
+}
+
+func pulseTopicOptimizationMemorySignals(signals []memoryPulseSignal) []gin.H {
+	result := make([]gin.H, 0, len(signals))
+	for _, signal := range signals {
+		result = append(result, gin.H{
+			"theme":    signal.Theme,
+			"focus":    signal.Focus,
+			"count":    signal.Count,
+			"keywords": limitStringSlice(signal.Keywords, 12, 40),
+			"snippets": limitStringSlice(signal.Snippets, 2, 180),
+		})
+	}
+	return result
+}
+
+func pulseTopicOptimizationRecentIntents(messages []models.Message) []gin.H {
+	intents := []gin.H{}
+	seen := map[string]bool{}
+	for _, message := range messages {
+		content := cleanSearchText(message.Content)
+		normalized := strings.ToLower(strings.Join(strings.Fields(content), " "))
+		runeCount := len([]rune(content))
+		if runeCount < 6 || normalized == "" || seen[normalized] {
+			continue
+		}
+		if pulseTextHasAny(
+			normalized,
+			"读取我的今日 pulse",
+			"结合我的 pulse",
+			"刷新 pulse",
+			"重新生成 pulse",
+			"推荐 3 个最值得关注",
+			"推荐三个最值得关注",
+		) {
+			continue
+		}
+		seen[normalized] = true
+		intents = append(intents, gin.H{
+			"created_at": message.CreatedAt.Format(time.RFC3339),
+			"text":       limitText(content, 220),
+		})
+		if len(intents) >= 12 {
+			break
+		}
+	}
+	return intents
+}
+
+func buildPulseTopicOptimizationHistory(
+	topics []models.PulseTopic,
+	items []models.PulseItem,
+	modules []models.PulseModule,
+	events []models.PulseEvent,
+	retrievalRuns []models.PulseRetrievalRun,
+) gin.H {
+	metricsByKey := map[string]*pulseTopicOptimizationMetric{}
+	itemTopicByID := map[string]string{}
+	for _, topic := range topics {
+		metricsByKey[topic.ID] = &pulseTopicOptimizationMetric{
+			TopicID:         topic.ID,
+			TopicName:       topic.Name,
+			Enabled:         topic.Enabled,
+			Engagement:      map[string]int{},
+			sourceDomainSet: map[string]bool{},
+		}
+	}
+
+	recentContent := []gin.H{}
+	qualityPassed := 0
+	qualityFailed := 0
+	totalSources := 0
+	for _, item := range items {
+		issues, sources := pulseTopicOptimizationQualityIssues(item)
+		passed := len(issues) == 0
+		if passed {
+			qualityPassed++
+		} else {
+			qualityFailed++
+		}
+		totalSources += len(sources)
+
+		metricKey := strings.TrimSpace(item.TopicID)
+		if metricKey == "" && strings.TrimSpace(item.TopicName) != "" {
+			metricKey = "name:" + normalizedPulseTopicKey(item.TopicName)
+		}
+		if metricKey != "" {
+			metric := metricsByKey[metricKey]
+			if metric == nil {
+				metric = &pulseTopicOptimizationMetric{
+					TopicID:         item.TopicID,
+					TopicName:       item.TopicName,
+					Engagement:      map[string]int{},
+					sourceDomainSet: map[string]bool{},
+				}
+				metricsByKey[metricKey] = metric
+			}
+			metric.StoredClusters++
+			if passed {
+				metric.QualityPassedAtGeneration++
+			} else {
+				metric.QualityFailedAtGeneration++
+			}
+			metric.SourceCount += len(sources)
+			if metric.LastClusterAt == "" || item.CreatedAt.Format(time.RFC3339) > metric.LastClusterAt {
+				metric.LastClusterAt = item.CreatedAt.Format(time.RFC3339)
+			}
+			for _, source := range sources {
+				if domain := pulseSourceDomainKey(source.URL); domain != "" {
+					metric.sourceDomainSet[domain] = true
+				}
+			}
+			itemTopicByID[item.ID] = metricKey
+		}
+
+		if len(recentContent) < 24 {
+			contentSources := make([]gin.H, 0, minInt(len(sources), 3))
+			for _, source := range sources[:minInt(len(sources), 3)] {
+				contentSources = append(contentSources, gin.H{
+					"title":        source.Title,
+					"url":          source.URL,
+					"source":       source.Source,
+					"published_at": source.PublishedAt,
+				})
+			}
+			recentContent = append(recentContent, gin.H{
+				"id":                           item.ID,
+				"date":                         item.Date,
+				"module":                       item.Source,
+				"topic_id":                     item.TopicID,
+				"topic_name":                   item.TopicName,
+				"title":                        item.Title,
+				"summary":                      item.Summary,
+				"quality_passed_at_generation": passed,
+				"quality_issues":               issues,
+				"sources":                      contentSources,
+			})
+		}
+	}
+
+	for _, event := range events {
+		metricKey := strings.TrimSpace(event.TopicID)
+		if metricKey == "" {
+			metricKey = itemTopicByID[event.ItemID]
+		}
+		metric := metricsByKey[metricKey]
+		if metric == nil || event.Value == 0 {
+			continue
+		}
+		metric.Engagement[event.EventType] += event.Value
+	}
+
+	metrics := make([]pulseTopicOptimizationMetric, 0, len(metricsByKey))
+	for _, metric := range metricsByKey {
+		for domain := range metric.sourceDomainSet {
+			metric.UniqueSourceDomains = append(metric.UniqueSourceDomains, domain)
+		}
+		sort.Strings(metric.UniqueSourceDomains)
+		metrics = append(metrics, *metric)
+	}
+	sort.SliceStable(metrics, func(i, j int) bool {
+		if metrics[i].Enabled != metrics[j].Enabled {
+			return metrics[i].Enabled
+		}
+		if metrics[i].StoredClusters != metrics[j].StoredClusters {
+			return metrics[i].StoredClusters > metrics[j].StoredClusters
+		}
+		return metrics[i].TopicName < metrics[j].TopicName
+	})
+
+	moduleHistory := make([]gin.H, 0, minInt(len(modules), 18))
+	for _, module := range modules[:minInt(len(modules), 18)] {
+		moduleHistory = append(moduleHistory, gin.H{
+			"date":       module.Date,
+			"module":     module.Key,
+			"title":      module.Title,
+			"summary":    module.Summary,
+			"created_at": module.CreatedAt.Format(time.RFC3339),
+		})
+	}
+
+	return gin.H{
+		"summary": gin.H{
+			"sampled_cluster_count":        len(items),
+			"quality_passed_at_generation": qualityPassed,
+			"quality_failed_at_generation": qualityFailed,
+			"source_count":                 totalSources,
+			"retrieval_run_count":          len(retrievalRuns),
+		},
+		"topic_metrics":      metrics,
+		"overlap_candidates": pulseTopicOverlapCandidates(topics),
+		"recent_content":     recentContent,
+		"module_history":     moduleHistory,
+		"retrieval_runs":     pulseTopicOptimizationRetrievalRuns(retrievalRuns),
+	}
+}
+
+func pulseTopicOptimizationQualityIssues(item models.PulseItem) ([]string, []pulseNewsSource) {
+	issues := []string{}
+	if !pulseNewsCopyMeetsQualityGate(item.Title, item.Summary) {
+		issues = append(issues, "copy_not_specific")
+	}
+	var detail pulseItemDetail
+	if item.DetailJSON == "" || json.Unmarshal([]byte(item.DetailJSON), &detail) != nil {
+		return append(issues, "missing_or_invalid_detail"), nil
+	}
+	sources := normalizeNewsSources(detail.NewsSources, pulseSearchClusterMaxSources)
+	results := pulseSearchResultsFromNewsSources(sources)
+	if len(sources) < 2 {
+		issues = append(issues, "insufficient_sources")
+	}
+	if pulseSearchIndependentSourceCount(results) < 2 {
+		issues = append(issues, "insufficient_independent_sources")
+	}
+	if len(results) > 0 && pulseAllWeakSearchSources(results) {
+		issues = append(issues, "only_weak_sources")
+	}
+	if len(results) > 0 && !pulseSearchClusterDescribesConcreteEvent(results) {
+		issues = append(issues, "no_concrete_event")
+	}
+	if !pulseSearchResultsFreshEnough(item.Date, item.Source, results) {
+		issues = append(issues, "insufficient_fresh_sources")
+	}
+	return issues, sources
+}
+
+func pulseTopicOverlapCandidates(topics []models.PulseTopic) []pulseTopicOverlapCandidate {
+	candidates := []pulseTopicOverlapCandidate{}
+	for leftIndex := 0; leftIndex < len(topics); leftIndex++ {
+		left := topics[leftIndex]
+		if !left.Enabled {
+			continue
+		}
+		leftTerms := pulseTopicOptimizationTermSet(left)
+		for rightIndex := leftIndex + 1; rightIndex < len(topics); rightIndex++ {
+			right := topics[rightIndex]
+			if !right.Enabled {
+				continue
+			}
+			rightTerms := pulseTopicOptimizationTermSet(right)
+			shared := []string{}
+			for term := range leftTerms {
+				if rightTerms[term] {
+					shared = append(shared, term)
+				}
+			}
+			sort.Strings(shared)
+			denominator := minInt(len(leftTerms), len(rightTerms))
+			if len(shared) < 2 || denominator == 0 {
+				continue
+			}
+			score := len(shared) * 100 / denominator
+			if score < 25 {
+				continue
+			}
+			candidates = append(candidates, pulseTopicOverlapCandidate{
+				LeftTopicID:    left.ID,
+				LeftTopicName:  left.Name,
+				RightTopicID:   right.ID,
+				RightTopicName: right.Name,
+				SharedKeywords: shared,
+				OverlapScore:   score,
+			})
+		}
+	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		return candidates[i].OverlapScore > candidates[j].OverlapScore
+	})
+	return candidates
+}
+
+func pulseTopicOptimizationTermSet(topic models.PulseTopic) map[string]bool {
+	terms := map[string]bool{}
+	values := append(decodeKeywords(topic.Keywords), pulseKeywordsFromText(topic.Name)...)
+	for _, value := range values {
+		term := strings.ToLower(strings.TrimSpace(value))
+		if term == "" {
+			continue
+		}
+		terms[term] = true
+	}
+	return terms
+}
+
+func pulseTopicOptimizationRetrievalRuns(runs []models.PulseRetrievalRun) []gin.H {
+	result := make([]gin.H, 0, minInt(len(runs), 6))
+	for _, run := range runs[:minInt(len(runs), 6)] {
+		var diagnostics pulseRetrievalDiagnostics
+		_ = json.Unmarshal([]byte(run.DiagnosticsJSON), &diagnostics)
+		queries := make([]gin.H, 0, len(diagnostics.Queries))
+		for _, query := range diagnostics.Queries {
+			results := make([]gin.H, 0, minInt(len(query.Results), 2))
+			for _, item := range query.Results[:minInt(len(query.Results), 2)] {
+				results = append(results, gin.H{
+					"title":        item.Title,
+					"url":          item.URL,
+					"source":       item.Source,
+					"published_at": item.PublishedAt,
+				})
+			}
+			queries = append(queries, gin.H{
+				"query_id":     query.QueryID,
+				"module":       query.Module,
+				"query":        query.Query,
+				"intent":       query.Intent,
+				"topic_id":     query.TopicID,
+				"topic_name":   query.TopicName,
+				"result_count": query.ResultCount,
+				"error":        query.Error,
+				"results":      results,
+			})
+		}
+		var searchErrors []string
+		_ = json.Unmarshal([]byte(run.SearchErrorsJSON), &searchErrors)
+		result = append(result, gin.H{
+			"id":                     run.ID,
+			"date":                   run.Date,
+			"created_at":             run.CreatedAt.Format(time.RFC3339),
+			"query_count":            run.QueryCount,
+			"successful_query_count": run.SuccessfulQueryCount,
+			"result_count":           run.ResultCount,
+			"generated_item_count":   run.GeneratedItemCount,
+			"published_item_count":   run.PublishedItemCount,
+			"used_fallback":          run.UsedFallback,
+			"generation_error":       run.GenerationError,
+			"search_errors":          limitStringSlice(searchErrors, 6, 220),
+			"queries":                queries,
+		})
+	}
+	return result
+}
+
+func persistPulseRetrievalRun(
+	date string,
+	userID string,
+	evidence []pulseSearchEvidence,
+	searchErrors []string,
+	generatedItemCount int,
+	publishedItemCount int,
+	usedFallback bool,
+	generationErr error,
+) error {
+	diagnostics := pulseRetrievalDiagnostics{Queries: []pulseRetrievalQueryDiagnostic{}}
+	successfulQueries := 0
+	resultCount := 0
+	for _, query := range evidence {
+		if len(query.Results) > 0 {
+			successfulQueries++
+		}
+		resultCount += len(query.Results)
+		queryDiagnostic := pulseRetrievalQueryDiagnostic{
+			QueryID:        query.QueryID,
+			Module:         query.Module,
+			Query:          limitText(query.Query, 240),
+			Intent:         limitText(query.Intent, 180),
+			TopicID:        query.TopicID,
+			TopicName:      limitText(query.TopicName, 100),
+			ResultCount:    len(query.Results),
+			Error:          limitText(query.Error, 300),
+			ProviderErrors: limitStringSlice(query.ProviderErrors, 3, 220),
+		}
+		for _, result := range query.Results[:minInt(len(query.Results), 4)] {
+			queryDiagnostic.Results = append(queryDiagnostic.Results, pulseRetrievalResultDiagnostic{
+				Title:       limitText(result.Title, 180),
+				URL:         limitText(result.URL, 600),
+				Source:      limitText(result.Source, 80),
+				PublishedAt: limitText(result.PublishedAt, 80),
+				Snippet:     limitText(result.Snippet, 240),
+			})
+		}
+		diagnostics.Queries = append(diagnostics.Queries, queryDiagnostic)
+	}
+	diagnosticsJSON, err := json.Marshal(diagnostics)
+	if err != nil {
+		return err
+	}
+	searchErrorsJSON, err := json.Marshal(limitStringSlice(searchErrors, 12, 300))
+	if err != nil {
+		return err
+	}
+	generationError := ""
+	if generationErr != nil {
+		generationError = limitText(generationErr.Error(), 600)
+	}
+	now := time.Now()
+	run := models.PulseRetrievalRun{
+		ID:                   uuid.NewString(),
+		UserID:               normalizedUserID(userID),
+		Date:                 date,
+		QueryCount:           len(evidence),
+		SuccessfulQueryCount: successfulQueries,
+		ResultCount:          resultCount,
+		GeneratedItemCount:   generatedItemCount,
+		PublishedItemCount:   publishedItemCount,
+		UsedFallback:         usedFallback,
+		SearchErrorsJSON:     string(searchErrorsJSON),
+		DiagnosticsJSON:      string(diagnosticsJSON),
+		GenerationError:      generationError,
+		CreatedAt:            now,
+	}
+	return database.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(&run).Error; err != nil {
+			return err
+		}
+		return tx.
+			Where("user_id = ? AND created_at < ?", run.UserID, now.Add(-pulseRetrievalHistoryRetention)).
+			Delete(&models.PulseRetrievalRun{}).Error
+	})
 }
 
 func (h *PulseHandler) collectPulseSearchEvidence(date string, topics []models.PulseTopic, signals []memoryPulseSignal) ([]pulseSearchEvidence, []string) {
