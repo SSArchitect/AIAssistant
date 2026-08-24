@@ -2783,11 +2783,37 @@ class AgentEngine:
         skill = self.skill_registry.get(skill_name)
         if skill is None:
             return SkillResult(success=False, error=f"Unknown skill: {skill_name}")
+        try:
+            prepared_arguments = await asyncio.wait_for(
+                skill.prepare_arguments(**arguments),
+                timeout=skill.metadata().timeout_seconds,
+            )
+        except (TimeoutError, asyncio.TimeoutError):
+            return SkillResult(
+                success=False,
+                error=f"Tool argument preparation timed out: {skill_name}",
+                error_code="tool_argument_preparation_timeout",
+                retryable=True,
+            )
+        except Exception as exc:
+            return SkillResult(
+                success=False,
+                error=f"Invalid tool arguments for {skill_name}: {exc}",
+                error_code="invalid_tool_arguments",
+                retryable=False,
+            )
+        if not isinstance(prepared_arguments, dict):
+            return SkillResult(
+                success=False,
+                error=f"Invalid prepared arguments for {skill_name}",
+                error_code="invalid_tool_arguments",
+                retryable=False,
+            )
         return await self.tool_governance.execute(
             skill=skill,
             request=request,
             run_id=run_id,
-            arguments=arguments,
+            arguments=prepared_arguments,
             trusted=trusted,
             step_id=step_id,
         )

@@ -973,6 +973,97 @@ async def test_tool_call_calculator(engine):
 
 
 @pytest.mark.asyncio
+async def test_skill_arguments_are_prepared_before_governance(engine):
+    prepared_calls = []
+    executed_calls = []
+
+    class PreparedSkill(Skill):
+        def metadata(self) -> SkillMetadata:
+            return SkillMetadata(
+                name="prepared_tool",
+                description="Resolve a short identifier before execution.",
+                parameters=[
+                    SkillParameter(name="item_id", type="string", description="Item ID.")
+                ],
+                always_on=True,
+                risk_level="medium",
+                access="write",
+                default_policy="confirm",
+                confirmation_keywords=["apply prepared item"],
+            )
+
+        async def prepare_arguments(self, **kwargs) -> dict:
+            prepared_calls.append(dict(kwargs))
+            return {
+                **kwargs,
+                "item_id": "item-1-full",
+                "name": "Readable item",
+            }
+
+        async def execute(self, **kwargs) -> SkillResult:
+            executed_calls.append(dict(kwargs))
+            return SkillResult(success=True, data={"item_id": kwargs["item_id"]})
+
+    engine.skill_registry.register(PreparedSkill())
+    tool_response = LLMResponse(
+        content="",
+        tool_calls=[
+            ToolCall(
+                id="call_prepared",
+                name="prepared_tool",
+                arguments={"item_id": "item-1"},
+            )
+        ],
+        model="test-model",
+        usage={},
+    )
+
+    with patch.object(engine, "_get_provider") as mock_provider:
+        provider = AsyncMock()
+        provider.chat = AsyncMock(return_value=tool_response)
+        mock_provider.return_value = provider
+        result = await engine.process(
+            ChatRequest(
+                conversation_id="prepared-tool-arguments",
+                user_id="alice",
+                message="Review the item.",
+            )
+        )
+
+    assert prepared_calls == [{"item_id": "item-1"}]
+    assert executed_calls == []
+    blocked = next(
+        event for event in result.events
+        if event.type == "tool.governance.blocked"
+        and event.payload.get("tool_name") == "prepared_tool"
+    )
+    assert blocked.payload["arguments"] == {
+        "item_id": "item-1-full",
+        "name": "Readable item",
+    }
+    approval = next(event for event in result.events if event.type == "approval.required")
+    assert approval.payload["operations"] == [
+        {
+            "step_id": "call_prepared",
+            "arguments": {
+                "item_id": "item-1-full",
+                "name": "Readable item",
+            },
+        }
+    ]
+
+    resolution = await engine.tool_governance.resolve_approval(
+        approval.payload["approval_id"],
+        user_id="alice",
+        decision="allow_once",
+    )
+
+    assert resolution["status"] == "approved"
+    assert executed_calls == [{"item_id": "item-1-full", "name": "Readable item"}]
+    assert provider.chat.await_count == 1
+
+
+@pytest.mark.asyncio
 async def test_tool_governance_blocks_unconfirmed_high_risk_call(engine):
     class ConfirmedDeleteSkill(Skill):
         def __init__(self):

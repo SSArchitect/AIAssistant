@@ -28,3 +28,10 @@ test('approval card exposes one-time, persistent, and deny decisions', () => {
     assert.match(appSource, /\/api\/tool-approvals\/\$\{encodeURIComponent\(approvalId\)\}/);
     assert.match(appSource, /alwaysConfirmTitle/);
 });
+
+test('Pulse approval card hides internal topic ids from users', () => {
+    assert.match(appSource, /function approvalVisibleArguments\(/);
+    assert.match(appSource, /toolName === 'upsert_pulse_topic'/);
+    assert.match(appSource, /delete args\.topic_id/);
+    assert.match(appSource, /approvalVisibleArguments\(approval\.toolName, operation\.arguments\)/);
+});

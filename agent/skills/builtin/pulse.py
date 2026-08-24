@@ -405,7 +405,10 @@ class PulseUpsertTopicSkill(_PulseTool):
                 SkillParameter(
                     name="topic_id",
                     type="string",
-                    description="可选 Topic ID；更新指定 Topic 时提供，通常来自 list_pulse_topics。",
+                    description=(
+                        "可选 Topic ID；更新指定 Topic 时提供，必须使用 list_pulse_topics 返回的完整 ID。"
+                        "若上下文中只有至少 8 位的唯一 ID 前缀，系统会在授权前解析为完整 ID。"
+                    ),
                     required=False,
                 ),
                 SkillParameter(
@@ -448,6 +451,45 @@ class PulseUpsertTopicSkill(_PulseTool):
                 "确认修改订阅",
             ],
         )
+
+    async def prepare_arguments(self, **kwargs) -> dict[str, Any]:
+        prepared = dict(kwargs)
+        topic_id = str(prepared.get("topic_id") or "").strip()
+        if not topic_id:
+            return prepared
+
+        topics = await self._client().list_topics(self._user_id(prepared))
+        normalized_id = topic_id.lower()
+        exact_matches = [
+            topic
+            for topic in topics
+            if str(topic.get("id") or "").strip().lower() == normalized_id
+        ]
+        if exact_matches:
+            match = exact_matches[0]
+        else:
+            if len(topic_id) < 8:
+                raise ValueError("topic_id prefix must contain at least 8 characters")
+            prefix_matches = [
+                topic
+                for topic in topics
+                if str(topic.get("id") or "").strip().lower().startswith(normalized_id)
+            ]
+            if not prefix_matches:
+                raise ValueError("topic not found")
+            if len(prefix_matches) > 1:
+                raise ValueError("topic_id prefix is ambiguous")
+            match = prefix_matches[0]
+
+        full_topic_id = str(match.get("id") or "").strip()
+        if not full_topic_id:
+            raise ValueError("matched topic has no ID")
+        prepared["topic_id"] = full_topic_id
+        if not str(prepared.get("name") or "").strip():
+            topic_name = str(match.get("name") or "").strip()
+            if topic_name:
+                prepared["name"] = topic_name
+        return prepared
 
     async def execute(self, **kwargs) -> SkillResult:
         topic_id = str(kwargs.get("topic_id") or "").strip()

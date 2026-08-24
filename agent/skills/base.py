@@ -68,6 +68,10 @@ class Skill(ABC):
         """Execute the skill with given parameters."""
         ...
 
+    async def prepare_arguments(self, **kwargs) -> dict[str, Any]:
+        """Validate and canonicalize arguments before governance and approval."""
+        return dict(kwargs)
+
     def to_tool_definition(self) -> dict:
         """Convert skill metadata to LLM tool definition (JSON Schema)."""
         meta = self.metadata()

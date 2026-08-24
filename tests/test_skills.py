@@ -3636,6 +3636,64 @@ class TestPulseSkills:
         assert result.data["topics"][0]["id"] == "topic-1"
 
     @pytest.mark.asyncio
+    async def test_upsert_pulse_topic_prepares_unique_prefix_for_approval(self):
+        def handler(request: httpx.Request) -> httpx.Response:
+            assert request.method == "GET"
+            assert request.url.path == "/api/pulse/topics"
+            assert request.headers["X-User-ID"] == "alice"
+            return httpx.Response(
+                200,
+                json={
+                    "topics": [
+                        {
+                            "id": "c16e9bfc-3165-41d9-86be-14631e245253",
+                            "name": "AI热门新闻",
+                            "keywords": ["AI"],
+                            "enabled": True,
+                        },
+                        {
+                            "id": "f2e3dbf9-5b68-420d-b25f-7f66f9060843",
+                            "name": "大模型产品动态",
+                            "keywords": ["模型发布"],
+                            "enabled": True,
+                        },
+                    ]
+                },
+            )
+
+        skill = PulseUpsertTopicSkill(client_factory=lambda: self.client(handler))
+        prepared = await skill.prepare_arguments(
+            topic_id="c16e9bfc",
+            enabled=False,
+            _user_id="alice",
+        )
+
+        assert prepared["topic_id"] == "c16e9bfc-3165-41d9-86be-14631e245253"
+        assert prepared["name"] == "AI热门新闻"
+        assert prepared["enabled"] is False
+        assert prepared["_user_id"] == "alice"
+
+    @pytest.mark.asyncio
+    async def test_upsert_pulse_topic_rejects_missing_or_ambiguous_prefix(self):
+        def handler(_: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={
+                    "topics": [
+                        {"id": "abcddcba-1111-4111-8111-111111111111", "name": "One"},
+                        {"id": "abcddcba-2222-4222-8222-222222222222", "name": "Two"},
+                    ]
+                },
+            )
+
+        skill = PulseUpsertTopicSkill(client_factory=lambda: self.client(handler))
+
+        with pytest.raises(ValueError, match="ambiguous"):
+            await skill.prepare_arguments(topic_id="abcddcba", _user_id="alice")
+        with pytest.raises(ValueError, match="not found"):
+            await skill.prepare_arguments(topic_id="deadbeef", _user_id="alice")
+
+    @pytest.mark.asyncio
     async def test_upsert_pulse_topic_creates_and_updates(self):
         requests = []
 

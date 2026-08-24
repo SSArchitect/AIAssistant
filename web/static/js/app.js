@@ -378,7 +378,7 @@ const I18N = {
         },
         approval: {
             title: '需要你的授权',
-            detail: '该工具准备执行 {count} 项操作。批准后只会执行卡片中列出的参数，不再解析确认话术。',
+            detail: '该工具准备执行 {count} 项操作。批准后只执行这里列出的对象与变更，不再解析确认话术。',
             tool: '工具',
             operations: '查看 {count} 项操作',
             allowOnce: '仅本次允许',
@@ -1277,7 +1277,7 @@ const I18N = {
         },
         approval: {
             title: 'Your approval is required',
-            detail: 'This tool is ready to perform {count} operation(s). Approval executes only the parameters shown here, without interpreting another confirmation message.',
+            detail: 'This tool is ready to perform {count} operation(s). Approval executes only the listed targets and changes, without interpreting another confirmation message.',
             tool: 'Tool',
             operations: 'Review {count} operation(s)',
             allowOnce: 'Allow once',
@@ -14536,8 +14536,16 @@ function approvalCardStatus(approval) {
     return 'pending';
 }
 
-function approvalOperationSummary(operation = {}, index = 0) {
-    const args = operation.arguments && typeof operation.arguments === 'object' ? operation.arguments : {};
+function approvalVisibleArguments(toolName = '', argumentsValue = {}) {
+    const args = argumentsValue && typeof argumentsValue === 'object'
+        ? { ...argumentsValue }
+        : {};
+    if (toolName === 'upsert_pulse_topic') delete args.topic_id;
+    return args;
+}
+
+function approvalOperationSummary(operation = {}, index = 0, toolName = '') {
+    const args = approvalVisibleArguments(toolName, operation.arguments);
     const target = args.name || args.path || args.item_id || args.todo_id || args.topic_id || args.url || '';
     const action = args.enabled === false
         ? (currentLanguage === 'zh' ? '停用' : 'Disable')
@@ -14567,10 +14575,10 @@ function renderApprovalCards(events = [], options = {}) {
                 ? t('approval.expired')
                 : '';
         const operationItems = approval.operations.map((operation, index) => {
-            const args = operation.arguments && typeof operation.arguments === 'object' ? operation.arguments : {};
+            const args = approvalVisibleArguments(approval.toolName, operation.arguments);
             return `
                 <li>
-                    <strong>${escapeHtml(approvalOperationSummary(operation, index))}</strong>
+                    <strong>${escapeHtml(approvalOperationSummary(operation, index, approval.toolName))}</strong>
                     <pre>${escapeHtml(JSON.stringify(args, null, 2))}</pre>
                 </li>
             `;

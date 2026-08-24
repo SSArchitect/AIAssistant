@@ -317,6 +317,8 @@ Pulse 内置工具：
 - `list_pulse_topics`：列出订阅 Topic、关键词和启用状态。
 - `upsert_pulse_topic`：按名称新增/覆盖 Topic，或按 `topic_id` 更新、启停 Topic。
 
+`upsert_pulse_topic` 会在 Tool Governance 生成授权卡片前，把至少 8 位的唯一 Topic ID 前缀解析为当前用户的完整 UUID，并补充 Topic 名称；找不到或前缀不唯一时直接拒绝参数。授权卡片面向用户只展示 Topic 名称和具体变更，内部完整 ID 仅用于精确执行和 Trace 审计。
+
 Pulse 工具只暴露给 `super_chat`。Pulse 后台先通过专用搜索阶段收集证据，再使用嵌套的 `super_chat` 请求仅基于已收集证据做总结；该请求会禁用 `search` 和全部 Pulse 工具，既避免重复搜索，也防止刷新流程递归调用自身。
 
 Pulse 自动预计算只覆盖最近 24 小时使用过有效帐号会话的活跃用户，正常成功间隔为 6 小时。自动任务全局串行，尝试时间和结果持久化在 `pulse_schedule_states`：首次失败退避 12 小时，连续失败最多退避 24 小时，因此 gateway 重启不会清空冷却并触发密集重试。用户显式点击刷新不受自动调度冷却限制。
