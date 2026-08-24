@@ -74,6 +74,73 @@ func TestPulseCreatesTopicAndPrecomputesDailyItems(t *testing.T) {
 	}
 }
 
+func TestPulseGetUsesRecentHealthyItemsForWelcomeSuggestions(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	if err := database.Init(filepath.Join(t.TempDir(), "assistant.db")); err != nil {
+		t.Fatalf("init database: %v", err)
+	}
+
+	previousDate := "2026-08-23"
+	now := time.Now().UTC()
+	detail := pulseItemDetail{
+		ContentVersion:       pulseContentVersion,
+		RecommendationReason: "你近期持续关注 DeepSeek 模型与 API 成本。",
+		KeyPoints:            []string{"V4 Pro agent 能力升级", "API 引入峰谷分时定价"},
+		NewsSources: []pulseNewsSource{
+			{Title: "DeepSeek releases V4 Pro", URL: "https://deepseek.com/news/v4-pro", Source: "official", Snippet: "DeepSeek released V4 Pro with upgraded agent capabilities on August 23, 2026.", PublishedAt: previousDate},
+			{Title: "DeepSeek adjusts V4 API pricing", URL: "https://reuters.com/technology/deepseek-v4-pricing", Source: "Reuters", Snippet: "DeepSeek launched V4 Pro and introduced peak and off-peak API pricing.", PublishedAt: previousDate},
+		},
+		SuggestedQuestions: []string{
+			"V4 Pro agent 能力比 Flash 强在哪？",
+			"峰谷定价后哪个时段调用最划算？",
+			"「DeepSeek 正式发布 V…」发生了什么？",
+		},
+	}
+	item := models.PulseItem{
+		ID:            "previous-welcome-item",
+		UserID:        models.DefaultAccountID,
+		Date:          previousDate,
+		Source:        pulseSourceTopicHot,
+		Title:         "DeepSeek 发布 V4 Pro 并调整 API 定价",
+		Summary:       "DeepSeek 发布 V4 Pro，并为 Pro 与 Flash 引入新的 API 分时定价。",
+		DetailJSON:    mustJSON(detail),
+		ExplorePrompt: "对比 DeepSeek V4 Pro 与 Flash 的能力和成本",
+		HeatScore:     90,
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	}
+	if err := database.DB.Create(&item).Error; err != nil {
+		t.Fatalf("seed previous Pulse item: %v", err)
+	}
+
+	handler := NewPulseHandler()
+	router := gin.New()
+	router.GET("/api/pulse", handler.Get)
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/pulse?date=2026-08-24", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("unexpected get status %d: %s", recorder.Code, recorder.Body.String())
+	}
+	var payload struct {
+		Date            string              `json:"date"`
+		Items           []pulseItemResponse `json:"items"`
+		SuggestionDate  string              `json:"suggestion_date"`
+		SuggestionItems []pulseItemResponse `json:"suggestion_items"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode pulse response: %v", err)
+	}
+	if payload.Date != "2026-08-24" || len(payload.Items) != 0 {
+		t.Fatalf("expected today's feed to remain empty, got %#v", payload)
+	}
+	if payload.SuggestionDate != previousDate || len(payload.SuggestionItems) != 1 {
+		t.Fatalf("expected recent Pulse welcome fallback, got %#v", payload)
+	}
+	if got := payload.SuggestionItems[0]; got.ID != item.ID || got.ExplorePrompt != item.ExplorePrompt {
+		t.Fatalf("unexpected suggestion item: %#v", got)
+	}
+}
+
 func TestPulseUsesAgentGeneratedModules(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	if err := database.Init(filepath.Join(t.TempDir(), "assistant.db")); err != nil {

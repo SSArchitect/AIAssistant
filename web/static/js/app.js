@@ -880,6 +880,8 @@ const I18N = {
         welcome: {
             prompt: '把问题或任务发给我就好。',
             suggestions: '你可能想问',
+            pulseSource: 'Pulse 推荐',
+            recentSource: '最近对话',
             todayPulse: '今天有什么值得关注？',
             unfinished: '最近还有什么问题没解决？',
             priorities: '我今天最该先做什么？',
@@ -1748,6 +1750,8 @@ const I18N = {
         welcome: {
             prompt: 'Send me a question or task to get started.',
             suggestions: 'You might ask',
+            pulseSource: 'From Pulse',
+            recentSource: 'Recent chats',
             todayPulse: 'What is worth following today?',
             unfinished: 'What recent questions remain unresolved?',
             priorities: 'What should I prioritize today?',
@@ -1902,6 +1906,7 @@ const CONVERSATION_RENDER_CACHE_LIMIT = 20;
 const FOLLOW_UP_QUESTION_COUNT = 3;
 const FOLLOW_UP_POLL_DELAYS_MS = [500, 1000, 1500, 2000, 3000, 4000];
 const SUPER_CHAT_WELCOME_ACTION_LIMIT = 4;
+const SUPER_CHAT_PULSE_ACTION_LIMIT = 3;
 const PULSE_REFRESH_POLL_MS = 5000;
 const PULSE_REFRESH_SLOW_POLL_MS = 30000;
 const PULSE_REFRESH_FAST_MAX_POLLS = 24;
@@ -14082,24 +14087,46 @@ function readModels(providerKey) {
 function superChatWelcomeActions() {
     const actions = [];
     const seen = new Set();
-    const addAction = (label, query, source) => {
+    const addAction = (label, query, source, meta = '') => {
         label = String(label || '').trim();
         query = String(query || '').trim();
         const key = label.toLocaleLowerCase();
-        if (!label || !query || seen.has(key) || actions.length >= SUPER_CHAT_WELCOME_ACTION_LIMIT) return;
+        if (!label || !query || seen.has(key) || actions.length >= SUPER_CHAT_WELCOME_ACTION_LIMIT) return false;
         seen.add(key);
-        actions.push({ label, query, source, autoSend: false });
+        actions.push({ label, query, source, meta: String(meta || '').trim(), autoSend: false });
+        return true;
+    };
+    const cleanPulseSuggestion = (value) => {
+        const text = String(value || '').replace(/\s+/g, ' ').trim();
+        const length = Array.from(text).length;
+        if (length < 6 || length > 64 || /\uFFFD|…|\.{3,}/u.test(text)) return '';
+        if (/为什么值得关注|有哪些风险|最近有哪些进展|下一步做什么|怎么验证|如何排优先级/u.test(text)) return '';
+        return text;
     };
 
-    const pulseItems = Array.isArray(pulse?.items) ? pulse.items : [];
-    for (let round = 0; round < 3 && actions.length < SUPER_CHAT_WELCOME_ACTION_LIMIT; round += 1) {
-        pulseItems.forEach((item) => {
-            if (actions.length >= SUPER_CHAT_WELCOME_ACTION_LIMIT) return;
-            const questions = Array.isArray(item?.detail?.suggested_questions)
-                ? item.detail.suggested_questions.map((question) => String(question || '').trim()).filter(Boolean)
-                : [];
-            const question = questions[round] || '';
-            if (question) addAction(question, buildPulseChatPrompt(item, question), 'pulse');
+    const pulseItems = Array.isArray(pulse?.suggestion_items) && pulse.suggestion_items.length
+        ? pulse.suggestion_items
+        : (Array.isArray(pulse?.items) ? pulse.items : []);
+    const pulsePrompts = pulseItems.map((item) => {
+        const questions = Array.isArray(item?.detail?.suggested_questions)
+            ? item.detail.suggested_questions
+            : [];
+        return [...questions, item?.explore_prompt]
+            .map(cleanPulseSuggestion)
+            .filter(Boolean);
+    });
+    let pulseActionCount = 0;
+    const maxPulseRounds = Math.max(0, ...pulsePrompts.map((prompts) => prompts.length));
+    for (let round = 0; round < maxPulseRounds && pulseActionCount < SUPER_CHAT_PULSE_ACTION_LIMIT; round += 1) {
+        pulseItems.forEach((item, itemIndex) => {
+            if (pulseActionCount >= SUPER_CHAT_PULSE_ACTION_LIMIT) return;
+            const question = pulsePrompts[itemIndex]?.[round] || '';
+            if (!question) return;
+            const itemTitle = truncateText(String(item?.title || '').trim(), 24);
+            const meta = itemTitle ? `${t('welcome.pulseSource')} · ${itemTitle}` : t('welcome.pulseSource');
+            if (addAction(question, buildPulseChatPrompt(item, question), 'pulse', meta)) {
+                pulseActionCount += 1;
+            }
         });
     }
 
@@ -14110,16 +14137,11 @@ function superChatWelcomeActions() {
             && String(conversation?.title || '').trim()
             && String(conversation.title).trim() !== 'New Conversation'
         ));
-    for (const conversation of recentConversations) {
-        if (actions.length >= SUPER_CHAT_WELCOME_ACTION_LIMIT) break;
-        const title = truncateText(String(conversation.title).trim(), 28);
-        const label = currentLanguage === 'zh'
-            ? `继续解决「${title}」`
-            : `Continue “${title}”`;
+    if (recentConversations.length && actions.length < SUPER_CHAT_WELCOME_ACTION_LIMIT) {
         const query = currentLanguage === 'zh'
-            ? `请回顾我最近关于「${title}」的对话，找出尚未解决但最值得继续推进的一个问题，并直接帮我往下做。`
-            : `Review my recent conversation about “${title}”, identify the most valuable unresolved question, and help me move it forward.`;
-        addAction(label, query, 'conversation');
+            ? '请回顾我最近的对话，找出尚未解决但最值得继续推进的一个问题，先说明你选择它的原因，再直接帮我往下做。'
+            : 'Review my recent chats, identify the most valuable unresolved question, briefly explain why you chose it, and help me move it forward.';
+        addAction(t('welcome.unfinished'), query, 'conversation', t('welcome.recentSource'));
     }
 
     const fallbackActions = currentLanguage === 'zh'
@@ -14172,9 +14194,11 @@ function showWelcome() {
                     ${quickActions.map((item) => `
                         <button class="quick-action" type="button"
                                 data-query="${escapeAttr(item.query)}"
+                                data-suggestion-source="${escapeAttr(item.source || '')}"
                                 ${item.modeId ? `data-quick-mode="${escapeAttr(item.modeId)}"` : ''}
                                 ${item.autoSend ? 'data-quick-send="true"' : ''}>
-                            <span>${escapeHtml(item.label)}</span>
+                            ${item.meta ? `<small class="quick-action-meta">${escapeHtml(item.meta)}</small>` : ''}
+                            <span class="quick-action-label">${escapeHtml(item.label)}</span>
                         </button>
                     `).join('')}
                 </div>

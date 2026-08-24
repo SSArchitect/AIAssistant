@@ -1621,6 +1621,28 @@ video {
     text-align: left;
 }
 
+.super-chat-suggestions .quick-action[data-suggestion-source="pulse"] {
+    border-color: color-mix(in srgb, var(--primary) 28%, var(--line));
+    background: color-mix(in srgb, var(--primary) 4%, var(--surface));
+}
+
+.quick-action-meta,
+.quick-action-label {
+    display: block;
+}
+
+.quick-action-meta {
+    margin-bottom: 4px;
+    color: var(--primary);
+    font-size: 10px;
+    font-weight: 800;
+    letter-spacing: 0.02em;
+}
+
+.quick-action-label {
+    color: inherit;
+}
+
 .quick-action {
     min-height: 36px;
     padding: 0 14px;

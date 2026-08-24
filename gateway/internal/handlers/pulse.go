@@ -277,6 +277,7 @@ const (
 	pulseFeatureEventLimit          = 1000
 	pulseTopicFreshnessWindow       = 45 * 24 * time.Hour
 	pulseMemoryFreshnessWindow      = 180 * 24 * time.Hour
+	pulseWelcomeSuggestionMaxAge    = 7 * 24 * time.Hour
 	pulseFutureDateTolerance        = 48 * time.Hour
 	pulseSuggestedQuestionLimit     = 3
 	pulseSuggestedQuestionMaxRunes  = 32
@@ -693,6 +694,16 @@ func (h *PulseHandler) writePulseWithStatus(c *gin.Context, date string, userID 
 	}
 	allItems := items
 	items = recommendedPulseItems(allItems, featureState)
+	suggestionItems, suggestionDate, suggestionErr := h.loadPulseWelcomeSuggestionItems(
+		date,
+		userID,
+		items,
+		allItems,
+		featureState,
+	)
+	if suggestionErr != nil {
+		slog.Warn("Pulse welcome suggestion fallback failed", "user_id", userID, "date", date, "error", suggestionErr)
+	}
 
 	memorySignals, err := h.loadMemorySignals(userID)
 	if err != nil {
@@ -726,12 +737,106 @@ func (h *PulseHandler) writePulseWithStatus(c *gin.Context, date string, userID 
 		"recommended_count":       len(items),
 		"filtered_count":          maxInt(0, len(allItems)-len(items)),
 		"items":                   itemResponsesWithFeatures(items, items, featureState),
+		"suggestion_date":         suggestionDate,
+		"suggestion_items":        suggestionItems,
 		"modules":                 moduleResponsesWithFeatures(modules, items, items, featureState),
 		"refreshing":              refreshing,
 		"refresh_stage":           refreshStage,
 		"refresh_started_at":      refreshStartedAt,
 		"refresh_elapsed_seconds": refreshElapsedSeconds,
 	})
+}
+
+func (h *PulseHandler) loadPulseWelcomeSuggestionItems(
+	date string,
+	userID string,
+	currentItems []models.PulseItem,
+	currentAllItems []models.PulseItem,
+	currentFeatureState pulseFeatureState,
+) ([]pulseItemResponse, string, error) {
+	currentCandidates, currentCount := pulseWelcomeSuggestionCandidates(currentItems)
+	if currentCount >= pulseSuggestedQuestionLimit {
+		return itemResponsesWithFeatures(currentCandidates, currentAllItems, currentFeatureState), date, nil
+	}
+
+	targetDate, err := time.ParseInLocation("2006-01-02", date, time.Local)
+	if err != nil {
+		return itemResponsesWithFeatures(currentCandidates, currentAllItems, currentFeatureState), date, nil
+	}
+	cutoffDate := targetDate.Add(-pulseWelcomeSuggestionMaxAge).Format("2006-01-02")
+	var dates []string
+	if err := database.DB.Model(&models.PulseItem{}).
+		Distinct("date").
+		Where("user_id = ? AND date < ? AND date >= ?", normalizedUserID(userID), date, cutoffDate).
+		Order("date desc").
+		Limit(7).
+		Pluck("date", &dates).Error; err != nil {
+		return itemResponsesWithFeatures(currentCandidates, currentAllItems, currentFeatureState), date, err
+	}
+
+	for _, fallbackDate := range dates {
+		var fallbackItems []models.PulseItem
+		if err := database.DB.
+			Where("user_id = ? AND date = ?", normalizedUserID(userID), fallbackDate).
+			Order("heat_score desc, created_at asc").
+			Find(&fallbackItems).Error; err != nil {
+			return itemResponsesWithFeatures(currentCandidates, currentAllItems, currentFeatureState), date, err
+		}
+		fallbackItems, cacheUpgrades := revalidatePulseCachedItems(fallbackItems)
+		if err := persistPulseCachedItemUpgrades(cacheUpgrades); err != nil {
+			slog.Warn("Pulse welcome cache upgrade failed", "user_id", userID, "date", fallbackDate, "error", err)
+		}
+		fallbackFeatureState, err := loadPulseFeatureState(userID, fallbackDate, fallbackItems)
+		if err != nil {
+			return itemResponsesWithFeatures(currentCandidates, currentAllItems, currentFeatureState), date, err
+		}
+		fallbackRecommended := recommendedPulseItems(fallbackItems, fallbackFeatureState)
+		fallbackCandidates, fallbackCount := pulseWelcomeSuggestionCandidates(fallbackRecommended)
+		if fallbackCount >= pulseSuggestedQuestionLimit {
+			return itemResponsesWithFeatures(fallbackCandidates, fallbackItems, fallbackFeatureState), fallbackDate, nil
+		}
+	}
+
+	return itemResponsesWithFeatures(currentCandidates, currentAllItems, currentFeatureState), date, nil
+}
+
+func pulseWelcomeSuggestionCandidates(items []models.PulseItem) ([]models.PulseItem, int) {
+	candidates := make([]models.PulseItem, 0, len(items))
+	count := 0
+	seen := map[string]bool{}
+	for _, item := range items {
+		var detail pulseItemDetail
+		_ = json.Unmarshal([]byte(item.DetailJSON), &detail)
+		itemCount := 0
+		prompts := append([]string{}, detail.SuggestedQuestions...)
+		prompts = append(prompts, item.ExplorePrompt)
+		for _, prompt := range prompts {
+			cleaned := cleanSearchText(prompt)
+			key := strings.ToLower(cleaned)
+			if seen[key] || !pulseWelcomeSuggestionLooksUseful(cleaned) {
+				continue
+			}
+			seen[key] = true
+			itemCount++
+			count++
+		}
+		if itemCount > 0 {
+			candidates = append(candidates, item)
+		}
+	}
+	return candidates, count
+}
+
+func pulseWelcomeSuggestionLooksUseful(value string) bool {
+	value = strings.TrimSpace(value)
+	runeCount := len([]rune(value))
+	if runeCount < 6 || runeCount > 64 || strings.ContainsRune(value, '\uFFFD') {
+		return false
+	}
+	if strings.Contains(value, "…") || strings.Contains(value, "...") {
+		return false
+	}
+	return !pulseQuestionLooksGeneric(value)
 }
 
 func (h *PulseHandler) startPulseGeneration(date string, userID string, force bool, reason string) bool {
@@ -3367,7 +3472,7 @@ func personalizedPulseSuggestedQuestions(existing []string, ctx pulseQuestionCon
 			return
 		}
 		cleaned = pulseCompactSuggestedQuestion(cleaned)
-		if cleaned == "" {
+		if cleaned == "" || !pulseWelcomeSuggestionLooksUseful(cleaned) {
 			return
 		}
 		questions = appendUniqueStrings(questions, cleaned)
@@ -3439,7 +3544,7 @@ func pulseShortQuestionAnchor(value string, maxRunes int) string {
 	if len(runes) <= maxRunes {
 		return value
 	}
-	return string(runes[:maxRunes-1]) + "…"
+	return string(runes[:maxRunes])
 }
 
 func pulseCompactSuggestedQuestion(value string) string {
@@ -3449,9 +3554,8 @@ func pulseCompactSuggestedQuestion(value string) string {
 		return ""
 	}
 	runes := []rune(value)
-	if len(runes) > pulseSuggestedQuestionMaxRunes-1 {
-		runes = runes[:pulseSuggestedQuestionMaxRunes-2]
-		value = string(runes) + "…"
+	if len(runes) >= pulseSuggestedQuestionMaxRunes {
+		return ""
 	}
 	return value + "？"
 }

@@ -955,7 +955,7 @@ func TestPulseQualitySuggestedQuestionsAreShortAndCapped(t *testing.T) {
 		if len([]rune(question)) > pulseSuggestedQuestionMaxRunes {
 			t.Fatalf("suggested question exceeds %d runes: %q", pulseSuggestedQuestionMaxRunes, question)
 		}
-		if strings.Contains(question, "用 5 分钟") || strings.Contains(question, "用5分钟") {
+		if strings.Contains(question, "用 5 分钟") || strings.Contains(question, "用5分钟") || strings.Contains(question, "…") {
 			t.Fatalf("long read-it-for-me template leaked into suggestions: %q", question)
 		}
 	}

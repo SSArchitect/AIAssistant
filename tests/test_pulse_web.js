@@ -251,21 +251,32 @@ test('a stale Pulse load cannot overwrite a newer refresh response', async () =>
     assert.deepEqual(state.syncCalls, [true]);
 });
 
-test('Super Chat welcome actions prefer Pulse questions, then recent work, then safe fallbacks', () => {
+test('Super Chat welcome shows three quality-filtered Pulse actions before one aggregated recent action', () => {
     const source = extractFunctionDeclaration('superChatWelcomeActions');
     const actions = vm.runInNewContext(`
         const SUPER_CHAT_WELCOME_ACTION_LIMIT = 4;
+        const SUPER_CHAT_PULSE_ACTION_LIMIT = 3;
         const SUPER_CHAT_AGENT_ID = 'super_chat';
         const currentConversationId = '';
         const currentLanguage = 'zh';
         const pulse = {
-            items: [
-                { id: 'pulse-1', detail: { suggested_questions: ['Pulse question one?'] } },
-                { id: 'pulse-2', detail: { suggested_questions: ['Pulse question two?'] } },
+            items: [],
+            suggestion_items: [
+                {
+                    id: 'pulse-1',
+                    title: 'DeepSeek V4 Pro 发布',
+                    detail: { suggested_questions: ['V4 Pro agent 能力强在哪？', '「DeepSeek 正式发布 V…」发生了什么？'] },
+                    explore_prompt: '对比 DeepSeek V4 Pro 与 Flash 的能力和成本',
+                },
+                {
+                    id: 'pulse-2',
+                    title: 'DeepSeek API 峰谷定价',
+                    detail: { suggested_questions: ['峰谷定价后哪个时段调用最划算？'] },
+                },
             ],
         };
         const conversations = [
-            { id: 'recent-1', agent_id: 'super_chat', title: 'Recent project' },
+            { id: 'recent-1', agent_id: 'super_chat', title: '截断乱码��...' },
             { id: 'image-1', agent_id: 'image_generation_v1', title: 'Image task' },
         ];
         ${source}
@@ -278,11 +289,17 @@ test('Super Chat welcome actions prefer Pulse questions, then recent work, then 
     });
 
     assert.equal(actions.length, 4);
-    assert.deepEqual(Array.from(actions, (action) => action.source), ['pulse', 'pulse', 'conversation', 'fallback']);
-    assert.equal(actions[0].label, 'Pulse question one?');
-    assert.equal(actions[0].query, 'pulse:pulse-1:Pulse question one?');
-    assert.match(actions[2].label, /Recent project/);
-    assert.equal(actions[3].label, 'welcome.todayPulse');
+    assert.deepEqual(Array.from(actions, (action) => action.source), ['pulse', 'pulse', 'pulse', 'conversation']);
+    assert.deepEqual(Array.from(actions, (action) => action.label), [
+        'V4 Pro agent 能力强在哪？',
+        '峰谷定价后哪个时段调用最划算？',
+        '对比 DeepSeek V4 Pro 与 Flash 的能力和成本',
+        'welcome.unfinished',
+    ]);
+    assert.equal(actions[0].query, 'pulse:pulse-1:V4 Pro agent 能力强在哪？');
+    assert.match(actions[0].meta, /^welcome\.pulseSource/);
+    assert.equal(actions[3].meta, 'welcome.recentSource');
+    assert.doesNotMatch(actions[3].query, /截断乱码|继续解决/);
     assert.ok(actions.every((action) => action.autoSend === false));
 });
 
@@ -290,6 +307,7 @@ test('Super Chat welcome always has four fallback questions when Pulse is empty'
     const source = extractFunctionDeclaration('superChatWelcomeActions');
     const actions = vm.runInNewContext(`
         const SUPER_CHAT_WELCOME_ACTION_LIMIT = 4;
+        const SUPER_CHAT_PULSE_ACTION_LIMIT = 3;
         const SUPER_CHAT_AGENT_ID = 'super_chat';
         const currentConversationId = '';
         const currentLanguage = 'en';
