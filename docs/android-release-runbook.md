@@ -1,6 +1,6 @@
 # Android APK 与增量 OTA 发布 Runbook
 
-最后验证：2026-08-22
+最后验证：2026-08-25
 
 本文记录 Agent Assistant 安卓内测版在当前生产服务器上的发布、验证、回退和排障流程。
 Android 容器的实现原理和本地开发说明见 [android-app.md](./android-app.md)，通用后端部署见
@@ -25,8 +25,8 @@ TLS private key:     /etc/letsencrypt/live/architect8.cn/privkey.pem
 ```text
 Native versionName:  0.3.0
 Native versionCode:  3
-OTA version:         0.3.0-ota.1
-OTA sequence:        3
+OTA version:         0.3.0-ota.3
+OTA sequence:        5
 OTA native range:    versionCode >= 3
 APK URL:             https://www.architect8.cn/downloads/agent-assistant-0.3.0-debug.apk
 ```
@@ -91,6 +91,7 @@ cd gateway && go test ./... && cd ..
 
 ```bash
 AGENT_ASSISTANT_API_BASE=https://www.architect8.cn \
+AGENT_ASSISTANT_ANDROID_VERSION_CODE=3 \
   npm run android:ota -- 0.1.0-ota.2 2
 ```
 
@@ -98,12 +99,15 @@ AGENT_ASSISTANT_API_BASE=https://www.architect8.cn \
 
 ```bash
 AGENT_ASSISTANT_API_BASE=https://www.architect8.cn \
+AGENT_ASSISTANT_ANDROID_VERSION_CODE=3 \
 AGENT_ASSISTANT_OTA_MIN_NATIVE_VERSION_CODE=2 \
 AGENT_ASSISTANT_OTA_MAX_NATIVE_VERSION_CODE=0 \
   npm run android:ota -- 0.2.0-ota.1 3
 ```
 
-`MAX_NATIVE_VERSION_CODE=0` 表示不设上限。构建脚本会生成：
+`MAX_NATIVE_VERSION_CODE=0` 表示不设上限。`AGENT_ASSISTANT_ANDROID_VERSION_CODE` 必须与目标
+APK 的真实 `versionCode` 一致；它会写入 OTA 的运行时配置，不能依赖构建脚本的默认值。
+构建脚本会生成：
 
 ```text
 artifacts/android-ota/<version>/files/
