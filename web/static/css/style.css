@@ -6255,15 +6255,9 @@ button.mode-chip:focus-visible {
     line-height: 1.45;
 }
 
-.pulse-toolbar-actions {
-    display: flex;
-    align-items: center;
-    justify-content: flex-end;
-    gap: 8px;
-    flex-wrap: wrap;
-}
-
 .pulse-optimize-button {
+    width: 100%;
+    justify-content: center;
     color: var(--primary);
     border-color: rgba(49, 87, 213, 0.28);
     background: var(--primary-soft);
@@ -10531,12 +10525,6 @@ body.drive-selecting {
     .pulse-feed-toolbar {
         align-items: stretch;
         flex-direction: column;
-    }
-
-    .pulse-toolbar-actions {
-        display: grid;
-        grid-template-columns: 1fr 1fr;
-        width: 100%;
     }
 
     .pulse-topic-panel {

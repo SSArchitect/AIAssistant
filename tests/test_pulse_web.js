@@ -601,8 +601,11 @@ test('related Pulse clusters are only clickable when present in the current feed
 });
 
 test('Pulse exposes an AI subscription optimization action', () => {
-    assert.match(indexSource, /data-pulse-optimize-topics/);
-    assert.match(indexSource, /data-i18n="pulse\.optimizeTopics"/);
+    const topicPanel = indexSource.match(/<aside class="pulse-topic-panel">[\s\S]*?<\/aside>/)?.[0] || '';
+    const feedToolbar = indexSource.match(/<div class="pulse-feed-toolbar">[\s\S]*?<\/div>\s*<div class="pulse-topic-filter"/)?.[0] || '';
+    assert.match(topicPanel, /data-pulse-optimize-topics/);
+    assert.match(topicPanel, /data-i18n="pulse\.optimizeTopics"/);
+    assert.doesNotMatch(feedToolbar, /data-pulse-optimize-topics/);
     assert.match(appSource, /optimizeTopics:\s*'AI 优化订阅'/);
     assert.match(appSource, /optimizeTopics:\s*'AI Optimize Topics'/);
 });
