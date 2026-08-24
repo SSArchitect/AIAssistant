@@ -182,8 +182,8 @@ func TestPulseTopicOptimizationContextCombinesHistoryAndRetrievalQuality(t *test
 	date := now.Format("2006-01-02")
 	userID := "optimization-user"
 	topics := []models.PulseTopic{
-		{ID: "topic-product", UserID: userID, Name: "Agent 产品", Keywords: encodeKeywords([]string{"Agent", "RAG", "工作流"}), Enabled: true, CreatedAt: now, UpdatedAt: now},
-		{ID: "topic-engineering", UserID: userID, Name: "Agent 工程", Keywords: encodeKeywords([]string{"Agent", "RAG", "评测"}), Enabled: true, CreatedAt: now, UpdatedAt: now},
+		{ID: "topic-product", UserID: userID, Name: "Agent 产品", Keywords: encodeKeywords([]string{"Agent", "RAG", "工作流"}), CreatedAt: now, UpdatedAt: now},
+		{ID: "topic-engineering", UserID: userID, Name: "Agent 工程", Keywords: encodeKeywords([]string{"Agent", "RAG", "评测"}), CreatedAt: now, UpdatedAt: now},
 	}
 	if err := database.DB.Create(&topics).Error; err != nil {
 		t.Fatalf("seed topics: %v", err)
@@ -208,6 +208,18 @@ func TestPulseTopicOptimizationContextCombinesHistoryAndRetrievalQuality(t *test
 	item.UpdatedAt = now
 	if err := database.DB.Create(&item).Error; err != nil {
 		t.Fatalf("seed item: %v", err)
+	}
+	deletedTopicItem := qualityTestPulseItem(date, "deleted-topic-item", []pulseNewsSource{
+		{Title: "Old route note", URL: "https://example.com/old-route", Snippet: "Historical content for a removed topic.", PublishedAt: date},
+		{Title: "Old route report", URL: "https://example.org/old-route", Snippet: "Another historical source.", PublishedAt: date},
+	})
+	deletedTopicItem.UserID = userID
+	deletedTopicItem.TopicID = "removed-topic"
+	deletedTopicItem.TopicName = "清远自驾三条 + AIGC 创作"
+	deletedTopicItem.CreatedAt = now
+	deletedTopicItem.UpdatedAt = now
+	if err := database.DB.Create(&deletedTopicItem).Error; err != nil {
+		t.Fatalf("seed removed topic item: %v", err)
 	}
 	if err := database.DB.Create(&models.PulseEvent{
 		ID: "optimization-open", UserID: userID, Date: date, ItemID: item.ID,
@@ -240,6 +252,12 @@ func TestPulseTopicOptimizationContextCombinesHistoryAndRetrievalQuality(t *test
 	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
+	if strings.Contains(recorder.Body.String(), `"enabled"`) {
+		t.Fatalf("topic optimization must not expose a status field: %s", recorder.Body.String())
+	}
+	if strings.Contains(recorder.Body.String(), deletedTopicItem.TopicName) {
+		t.Fatalf("removed topic history must not be returned: %s", recorder.Body.String())
+	}
 	if payload["lookback_days"] != float64(30) {
 		t.Fatalf("unexpected lookback: %#v", payload["lookback_days"])
 	}
@@ -270,9 +288,16 @@ func TestPulseTopicOptimizationContextCombinesHistoryAndRetrievalQuality(t *test
 	if runs, ok := history["retrieval_runs"].([]interface{}); !ok || len(runs) != 1 {
 		t.Fatalf("expected retrieval diagnostics, got %#v", history["retrieval_runs"])
 	}
-	metrics, ok := history["topic_metrics"].([]interface{})
+	metrics, ok := history["current_topic_metrics"].([]interface{})
 	if !ok || len(metrics) != 2 {
-		t.Fatalf("expected per-topic metrics, got %#v", history["topic_metrics"])
+		t.Fatalf("expected current-topic metrics, got %#v", history["current_topic_metrics"])
+	}
+	if _, exists := history["topic_metrics"]; exists {
+		t.Fatalf("ambiguous topic metrics key must not be returned: %#v", history["topic_metrics"])
+	}
+	summary, _ := history["summary"].(map[string]interface{})
+	if summary["sampled_cluster_count"] != float64(1) {
+		t.Fatalf("expected only current-topic history in summary, got %#v", summary)
 	}
 	firstMetric, _ := metrics[0].(map[string]interface{})
 	if firstMetric["stored_clusters"] != float64(1) {
@@ -284,7 +309,7 @@ func TestPulseTopicOptimizationContextCombinesHistoryAndRetrievalQuality(t *test
 	}
 }
 
-func TestPulseTopicLifecycleIsPresentOrDeleted(t *testing.T) {
+func TestPulseTopicManagementUsesCreateUpdateAndDelete(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	if err := database.Init(filepath.Join(t.TempDir(), "assistant.db")); err != nil {
 		t.Fatalf("init database: %v", err)
@@ -299,7 +324,7 @@ func TestPulseTopicLifecycleIsPresentOrDeleted(t *testing.T) {
 	createReq := httptest.NewRequest(
 		http.MethodPost,
 		"/api/pulse/topics",
-		bytes.NewBufferString(`{"name":"AI Agent","keywords":["Agent"],"enabled":false}`),
+		bytes.NewBufferString(`{"name":"AI Agent","keywords":["Agent"]}`),
 	)
 	createReq.Header.Set("Content-Type", "application/json")
 	createReq.Header.Set("X-User-ID", "topic-lifecycle-user")
@@ -314,14 +339,14 @@ func TestPulseTopicLifecycleIsPresentOrDeleted(t *testing.T) {
 	if err := json.Unmarshal(createRecorder.Body.Bytes(), &createPayload); err != nil {
 		t.Fatalf("decode create response: %v", err)
 	}
-	if !createPayload.Topic.Enabled {
-		t.Fatalf("legacy enabled=false must not create a disabled topic: %#v", createPayload.Topic)
+	if strings.Contains(createRecorder.Body.String(), `"enabled"`) {
+		t.Fatalf("create response must not expose a topic status field: %s", createRecorder.Body.String())
 	}
 
 	updateReq := httptest.NewRequest(
 		http.MethodPut,
 		"/api/pulse/topics/"+createPayload.Topic.ID,
-		bytes.NewBufferString(`{"enabled":false,"keywords":["Agent","workflow"]}`),
+		bytes.NewBufferString(`{"keywords":["Agent","workflow"]}`),
 	)
 	updateReq.Header.Set("Content-Type", "application/json")
 	updateReq.Header.Set("X-User-ID", "topic-lifecycle-user")
@@ -336,8 +361,8 @@ func TestPulseTopicLifecycleIsPresentOrDeleted(t *testing.T) {
 	if err := json.Unmarshal(updateRecorder.Body.Bytes(), &updatePayload); err != nil {
 		t.Fatalf("decode update response: %v", err)
 	}
-	if !updatePayload.Topic.Enabled {
-		t.Fatalf("legacy enabled=false must not disable a topic: %#v", updatePayload.Topic)
+	if strings.Contains(updateRecorder.Body.String(), `"enabled"`) {
+		t.Fatalf("update response must not expose a topic status field: %s", updateRecorder.Body.String())
 	}
 
 	deleteReq := httptest.NewRequest(http.MethodDelete, "/api/pulse/topics/"+createPayload.Topic.ID, nil)
@@ -1352,7 +1377,7 @@ func TestPulseUsesVerifiedSearchFallbackWhenGenerationFails(t *testing.T) {
 
 func TestFallbackPulseDoesNotCreateFailedRecommendationItems(t *testing.T) {
 	modules, items := buildFallbackPulse("2026-06-20", []models.PulseTopic{
-		{ID: "topic-ai", Name: "AI", Keywords: encodeKeywords([]string{"Agent", "RAG"}), Enabled: true},
+		{ID: "topic-ai", Name: "AI", Keywords: encodeKeywords([]string{"Agent", "RAG"})},
 	}, []memoryPulseSignal{
 		{Theme: "最近对话延展", Focus: "Go 语言工程实现", Keywords: []string{"Go", "接口", "测试"}},
 	}, []string{"Go 语言工程实现 recent update 2026: agent returned status 502"})
@@ -1697,7 +1722,7 @@ func TestPulseSearchEvidenceFollowupAddsCorroboratingResults(t *testing.T) {
 
 	handler := NewPulseHandler(bridge.NewAgentClient(agentServer.URL, time.Second))
 	evidence, searchErrors := handler.collectPulseSearchEvidence("2026-06-20", []models.PulseTopic{
-		{ID: "topic-ai", Name: "AI 工程", Keywords: encodeKeywords([]string{"Claude Code", "Gemini CLI"}), Enabled: true},
+		{ID: "topic-ai", Name: "AI 工程", Keywords: encodeKeywords([]string{"Claude Code", "Gemini CLI"})},
 	}, nil)
 	if len(searchErrors) != 0 {
 		t.Fatalf("expected no search errors, got %#v", searchErrors)

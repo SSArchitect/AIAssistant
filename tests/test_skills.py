@@ -3530,7 +3530,6 @@ class TestPulseSkills:
                             "id": "topic-1",
                             "name": "AI Agent",
                             "keywords": ["Agent"],
-                            "enabled": True,
                         }
                     ],
                     "modules": [
@@ -3650,13 +3649,11 @@ class TestPulseSkills:
                             "id": "c16e9bfc-3165-41d9-86be-14631e245253",
                             "name": "AI热门新闻",
                             "keywords": ["AI"],
-                            "enabled": True,
                         },
                         {
                             "id": "f2e3dbf9-5b68-420d-b25f-7f66f9060843",
                             "name": "大模型产品动态",
                             "keywords": ["模型发布"],
-                            "enabled": True,
                         },
                     ]
                 },
@@ -3841,6 +3838,11 @@ class TestPulseSkills:
         assert "id" not in result.data["current_topics"][0]
         assert result.data["candidate_interest_signals"][0]["theme"] == "AI 应用与 Agent"
         assert result.data["topic_semantics"]["existing_topics_source"] == "current_topics_only"
+        assert result.data["topic_semantics"]["management_actions"] == [
+            "add",
+            "update",
+            "delete",
+        ]
         assert result.data["history"]["summary"]["sampled_cluster_count"] == 4
         assert "left_topic_id" not in result.data["history"]["overlap_candidates"][0]
         assert "right_topic_id" not in result.data["history"]["overlap_candidates"][0]

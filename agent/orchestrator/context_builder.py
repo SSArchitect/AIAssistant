@@ -111,7 +111,7 @@ class ContextBuilder:
                     "绝不能把它们说成现有 Topic，也不能作为删除目标。",
                     "- optimize_pulse_topics 只分析、不修改。先把变更前后方案展示给用户；"
                     "只有用户当前消息明确确认应用方案后，才能调用 upsert_pulse_topic 或 delete_pulse_topic。"
-                    "Topic 只有存在或删除两种状态；合并 Topic 时删除被合并项，不要停用。",
+                    "Topic 管理操作为新增、更新和删除；合并 Topic 时删除被合并项。",
                     "- Pulse Topic ID 是仅供系统精确执行的内部标识。用户可见的方案、授权说明和最终回答"
                     "只写 Topic 名称，绝不输出 Topic ID。",
                 ]

@@ -318,7 +318,7 @@ Pulse 内置工具：
 - `refresh_pulse`：强制重新生成 Pulse，默认等待完成；仅在用户要求刷新时调用。
 - `list_pulse_topics`：列出当前实际存在的订阅 Topic 和关键词。
 - `upsert_pulse_topic`：按名称新增/覆盖 Topic，或按 `topic_id` 更新名称和关键词。
-- `delete_pulse_topic`：永久删除 Topic，默认策略 `confirm`。Topic 不再提供停用状态，只有存在或删除。
+- `delete_pulse_topic`：永久删除 Topic，默认策略 `confirm`。
 
 `upsert_pulse_topic` 和 `delete_pulse_topic` 会在 Tool Governance 生成授权卡片前，把至少 8 位的唯一 Topic ID 前缀解析为当前用户的完整 UUID，并补充 Topic 名称；删除也可以直接按当前 Topic 名称定位。找不到或目标不唯一时直接拒绝参数。授权卡片面向用户只展示 Topic 名称和具体变更，内部完整 ID 仅用于精确执行和 Trace 审计。
 

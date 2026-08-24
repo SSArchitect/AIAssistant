@@ -17,11 +17,11 @@ import (
 
 func TestPulseQualitySearchBudgetPreservesAllModules(t *testing.T) {
 	topics := []models.PulseTopic{
-		{ID: "topic-ai", Name: "AI", Keywords: `["agent","model"]`, Enabled: true},
-		{ID: "topic-engineering", Name: "工程效率", Keywords: `["devops","toolchain"]`, Enabled: true},
-		{ID: "topic-models", Name: "大模型产品", Keywords: `["llm","release"]`, Enabled: true},
-		{ID: "topic-investing", Name: "投资研究", Keywords: `["market","earnings"]`, Enabled: true},
-		{ID: "topic-travel", Name: "旅行规划", Keywords: `["route","hotel"]`, Enabled: true},
+		{ID: "topic-ai", Name: "AI", Keywords: `["agent","model"]`},
+		{ID: "topic-engineering", Name: "工程效率", Keywords: `["devops","toolchain"]`},
+		{ID: "topic-models", Name: "大模型产品", Keywords: `["llm","release"]`},
+		{ID: "topic-investing", Name: "投资研究", Keywords: `["market","earnings"]`},
+		{ID: "topic-travel", Name: "旅行规划", Keywords: `["route","hotel"]`},
 	}
 	signals := []memoryPulseSignal{
 		{Theme: "代码质量", Focus: "后端代码质量与测试", Keywords: []string{"testing", "quality"}},

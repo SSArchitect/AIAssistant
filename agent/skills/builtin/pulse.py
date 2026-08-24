@@ -393,7 +393,7 @@ class PulseOptimizeTopicsSkill(_PulseTool):
                 "existing_topics_source": "current_topics_only",
                 "candidate_interest_signals_are_existing_topics": False,
                 "historical_clusters_are_existing_topics": False,
-                "lifecycle": "A Topic either exists or is deleted; there is no disabled state.",
+                "management_actions": ["add", "update", "delete"],
             }
             return SkillResult(
                 success=True,
@@ -526,7 +526,7 @@ class PulseDeleteTopicSkill(_PulseTool):
         return SkillMetadata(
             name="delete_pulse_topic",
             description=(
-                "永久删除当前用户的一个 Pulse Topic。Topic 只有存在或删除两种状态，不支持停用。"
+                "永久删除当前用户的一个 Pulse Topic。"
                 "仅在用户当前消息明确要求删除，或明确确认包含删除动作的优化方案后使用。"
                 "可以按 list_pulse_topics 返回的名称或内部 topic_id 精确定位。"
             ),
@@ -727,7 +727,7 @@ def _strip_internal_topic_ids(value: Any) -> Any:
     return {
         key: _strip_internal_topic_ids(item)
         for key, item in value.items()
-        if "topic_id" not in str(key).casefold()
+        if "topic_id" not in str(key).casefold() and str(key).casefold() != "enabled"
     }
 
 

@@ -145,8 +145,8 @@ test('Pulse news fallback prompt respects the selected topic and asks for source
         const pulse = {
             date: '2026-08-21',
             topics: [
-                { id: 'ai', name: 'AI', keywords: ['Agent', 'RAG'], enabled: true },
-                { id: 'travel', name: 'Travel', keywords: ['Tokyo'], enabled: true },
+                { id: 'ai', name: 'AI', keywords: ['Agent', 'RAG'] },
+                { id: 'travel', name: 'Travel', keywords: ['Tokyo'] },
             ],
         };
         const selectedPulseTopicId = 'ai';
@@ -636,7 +636,7 @@ test('Pulse AI optimization delegates read-only planning to Super Chat', () => {
     assert.match(enPrompt, /Do not modify any Topic/);
 });
 
-test('Pulse topic UI has no disabled visual state', () => {
+test('Pulse topic UI renders topics without status styling', () => {
     const renderTopics = extractFunctionDeclaration('renderPulseTopics');
     const fallbackPrompt = extractFunctionDeclaration('pulseNewsFallbackPrompt');
     assert.doesNotMatch(renderTopics, /topic\.enabled|muted/);

@@ -4375,6 +4375,25 @@ async def test_ai_memory_review_writes_long_term_memory(registry):
     assert "memory.review.completed" in event_types
 
 
+def test_ai_memory_review_keeps_live_pulse_configuration_out_of_memory(registry):
+    engine = AgentEngine(registry, ai_memory_review_enabled=True)
+    role_context = engine.role_memory.get_context(role_id="default")
+    assert role_context is not None
+    messages = engine._memory_review_messages(
+        role_context=role_context,
+        agent_id="super_chat",
+        request=ChatRequest(
+            conversation_id="conv-pulse-memory-policy",
+            message="帮我优化 Pulse Topic",
+        ),
+        assistant_message="这是一个待确认的调整方案。",
+        new_messages=[],
+    )
+
+    assert "Pulse Topic 的当前清单" in messages[0].content
+    assert "必须由工具实时读取" in messages[0].content
+
+
 @pytest.mark.asyncio
 async def test_ai_memory_review_failure_skips_memory_write(registry):
     engine = AgentEngine(registry, ai_memory_review_enabled=True)

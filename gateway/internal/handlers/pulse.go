@@ -79,7 +79,6 @@ type pulseTopicResponse struct {
 	ID        string    `json:"id"`
 	Name      string    `json:"name"`
 	Keywords  []string  `json:"keywords"`
-	Enabled   bool      `json:"enabled"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
@@ -257,7 +256,6 @@ type pulseRetrievalResultDiagnostic struct {
 type pulseTopicOptimizationMetric struct {
 	TopicID                   string          `json:"topic_id"`
 	TopicName                 string          `json:"topic_name"`
-	Enabled                   bool            `json:"enabled"`
 	StoredClusters            int             `json:"stored_clusters"`
 	QualityPassedAtGeneration int             `json:"quality_passed_at_generation"`
 	QualityFailedAtGeneration int             `json:"quality_failed_at_generation"`
@@ -620,7 +618,7 @@ func (h *PulseHandler) TopicOptimizationContext(c *gin.Context) {
 			"existing_topics_source":                         "current_topics_only",
 			"candidate_interest_signals_are_existing_topics": false,
 			"historical_clusters_are_existing_topics":        false,
-			"lifecycle": "A Topic either exists or is deleted; there is no disabled state.",
+			"management_actions":                             []string{"add", "update", "delete"},
 		},
 		"workflow": gin.H{
 			"analysis_only": true,
@@ -648,7 +646,6 @@ func (h *PulseHandler) CreateTopic(c *gin.Context) {
 	err := database.DB.Where("user_id = ? AND lower(name) = lower(?)", userID, name).First(&existing).Error
 	if err == nil {
 		existing.Keywords = keywordsJSON
-		existing.Enabled = true
 		existing.UpdatedAt = time.Now()
 		if err := database.DB.Save(&existing).Error; err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save topic"})
@@ -663,7 +660,6 @@ func (h *PulseHandler) CreateTopic(c *gin.Context) {
 		UserID:    userID,
 		Name:      name,
 		Keywords:  keywordsJSON,
-		Enabled:   true,
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),
 	}
@@ -695,7 +691,6 @@ func (h *PulseHandler) UpdateTopic(c *gin.Context) {
 	if req.Keywords != nil {
 		topic.Keywords = encodeKeywords(req.Keywords)
 	}
-	topic.Enabled = true
 	topic.UpdatedAt = time.Now()
 
 	if err := database.DB.Save(&topic).Error; err != nil {
@@ -1336,7 +1331,7 @@ func (h *PulseHandler) hasCurrentPulseShape(date string, userID string) (bool, e
 
 func (h *PulseHandler) loadTopics(userID string) ([]models.PulseTopic, error) {
 	var topics []models.PulseTopic
-	err := database.DB.Where("user_id = ? AND enabled = ?", normalizedUserID(userID), true).Order("created_at asc").Find(&topics).Error
+	err := database.DB.Where("user_id = ?", normalizedUserID(userID)).Order("created_at asc").Find(&topics).Error
 	return topics, err
 }
 
@@ -1416,22 +1411,37 @@ func buildPulseTopicOptimizationHistory(
 	retrievalRuns []models.PulseRetrievalRun,
 ) gin.H {
 	metricsByKey := map[string]*pulseTopicOptimizationMetric{}
+	metricKeyByName := map[string]string{}
 	itemTopicByID := map[string]string{}
 	for _, topic := range topics {
 		metricsByKey[topic.ID] = &pulseTopicOptimizationMetric{
 			TopicID:         topic.ID,
 			TopicName:       topic.Name,
-			Enabled:         topic.Enabled,
 			Engagement:      map[string]int{},
 			sourceDomainSet: map[string]bool{},
+		}
+		if nameKey := normalizedPulseTopicKey(topic.Name); nameKey != "" {
+			metricKeyByName[nameKey] = topic.ID
 		}
 	}
 
 	recentContent := []gin.H{}
+	sampledClusterCount := 0
 	qualityPassed := 0
 	qualityFailed := 0
 	totalSources := 0
 	for _, item := range items {
+		metricKey := strings.TrimSpace(item.TopicID)
+		metric := metricsByKey[metricKey]
+		if metric == nil {
+			metricKey = metricKeyByName[normalizedPulseTopicKey(item.TopicName)]
+			metric = metricsByKey[metricKey]
+		}
+		if metric == nil {
+			continue
+		}
+		sampledClusterCount++
+
 		issues, sources := pulseTopicOptimizationQualityIssues(item)
 		passed := len(issues) == 0
 		if passed {
@@ -1441,38 +1451,22 @@ func buildPulseTopicOptimizationHistory(
 		}
 		totalSources += len(sources)
 
-		metricKey := strings.TrimSpace(item.TopicID)
-		if metricKey == "" && strings.TrimSpace(item.TopicName) != "" {
-			metricKey = "name:" + normalizedPulseTopicKey(item.TopicName)
+		metric.StoredClusters++
+		if passed {
+			metric.QualityPassedAtGeneration++
+		} else {
+			metric.QualityFailedAtGeneration++
 		}
-		if metricKey != "" {
-			metric := metricsByKey[metricKey]
-			if metric == nil {
-				metric = &pulseTopicOptimizationMetric{
-					TopicID:         item.TopicID,
-					TopicName:       item.TopicName,
-					Engagement:      map[string]int{},
-					sourceDomainSet: map[string]bool{},
-				}
-				metricsByKey[metricKey] = metric
-			}
-			metric.StoredClusters++
-			if passed {
-				metric.QualityPassedAtGeneration++
-			} else {
-				metric.QualityFailedAtGeneration++
-			}
-			metric.SourceCount += len(sources)
-			if metric.LastClusterAt == "" || item.CreatedAt.Format(time.RFC3339) > metric.LastClusterAt {
-				metric.LastClusterAt = item.CreatedAt.Format(time.RFC3339)
-			}
-			for _, source := range sources {
-				if domain := pulseSourceDomainKey(source.URL); domain != "" {
-					metric.sourceDomainSet[domain] = true
-				}
-			}
-			itemTopicByID[item.ID] = metricKey
+		metric.SourceCount += len(sources)
+		if metric.LastClusterAt == "" || item.CreatedAt.Format(time.RFC3339) > metric.LastClusterAt {
+			metric.LastClusterAt = item.CreatedAt.Format(time.RFC3339)
 		}
+		for _, source := range sources {
+			if domain := pulseSourceDomainKey(source.URL); domain != "" {
+				metric.sourceDomainSet[domain] = true
+			}
+		}
+		itemTopicByID[item.ID] = metricKey
 
 		if len(recentContent) < 24 {
 			contentSources := make([]gin.H, 0, minInt(len(sources), 3))
@@ -1488,8 +1482,8 @@ func buildPulseTopicOptimizationHistory(
 				"id":                           item.ID,
 				"date":                         item.Date,
 				"module":                       item.Source,
-				"topic_id":                     item.TopicID,
-				"topic_name":                   item.TopicName,
+				"topic_id":                     metric.TopicID,
+				"topic_name":                   metric.TopicName,
 				"title":                        item.Title,
 				"summary":                      item.Summary,
 				"quality_passed_at_generation": passed,
@@ -1501,7 +1495,7 @@ func buildPulseTopicOptimizationHistory(
 
 	for _, event := range events {
 		metricKey := strings.TrimSpace(event.TopicID)
-		if metricKey == "" {
+		if metricsByKey[metricKey] == nil {
 			metricKey = itemTopicByID[event.ItemID]
 		}
 		metric := metricsByKey[metricKey]
@@ -1520,9 +1514,6 @@ func buildPulseTopicOptimizationHistory(
 		metrics = append(metrics, *metric)
 	}
 	sort.SliceStable(metrics, func(i, j int) bool {
-		if metrics[i].Enabled != metrics[j].Enabled {
-			return metrics[i].Enabled
-		}
 		if metrics[i].StoredClusters != metrics[j].StoredClusters {
 			return metrics[i].StoredClusters > metrics[j].StoredClusters
 		}
@@ -1542,17 +1533,17 @@ func buildPulseTopicOptimizationHistory(
 
 	return gin.H{
 		"summary": gin.H{
-			"sampled_cluster_count":        len(items),
+			"sampled_cluster_count":        sampledClusterCount,
 			"quality_passed_at_generation": qualityPassed,
 			"quality_failed_at_generation": qualityFailed,
 			"source_count":                 totalSources,
 			"retrieval_run_count":          len(retrievalRuns),
 		},
-		"topic_metrics":      metrics,
-		"overlap_candidates": pulseTopicOverlapCandidates(topics),
-		"recent_content":     recentContent,
-		"module_history":     moduleHistory,
-		"retrieval_runs":     pulseTopicOptimizationRetrievalRuns(retrievalRuns),
+		"current_topic_metrics": metrics,
+		"overlap_candidates":    pulseTopicOverlapCandidates(topics),
+		"recent_content":        recentContent,
+		"module_history":        moduleHistory,
+		"retrieval_runs":        pulseTopicOptimizationRetrievalRuns(retrievalRuns),
 	}
 }
 
@@ -1589,15 +1580,9 @@ func pulseTopicOverlapCandidates(topics []models.PulseTopic) []pulseTopicOverlap
 	candidates := []pulseTopicOverlapCandidate{}
 	for leftIndex := 0; leftIndex < len(topics); leftIndex++ {
 		left := topics[leftIndex]
-		if !left.Enabled {
-			continue
-		}
 		leftTerms := pulseTopicOptimizationTermSet(left)
 		for rightIndex := leftIndex + 1; rightIndex < len(topics); rightIndex++ {
 			right := topics[rightIndex]
-			if !right.Enabled {
-				continue
-			}
 			rightTerms := pulseTopicOptimizationTermSet(right)
 			shared := []string{}
 			for term := range leftTerms {
@@ -2132,22 +2117,17 @@ func buildPulseSearchQueries(date string, topics []models.PulseTopic, signals []
 		})
 	}
 
-	enabledTopics := make([]models.PulseTopic, 0, len(topics))
-	for _, topic := range topics {
-		if topic.Enabled {
-			enabledTopics = append(enabledTopics, topic)
-		}
-	}
-	if len(enabledTopics) > 1 {
-		offset := stableIndex(date+":pulse-topic-query-rotation", len(enabledTopics))
-		enabledTopics = append(
-			append([]models.PulseTopic{}, enabledTopics[offset:]...),
-			enabledTopics[:offset]...,
+	currentTopics := append([]models.PulseTopic{}, topics...)
+	if len(currentTopics) > 1 {
+		offset := stableIndex(date+":pulse-topic-query-rotation", len(currentTopics))
+		currentTopics = append(
+			append([]models.PulseTopic{}, currentTopics[offset:]...),
+			currentTopics[:offset]...,
 		)
 	}
 	topicSuffixes := pulseSearchQuerySuffixesForDate(pulseSourceTopicHot, date)
 	for suffixIndex := range topicSuffixes {
-		for _, topic := range enabledTopics {
+		for _, topic := range currentTopics {
 			termGroups := pulseFocusedSearchTermGroups(
 				topic.Name,
 				expandPulseTopicKeywords(topic.Name, decodeKeywords(topic.Keywords)),
@@ -4442,9 +4422,6 @@ func inferMemorySignals(messages []models.Message) []memoryPulseSignal {
 func collectInterestTerms(topics []models.PulseTopic, signals []memoryPulseSignal) []string {
 	terms := []string{}
 	for _, topic := range topics {
-		if !topic.Enabled {
-			continue
-		}
 		terms = appendUniqueStrings(terms, topic.Name)
 		terms = appendUniqueStrings(terms, expandPulseTopicKeywords(topic.Name, decodeKeywords(topic.Keywords))...)
 	}
@@ -4494,9 +4471,6 @@ func buildPulseSuggestedTopics(topics []models.PulseTopic, signals []memoryPulse
 	}
 
 	for _, topic := range topics {
-		if !topic.Enabled {
-			continue
-		}
 		for _, seed := range adjacentPulseTopicSeeds(topic) {
 			add(seed.Name, seed.Keywords, seed.Reason, "topic_expansion", seed.HeatScore)
 		}
@@ -5570,7 +5544,6 @@ func topicResponse(topic models.PulseTopic) pulseTopicResponse {
 		ID:        topic.ID,
 		Name:      topic.Name,
 		Keywords:  decodeKeywords(topic.Keywords),
-		Enabled:   topic.Enabled,
 		CreatedAt: topic.CreatedAt,
 		UpdatedAt: topic.UpdatedAt,
 	}

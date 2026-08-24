@@ -7,7 +7,6 @@ type PulseTopic struct {
 	UserID    string    `json:"user_id" gorm:"index;not null;default:0"`
 	Name      string    `json:"name" gorm:"index"`
 	Keywords  string    `json:"keywords,omitempty"` // JSON array
-	Enabled   bool      `json:"enabled" gorm:"default:true"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
