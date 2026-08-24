@@ -75,7 +75,7 @@ func TestPulseCreatesTopicAndPrecomputesDailyItems(t *testing.T) {
 }
 
 func TestPulseKeywordsSplitChineseEnumerationDelimiter(t *testing.T) {
-	got := normalizeKeywords([]string{"Anthropic、Claude、OpenAI，GPT;DeepSeek", "Claude"})
+	got := normalizeKeywords([]string{"Anthropic、Claude、OpenAI，GPT;DeepSeek、A", "Claude"})
 	want := []string{"Anthropic", "Claude", "DeepSeek", "GPT", "OpenAI"}
 	if fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("expected delimited keyword string to be normalized, got %#v", got)

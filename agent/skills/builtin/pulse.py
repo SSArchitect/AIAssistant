@@ -659,17 +659,24 @@ def _coerce_bool(value: Any, *, default: bool) -> bool:
 
 
 def _coerce_keywords(value: Any) -> list[str]:
-    if isinstance(value, list):
-        candidates = [str(item).strip() for item in value]
-    else:
-        candidates = [
-            item.strip()
-            for item in re.split(r"[,，;；、\n]+", str(value or ""))
-        ]
+    raw_values = value if isinstance(value, list) else [value]
+    candidates = [
+        item.strip()
+        for raw_value in raw_values
+        for item in re.split(r"[,，;；、\n]+", str(raw_value or ""))
+    ]
     keywords: list[str] = []
+    seen: set[str] = set()
     for candidate in candidates:
-        if candidate and candidate not in keywords:
-            keywords.append(candidate[:60])
+        candidate = candidate[:60]
+        if (
+            not candidate
+            or (len(candidate) == 1 and candidate.isascii() and candidate.isalnum())
+            or candidate.casefold() in seen
+        ):
+            continue
+        seen.add(candidate.casefold())
+        keywords.append(candidate)
     return keywords[:20]
 
 

@@ -5776,12 +5776,17 @@ func normalizeKeywords(values []string) []string {
 			if cleaned == "" {
 				continue
 			}
+			runes := []rune(cleaned)
+			if len(runes) == 1 && runes[0] <= unicode.MaxASCII && (unicode.IsLetter(runes[0]) || unicode.IsDigit(runes[0])) {
+				continue
+			}
+			cleaned = limitText(cleaned, 60)
 			key := strings.ToLower(cleaned)
 			if seen[key] {
 				continue
 			}
 			seen[key] = true
-			keywords = append(keywords, limitText(cleaned, 60))
+			keywords = append(keywords, cleaned)
 			if len(keywords) >= 20 {
 				break
 			}

@@ -3749,7 +3749,7 @@ class TestPulseSkills:
 
         created = await skill.execute(
             name="机器人",
-            keywords="具身智能、供应链，机器人;控制器",
+            keywords=["具身智能、供应链，机器人;控制器", "A"],
             _user_id="alice",
         )
         updated = await skill.execute(
