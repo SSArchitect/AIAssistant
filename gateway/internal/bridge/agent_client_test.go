@@ -703,6 +703,46 @@ func TestAgentClientListRunsUsesFiltersAndDecodesEvents(t *testing.T) {
 	}
 }
 
+func TestAgentClientResolveToolApprovalSendsStructuredDecision(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/agent/tool-approvals/approval_123" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		var body map[string]string
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if body["user_id"] != "alice" || body["decision"] != "allow_once" {
+			t.Fatalf("unexpected request: %#v", body)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"approval_id":"approval_123",
+			"run_id":"run_123",
+			"conversation_id":"conv-1",
+			"tool_name":"upsert_pulse_topic",
+			"decision":"allow_once",
+			"status":"approved",
+			"request_count":2,
+			"succeeded_count":2,
+			"failed_count":0,
+			"results":[],
+			"events":[],
+			"skills_used":["upsert_pulse_topic"]
+		}`))
+	}))
+	defer server.Close()
+
+	client := NewAgentClient(server.URL, time.Second)
+	resolution, err := client.ResolveToolApproval("approval_123", "alice", "allow_once")
+	if err != nil {
+		t.Fatalf("ResolveToolApproval returned error: %v", err)
+	}
+	if resolution.Status != "approved" || resolution.SucceededCount != 2 {
+		t.Fatalf("unexpected resolution: %#v", resolution)
+	}
+}
+
 func TestAgentClientReturnsStatusBodyOnError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "agent unavailable", http.StatusServiceUnavailable)

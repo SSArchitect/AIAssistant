@@ -1009,16 +1009,9 @@ async def test_tool_governance_blocks_unconfirmed_high_risk_call(engine):
         model="test-model",
         usage={"input": 10, "output": 5},
     )
-    final_response = LLMResponse(
-        content="没有执行删除，因为缺少明确确认。",
-        tool_calls=[],
-        model="test-model",
-        usage={"input": 10, "output": 5},
-    )
-
     with patch.object(engine, "_get_provider") as mock_provider:
         provider = AsyncMock()
-        provider.chat = AsyncMock(side_effect=[tool_response, final_response])
+        provider.chat = AsyncMock(return_value=tool_response)
         mock_provider.return_value = provider
         result = await engine.process(
             ChatRequest(
@@ -1028,8 +1021,12 @@ async def test_tool_governance_blocks_unconfirmed_high_risk_call(engine):
         )
 
     assert skill.calls == 0
-    assert result.plan[0].status == "error"
+    assert "授权" in result.response
+    assert result.plan[0].status == "approval_required"
     assert any(event.type == "tool.governance.blocked" for event in result.events)
+    assert any(event.type == "approval.required" for event in result.events)
+    assert any(event.type == "tool.awaiting_approval" for event in result.events)
+    assert provider.chat.await_count == 1
 
 
 @pytest.mark.asyncio

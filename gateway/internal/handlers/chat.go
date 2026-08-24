@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -485,6 +486,7 @@ func compactTracePayload(payload map[string]interface{}) map[string]interface{} 
 	}
 	allowed := map[string]bool{
 		"agent_id": true, "arguments": true, "aspect_ratio": true, "brief_preview": true,
+		"access": true, "approval_id": true, "approval_resume": true,
 		"budget_error_type": true, "budget_reason": true, "citation_count": true,
 		"command_text": true, "count": true, "error_message": true,
 		"error_type": true, "failed_tool_call_count": true, "final_prompt_char_count": true,
@@ -492,9 +494,11 @@ func compactTracePayload(payload map[string]interface{}) map[string]interface{} 
 		"information_strategy": true, "max_failed_tool_calls": true, "max_model_rounds": true,
 		"max_tool_calls": true, "message_count": true, "model": true, "node": true,
 		"provider": true, "reason": true, "response_status": true, "result": true,
+		"decision": true, "expires_at": true, "failed_count": true, "operations": true,
 		"result_preview": true, "round": true, "skills_used": true, "source_agent_id": true,
 		"status": true, "step": true, "steps": true, "streaming": true, "summary": true,
-		"target_agent_id": true, "tool_calls": true, "tools_count": true, "total": true,
+		"request_count": true, "risk_level": true, "succeeded_count": true,
+		"target_agent_id": true, "tool_calls": true, "tool_name": true, "tools_count": true, "total": true,
 		"tool_call_count": true, "usage": true, "urls": true, "workflow_node": true,
 	}
 	compact := make(map[string]interface{})
@@ -523,6 +527,8 @@ func compactTraceValue(key string, value interface{}) interface{} {
 		})
 	case "tool_calls":
 		return compactTraceObjects(value, 8, map[string]int{"id": 120, "name": 120})
+	case "operations":
+		return compactApprovalOperations(value)
 	case "usage":
 		return compactTraceObject(value, map[string]int{
 			"input": 40, "output": 40, "total": 40, "input_tokens": 40, "output_tokens": 40, "total_tokens": 40,
@@ -576,6 +582,50 @@ func compactTraceObjects(value interface{}, limit int, allowed map[string]int) [
 			break
 		}
 		compact = append(compact, compactTraceObject(item, allowed))
+	}
+	return compact
+}
+
+func compactApprovalOperations(value interface{}) []map[string]interface{} {
+	items, ok := value.([]interface{})
+	if !ok {
+		return []map[string]interface{}{}
+	}
+	compact := make([]map[string]interface{}, 0, minTraceInt(len(items), 12))
+	for _, item := range items {
+		if len(compact) >= 12 {
+			break
+		}
+		source, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		operation := map[string]interface{}{}
+		if stepID, ok := source["step_id"].(string); ok {
+			operation["step_id"] = truncateRunes(stepID, 120)
+		}
+		arguments, ok := source["arguments"].(map[string]interface{})
+		if ok {
+			keys := make([]string, 0, len(arguments))
+			for key := range arguments {
+				keys = append(keys, key)
+			}
+			sort.Strings(keys)
+			compactArguments := map[string]interface{}{}
+			for _, key := range keys {
+				if len(compactArguments) >= 12 {
+					break
+				}
+				value := arguments[key]
+				if text, ok := value.(string); ok {
+					compactArguments[key] = truncateRunes(text, 240)
+				} else {
+					compactArguments[key] = value
+				}
+			}
+			operation["arguments"] = compactArguments
+		}
+		compact = append(compact, operation)
 	}
 	return compact
 }

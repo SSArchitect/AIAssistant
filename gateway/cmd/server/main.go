@@ -104,6 +104,7 @@ func main() {
 		api.DELETE("/roles/:id/memories/:memory_id", chatHandler.DeleteRoleMemory)
 		api.GET("/tools", chatHandler.ListTools)
 		api.PUT("/tools/settings", chatHandler.UpdateToolSettings)
+		api.POST("/tool-approvals/:id", chatHandler.ResolveToolApproval)
 		api.GET("/runs", chatHandler.ListRuns)
 		api.GET("/runs/:id", chatHandler.GetRun)
 		api.POST("/runs/:id/cancel", chatHandler.CancelRun)

@@ -97,6 +97,80 @@ async def test_confirm_policy_requires_explicit_current_turn_intent():
 
 
 @pytest.mark.asyncio
+async def test_pending_approval_groups_calls_and_executes_exact_arguments_once():
+    governance, store, run_id = governance_run()
+    skill = GovernedSkill(max_calls=3)
+
+    first = await governance.execute(
+        skill=skill,
+        request=request("看看这些待办"),
+        run_id=run_id,
+        arguments={"todo_id": "todo-1", "secret": "first"},
+        step_id="call-1",
+    )
+    second = await governance.execute(
+        skill=skill,
+        request=request("看看这些待办"),
+        run_id=run_id,
+        arguments={"todo_id": "todo-2", "secret": "second"},
+        step_id="call-2",
+    )
+
+    approval_id = first.data["governance"]["approval_id"]
+    assert approval_id == second.data["governance"]["approval_id"]
+    required = [event for event in store.get_run(run_id).events if event.type == "approval.required"]
+    assert required[-1].payload["request_count"] == 2
+    assert required[-1].payload["operations"][0]["arguments"]["secret"] == "<redacted>"
+
+    resolution = await governance.resolve_approval(
+        approval_id,
+        user_id="alice",
+        decision="allow_once",
+    )
+
+    assert resolution["status"] == "approved"
+    assert resolution["succeeded_count"] == 2
+    assert skill.calls == 2
+    assert store.get_run(run_id).skills_used == ["dangerous"]
+    assert any(event.type == "approval.resolved" for event in store.get_run(run_id).events)
+
+    with pytest.raises(RuntimeError, match="already been resolved"):
+        await governance.resolve_approval(
+            approval_id,
+            user_id="alice",
+            decision="allow_once",
+        )
+
+
+@pytest.mark.asyncio
+async def test_pending_approval_rejects_wrong_user_and_supports_deny():
+    governance, _, run_id = governance_run()
+    skill = GovernedSkill()
+    blocked = await governance.execute(
+        skill=skill,
+        request=request("看看这条待办"),
+        run_id=run_id,
+        arguments={"todo_id": "todo-1"},
+    )
+    approval_id = blocked.data["governance"]["approval_id"]
+
+    with pytest.raises(PermissionError):
+        await governance.resolve_approval(
+            approval_id,
+            user_id="mallory",
+            decision="allow_once",
+        )
+
+    resolution = await governance.resolve_approval(
+        approval_id,
+        user_id="alice",
+        decision="deny",
+    )
+    assert resolution["status"] == "denied"
+    assert skill.calls == 0
+
+
+@pytest.mark.asyncio
 async def test_user_deny_policy_blocks_trusted_workflow():
     governance, _, run_id = governance_run()
     skill = GovernedSkill(default_policy="auto")

@@ -288,10 +288,10 @@ Drive 与 Memory 的边界：
 Tool UI 展示 `/api/tools` 返回的 skill 元数据，包括 `source`、`enabled`、风险等级、访问类型、调用上限、超时和执行策略。当前帐号可为每个工具设置：
 
 - `auto`：模型或受控工作流可直接执行。
-- `confirm`：当前用户消息必须明确要求该高风险动作；受控内部工作流可复用已经成立的流程确认。
+- `confirm`：当前用户消息已经明确要求该高风险动作时可直接执行；否则暂停精确的工具调用并在聊天内展示授权卡片。受控内部工作流可复用已经成立的流程确认。
 - `deny`：无论普通调用还是内部工作流都禁止执行。
 
-`AgentEngine` 的所有 Skill 执行统一经过 `ToolGovernance`，执行前检查策略与每次 run 调用上限，执行时应用超时，并写入 `tool.governance.allowed`、`tool.governance.blocked` 或 `tool.governance.timeout` Trace 事件。敏感参数按 Skill 元数据在治理事件和通用工具事件中脱敏。当前是个人单用户实现，`confirm` 不建立异步审批队列；需要审批时，以本轮明确指令为准。
+`AgentEngine` 的所有 Skill 执行统一经过 `ToolGovernance`，执行前检查策略与每次 run 调用上限，执行时应用超时，并写入 `tool.governance.allowed`、`tool.governance.blocked` 或 `tool.governance.timeout` Trace 事件。敏感参数按 Skill 元数据在治理事件和通用工具事件中脱敏。未获得明确确认时，同一 run 内同一工具的调用会合并为一个 15 分钟有效的 approval ticket，并通过 `approval.required`、`tool.awaiting_approval` 事件展示聊天内授权卡片。用户可选择“仅本次允许”“始终允许”或“拒绝”；允许后只执行 ticket 中冻结的原始参数，不重新让模型解释或生成参数，并通过 `approval.resolved` 记录结果。“始终允许”还会把该用户的工具策略更新为 `auto`。
 
 Drive 内置工具：
 
@@ -517,7 +517,7 @@ Web: app.js syntax passed when node is available
 - TraceStore 还是内存实现，服务重启后 run history 会丢失。后续需要落 SQLite/Postgres。
 - `/agent/chat` 当前是非 streaming；`stream` 字段保留但还没有端到端 SSE。
 - `langgraph_research` 只是实验槽位；未安装 `langgraph` 时会显示 `enabled=false`。
-- Tool 已有统一的本地治理层，但 `confirm` 目前是“本轮明确指令”语义，没有多用户审批人、异步 approval ticket 或企业策略中心。
+- Tool 已有统一的本地治理层和聊天内 approval ticket，但 ticket 仍保存在 Agent 进程内，服务重启后会失效；目前也没有多用户审批人、持久化审批队列或企业策略中心。
 - Drive 已作为知识内容存储并支持关键词检索，但尚未建立 chunk/embedding/vector 索引；语义检索和引用质量仍需后续增强。
 - Gateway 当前主要面向本地个人工作台，没有认证、租户隔离、限流和生产审计。
 - `data/assistant.db` 是本地 SQLite，生产化前需要迁移策略。

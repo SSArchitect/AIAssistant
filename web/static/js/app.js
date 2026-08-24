@@ -376,6 +376,28 @@ const I18N = {
             citations: '引用来源',
             followUpAria: '推荐追问',
         },
+        approval: {
+            title: '需要你的授权',
+            detail: '该工具准备执行 {count} 项操作。批准后只会执行卡片中列出的参数，不再解析确认话术。',
+            tool: '工具',
+            operations: '查看 {count} 项操作',
+            allowOnce: '仅本次允许',
+            allowAlways: '始终允许',
+            deny: '拒绝',
+            waiting: '正在汇总待授权操作…',
+            resolving: '正在处理授权…',
+            approved: '已授权并执行',
+            denied: '已拒绝',
+            partial: '部分操作执行失败',
+            failed: '授权后的操作执行失败',
+            expired: '授权已过期，请重新发起操作。',
+            succeeded: '已完成 {succeeded}/{total} 项操作。',
+            alwaysConfirmTitle: '始终允许这个工具？',
+            alwaysConfirm: '以后模型调用 {tool} 时将不再逐次询问。当前卡片中的操作也会立即执行。',
+            resolveFailed: '授权处理失败：{message}',
+            risk: '风险：{risk}',
+            access: '访问：{access}',
+        },
         chatNav: {
             previousUser: '上一条用户消息',
             historyOpen: '展开对话历史',
@@ -1252,6 +1274,28 @@ const I18N = {
             resumeFailed: 'The connection is back, but this answer could not be recovered yet. Refresh the conversation and try again.',
             citations: 'Sources',
             followUpAria: 'Suggested follow-up questions',
+        },
+        approval: {
+            title: 'Your approval is required',
+            detail: 'This tool is ready to perform {count} operation(s). Approval executes only the parameters shown here, without interpreting another confirmation message.',
+            tool: 'Tool',
+            operations: 'Review {count} operation(s)',
+            allowOnce: 'Allow once',
+            allowAlways: 'Always allow',
+            deny: 'Deny',
+            waiting: 'Collecting operations for approval…',
+            resolving: 'Resolving approval…',
+            approved: 'Approved and executed',
+            denied: 'Denied',
+            partial: 'Some operations failed',
+            failed: 'Approved operations failed',
+            expired: 'This approval expired. Start the operation again.',
+            succeeded: 'Completed {succeeded}/{total} operation(s).',
+            alwaysConfirmTitle: 'Always allow this tool?',
+            alwaysConfirm: 'Future model calls to {tool} will run without asking each time. The operations in this card will also run now.',
+            resolveFailed: 'Approval failed: {message}',
+            risk: 'Risk: {risk}',
+            access: 'Access: {access}',
         },
         chatNav: {
             previousUser: 'Previous user message',
@@ -14436,6 +14480,202 @@ function renderConversationMessageListHtml(messages = []) {
     return html;
 }
 
+function approvalStatesFromEvents(events = []) {
+    const approvals = new Map();
+    let runFinished = false;
+    (Array.isArray(events) ? events : []).forEach((event) => {
+        const type = String(event?.type || '');
+        if (type === 'run.completed' || type === 'run.partial' || type === 'run.failed' || type === 'run.cancelled') {
+            runFinished = true;
+        }
+        if (type !== 'approval.required' && type !== 'approval.resolved') return;
+        const payload = event.payload && typeof event.payload === 'object' ? event.payload : {};
+        const approvalId = String(payload.approval_id || '');
+        if (!approvalId) return;
+        const current = approvals.get(approvalId) || {
+            approvalId,
+            toolName: '',
+            riskLevel: '',
+            access: '',
+            requestCount: 0,
+            operations: [],
+            expiresAt: '',
+            resolution: null,
+        };
+        if (type === 'approval.required') {
+            current.toolName = String(payload.tool_name || current.toolName || '');
+            current.riskLevel = String(payload.risk_level || current.riskLevel || '');
+            current.access = String(payload.access || current.access || '');
+            current.requestCount = Number(payload.request_count || current.requestCount || 0);
+            current.operations = Array.isArray(payload.operations) ? payload.operations : current.operations;
+            current.expiresAt = String(payload.expires_at || current.expiresAt || '');
+        } else {
+            current.resolution = {
+                decision: String(payload.decision || ''),
+                requestCount: Number(payload.request_count || current.requestCount || 0),
+                succeededCount: Number(payload.succeeded_count || 0),
+                failedCount: Number(payload.failed_count || 0),
+                eventStatus: String(event.status || ''),
+            };
+        }
+        approvals.set(approvalId, current);
+    });
+    return Array.from(approvals.values()).map((approval) => ({ ...approval, runFinished }));
+}
+
+function approvalCardStatus(approval) {
+    const resolution = approval.resolution;
+    if (resolution) {
+        if (resolution.decision === 'deny') return 'denied';
+        if (resolution.failedCount > 0 && resolution.succeededCount > 0) return 'partial';
+        if (resolution.failedCount > 0 || resolution.eventStatus === 'error') return 'failed';
+        return 'approved';
+    }
+    const expiresAt = Date.parse(approval.expiresAt || '');
+    if (Number.isFinite(expiresAt) && expiresAt <= Date.now()) return 'expired';
+    return 'pending';
+}
+
+function approvalOperationSummary(operation = {}, index = 0) {
+    const args = operation.arguments && typeof operation.arguments === 'object' ? operation.arguments : {};
+    const target = args.name || args.path || args.item_id || args.todo_id || args.topic_id || args.url || '';
+    const action = args.enabled === false
+        ? (currentLanguage === 'zh' ? '停用' : 'Disable')
+        : args.enabled === true
+            ? (currentLanguage === 'zh' ? '启用/更新' : 'Enable/update')
+            : (currentLanguage === 'zh' ? '执行' : 'Run');
+    return `${index + 1}. ${action}${target ? ` · ${target}` : ''}`;
+}
+
+function renderApprovalCards(events = [], options = {}) {
+    const interactive = options.interactive !== false;
+    return approvalStatesFromEvents(events).map((approval) => {
+        const status = approvalCardStatus(approval);
+        const count = approval.requestCount || approval.operations.length || 1;
+        const pending = status === 'pending';
+        const ready = pending && approval.runFinished && interactive;
+        const statusLabel = status === 'pending'
+            ? (ready ? t('approval.title') : t('approval.waiting'))
+            : t(`approval.${status}`);
+        const resolution = approval.resolution || {};
+        const summary = status === 'approved' || status === 'partial' || status === 'failed'
+            ? t('approval.succeeded', {
+                succeeded: Number(resolution.succeededCount || 0),
+                total: Number(resolution.requestCount || count),
+            })
+            : status === 'expired'
+                ? t('approval.expired')
+                : '';
+        const operationItems = approval.operations.map((operation, index) => {
+            const args = operation.arguments && typeof operation.arguments === 'object' ? operation.arguments : {};
+            return `
+                <li>
+                    <strong>${escapeHtml(approvalOperationSummary(operation, index))}</strong>
+                    <pre>${escapeHtml(JSON.stringify(args, null, 2))}</pre>
+                </li>
+            `;
+        }).join('');
+        const actions = ready ? `
+            <div class="tool-approval-actions">
+                <button class="btn-primary" type="button"
+                        data-resolve-tool-approval="${escapeAttr(approval.approvalId)}"
+                        data-approval-decision="allow_once">${escapeHtml(t('approval.allowOnce'))}</button>
+                <button class="btn-secondary" type="button"
+                        data-resolve-tool-approval="${escapeAttr(approval.approvalId)}"
+                        data-approval-decision="allow_always">${escapeHtml(t('approval.allowAlways'))}</button>
+                <button class="btn-secondary danger" type="button"
+                        data-resolve-tool-approval="${escapeAttr(approval.approvalId)}"
+                        data-approval-decision="deny">${escapeHtml(t('approval.deny'))}</button>
+            </div>
+        ` : pending ? `<div class="tool-approval-waiting">${escapeHtml(t('approval.waiting'))}</div>` : '';
+        return `
+            <article class="tool-approval-card ${escapeAttr(status)}" data-tool-approval-card="${escapeAttr(approval.approvalId)}">
+                <div class="tool-approval-head">
+                    <span class="tool-approval-icon" aria-hidden="true">!</span>
+                    <div>
+                        <h3>${escapeHtml(t('approval.title'))}</h3>
+                        <p>${escapeHtml(t('approval.detail', { count }))}</p>
+                    </div>
+                    <span class="status-chip ${status === 'approved' ? 'ok' : status === 'pending' ? 'warn' : status === 'denied' ? 'neutral' : 'error'}">${escapeHtml(statusLabel)}</span>
+                </div>
+                <div class="tool-approval-meta">
+                    <span>${escapeHtml(t('approval.tool'))}: <code>${escapeHtml(approval.toolName || '-')}</code></span>
+                    ${approval.riskLevel ? `<span>${escapeHtml(t('approval.risk', { risk: approval.riskLevel }))}</span>` : ''}
+                    ${approval.access ? `<span>${escapeHtml(t('approval.access', { access: approval.access }))}</span>` : ''}
+                </div>
+                ${operationItems ? `
+                    <details class="tool-approval-operations">
+                        <summary>${escapeHtml(t('approval.operations', { count }))}</summary>
+                        <ol>${operationItems}</ol>
+                    </details>
+                ` : ''}
+                ${summary ? `<p class="tool-approval-summary">${escapeHtml(summary)}</p>` : ''}
+                <p class="tool-approval-error" role="alert"></p>
+                ${actions}
+            </article>
+        `;
+    }).join('');
+}
+
+function renderApprovalPanel(events = []) {
+    const cards = renderApprovalCards(events);
+    return cards ? `<div class="tool-approval-list" data-approval-list>${cards}</div>` : '';
+}
+
+async function resolveToolApproval(button) {
+    const approvalId = button?.dataset?.resolveToolApproval || '';
+    const decision = button?.dataset?.approvalDecision || '';
+    const card = button?.closest?.('[data-tool-approval-card]');
+    if (!approvalId || !card || !['allow_once', 'allow_always', 'deny'].includes(decision)) return;
+    const toolName = card.querySelector('code')?.textContent || '';
+    if (decision === 'allow_always') {
+        const confirmed = await confirmAction(t('approval.alwaysConfirm', { tool: toolName }), {
+            title: t('approval.alwaysConfirmTitle'),
+            confirmText: t('approval.allowAlways'),
+        });
+        if (!confirmed) return;
+    }
+
+    const buttons = card.querySelectorAll('[data-resolve-tool-approval]');
+    buttons.forEach((item) => { item.disabled = true; });
+    card.classList.add('resolving');
+    const status = card.querySelector('.status-chip');
+    if (status) status.textContent = t('approval.resolving');
+    const errorEl = card.querySelector('.tool-approval-error');
+    if (errorEl) errorEl.textContent = '';
+    try {
+        const data = await apiCall(
+            'POST',
+            `/api/tool-approvals/${encodeURIComponent(approvalId)}`,
+            { decision, user_id: currentUserId },
+        );
+        if (data.policy_updated && data.tool_name) {
+            toolUserSettings[toolPolicySettingKey(data.tool_name)] = 'auto';
+        }
+        const message = card.closest('.message');
+        const list = card.closest('[data-approval-list]');
+        if (list) {
+            list.innerHTML = renderApprovalCards(data.events || []);
+            if (data.warning) {
+                const warningEl = list.querySelector('.tool-approval-error');
+                if (warningEl) warningEl.textContent = data.warning;
+            }
+        }
+        const traceEl = message?.querySelector?.('.streaming-trace');
+        if (traceEl) {
+            renderProcessPanelInto(traceEl, renderProcessPanel(data.events || [], { expanded: false, live: false }));
+        } else {
+            const processPanel = message?.querySelector?.('.process-panel');
+            if (processPanel) processPanel.outerHTML = renderProcessPanel(data.events || [], { expanded: false });
+        }
+    } catch (err) {
+        card.classList.remove('resolving');
+        buttons.forEach((item) => { item.disabled = false; });
+        if (status) status.textContent = t('approval.title');
+        if (errorEl) errorEl.textContent = t('approval.resolveFailed', { message: err.message });
+    }
+}
+
 function renderProcessPanel(events = [], options = {}) {
     const items = buildProcessTimeline(events);
     if (!items.length) return '';
@@ -14535,6 +14775,7 @@ function isProcessEventVisible(event = {}) {
     if (type.startsWith('aigc.')) return true;
     if (type.startsWith('model.')) return true;
     if (type.startsWith('tool.')) return true;
+    if (type.startsWith('approval.')) return true;
     if (type.startsWith('citations.')) return true;
     if (type.startsWith('agent.')) return true;
     if (type.startsWith('weight_loss.')) return true;
@@ -14563,7 +14804,7 @@ function processTimelineItem(event = {}, index = 0) {
 
 function processEventKind(event = {}) {
     const type = String(event.type || '');
-    if (type.startsWith('tool.') || type.startsWith('citations.')) return 'tool';
+    if (type.startsWith('tool.') || type.startsWith('approval.') || type.startsWith('citations.')) return 'tool';
     if (type.startsWith('model.')) return 'model';
     if (type.startsWith('thinking.') || type.startsWith('workflow.')) return 'plan';
     if (type.startsWith('agent.')) return 'agent';
@@ -14606,6 +14847,16 @@ function processEventDetail(event = {}, fallback = '') {
     } else if (type === 'tool.completed' || type === 'tool.failed') {
         parts.push(toolArgumentSummary(payload));
         parts.push(toolPreviewSummary(payload));
+    } else if (type === 'tool.awaiting_approval' || type === 'approval.required') {
+        parts.push(traceCopy(
+            `${payload.tool_name || payload.name || '工具'} 等待用户授权，共 ${payload.request_count || 1} 项操作。`,
+            `${payload.tool_name || payload.name || 'Tool'} is waiting for approval for ${payload.request_count || 1} operation(s).`,
+        ));
+    } else if (type === 'approval.resolved') {
+        parts.push(traceCopy(
+            `授权结果：${payload.decision || '-'}；成功 ${payload.succeeded_count || 0}，失败 ${payload.failed_count || 0}。`,
+            `Decision: ${payload.decision || '-'}; ${payload.succeeded_count || 0} succeeded, ${payload.failed_count || 0} failed.`,
+        ));
     } else if (type === 'model.started') {
         const round = payload.round ? `${traceCopy('轮次', 'Round')} ${payload.round}` : '';
         const tools = Number.isFinite(payload.tools_count) ? traceCopy(`可用工具 ${payload.tools_count}`, `${payload.tools_count} tools`) : '';
@@ -15542,6 +15793,7 @@ function appendStreamingAssistantMessage(regenerateQuery = '', conversationId = 
         <div class="bubble">
             <div class="streaming-status"></div>
             <div class="streaming-trace"></div>
+            <div class="streaming-approvals tool-approval-list" data-approval-list></div>
             <div class="streaming-content">
                 <div class="loading-dots"><span></span><span></span><span></span></div>
             </div>
@@ -15561,6 +15813,7 @@ function appendStreamingAssistantMessage(regenerateQuery = '', conversationId = 
     const citationsEl = div.querySelector('.streaming-citations');
     const skillsEl = div.querySelector('.streaming-skills');
     const traceEl = div.querySelector('.streaming-trace');
+    const approvalsEl = div.querySelector('.streaming-approvals');
     const cancelActionsEl = div.querySelector('.streaming-task-actions');
     let lastContent = '';
     let lastEvents = [];
@@ -15626,6 +15879,9 @@ function appendStreamingAssistantMessage(regenerateQuery = '', conversationId = 
         setTrace(events = [], meta = {}) {
             lastEvents = events;
             lastMeta = { ...lastMeta, ...meta };
+            approvalsEl.innerHTML = renderApprovalCards(lastEvents, {
+                interactive: Boolean(lastContent),
+            });
             const shouldExpand = processTouched ? processExpanded : !lastContent;
             const processPanel = renderProcessPanel(lastEvents, {
                 expanded: shouldExpand,
@@ -15809,6 +16065,8 @@ function traceProgressLabel(event = {}) {
     if (type === 'tool.started') return currentLanguage === 'zh' ? '正在调用工具' : 'Calling tool';
     if (type === 'tool.completed') return currentLanguage === 'zh' ? '工具调用完成' : 'Tool completed';
     if (type === 'tool.failed') return currentLanguage === 'zh' ? '工具调用失败，继续整理回答' : 'Tool failed, continuing';
+    if (type === 'tool.awaiting_approval' || type === 'approval.required') return currentLanguage === 'zh' ? '等待你的授权' : 'Waiting for your approval';
+    if (type === 'approval.resolved') return currentLanguage === 'zh' ? '授权已处理' : 'Approval resolved';
     if (type === 'memory.extracted') return currentLanguage === 'zh' ? '已完成记忆检查' : 'Memory review completed';
     if (type === 'run.completed') return currentLanguage === 'zh' ? '回答完成' : 'Done';
     if (type === 'run.partial') return currentLanguage === 'zh' ? '已生成阶段性总结' : 'Partial summary ready';
@@ -15939,12 +16197,16 @@ function renderMessageHtml(
         const processPanel = role === 'assistant'
             ? renderProcessPanel(traceEvents, { expanded: false })
             : '';
+        const approvalPanel = role === 'assistant'
+            ? renderApprovalPanel(traceEvents)
+            : '';
         const citationPanel = renderCitationPanel(citations);
         const artifactPanel = renderArtifactPanel(artifacts);
         bubbleContent = [
             renderInputMeta(inputMeta),
             processPanel,
             processPanel ? renderMessageDivider() : '',
+            approvalPanel,
             formatContent(content),
             artifactPanel,
             citationPanel ? renderMessageDivider() : '',
@@ -17737,6 +17999,14 @@ document.addEventListener('click', async (event) => {
 
     const clickTarget = event.target instanceof Element ? event.target : event.target?.parentElement;
     if (!clickTarget) return;
+
+    const approvalButton = clickTarget.closest('[data-resolve-tool-approval]');
+    if (approvalButton && !approvalButton.disabled) {
+        event.preventDefault();
+        event.stopPropagation();
+        await resolveToolApproval(approvalButton);
+        return;
+    }
 
     const earlyConversationDeleteButton = clickTarget.closest('[data-delete-conversation]');
     if (earlyConversationDeleteButton && !earlyConversationDeleteButton.disabled) {

@@ -3528,7 +3528,13 @@ class AgentEngine:
                 )
                 result_data = result.data
                 result_text = self._skill_result_json(result)
-                status = "completed" if result.success else "error"
+                status = (
+                    "completed"
+                    if result.success
+                    else "approval_required"
+                    if result.error_code == "explicit_confirmation_required"
+                    else "error"
+                )
             except Exception as e:
                 logger.exception(f"Agent tool {tc.name} execution failed")
                 result_text = json.dumps({"error": str(e)}, ensure_ascii=False)
@@ -3545,7 +3551,13 @@ class AgentEngine:
                 )
                 result_data = result.data
                 result_text = self._skill_result_json(result)
-                status = "completed" if result.success else "error"
+                status = (
+                    "completed"
+                    if result.success
+                    else "approval_required"
+                    if result.error_code == "explicit_confirmation_required"
+                    else "error"
+                )
             except Exception as e:
                 logger.exception(f"Skill {tc.name} execution failed")
                 result_text = json.dumps({"error": str(e)})
@@ -3656,11 +3668,23 @@ class AgentEngine:
             "result_preview": trace_result_text[:500],
         }
         tool_completed_payload.update(workflow_payload)
+        completion_type = (
+            "tool.completed"
+            if execution.status == "completed"
+            else "tool.awaiting_approval"
+            if execution.status == "approval_required"
+            else "tool.failed"
+        )
+        completion_status = "pending" if execution.status == "approval_required" else execution.status
         self.trace_store.append_event(
             run_id,
-            type="tool.completed" if execution.status == "completed" else "tool.failed",
-            status=execution.status,
-            title=f"Tool {tc.name} {execution.status}",
+            type=completion_type,
+            status=completion_status,
+            title=(
+                f"Tool {tc.name} awaiting approval"
+                if execution.status == "approval_required"
+                else f"Tool {tc.name} {execution.status}"
+            ),
             step_id=tc.id,
             payload=tool_completed_payload,
             duration_ms=execution.duration_ms,
@@ -11559,6 +11583,7 @@ class AgentEngine:
         model_rounds_used = 0
         tool_call_count = 0
         failed_tool_call_count = 0
+        approval_pending = False
         auto_search_forced = False
         force_tool_capable_next_round = False
         for round_index in range(MAX_MODEL_ROUNDS):
@@ -12002,8 +12027,10 @@ class AgentEngine:
 
                 for execution in executions:
                     tool_call_count += 1
-                    if execution.status != "completed":
+                    if execution.status == "error":
                         failed_tool_call_count += 1
+                    if execution.status == "approval_required":
+                        approval_pending = True
                     self._finalize_agent_loop_tool_execution(
                         run_id=run.run_id,
                         execution=execution,
@@ -12075,6 +12102,15 @@ class AgentEngine:
                                     "exposed_tools": tool_names,
                                 },
                             )
+            if approval_pending:
+                approval_message = (
+                    "这项操作需要你的授权。请在消息卡片中核对影响范围，"
+                    "然后选择仅本次允许、始终允许或拒绝。"
+                )
+                all_new_messages.append(
+                    LLMMessage(role="assistant", content=approval_message)
+                )
+                break
             if failed_tool_call_count >= MAX_FAILED_TOOL_CALLS:
                 budget_exhausted = True
                 budget_reason = "max_failed_tool_calls_reached"
@@ -12147,7 +12183,13 @@ class AgentEngine:
             all_new_messages.append(LLMMessage(role="assistant", content=response.content))
 
         if agent_loop_enabled:
-            workflow_result = "partial_summary" if (max_rounds_reached or budget_exhausted) else "final_answer"
+            workflow_result = (
+                "approval_required"
+                if approval_pending
+                else "partial_summary"
+                if (max_rounds_reached or budget_exhausted)
+                else "final_answer"
+            )
             self._append_workflow_event(
                 run.run_id,
                 event="workflow.node.completed",
@@ -12157,7 +12199,13 @@ class AgentEngine:
                 title="Workflow node main_loop completed",
                 payload={
                     "result": workflow_result,
-                    "response_status": "partial_summary" if (max_rounds_reached or budget_exhausted) else "completed",
+                    "response_status": (
+                        "approval_required"
+                        if approval_pending
+                        else "partial_summary"
+                        if (max_rounds_reached or budget_exhausted)
+                        else "completed"
+                    ),
                     "budget_reason": budget_reason,
                     "budget_error_type": budget_error_type,
                     "finalization_status": budget_finalization_status,
@@ -12183,7 +12231,13 @@ class AgentEngine:
                 title="Workflow agent_loop completed",
                 payload={
                     "result": workflow_result,
-                    "response_status": "partial_summary" if (max_rounds_reached or budget_exhausted) else "completed",
+                    "response_status": (
+                        "approval_required"
+                        if approval_pending
+                        else "partial_summary"
+                        if (max_rounds_reached or budget_exhausted)
+                        else "completed"
+                    ),
                     "budget_reason": budget_reason,
                     "budget_error_type": budget_error_type,
                     "finalization_status": budget_finalization_status,
@@ -12242,14 +12296,15 @@ class AgentEngine:
                 artifacts=[artifact.model_dump(mode="json") for artifact in artifacts],
             )
         events = self._snapshot_run_events(run.run_id)
-        self._schedule_memory_postprocess(
-            request=request,
-            agent_id=agent_id,
-            role_context=role_context,
-            assistant_message=final_content,
-            new_messages=all_new_messages,
-            run_id=run.run_id,
-        )
+        if not approval_pending:
+            self._schedule_memory_postprocess(
+                request=request,
+                agent_id=agent_id,
+                role_context=role_context,
+                assistant_message=final_content,
+                new_messages=all_new_messages,
+                run_id=run.run_id,
+            )
 
         return ChatResponse(
             conversation_id=request.conversation_id,

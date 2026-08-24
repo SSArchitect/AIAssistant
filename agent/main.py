@@ -7,7 +7,7 @@ import sys
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException
@@ -83,6 +83,11 @@ class SearchResponse(BaseModel):
     provider_errors: list[str] = []
     results: list[SearchResult] = []
     trace_nodes: list[dict] = []
+
+
+class ToolApprovalResolveRequest(BaseModel):
+    user_id: str = "0"
+    decision: Literal["allow_once", "allow_always", "deny"]
 
 
 def _memory_storage_path() -> Path:
@@ -702,6 +707,29 @@ async def list_runs(
             limit=bounded_limit,
         )
     )
+
+
+@app.post("/agent/tool-approvals/{approval_id}")
+async def resolve_tool_approval(
+    approval_id: str,
+    request: ToolApprovalResolveRequest,
+):
+    if engine is None:
+        raise HTTPException(status_code=503, detail="Agent engine not ready")
+    try:
+        return await engine.tool_governance.resolve_approval(
+            approval_id,
+            user_id=request.user_id,
+            decision=request.decision,
+        )
+    except (KeyError, PermissionError) as exc:
+        raise HTTPException(status_code=404, detail="approval not found") from exc
+    except TimeoutError as exc:
+        raise HTTPException(status_code=410, detail="approval has expired") from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.get("/agent/runs/{run_id}", response_model=RunRecord)

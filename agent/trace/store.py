@@ -228,6 +228,15 @@ class TraceStore:
         with self._lock:
             return self._runs.get(run_id)
 
+    def record_skill_use(self, run_id: str, skill_name: str) -> None:
+        normalized = str(skill_name or "").strip()
+        if not normalized:
+            return
+        with self._lock:
+            run = self._runs.get(run_id)
+            if run is not None and normalized not in run.skills_used:
+                run.skills_used.append(normalized)
+
     def list_runs(
         self,
         *,

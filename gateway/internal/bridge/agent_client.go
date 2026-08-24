@@ -200,6 +200,23 @@ type ChatResponse struct {
 	MemoryUpdates  []MemoryRecord  `json:"memory_updates,omitempty"`
 }
 
+type ToolApprovalResolution struct {
+	ApprovalID     string                   `json:"approval_id"`
+	RunID          string                   `json:"run_id"`
+	ConversationID string                   `json:"conversation_id"`
+	ToolName       string                   `json:"tool_name"`
+	Decision       string                   `json:"decision"`
+	Status         string                   `json:"status"`
+	RequestCount   int                      `json:"request_count"`
+	SucceededCount int                      `json:"succeeded_count"`
+	FailedCount    int                      `json:"failed_count"`
+	Results        []map[string]interface{} `json:"results"`
+	Events         []RunEvent               `json:"events"`
+	SkillsUsed     []string                 `json:"skills_used"`
+	PolicyUpdated  bool                     `json:"policy_updated,omitempty"`
+	Warning        string                   `json:"warning,omitempty"`
+}
+
 type FollowUpRequest struct {
 	UserQuestion    string  `json:"user_question"`
 	AssistantAnswer string  `json:"assistant_answer"`
@@ -871,6 +888,38 @@ func (c *AgentClient) CancelRun(runID string) error {
 		return fmt.Errorf("agent returned status %d: %s", resp.StatusCode, string(respBody))
 	}
 	return nil
+}
+
+func (c *AgentClient) ResolveToolApproval(
+	approvalID string,
+	userID string,
+	decision string,
+) (*ToolApprovalResolution, error) {
+	body, err := json.Marshal(map[string]string{
+		"user_id":  userID,
+		"decision": decision,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("marshal approval request: %w", err)
+	}
+	resp, err := c.httpClient.Post(
+		c.baseURL+"/agent/tool-approvals/"+url.PathEscape(approvalID),
+		"application/json",
+		bytes.NewReader(body),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("approval request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("agent returned status %d: %s", resp.StatusCode, string(respBody))
+	}
+	var resolution ToolApprovalResolution
+	if err := json.NewDecoder(resp.Body).Decode(&resolution); err != nil {
+		return nil, fmt.Errorf("decode approval response: %w", err)
+	}
+	return &resolution, nil
 }
 
 func (c *AgentClient) UpdateConfig(config map[string]string) error {

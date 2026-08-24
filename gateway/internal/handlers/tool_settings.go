@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"sort"
 	"strings"
@@ -23,6 +24,64 @@ const (
 
 type UpdateToolSettingsRequest struct {
 	Settings map[string]string `json:"settings" binding:"required"`
+}
+
+type ResolveToolApprovalRequest struct {
+	UserID   string `json:"user_id,omitempty"`
+	Decision string `json:"decision" binding:"required"`
+}
+
+func (h *ChatHandler) ResolveToolApproval(c *gin.Context) {
+	var req ResolveToolApprovalRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request: " + err.Error()})
+		return
+	}
+	if req.Decision != "allow_once" && req.Decision != "allow_always" && req.Decision != "deny" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid approval decision"})
+		return
+	}
+	userID := requestUserIDWithBody(c, req.UserID)
+	resolution, err := h.agent.ResolveToolApproval(c.Param("id"), userID, req.Decision)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "agent approval error: " + err.Error()})
+		return
+	}
+	if req.Decision == "allow_always" {
+		if err := saveUserSettings(userID, map[string]string{
+			toolPolicySettingKey(resolution.ToolName): "auto",
+		}); err != nil {
+			resolution.Warning = "approval succeeded but the always-allow policy could not be saved"
+		} else {
+			resolution.PolicyUpdated = true
+		}
+	}
+	if err := persistResolvedApprovalRun(userID, resolution); err != nil {
+		slog.Warn("Approval succeeded but trace could not be saved", "run_id", resolution.RunID, "error", err)
+	}
+	c.JSON(http.StatusOK, resolution)
+}
+
+func persistResolvedApprovalRun(userID string, resolution *bridge.ToolApprovalResolution) error {
+	if resolution == nil || strings.TrimSpace(resolution.RunID) == "" {
+		return nil
+	}
+	traceEventsJSON, _ := json.Marshal(resolution.Events)
+	traceSummaryJSON, _ := json.Marshal(compactTraceEvents(resolution.Events))
+	skillsJSON, _ := json.Marshal(resolution.SkillsUsed)
+	result := database.DB.Model(&models.Message{}).
+		Where(
+			"run_id = ? AND user_id = ? AND role = ?",
+			resolution.RunID,
+			normalizedUserID(userID),
+			"assistant",
+		).
+		Updates(map[string]interface{}{
+			"trace_events":  string(traceEventsJSON),
+			"trace_summary": string(traceSummaryJSON),
+			"skills_used":   string(skillsJSON),
+		})
+	return result.Error
 }
 
 func (h *ChatHandler) UpdateToolSettings(c *gin.Context) {
