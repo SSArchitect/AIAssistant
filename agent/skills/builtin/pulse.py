@@ -664,7 +664,7 @@ def _coerce_keywords(value: Any) -> list[str]:
     else:
         candidates = [
             item.strip()
-            for item in re.split(r"[,，;；\n]+", str(value or ""))
+            for item in re.split(r"[,，;；、\n]+", str(value or ""))
         ]
     keywords: list[str] = []
     for candidate in candidates:

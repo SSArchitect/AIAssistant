@@ -3749,7 +3749,7 @@ class TestPulseSkills:
 
         created = await skill.execute(
             name="机器人",
-            keywords="具身智能，供应链",
+            keywords="具身智能、供应链，机器人;控制器",
             _user_id="alice",
         )
         updated = await skill.execute(
@@ -3759,7 +3759,7 @@ class TestPulseSkills:
         )
 
         assert created.success is True
-        assert created.data["topic"]["keywords"] == ["具身智能", "供应链"]
+        assert created.data["topic"]["keywords"] == ["具身智能", "供应链", "机器人", "控制器"]
         assert updated.success is True
         assert updated.data["topic"]["keywords"] == ["具身智能"]
         assert "enabled" not in requests[0][2]

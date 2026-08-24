@@ -74,6 +74,18 @@ func TestPulseCreatesTopicAndPrecomputesDailyItems(t *testing.T) {
 	}
 }
 
+func TestPulseKeywordsSplitChineseEnumerationDelimiter(t *testing.T) {
+	got := normalizeKeywords([]string{"Anthropic、Claude、OpenAI，GPT;DeepSeek", "Claude"})
+	want := []string{"Anthropic", "Claude", "DeepSeek", "GPT", "OpenAI"}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("expected delimited keyword string to be normalized, got %#v", got)
+	}
+	encoded := encodeKeywords([]string{"Agent、RAG、工具调用"})
+	if decoded := decodeKeywords(encoded); fmt.Sprint(decoded) != fmt.Sprint([]string{"Agent", "RAG", "工具调用"}) {
+		t.Fatalf("expected stored keyword strings to self-heal on decode, got %#v", decoded)
+	}
+}
+
 func TestPulseGetUsesRecentHealthyItemsForWelcomeSuggestions(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	if err := database.Init(filepath.Join(t.TempDir(), "assistant.db")); err != nil {
@@ -235,7 +247,15 @@ func TestPulseTopicOptimizationContextCombinesHistoryAndRetrievalQuality(t *test
 			Results: []pulseSearchResult{{Title: "OpenAI releases agent controls", URL: "https://openai.com/news/agent-controls", PublishedAt: date}},
 		},
 	}
-	if err := persistPulseRetrievalRun(date, userID, evidence, nil, 1, 1, false, nil); err != nil {
+	evidence[0].Stage = "initial"
+	diagnostics := pulseGenerationDiagnostics{
+		RawCandidateCount: 2,
+		GroundedItemCount: 1,
+		CandidateRejections: []pulseCandidateRejectionDiagnostic{
+			{Stage: "publishing", Module: pulseSourceTopicHot, Title: "Generic update", Reasons: []string{"generic_title"}},
+		},
+	}
+	if err := persistPulseRetrievalRun(date, userID, evidence, nil, 1, 1, false, diagnostics, nil); err != nil {
 		t.Fatalf("persist retrieval run: %v", err)
 	}
 
@@ -285,8 +305,16 @@ func TestPulseTopicOptimizationContextCombinesHistoryAndRetrievalQuality(t *test
 	if overlaps, ok := history["overlap_candidates"].([]interface{}); !ok || len(overlaps) != 1 {
 		t.Fatalf("expected overlapping topics, got %#v", history["overlap_candidates"])
 	}
-	if runs, ok := history["retrieval_runs"].([]interface{}); !ok || len(runs) != 1 {
+	runs, ok := history["retrieval_runs"].([]interface{})
+	if !ok || len(runs) != 1 {
 		t.Fatalf("expected retrieval diagnostics, got %#v", history["retrieval_runs"])
+	}
+	firstRun, _ := runs[0].(map[string]interface{})
+	if firstRun["raw_candidate_count"] != float64(2) {
+		t.Fatalf("expected raw candidate diagnostics, got %#v", firstRun)
+	}
+	if rejections, ok := firstRun["candidate_rejections"].([]interface{}); !ok || len(rejections) != 1 {
+		t.Fatalf("expected item rejection reasons, got %#v", firstRun["candidate_rejections"])
 	}
 	metrics, ok := history["current_topic_metrics"].([]interface{})
 	if !ok || len(metrics) != 2 {
@@ -1729,6 +1757,12 @@ func TestPulseSearchEvidenceFollowupAddsCorroboratingResults(t *testing.T) {
 	}
 	for _, item := range evidence {
 		if pulseSearchIndependentSourceCount(item.Results) >= 2 {
+			if item.Stage != "followup" || item.ParentQueryID == "" {
+				t.Fatalf("expected separately recorded follow-up evidence, got %#v", item)
+			}
+			if !strings.Contains(item.Query, "official announcement") || !strings.Contains(item.Query, "independent report") {
+				t.Fatalf("expected official and independent source expansion query, got %q", item.Query)
+			}
 			return
 		}
 	}

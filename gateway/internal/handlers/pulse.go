@@ -210,6 +210,8 @@ type pulseSearchQuery struct {
 
 type pulseSearchEvidence struct {
 	QueryID        string              `json:"query_id"`
+	Stage          string              `json:"stage,omitempty"`
+	ParentQueryID  string              `json:"parent_query_id,omitempty"`
 	Module         string              `json:"module"`
 	Query          string              `json:"query"`
 	Intent         string              `json:"intent"`
@@ -229,11 +231,16 @@ type pulseSearchResult struct {
 }
 
 type pulseRetrievalDiagnostics struct {
-	Queries []pulseRetrievalQueryDiagnostic `json:"queries"`
+	Queries             []pulseRetrievalQueryDiagnostic     `json:"queries"`
+	RawCandidateCount   int                                 `json:"raw_candidate_count,omitempty"`
+	GroundedItemCount   int                                 `json:"grounded_item_count,omitempty"`
+	CandidateRejections []pulseCandidateRejectionDiagnostic `json:"candidate_rejections,omitempty"`
 }
 
 type pulseRetrievalQueryDiagnostic struct {
 	QueryID        string                           `json:"query_id"`
+	Stage          string                           `json:"stage,omitempty"`
+	ParentQueryID  string                           `json:"parent_query_id,omitempty"`
 	Module         string                           `json:"module"`
 	Query          string                           `json:"query"`
 	Intent         string                           `json:"intent"`
@@ -243,6 +250,23 @@ type pulseRetrievalQueryDiagnostic struct {
 	Error          string                           `json:"error,omitempty"`
 	ProviderErrors []string                         `json:"provider_errors,omitempty"`
 	Results        []pulseRetrievalResultDiagnostic `json:"results,omitempty"`
+}
+
+type pulseCandidateRejectionDiagnostic struct {
+	Stage         string   `json:"stage"`
+	Module        string   `json:"module,omitempty"`
+	TopicID       string   `json:"topic_id,omitempty"`
+	TopicName     string   `json:"topic_name,omitempty"`
+	Title         string   `json:"title,omitempty"`
+	Reasons       []string `json:"reasons"`
+	SourceCount   int      `json:"source_count"`
+	SourceDomains []string `json:"source_domains,omitempty"`
+}
+
+type pulseGenerationDiagnostics struct {
+	RawCandidateCount   int
+	GroundedItemCount   int
+	CandidateRejections []pulseCandidateRejectionDiagnostic
 }
 
 type pulseRetrievalResultDiagnostic struct {
@@ -1178,7 +1202,7 @@ func (h *PulseHandler) ensureDailyPulse(date string, userID string, force bool) 
 	h.updatePulseGenerationStage(date, userID, pulseGenerationStageSearching)
 	searchEvidence, searchErrors := h.collectPulseSearchEvidence(date, topics, memorySignals)
 	h.updatePulseGenerationStage(date, userID, pulseGenerationStageSummarizing)
-	modules, items, err := h.generatePulse(date, userID, topics, memorySignals, searchEvidence, searchErrors)
+	modules, items, generationDiagnostics, err := h.generatePulse(date, userID, topics, memorySignals, searchEvidence, searchErrors)
 	agentGenerationErr := err
 	usedFallback := err != nil
 	if err != nil {
@@ -1191,7 +1215,12 @@ func (h *PulseHandler) ensureDailyPulse(date string, userID string, force bool) 
 	}
 	scopePulseModels(userID, modules, items)
 	originalItemCount := len(items)
-	items = filterPulseItemsForPublishing(items)
+	var publishingRejections []pulseCandidateRejectionDiagnostic
+	items, publishingRejections = filterPulseItemsForPublishingWithDiagnostics(items)
+	generationDiagnostics.CandidateRejections = append(
+		generationDiagnostics.CandidateRejections,
+		publishingRejections...,
+	)
 	if len(items) != originalItemCount {
 		slog.Warn(
 			"Pulse quality gate removed unverified items",
@@ -1199,6 +1228,7 @@ func (h *PulseHandler) ensureDailyPulse(date string, userID string, force bool) 
 			"user_id", userID,
 			"removed", originalItemCount-len(items),
 			"remaining", len(items),
+			"reasons", pulseRejectionReasonCounts(publishingRejections),
 		)
 	}
 	if err := persistPulseRetrievalRun(
@@ -1209,6 +1239,7 @@ func (h *PulseHandler) ensureDailyPulse(date string, userID string, force bool) 
 		originalItemCount,
 		len(items),
 		usedFallback,
+		generationDiagnostics,
 		agentGenerationErr,
 	); err != nil {
 		slog.Warn("Pulse retrieval diagnostics persistence failed", "date", date, "user_id", userID, "error", err)
@@ -1548,31 +1579,13 @@ func buildPulseTopicOptimizationHistory(
 }
 
 func pulseTopicOptimizationQualityIssues(item models.PulseItem) ([]string, []pulseNewsSource) {
-	issues := []string{}
-	if !pulseNewsCopyMeetsQualityGate(item.Title, item.Summary) {
-		issues = append(issues, "copy_not_specific")
-	}
+	issues := append([]string{}, pulseNewsCopyQualityIssues(item.Title, item.Summary)...)
 	var detail pulseItemDetail
 	if item.DetailJSON == "" || json.Unmarshal([]byte(item.DetailJSON), &detail) != nil {
 		return append(issues, "missing_or_invalid_detail"), nil
 	}
 	sources := normalizeNewsSources(detail.NewsSources, pulseSearchClusterMaxSources)
-	results := pulseSearchResultsFromNewsSources(sources)
-	if len(sources) < 2 {
-		issues = append(issues, "insufficient_sources")
-	}
-	if pulseSearchIndependentSourceCount(results) < 2 {
-		issues = append(issues, "insufficient_independent_sources")
-	}
-	if len(results) > 0 && pulseAllWeakSearchSources(results) {
-		issues = append(issues, "only_weak_sources")
-	}
-	if len(results) > 0 && !pulseSearchClusterDescribesConcreteEvent(results) {
-		issues = append(issues, "no_concrete_event")
-	}
-	if !pulseSearchResultsFreshEnough(item.Date, item.Source, results) {
-		issues = append(issues, "insufficient_fresh_sources")
-	}
+	issues = append(issues, pulseNewsSourceQualityIssues(item.Date, item.Source, sources)...)
 	return issues, sources
 }
 
@@ -1645,15 +1658,30 @@ func pulseTopicOptimizationRetrievalRuns(runs []models.PulseRetrievalRun) []gin.
 				})
 			}
 			queries = append(queries, gin.H{
-				"query_id":     query.QueryID,
-				"module":       query.Module,
-				"query":        query.Query,
-				"intent":       query.Intent,
-				"topic_id":     query.TopicID,
-				"topic_name":   query.TopicName,
-				"result_count": query.ResultCount,
-				"error":        query.Error,
-				"results":      results,
+				"query_id":        query.QueryID,
+				"stage":           query.Stage,
+				"parent_query_id": query.ParentQueryID,
+				"module":          query.Module,
+				"query":           query.Query,
+				"intent":          query.Intent,
+				"topic_id":        query.TopicID,
+				"topic_name":      query.TopicName,
+				"result_count":    query.ResultCount,
+				"error":           query.Error,
+				"results":         results,
+			})
+		}
+		rejections := make([]gin.H, 0, minInt(len(diagnostics.CandidateRejections), 24))
+		for _, rejection := range diagnostics.CandidateRejections[:minInt(len(diagnostics.CandidateRejections), 24)] {
+			rejections = append(rejections, gin.H{
+				"stage":          rejection.Stage,
+				"module":         rejection.Module,
+				"topic_id":       rejection.TopicID,
+				"topic_name":     rejection.TopicName,
+				"title":          rejection.Title,
+				"reasons":        rejection.Reasons,
+				"source_count":   rejection.SourceCount,
+				"source_domains": rejection.SourceDomains,
 			})
 		}
 		var searchErrors []string
@@ -1669,6 +1697,9 @@ func pulseTopicOptimizationRetrievalRuns(runs []models.PulseRetrievalRun) []gin.
 			"published_item_count":   run.PublishedItemCount,
 			"used_fallback":          run.UsedFallback,
 			"generation_error":       run.GenerationError,
+			"raw_candidate_count":    diagnostics.RawCandidateCount,
+			"grounded_item_count":    diagnostics.GroundedItemCount,
+			"candidate_rejections":   rejections,
 			"search_errors":          limitStringSlice(searchErrors, 6, 220),
 			"queries":                queries,
 		})
@@ -1684,9 +1715,15 @@ func persistPulseRetrievalRun(
 	generatedItemCount int,
 	publishedItemCount int,
 	usedFallback bool,
+	generationDiagnostics pulseGenerationDiagnostics,
 	generationErr error,
 ) error {
-	diagnostics := pulseRetrievalDiagnostics{Queries: []pulseRetrievalQueryDiagnostic{}}
+	diagnostics := pulseRetrievalDiagnostics{
+		Queries:             []pulseRetrievalQueryDiagnostic{},
+		RawCandidateCount:   generationDiagnostics.RawCandidateCount,
+		GroundedItemCount:   generationDiagnostics.GroundedItemCount,
+		CandidateRejections: generationDiagnostics.CandidateRejections,
+	}
 	successfulQueries := 0
 	resultCount := 0
 	for _, query := range evidence {
@@ -1696,6 +1733,8 @@ func persistPulseRetrievalRun(
 		resultCount += len(query.Results)
 		queryDiagnostic := pulseRetrievalQueryDiagnostic{
 			QueryID:        query.QueryID,
+			Stage:          query.Stage,
+			ParentQueryID:  query.ParentQueryID,
 			Module:         query.Module,
 			Query:          limitText(query.Query, 240),
 			Intent:         limitText(query.Intent, 180),
@@ -1777,6 +1816,7 @@ func (h *PulseHandler) collectPulseSearchEvidence(date string, topics []models.P
 
 			item := pulseSearchEvidence{
 				QueryID:   query.ID,
+				Stage:     "initial",
 				Module:    query.Module,
 				Query:     query.Query,
 				Intent:    query.Intent,
@@ -1881,12 +1921,13 @@ func (h *PulseHandler) enrichPulseSearchEvidence(date string, evidence []pulseSe
 		return evidence
 	}
 
-	resultsByEvidence := make([][]pulseSearchResult, len(evidence))
+	followups := make([]pulseSearchEvidence, len(seeds))
+	hasFollowup := make([]bool, len(seeds))
 	followupErrors := []string{}
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	sem := make(chan struct{}, 4)
-	for _, seed := range seeds {
+	for seedPosition, seed := range seeds {
 		if seed.EvidenceIndex < 0 || seed.EvidenceIndex >= len(evidence) {
 			continue
 		}
@@ -1894,11 +1935,23 @@ func (h *PulseHandler) enrichPulseSearchEvidence(date string, evidence []pulseSe
 		if !ok {
 			continue
 		}
+		followupQuery.ID = fmt.Sprintf("%s:followup:%d", evidence[seed.EvidenceIndex].QueryID, seedPosition+1)
+		hasFollowup[seedPosition] = true
 		wg.Add(1)
-		go func(seed pulseSearchFollowupSeed, followupQuery pulseSearchQuery) {
+		go func(seedPosition int, seed pulseSearchFollowupSeed, followupQuery pulseSearchQuery) {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
+			item := pulseSearchEvidence{
+				QueryID:       followupQuery.ID,
+				Stage:         "followup",
+				ParentQueryID: evidence[seed.EvidenceIndex].QueryID,
+				Module:        followupQuery.Module,
+				Query:         followupQuery.Query,
+				Intent:        followupQuery.Intent,
+				TopicID:       followupQuery.TopicID,
+				TopicName:     followupQuery.TopicName,
+			}
 
 			resp, err := h.agent.Search(bridge.SearchRequest{
 				Query:       followupQuery.Query,
@@ -1908,35 +1961,36 @@ func (h *PulseHandler) enrichPulseSearchEvidence(date string, evidence []pulseSe
 				PageChars:   1400,
 			})
 			if err != nil {
+				item.Error = err.Error()
+				followups[seedPosition] = item
 				mu.Lock()
 				followupErrors = append(followupErrors, fmt.Sprintf("二次检索 %s: %v", followupQuery.Query, err))
 				mu.Unlock()
 				return
 			}
 
+			item.ProviderErrors = limitStringSlice(resp.ProviderErrors, 3, 220)
 			normalized := normalizePulseSearchResults(date, followupQuery, resp.Results, pulseSearchFollowupResultLimit)
 			supporting := pulseSupportingFollowupResults(evidence[seed.EvidenceIndex], seed.Result, normalized)
 			if len(supporting) == 0 {
+				item.Error = "二次取证未找到与首轮候选相互印证的官方来源或独立报道。"
+				followups[seedPosition] = item
 				return
 			}
-			mu.Lock()
-			resultsByEvidence[seed.EvidenceIndex] = append(resultsByEvidence[seed.EvidenceIndex], supporting...)
-			mu.Unlock()
-		}(seed, followupQuery)
+			item.Results = append([]pulseSearchResult{seed.Result}, supporting...)
+			item.Results = pulseRankSearchResults(followupQuery, item.Results, pulseSearchExpandedResultLimit)
+			followups[seedPosition] = item
+		}(seedPosition, seed, followupQuery)
 	}
 	wg.Wait()
 
 	if len(followupErrors) > 0 && searchErrors != nil {
 		*searchErrors = append(*searchErrors, limitStringSlice(followupErrors, 4, 220)...)
 	}
-	for index := range evidence {
-		if len(resultsByEvidence[index]) == 0 {
-			continue
+	for index, item := range followups {
+		if hasFollowup[index] {
+			evidence = append(evidence, item)
 		}
-		query := pulseSearchQueryFromEvidence(evidence[index])
-		merged := append([]pulseSearchResult{}, evidence[index].Results...)
-		merged = append(merged, resultsByEvidence[index]...)
-		evidence[index].Results = pulseRankSearchResults(query, merged, pulseSearchExpandedResultLimit)
 	}
 	return evidence
 }
@@ -1978,7 +2032,11 @@ func pulseRankSearchResults(query pulseSearchQuery, results []pulseSearchResult,
 			seen[key] = true
 		}
 		score := pulseSearchResultRelevanceScore(query, result)
-		if !pulseWeakSearchSource(result) {
+		if pulsePrimarySearchSource(result) {
+			score += 12
+		} else if pulseAuthoritativeSearchSource(result) {
+			score += 7
+		} else if !pulseWeakSearchSource(result) {
 			score += 3
 		}
 		if strings.TrimSpace(result.PublishedAt) != "" {
@@ -1998,11 +2056,12 @@ func pulseSearchFollowupSeeds(date string, evidence []pulseSearchEvidence) []pul
 	seen := map[string]bool{}
 	seedIndex := 0
 	for evidenceIndex, item := range evidence {
-		if !pulseSearchEvidenceNeedsFollowup(date, item) {
-			continue
-		}
 		query := pulseSearchQueryFromEvidence(item)
 		for _, result := range item.Results {
+			if !pulseSearchResultCanSeedFollowup(date, item, result) ||
+				pulseSearchResultHasVerifiedSupport(date, item, result) {
+				continue
+			}
 			key := pulseSearchResultDedupeKey(result)
 			if key != "" {
 				if seen[key] {
@@ -2016,6 +2075,11 @@ func pulseSearchFollowupSeeds(date string, evidence []pulseSearchEvidence) []pul
 			}
 			if !pulseWeakSearchSource(result) {
 				score += 8
+			}
+			if pulsePrimarySearchSource(result) {
+				score += 12
+			} else if pulseAuthoritativeSearchSource(result) {
+				score += 6
 			}
 			if strings.TrimSpace(result.PublishedAt) != "" {
 				score += 3
@@ -2042,12 +2106,44 @@ func pulseSearchFollowupSeeds(date string, evidence []pulseSearchEvidence) []pul
 }
 
 func pulseSearchEvidenceNeedsFollowup(date string, evidence pulseSearchEvidence) bool {
-	for _, cluster := range pulseCorroboratedSearchClusters(evidence, evidence.Results) {
-		if pulseSearchResultsFreshEnough(date, evidence.Module, cluster) {
-			return false
+	for _, result := range evidence.Results {
+		if pulseSearchResultCanSeedFollowup(date, evidence, result) &&
+			!pulseSearchResultHasVerifiedSupport(date, evidence, result) {
+			return true
 		}
 	}
-	return true
+	return false
+}
+
+func pulseSearchResultCanSeedFollowup(date string, evidence pulseSearchEvidence, result pulseSearchResult) bool {
+	if !pulseSafeHTTPURL(result.URL) ||
+		pulseSearchResultHasStaleDate(date, evidence.Module, result) ||
+		pulseSearchResultLooksThinHomepage(result) ||
+		len(pulseConcreteEventFamilies(result)) == 0 {
+		return false
+	}
+	return len(pulseCorroborationTerms(result)) >= 2
+}
+
+func pulseSearchResultHasVerifiedSupport(date string, evidence pulseSearchEvidence, seed pulseSearchResult) bool {
+	seedKey := pulseSearchResultDedupeKey(seed)
+	for _, cluster := range pulseCorroboratedSearchClusters(evidence, evidence.Results) {
+		containsSeed := false
+		for _, result := range cluster {
+			if pulseSearchResultDedupeKey(result) == seedKey {
+				containsSeed = true
+				break
+			}
+		}
+		if containsSeed && pulseNewsSourcesMeetQualityGate(
+			date,
+			evidence.Module,
+			newsSourcesFromSearchResults(cluster, pulseSearchClusterMaxSources),
+		) {
+			return true
+		}
+	}
+	return false
 }
 
 func pulseSearchFollowupQuery(date string, queryEvidence pulseSearchEvidence, seed pulseSearchResult) (pulseSearchQuery, bool) {
@@ -2056,20 +2152,20 @@ func pulseSearchFollowupQuery(date string, queryEvidence pulseSearchEvidence, se
 	for _, term := range pulseSearchRelevanceTerms(pulseSearchQueryFromEvidence(queryEvidence)) {
 		terms = appendUniqueStrings(terms, term)
 	}
-	terms = limitStringSlice(terms, 5, 40)
+	terms = limitStringSlice(terms, 4, 40)
 	if len(terms) == 0 {
 		return pulseSearchQuery{}, false
 	}
-	year := date
-	if len(year) > 4 {
-		year = year[:4]
+	since := date
+	if reference, err := time.Parse("2006-01-02", date); err == nil {
+		since = reference.Add(-pulseFreshnessWindow(queryEvidence.Module)).Format("2006-01-02")
 	}
-	queryText := strings.Join(terms, " ") + " latest update " + year
+	queryText := strings.Join(terms, " ") + " official announcement primary source independent report after " + since
 	return pulseSearchQuery{
 		ID:        queryEvidence.QueryID + ":followup",
 		Module:    queryEvidence.Module,
 		Query:     queryText,
-		Intent:    "围绕初始候选补充独立来源互证",
+		Intent:    "围绕首轮候选优先补充官方/一手来源和独立报道",
 		TopicID:   queryEvidence.TopicID,
 		TopicName: queryEvidence.TopicName,
 	}, true
@@ -2331,9 +2427,17 @@ func cleanPulseSearchTerms(values []string) []string {
 	return terms
 }
 
-func (h *PulseHandler) generatePulse(date string, userID string, topics []models.PulseTopic, signals []memoryPulseSignal, searchEvidence []pulseSearchEvidence, searchErrors []string) ([]models.PulseModule, []models.PulseItem, error) {
+func (h *PulseHandler) generatePulse(
+	date string,
+	userID string,
+	topics []models.PulseTopic,
+	signals []memoryPulseSignal,
+	searchEvidence []pulseSearchEvidence,
+	searchErrors []string,
+) ([]models.PulseModule, []models.PulseItem, pulseGenerationDiagnostics, error) {
+	diagnostics := pulseGenerationDiagnostics{}
 	if h.agent == nil {
-		return nil, nil, fmt.Errorf("agent client is not configured")
+		return nil, nil, diagnostics, fmt.Errorf("agent client is not configured")
 	}
 	userID = normalizedUserID(userID)
 
@@ -2356,7 +2460,7 @@ func (h *PulseHandler) generatePulse(date string, userID string, topics []models
 
 	rawResponse, err := h.requestPulseGeneration(date, userID, string(inputJSON))
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, diagnostics, err
 	}
 
 	var payload generatedPulsePayload
@@ -2364,33 +2468,37 @@ func (h *PulseHandler) generatePulse(date string, userID string, topics []models
 		firstErr := err
 		repairedResponse, repairErr := h.repairPulseGeneration(date, userID, string(inputJSON), rawResponse, err)
 		if repairErr != nil {
-			return nil, nil, fmt.Errorf("%w; repair_failed=%v; response_preview=%q", firstErr, repairErr, compactSnippet(rawResponse, 320))
+			return nil, nil, diagnostics, fmt.Errorf("%w; repair_failed=%v; response_preview=%q", firstErr, repairErr, compactSnippet(rawResponse, 320))
 		} else if err := decodePulseGeneration(repairedResponse, &payload); err != nil {
-			return nil, nil, fmt.Errorf("%w; original_error=%v; repaired_preview=%q", err, firstErr, compactSnippet(repairedResponse, 320))
+			return nil, nil, diagnostics, fmt.Errorf("%w; original_error=%v; repaired_preview=%q", err, firstErr, compactSnippet(repairedResponse, 320))
 		}
 	}
 	if err := validateGeneratedPulsePayload(payload, false); err != nil {
-		return nil, nil, fmt.Errorf("%w; response_preview=%q", err, compactSnippet(rawResponse, 320))
+		return nil, nil, diagnostics, fmt.Errorf("%w; response_preview=%q", err, compactSnippet(rawResponse, 320))
 	}
-	filteredPayload, rejectedItems := filterGeneratedPulsePayloadByEvidence(date, payload, searchEvidence)
-	if rejectedItems > 0 {
+	diagnostics.RawCandidateCount = generatedPulseItemCount(payload)
+	filteredPayload, groundingRejections := filterGeneratedPulsePayloadByEvidenceWithDiagnostics(date, payload, searchEvidence)
+	diagnostics.CandidateRejections = append(diagnostics.CandidateRejections, groundingRejections...)
+	if len(groundingRejections) > 0 {
 		slog.Warn(
 			"Pulse discarded generated items that failed evidence validation",
 			"date", date,
-			"discarded", rejectedItems,
+			"discarded", len(groundingRejections),
 			"remaining", generatedPulseItemCount(filteredPayload),
+			"reasons", pulseRejectionReasonCounts(groundingRejections),
 		)
 	}
 	if generatedPulseItemCount(filteredPayload) == 0 {
-		return nil, nil, fmt.Errorf("agent returned no items backed by recent independent sources")
+		return nil, nil, diagnostics, fmt.Errorf("agent returned no items backed by recent independent sources")
 	}
 	payload = filteredPayload
 
 	modules, items := generatedPayloadToModels(date, payload, topics)
+	diagnostics.GroundedItemCount = len(items)
 	if len(modules) == 0 {
-		return nil, nil, fmt.Errorf("agent returned no pulse modules")
+		return nil, nil, diagnostics, fmt.Errorf("agent returned no pulse modules")
 	}
-	return modules, items, nil
+	return modules, items, diagnostics, nil
 }
 
 func (h *PulseHandler) requestPulseGeneration(date string, userID string, inputJSON string) (string, error) {
@@ -2401,6 +2509,7 @@ func (h *PulseHandler) requestPulseGeneration(date string, userID string, inputJ
 		[]string{
 			"你是 Pulse 推荐预计算器。必须只输出一个合法 JSON 对象，不要 Markdown，不要解释。",
 			"你必须基于 search_evidence 中的外网检索结果做新闻/资讯聚合总结，不能只改写 topic/keyword。",
+			"search_evidence.stage=followup 表示围绕首轮候选补搜的取证结果；优先采用官方/一手来源与独立权威报道能够共同支撑的信息簇。",
 			"search_evidence 可能包含围绕候选补充检索到的互证来源；生成 item 时只聚合多个独立来源共同支撑的信息簇，孤立单来源候选不要硬生成推荐。",
 			"生成前必须先剔除和 query/topic 无关的搜索结果；如果剩余相关来源不足，不要硬生成推荐。",
 			"每个 item 是一个资讯簇，必须包含 news_sources 数组，并且 signals 至少包含一个真实来源，格式为：搜索来源：标题 - URL。",
@@ -2594,6 +2703,15 @@ func pulseItemHasSearchSource(item generatedPulseItem) bool {
 }
 
 func filterGeneratedPulsePayloadByEvidence(date string, payload generatedPulsePayload, evidence []pulseSearchEvidence) (generatedPulsePayload, int) {
+	filtered, rejections := filterGeneratedPulsePayloadByEvidenceWithDiagnostics(date, payload, evidence)
+	return filtered, len(rejections)
+}
+
+func filterGeneratedPulsePayloadByEvidenceWithDiagnostics(
+	date string,
+	payload generatedPulsePayload,
+	evidence []pulseSearchEvidence,
+) (generatedPulsePayload, []pulseCandidateRejectionDiagnostic) {
 	allowedByModule := map[string]map[string]pulseNewsSource{}
 	evidenceByModule := map[string][]pulseSearchEvidence{}
 	for _, queryEvidence := range evidence {
@@ -2621,7 +2739,7 @@ func filterGeneratedPulsePayloadByEvidence(date string, payload generatedPulsePa
 	}
 
 	filtered := generatedPulsePayload{Modules: make([]generatedPulseModule, 0, len(payload.Modules))}
-	rejected := 0
+	rejections := []pulseCandidateRejectionDiagnostic{}
 	for _, module := range payload.Modules {
 		key := normalizePulseModuleKey(module.Key)
 		allowed := allowedByModule[key]
@@ -2648,24 +2766,46 @@ func filterGeneratedPulsePayloadByEvidence(date string, payload generatedPulsePa
 				}
 			}
 			matched = pulseExpandGeneratedItemSources(matched, evidenceByModule[key], seen)
-			matched = pulseCorroboratedGeneratedSources(matched, evidenceByModule[key])
-			if strings.TrimSpace(item.Title) == "" ||
-				strings.TrimSpace(item.Summary) == "" ||
-				!pulseNewsCopyMeetsQualityGate(item.Title, item.Summary) ||
-				!pulseNewsSourcesMeetQualityGate(date, key, matched) {
-				rejected++
+			groundedSources := pulseCorroboratedGeneratedSources(matched, evidenceByModule[key])
+			reasons := []string{}
+			if strings.TrimSpace(item.Title) == "" {
+				reasons = append(reasons, "missing_title")
+			}
+			if strings.TrimSpace(item.Summary) == "" {
+				reasons = append(reasons, "missing_summary")
+			}
+			if len(matched) == 0 {
+				reasons = append(reasons, "no_matching_search_source")
+			} else if len(groundedSources) < 2 {
+				reasons = append(reasons, "insufficient_corroborated_sources")
+			}
+			if len(reasons) > 0 {
+				diagnosticSources := groundedSources
+				if len(diagnosticSources) == 0 {
+					diagnosticSources = matched
+				}
+				rejections = append(rejections, pulseCandidateRejectionDiagnostic{
+					Stage:         "grounding",
+					Module:        key,
+					TopicID:       item.TopicID,
+					TopicName:     limitText(cleanSearchText(item.TopicName), 100),
+					Title:         limitText(cleanSearchText(item.Title), 180),
+					Reasons:       reasons,
+					SourceCount:   len(diagnosticSources),
+					SourceDomains: pulseNewsSourceDomains(diagnosticSources),
+				})
 				continue
 			}
-			item.NewsSources = matched
+			item.NewsSources = groundedSources
 			item.Sources = nil
-			item.Signals = pulseSignalsWithVerifiedSources(item.Signals, matched)
-			item.HeatScore = pulseVerifiedEvidenceHeatScore(matched, item.HeatScore)
+			item.Signals = pulseSignalsWithVerifiedSources(item.Signals, groundedSources)
+			item.HeatScore = pulseVerifiedEvidenceHeatScore(groundedSources, item.HeatScore)
 			items = append(items, item)
 		}
 		module.Items = items
 		filtered.Modules = append(filtered.Modules, module)
 	}
-	return filtered, rejected
+	return filtered, rejections
 }
 
 func pulseExpandGeneratedItemSources(matched []pulseNewsSource, evidence []pulseSearchEvidence, seen map[string]bool) []pulseNewsSource {
@@ -2881,8 +3021,11 @@ func generatedPayloadToModels(date string, payload generatedPulsePayload, topics
 			if len(newsSources) == 0 {
 				newsSources = newsSourcesFromSignals(generatedItem.Signals, 5)
 			}
-			itemTitle := strings.TrimSpace(generatedItem.Title)
-			itemSummary := strings.TrimSpace(generatedItem.Summary)
+			originalTitle := cleanSearchText(generatedItem.Title)
+			originalSummary := cleanSearchText(generatedItem.Summary)
+			originalCopyValid := pulseNewsCopyMeetsQualityGate(originalTitle, originalSummary)
+			itemTitle := originalTitle
+			itemSummary := originalSummary
 			if pulseItemCopyLooksLikeSearchDump(itemTitle, itemSummary) {
 				fallbackResults := pulseSearchResultsFromNewsSources(newsSources)
 				if len(fallbackResults) > 0 {
@@ -2902,6 +3045,11 @@ func generatedPayloadToModels(date string, payload generatedPulsePayload, topics
 				}
 			}
 			itemSummary = pulseCompactSummary(itemSummary)
+			itemTitle = limitText(itemTitle, 120)
+			if originalCopyValid && !pulseNewsCopyMeetsQualityGate(itemTitle, itemSummary) {
+				itemTitle = originalTitle
+				itemSummary = originalSummary
+			}
 			recommendationReason := pulseCompactRecommendationReason(generatedItem.RecommendationReason)
 			keyPoints := pulseCompactKeyPoints(generatedItem.KeyPoints)
 			questionContext := pulseQuestionContext{
@@ -2934,7 +3082,7 @@ func generatedPayloadToModels(date string, payload generatedPulsePayload, topics
 				TopicName:     topicName,
 				Source:        key,
 				Category:      limitText(firstNonEmptyPulse(generatedItem.Category, moduleCategory(key)), 80),
-				Title:         limitText(itemTitle, 120),
+				Title:         itemTitle,
 				Summary:       itemSummary,
 				HeatScore:     normalizeHeatScore(generatedItem.HeatScore, key, index),
 				DetailJSON:    mustJSON(detail),
@@ -3600,22 +3748,26 @@ func pulseResultsHaveIndependentDomains(left pulseSearchResult, right pulseSearc
 func pulseCorroborationTerms(result pulseSearchResult) []string {
 	text := cleanSearchText(strings.Join([]string{result.Title, result.Snippet}, " "))
 	terms := []string{}
+	appendTerm := func(term string) {
+		term = strings.TrimFunc(strings.TrimSpace(term), unicode.IsPunct)
+		terms = appendUniqueStrings(terms, term)
+	}
 	for _, match := range pulseModelEntityPattern.FindAllString(text, -1) {
-		terms = appendUniqueStrings(terms, normalizePulseEntity(match))
+		appendTerm(normalizePulseEntity(match))
 	}
 	for _, entity := range pulseKnownEntities {
 		if pulseTextContainsFold(text, entity) {
-			terms = appendUniqueStrings(terms, entity)
+			appendTerm(entity)
 		}
 	}
 	for _, term := range pulseClusterHintTerms(text) {
 		if !pulseCorroborationTermLooksGeneric(term) {
-			terms = appendUniqueStrings(terms, term)
+			appendTerm(term)
 		}
 	}
 	for _, term := range pulseKeywordsFromText(text) {
 		if !pulseCorroborationTermLooksGeneric(term) {
-			terms = appendUniqueStrings(terms, term)
+			appendTerm(term)
 		}
 	}
 	return limitStringSlice(terms, 16, 40)
@@ -3810,6 +3962,45 @@ func pulseWeakSearchSource(result pulseSearchResult) bool {
 	}
 	for _, weakHost := range weakHosts {
 		if host == weakHost || strings.HasSuffix(host, "."+weakHost) {
+			return true
+		}
+	}
+	return false
+}
+
+func pulsePrimarySearchSource(result pulseSearchResult) bool {
+	source := strings.ToLower(cleanSearchText(result.Source))
+	if pulseTextHasAny(source, "official", "primary source", "官网", "官方", "公司公告") {
+		return true
+	}
+	return pulseSearchSourceHostMatches(result.URL, []string{
+		"openai.com", "chatgpt.com", "anthropic.com", "claude.com",
+		"blog.google", "deepmind.google", "ai.google.dev", "developers.googleblog.com",
+		"x.ai", "meta.com", "deepseek.com", "qwenlm.ai", "alibabacloud.com",
+		"mistral.ai", "nvidia.com", "microsoft.com", "sec.gov", "arxiv.org",
+	})
+}
+
+func pulseAuthoritativeSearchSource(result pulseSearchResult) bool {
+	if pulsePrimarySearchSource(result) {
+		return true
+	}
+	return pulseSearchSourceHostMatches(result.URL, []string{
+		"reuters.com", "apnews.com", "bloomberg.com", "ft.com", "wsj.com",
+		"economist.com", "technologyreview.com", "theverge.com", "techcrunch.com",
+		"cnbc.com", "bbc.com", "theguardian.com", "nikkei.com",
+	})
+}
+
+func pulseSearchSourceHostMatches(rawURL string, domains []string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil {
+		return false
+	}
+	host := strings.TrimPrefix(strings.ToLower(parsed.Hostname()), "www.")
+	for _, domain := range domains {
+		domain = strings.TrimPrefix(strings.ToLower(strings.TrimSpace(domain)), "www.")
+		if host == domain || strings.HasSuffix(host, "."+domain) {
 			return true
 		}
 	}
@@ -4916,27 +5107,60 @@ func pulseSearchResultsFreshEnough(date string, module string, results []pulseSe
 }
 
 func pulseNewsSourcesMeetQualityGate(date string, module string, sources []pulseNewsSource) bool {
+	return len(pulseNewsSourceQualityIssues(date, module, sources)) == 0
+}
+
+func pulseNewsSourceQualityIssues(date string, module string, sources []pulseNewsSource) []string {
+	issues := []string{}
 	if len(sources) < 2 || len(sources) > pulseSearchClusterMaxSources {
-		return false
+		issues = append(issues, "insufficient_sources")
 	}
 	results := pulseSearchResultsFromNewsSources(sources)
-	return pulseSearchIndependentSourceCount(results) >= 2 &&
-		!pulseAllWeakSearchSources(results) &&
-		pulseSearchClusterDescribesConcreteEvent(results) &&
-		pulseSearchResultsFreshEnough(date, module, results)
+	if pulseSearchIndependentSourceCount(results) < 2 {
+		issues = append(issues, "insufficient_independent_sources")
+	}
+	if len(results) > 0 && pulseAllWeakSearchSources(results) {
+		issues = append(issues, "only_weak_sources")
+	}
+	if len(results) > 0 && !pulseSearchClusterDescribesConcreteEvent(results) {
+		issues = append(issues, "sources_do_not_describe_same_event")
+	}
+	if !pulseSearchResultsFreshEnough(date, module, results) {
+		issues = append(issues, "insufficient_fresh_sources")
+	}
+	return issues
 }
 
 func pulseNewsCopyMeetsQualityGate(title string, summary string) bool {
+	return len(pulseNewsCopyQualityIssues(title, summary)) == 0
+}
+
+func pulseNewsCopyQualityIssues(title string, summary string) []string {
+	issues := []string{}
 	title = cleanSearchText(title)
 	summary = cleanSearchText(summary)
-	if title == "" || summary == "" ||
-		pulseNewsCopyLooksGeneric(title) ||
-		pulseNewsCopyLooksGeneric(summary) {
-		return false
+	if title == "" {
+		issues = append(issues, "missing_title")
 	}
-	return pulseCopyContainsConcreteEvent(title) &&
-		pulseCopyHasIdentifiableSubject(title) &&
-		pulseCopyContainsConcreteFact(summary)
+	if summary == "" {
+		issues = append(issues, "missing_summary")
+	}
+	if title != "" && pulseNewsCopyLooksGeneric(title) {
+		issues = append(issues, "generic_title")
+	}
+	if summary != "" && pulseNewsCopyLooksGeneric(summary) {
+		issues = append(issues, "generic_summary")
+	}
+	if title != "" && !pulseCopyContainsConcreteEvent(title) {
+		issues = append(issues, "title_missing_concrete_event")
+	}
+	if title != "" && !pulseCopyHasIdentifiableSubject(title) {
+		issues = append(issues, "title_missing_identifiable_subject")
+	}
+	if summary != "" && !pulseCopyContainsConcreteFact(summary) {
+		issues = append(issues, "summary_missing_concrete_fact")
+	}
+	return issues
 }
 
 func pulseNewsCopyLooksGeneric(value string) bool {
@@ -5035,24 +5259,67 @@ func pulseCopyContainsConcreteFact(summary string) bool {
 }
 
 func pulseItemMeetsQualityGate(item models.PulseItem) bool {
-	if !pulseNewsCopyMeetsQualityGate(item.Title, item.Summary) {
-		return false
-	}
+	return len(pulseItemQualityIssues(item)) == 0
+}
+
+func pulseItemQualityIssues(item models.PulseItem) []string {
+	issues := append([]string{}, pulseNewsCopyQualityIssues(item.Title, item.Summary)...)
 	var detail pulseItemDetail
 	if item.DetailJSON == "" || json.Unmarshal([]byte(item.DetailJSON), &detail) != nil {
-		return false
+		return append(issues, "missing_or_invalid_detail")
 	}
-	return pulseNewsSourcesMeetQualityGate(item.Date, item.Source, detail.NewsSources)
+	return append(issues, pulseNewsSourceQualityIssues(item.Date, item.Source, detail.NewsSources)...)
 }
 
 func filterPulseItemsForPublishing(items []models.PulseItem) []models.PulseItem {
+	filtered, _ := filterPulseItemsForPublishingWithDiagnostics(items)
+	return filtered
+}
+
+func filterPulseItemsForPublishingWithDiagnostics(items []models.PulseItem) ([]models.PulseItem, []pulseCandidateRejectionDiagnostic) {
 	filtered := make([]models.PulseItem, 0, len(items))
+	rejections := []pulseCandidateRejectionDiagnostic{}
 	for _, item := range items {
-		if pulseItemMeetsQualityGate(item) {
+		issues := pulseItemQualityIssues(item)
+		if len(issues) == 0 {
 			filtered = append(filtered, item)
+			continue
+		}
+		var detail pulseItemDetail
+		_ = json.Unmarshal([]byte(item.DetailJSON), &detail)
+		rejections = append(rejections, pulseCandidateRejectionDiagnostic{
+			Stage:         "publishing",
+			Module:        item.Source,
+			TopicID:       item.TopicID,
+			TopicName:     item.TopicName,
+			Title:         limitText(cleanSearchText(item.Title), 180),
+			Reasons:       issues,
+			SourceCount:   len(detail.NewsSources),
+			SourceDomains: pulseNewsSourceDomains(detail.NewsSources),
+		})
+	}
+	return filtered, rejections
+}
+
+func pulseNewsSourceDomains(sources []pulseNewsSource) []string {
+	domains := []string{}
+	for _, source := range sources {
+		if domain := pulseSourceDomainKey(source.URL); domain != "" {
+			domains = appendUniqueStrings(domains, domain)
 		}
 	}
-	return filtered
+	sort.Strings(domains)
+	return domains
+}
+
+func pulseRejectionReasonCounts(rejections []pulseCandidateRejectionDiagnostic) map[string]int {
+	counts := map[string]int{}
+	for _, rejection := range rejections {
+		for _, reason := range rejection.Reasons {
+			counts[reason]++
+		}
+	}
+	return counts
 }
 
 func revalidatePulseCachedItems(items []models.PulseItem) ([]models.PulseItem, []models.PulseItem) {
@@ -5501,18 +5768,27 @@ func normalizeKeywords(values []string) []string {
 	seen := map[string]bool{}
 	keywords := make([]string, 0, len(values))
 	for _, value := range values {
-		cleaned := strings.TrimFunc(strings.Join(strings.Fields(value), " "), func(r rune) bool {
-			return unicode.IsSpace(r) || r == ',' || r == '，' || r == ';' || r == '；'
+		parts := strings.FieldsFunc(value, func(r rune) bool {
+			return r == ',' || r == '，' || r == ';' || r == '；' || r == '、' || r == '\n' || r == '\r'
 		})
-		if cleaned == "" {
-			continue
+		for _, part := range parts {
+			cleaned := strings.Join(strings.Fields(part), " ")
+			if cleaned == "" {
+				continue
+			}
+			key := strings.ToLower(cleaned)
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			keywords = append(keywords, limitText(cleaned, 60))
+			if len(keywords) >= 20 {
+				break
+			}
 		}
-		key := strings.ToLower(cleaned)
-		if seen[key] {
-			continue
+		if len(keywords) >= 20 {
+			break
 		}
-		seen[key] = true
-		keywords = append(keywords, cleaned)
 	}
 	sort.Strings(keywords)
 	return keywords

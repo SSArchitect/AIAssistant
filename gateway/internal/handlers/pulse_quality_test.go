@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -85,6 +86,83 @@ func TestPulseQualitySkipsFollowupForAlreadyVerifiedCluster(t *testing.T) {
 	}
 	if seeds := pulseSearchFollowupSeeds("2026-07-27", []pulseSearchEvidence{evidence}); len(seeds) != 0 {
 		t.Fatalf("expected no follow-up seeds for verified evidence, got %#v", seeds)
+	}
+}
+
+func TestPulseQualityFollowupTargetsUnsupportedSeedInsidePartlyVerifiedQuery(t *testing.T) {
+	evidence := pulseSearchEvidence{
+		Module:    pulseSourceTopicHot,
+		Query:     "OpenAI Anthropic agent controls latest news 2026",
+		TopicName: "AI Agent",
+		Results: []pulseSearchResult{
+			{
+				Title:       "OpenAI launches GPT-5.6 coding agent with terminal controls",
+				Snippet:     "OpenAI released GPT-5.6 with a coding agent and new terminal controls.",
+				URL:         "https://openai.com/news/gpt-5-6-coding-agent",
+				PublishedAt: "2026-07-26",
+			},
+			{
+				Title:       "OpenAI releases GPT-5.6 coding agent and terminal controls",
+				Snippet:     "The GPT-5.6 release adds a coding agent with terminal controls.",
+				URL:         "https://www.reuters.com/technology/openai-gpt-5-6-agent",
+				PublishedAt: "2026-07-25",
+			},
+			{
+				Title:       "Anthropic launches Claude Guardrail 2.0 with policy controls",
+				Snippet:     "Anthropic launched Claude Guardrail 2.0 and added enterprise policy controls.",
+				URL:         "https://anthropic.com/news/claude-guardrail-2",
+				PublishedAt: "2026-07-26",
+			},
+		},
+	}
+
+	seeds := pulseSearchFollowupSeeds("2026-07-27", []pulseSearchEvidence{evidence})
+	if len(seeds) != 1 || !strings.Contains(seeds[0].Result.Title, "Guardrail 2.0") {
+		orphan := evidence.Results[2]
+		t.Fatalf(
+			"expected only the unsupported event to receive a second-stage search, got %#v (eligible=%v supported=%v score=%d terms=%#v families=%#v)",
+			seeds,
+			pulseSearchResultCanSeedFollowup("2026-07-27", evidence, orphan),
+			pulseSearchResultHasVerifiedSupport("2026-07-27", evidence, orphan),
+			pulseSearchResultRelevanceScore(pulseSearchQueryFromEvidence(evidence), orphan),
+			pulseCorroborationTerms(orphan),
+			pulseConcreteEventFamilies(orphan),
+		)
+	}
+}
+
+func TestPulseQualityFollowupSeedCountIsBounded(t *testing.T) {
+	evidence := pulseSearchEvidence{
+		Module:    pulseSourceTopicHot,
+		Query:     "ModelCo acquisitions latest news 2026",
+		TopicName: "AI",
+	}
+	for index := 0; index < pulseSearchFollowupSeedLimit+3; index++ {
+		name := fmt.Sprintf("ModelCo%d", index)
+		evidence.Results = append(evidence.Results, pulseSearchResult{
+			Title:       fmt.Sprintf("%s acquires SafeLab%d in $%dM deal", name, index, 100+index),
+			Snippet:     fmt.Sprintf("%s acquired SafeLab%d for $%dM to expand its AI safety research.", name, index, 100+index),
+			URL:         fmt.Sprintf("https://%s.example.com/news/safelab-%d", strings.ToLower(name), index),
+			PublishedAt: "2026-07-26",
+		})
+	}
+
+	if seeds := pulseSearchFollowupSeeds("2026-07-27", []pulseSearchEvidence{evidence}); len(seeds) != pulseSearchFollowupSeedLimit {
+		t.Fatalf("expected follow-up searches to stay capped at %d, got %d", pulseSearchFollowupSeedLimit, len(seeds))
+	}
+}
+
+func TestPulseQualityRanksPrimaryAndAuthoritativeSourcesFirst(t *testing.T) {
+	query := pulseSearchQuery{Query: "OpenAI GPT-5.6 agent controls", TopicName: "AI"}
+	results := []pulseSearchResult{
+		{Title: "OpenAI GPT-5.6 agent controls", URL: "https://blog.csdn.net/example/gpt-5-6", Snippet: "OpenAI launched GPT-5.6 agent controls."},
+		{Title: "OpenAI GPT-5.6 agent controls", URL: "https://www.reuters.com/technology/openai-gpt-5-6", Snippet: "OpenAI launched GPT-5.6 agent controls."},
+		{Title: "OpenAI GPT-5.6 agent controls", URL: "https://openai.com/news/gpt-5-6", Snippet: "OpenAI launched GPT-5.6 agent controls."},
+	}
+
+	ranked := pulseRankSearchResults(query, results, len(results))
+	if len(ranked) != 3 || !strings.Contains(ranked[0].URL, "openai.com") || !strings.Contains(ranked[1].URL, "reuters.com") {
+		t.Fatalf("expected primary source then authoritative reporting, got %#v", ranked)
 	}
 }
 
@@ -822,9 +900,12 @@ func TestPulseQualityGeneratedItemsMustReferenceSearchEvidence(t *testing.T) {
 		},
 	}}
 
-	filtered, rejected := filterGeneratedPulsePayloadByEvidence(date, payload, evidence)
-	if rejected != 1 {
-		t.Fatalf("expected one hallucinated item to be rejected, got %d", rejected)
+	filtered, rejections := filterGeneratedPulsePayloadByEvidenceWithDiagnostics(date, payload, evidence)
+	if len(rejections) != 1 {
+		t.Fatalf("expected one hallucinated item to be rejected, got %#v", rejections)
+	}
+	if !strings.Contains(strings.Join(rejections[0].Reasons, ","), "no_matching_search_source") {
+		t.Fatalf("expected a specific grounding rejection reason, got %#v", rejections[0])
 	}
 	if got := generatedPulseItemCount(filtered); got != 1 {
 		t.Fatalf("expected only the grounded item to remain, got %d: %#v", got, filtered)
@@ -832,6 +913,11 @@ func TestPulseQualityGeneratedItemsMustReferenceSearchEvidence(t *testing.T) {
 	sources := filtered.Modules[0].Items[0].NewsSources
 	if len(sources) != 2 || sources[0].PublishedAt == "" || sources[1].PublishedAt == "" {
 		t.Fatalf("expected only the corroborating source component to be copied from evidence, got %#v", sources)
+	}
+	_, converted := generatedPayloadToModels(date, filtered, nil)
+	published, publishingRejections := filterPulseItemsForPublishingWithDiagnostics(converted)
+	if len(published) != 1 || len(publishingRejections) != 0 {
+		t.Fatalf("grounded valid copy must remain publishable after model conversion, published=%#v rejected=%#v", published, publishingRejections)
 	}
 }
 
