@@ -19207,5 +19207,6 @@ renderDeveloperView();
 updateCounts();
 renderHealth();
 updateSendState();
+showWelcome();
 
 bootApp();
