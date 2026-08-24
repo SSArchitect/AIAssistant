@@ -49,7 +49,6 @@ type pulseGenerationJob struct {
 type pulseTopicRequest struct {
 	Name     string   `json:"name"`
 	Keywords []string `json:"keywords"`
-	Enabled  *bool    `json:"enabled"`
 	UserID   string   `json:"user_id,omitempty"`
 }
 
@@ -352,6 +351,7 @@ var pulseBackgroundDisabledTools = []string{
 	"list_pulse_topics",
 	"optimize_pulse_topics",
 	"upsert_pulse_topic",
+	"delete_pulse_topic",
 }
 
 var pulseModelEntityPattern = regexp.MustCompile(`(?i)\b(?:gpt|claude|gemini|llama|grok|fable|mythos|deepseek|qwen|kimi|mistral|sora|dall-e|o[0-9])(?:[-\s]?[a-z0-9.]+)?\b`)
@@ -610,15 +610,21 @@ func (h *PulseHandler) TopicOptimizationContext(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"generated_at":        time.Now().Format(time.RFC3339),
-		"lookback_days":       lookbackDays,
-		"topics":              topicResponses(topics),
-		"memory_signals":      pulseTopicOptimizationMemorySignals(memorySignals),
-		"recent_user_intents": pulseTopicOptimizationRecentIntents(messages),
-		"history":             buildPulseTopicOptimizationHistory(topics, items, modules, events, retrievalRuns),
+		"generated_at":               time.Now().Format(time.RFC3339),
+		"lookback_days":              lookbackDays,
+		"current_topics":             topicResponses(topics),
+		"candidate_interest_signals": pulseTopicOptimizationMemorySignals(memorySignals),
+		"recent_user_intents":        pulseTopicOptimizationRecentIntents(messages),
+		"history":                    buildPulseTopicOptimizationHistory(topics, items, modules, events, retrievalRuns),
+		"topic_semantics": gin.H{
+			"existing_topics_source":                         "current_topics_only",
+			"candidate_interest_signals_are_existing_topics": false,
+			"historical_clusters_are_existing_topics":        false,
+			"lifecycle": "A Topic either exists or is deleted; there is no disabled state.",
+		},
 		"workflow": gin.H{
 			"analysis_only": true,
-			"instruction":   "结合当前会话与本工具证据提出 Topic 合并、保留、改名和关键词调整方案；先向用户展示理由与变更，再在用户明确确认后调用 upsert_pulse_topic。",
+			"instruction":   "只有 current_topics 是现有 Topic；candidate_interest_signals 和历史信息簇只是证据，绝不能称为现有 Topic。结合证据提出 Topic 合并、保留、改名、删除和关键词调整方案；先向用户展示理由与变更，再在用户明确确认后调用 upsert_pulse_topic 或 delete_pulse_topic。",
 		},
 	})
 }
@@ -637,17 +643,12 @@ func (h *PulseHandler) CreateTopic(c *gin.Context) {
 		return
 	}
 
-	enabled := true
-	if req.Enabled != nil {
-		enabled = *req.Enabled
-	}
-
 	keywordsJSON := encodeKeywords(expandPulseTopicKeywords(name, req.Keywords))
 	var existing models.PulseTopic
 	err := database.DB.Where("user_id = ? AND lower(name) = lower(?)", userID, name).First(&existing).Error
 	if err == nil {
 		existing.Keywords = keywordsJSON
-		existing.Enabled = enabled
+		existing.Enabled = true
 		existing.UpdatedAt = time.Now()
 		if err := database.DB.Save(&existing).Error; err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save topic"})
@@ -662,7 +663,7 @@ func (h *PulseHandler) CreateTopic(c *gin.Context) {
 		UserID:    userID,
 		Name:      name,
 		Keywords:  keywordsJSON,
-		Enabled:   enabled,
+		Enabled:   true,
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),
 	}
@@ -694,9 +695,7 @@ func (h *PulseHandler) UpdateTopic(c *gin.Context) {
 	if req.Keywords != nil {
 		topic.Keywords = encodeKeywords(req.Keywords)
 	}
-	if req.Enabled != nil {
-		topic.Enabled = *req.Enabled
-	}
+	topic.Enabled = true
 	topic.UpdatedAt = time.Now()
 
 	if err := database.DB.Save(&topic).Error; err != nil {
@@ -709,8 +708,13 @@ func (h *PulseHandler) UpdateTopic(c *gin.Context) {
 func (h *PulseHandler) DeleteTopic(c *gin.Context) {
 	id := c.Param("id")
 	userID := requestUserID(c)
-	if err := database.DB.Delete(&models.PulseTopic{}, "id = ? AND user_id = ?", id, userID).Error; err != nil {
+	result := database.DB.Delete(&models.PulseTopic{}, "id = ? AND user_id = ?", id, userID)
+	if result.Error != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete topic"})
+		return
+	}
+	if result.RowsAffected == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"error": "topic not found"})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"status": "deleted"})
@@ -1332,7 +1336,7 @@ func (h *PulseHandler) hasCurrentPulseShape(date string, userID string) (bool, e
 
 func (h *PulseHandler) loadTopics(userID string) ([]models.PulseTopic, error) {
 	var topics []models.PulseTopic
-	err := database.DB.Where("user_id = ?", normalizedUserID(userID)).Order("enabled desc, created_at asc").Find(&topics).Error
+	err := database.DB.Where("user_id = ? AND enabled = ?", normalizedUserID(userID), true).Order("created_at asc").Find(&topics).Error
 	return topics, err
 }
 

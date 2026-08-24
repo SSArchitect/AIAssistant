@@ -29,6 +29,7 @@ from agent.skills.builtin.todo import (
 )
 from agent.skills.builtin.open_url import OpenURLSkill
 from agent.skills.builtin.pulse import (
+    PulseDeleteTopicSkill,
     PulseGatewayClient,
     PulseGetSkill,
     PulseListTopicsSkill,
@@ -3613,7 +3614,7 @@ class TestPulseSkills:
         assert "Refreshed Pulse" in result.display_text
 
     @pytest.mark.asyncio
-    async def test_list_pulse_topics_can_filter_disabled(self):
+    async def test_list_pulse_topics_returns_existing_topics(self):
         def handler(request: httpx.Request) -> httpx.Response:
             assert request.method == "GET"
             assert request.url.path == "/api/pulse/topics"
@@ -3621,15 +3622,14 @@ class TestPulseSkills:
                 200,
                 json={
                     "topics": [
-                        {"id": "topic-1", "name": "AI", "keywords": ["Agent"], "enabled": True},
-                        {"id": "topic-2", "name": "旧关注", "keywords": [], "enabled": False},
+                        {"id": "topic-1", "name": "AI", "keywords": ["Agent"]},
                     ]
                 },
             )
 
         skill = PulseListTopicsSkill(client_factory=lambda: self.client(handler))
 
-        result = await skill.execute(include_disabled=False, _user_id="alice")
+        result = await skill.execute(_user_id="alice")
 
         assert result.success is True
         assert result.data["total"] == 1
@@ -3664,13 +3664,11 @@ class TestPulseSkills:
         skill = PulseUpsertTopicSkill(client_factory=lambda: self.client(handler))
         prepared = await skill.prepare_arguments(
             topic_id="c16e9bfc",
-            enabled=False,
             _user_id="alice",
         )
 
         assert prepared["topic_id"] == "c16e9bfc-3165-41d9-86be-14631e245253"
         assert prepared["name"] == "AI热门新闻"
-        assert prepared["enabled"] is False
         assert prepared["_user_id"] == "alice"
 
     @pytest.mark.asyncio
@@ -3708,7 +3706,6 @@ class TestPulseSkills:
                             "id": "topic-1",
                             "name": body["name"],
                             "keywords": body["keywords"],
-                            "enabled": body["enabled"],
                         }
                     },
                 )
@@ -3718,8 +3715,7 @@ class TestPulseSkills:
                     "topic": {
                         "id": "topic-1",
                         "name": "机器人",
-                        "keywords": ["具身智能"],
-                        "enabled": body["enabled"],
+                        "keywords": body["keywords"],
                     }
                 },
             )
@@ -3733,16 +3729,54 @@ class TestPulseSkills:
         )
         updated = await skill.execute(
             topic_id="topic-1",
-            enabled=False,
+            keywords="具身智能",
             _user_id="alice",
         )
 
         assert created.success is True
         assert created.data["topic"]["keywords"] == ["具身智能", "供应链"]
         assert updated.success is True
-        assert updated.data["topic"]["enabled"] is False
+        assert updated.data["topic"]["keywords"] == ["具身智能"]
+        assert "enabled" not in requests[0][2]
+        assert "enabled" not in requests[1][2]
         assert requests[0][0:2] == ("POST", "/api/pulse/topics")
         assert requests[1][0:2] == ("PUT", "/api/pulse/topics/topic-1")
+
+    @pytest.mark.asyncio
+    async def test_delete_pulse_topic_resolves_name_before_approval_and_deletes(self):
+        requests = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append((request.method, request.url.path))
+            if request.method == "GET":
+                return httpx.Response(
+                    200,
+                    json={
+                        "topics": [
+                            {
+                                "id": "c16e9bfc-3165-41d9-86be-14631e245253",
+                                "name": "旧关注",
+                                "keywords": ["legacy"],
+                            }
+                        ]
+                    },
+                )
+            return httpx.Response(200, json={"status": "deleted"})
+
+        skill = PulseDeleteTopicSkill(client_factory=lambda: self.client(handler))
+        prepared = await skill.prepare_arguments(name="旧关注", _user_id="alice")
+
+        assert prepared["topic_id"] == "c16e9bfc-3165-41d9-86be-14631e245253"
+        assert prepared["name"] == "旧关注"
+        result = await skill.execute(**prepared)
+        assert result.success is True
+        assert result.data["deleted"]["name"] == "旧关注"
+        assert requests == [
+            ("GET", "/api/pulse/topics"),
+            ("DELETE", "/api/pulse/topics/c16e9bfc-3165-41d9-86be-14631e245253"),
+        ]
+        assert skill.metadata().default_policy == "confirm"
+        assert skill.metadata().access == "destructive"
 
     @pytest.mark.asyncio
     async def test_optimize_pulse_topics_returns_read_only_analysis_context(self):
@@ -3755,10 +3789,10 @@ class TestPulseSkills:
                 200,
                 json={
                     "lookback_days": 45,
-                    "topics": [
-                        {"id": "topic-1", "name": "AI Agent", "keywords": ["Agent"], "enabled": True}
+                    "current_topics": [
+                        {"id": "topic-1", "name": "AI Agent", "keywords": ["Agent"]}
                     ],
-                    "memory_signals": [{"theme": "AI 应用与 Agent", "count": 3}],
+                    "candidate_interest_signals": [{"theme": "AI 应用与 Agent", "count": 3}],
                     "recent_user_intents": [{"text": "最近在研究 Agent 评测"}],
                     "history": {
                         "summary": {"sampled_cluster_count": 4},
@@ -3774,11 +3808,15 @@ class TestPulseSkills:
 
         assert result.success is True
         assert result.data["workflow"]["analysis_only"] is True
+        assert result.data["current_topics"][0]["name"] == "AI Agent"
+        assert result.data["candidate_interest_signals"][0]["theme"] == "AI 应用与 Agent"
+        assert result.data["topic_semantics"]["existing_topics_source"] == "current_topics_only"
         assert result.data["history"]["summary"]["sampled_cluster_count"] == 4
-        assert "do not modify topics" in result.display_text
+        assert "Only current_topics are existing subscriptions" in result.display_text
         assert skill.metadata().access == "read"
         assert skill.metadata().default_policy == "auto"
         assert PulseUpsertTopicSkill().metadata().default_policy == "confirm"
+        assert PulseDeleteTopicSkill().metadata().default_policy == "confirm"
 
 
 class TestTodoSkills:

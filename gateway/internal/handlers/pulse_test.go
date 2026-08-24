@@ -243,6 +243,20 @@ func TestPulseTopicOptimizationContextCombinesHistoryAndRetrievalQuality(t *test
 	if payload["lookback_days"] != float64(30) {
 		t.Fatalf("unexpected lookback: %#v", payload["lookback_days"])
 	}
+	if _, exists := payload["topics"]; exists {
+		t.Fatalf("legacy topics key must not be returned: %#v", payload["topics"])
+	}
+	currentTopics, ok := payload["current_topics"].([]interface{})
+	if !ok || len(currentTopics) != 2 {
+		t.Fatalf("expected current topics, got %#v", payload["current_topics"])
+	}
+	if _, ok := payload["candidate_interest_signals"].([]interface{}); !ok {
+		t.Fatalf("expected separately labeled candidate interests, got %#v", payload["candidate_interest_signals"])
+	}
+	semantics, ok := payload["topic_semantics"].(map[string]interface{})
+	if !ok || semantics["existing_topics_source"] != "current_topics_only" {
+		t.Fatalf("expected explicit topic semantics, got %#v", payload["topic_semantics"])
+	}
 	if intents, ok := payload["recent_user_intents"].([]interface{}); !ok || len(intents) != 1 {
 		t.Fatalf("expected recent user intent, got %#v", payload["recent_user_intents"])
 	}
@@ -267,6 +281,94 @@ func TestPulseTopicOptimizationContextCombinesHistoryAndRetrievalQuality(t *test
 	engagement, _ := firstMetric["engagement"].(map[string]interface{})
 	if engagement[pulseEventOpen] != float64(1) {
 		t.Fatalf("expected topic engagement, got %#v", engagement)
+	}
+}
+
+func TestPulseTopicLifecycleIsPresentOrDeleted(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	if err := database.Init(filepath.Join(t.TempDir(), "assistant.db")); err != nil {
+		t.Fatalf("init database: %v", err)
+	}
+	handler := NewPulseHandler()
+	router := gin.New()
+	router.GET("/api/pulse/topics", handler.ListTopics)
+	router.POST("/api/pulse/topics", handler.CreateTopic)
+	router.PUT("/api/pulse/topics/:id", handler.UpdateTopic)
+	router.DELETE("/api/pulse/topics/:id", handler.DeleteTopic)
+
+	createReq := httptest.NewRequest(
+		http.MethodPost,
+		"/api/pulse/topics",
+		bytes.NewBufferString(`{"name":"AI Agent","keywords":["Agent"],"enabled":false}`),
+	)
+	createReq.Header.Set("Content-Type", "application/json")
+	createReq.Header.Set("X-User-ID", "topic-lifecycle-user")
+	createRecorder := httptest.NewRecorder()
+	router.ServeHTTP(createRecorder, createReq)
+	if createRecorder.Code != http.StatusCreated {
+		t.Fatalf("unexpected create status %d: %s", createRecorder.Code, createRecorder.Body.String())
+	}
+	var createPayload struct {
+		Topic pulseTopicResponse `json:"topic"`
+	}
+	if err := json.Unmarshal(createRecorder.Body.Bytes(), &createPayload); err != nil {
+		t.Fatalf("decode create response: %v", err)
+	}
+	if !createPayload.Topic.Enabled {
+		t.Fatalf("legacy enabled=false must not create a disabled topic: %#v", createPayload.Topic)
+	}
+
+	updateReq := httptest.NewRequest(
+		http.MethodPut,
+		"/api/pulse/topics/"+createPayload.Topic.ID,
+		bytes.NewBufferString(`{"enabled":false,"keywords":["Agent","workflow"]}`),
+	)
+	updateReq.Header.Set("Content-Type", "application/json")
+	updateReq.Header.Set("X-User-ID", "topic-lifecycle-user")
+	updateRecorder := httptest.NewRecorder()
+	router.ServeHTTP(updateRecorder, updateReq)
+	if updateRecorder.Code != http.StatusOK {
+		t.Fatalf("unexpected update status %d: %s", updateRecorder.Code, updateRecorder.Body.String())
+	}
+	var updatePayload struct {
+		Topic pulseTopicResponse `json:"topic"`
+	}
+	if err := json.Unmarshal(updateRecorder.Body.Bytes(), &updatePayload); err != nil {
+		t.Fatalf("decode update response: %v", err)
+	}
+	if !updatePayload.Topic.Enabled {
+		t.Fatalf("legacy enabled=false must not disable a topic: %#v", updatePayload.Topic)
+	}
+
+	deleteReq := httptest.NewRequest(http.MethodDelete, "/api/pulse/topics/"+createPayload.Topic.ID, nil)
+	deleteReq.Header.Set("X-User-ID", "topic-lifecycle-user")
+	deleteRecorder := httptest.NewRecorder()
+	router.ServeHTTP(deleteRecorder, deleteReq)
+	if deleteRecorder.Code != http.StatusOK {
+		t.Fatalf("unexpected delete status %d: %s", deleteRecorder.Code, deleteRecorder.Body.String())
+	}
+
+	listReq := httptest.NewRequest(http.MethodGet, "/api/pulse/topics", nil)
+	listReq.Header.Set("X-User-ID", "topic-lifecycle-user")
+	listRecorder := httptest.NewRecorder()
+	router.ServeHTTP(listRecorder, listReq)
+	if listRecorder.Code != http.StatusOK {
+		t.Fatalf("unexpected list status %d: %s", listRecorder.Code, listRecorder.Body.String())
+	}
+	var listPayload struct {
+		Topics []pulseTopicResponse `json:"topics"`
+	}
+	if err := json.Unmarshal(listRecorder.Body.Bytes(), &listPayload); err != nil {
+		t.Fatalf("decode list response: %v", err)
+	}
+	if len(listPayload.Topics) != 0 {
+		t.Fatalf("expected deleted topic to disappear, got %#v", listPayload.Topics)
+	}
+
+	missingRecorder := httptest.NewRecorder()
+	router.ServeHTTP(missingRecorder, deleteReq)
+	if missingRecorder.Code != http.StatusNotFound {
+		t.Fatalf("expected repeated delete to return 404, got %d: %s", missingRecorder.Code, missingRecorder.Body.String())
 	}
 }
 

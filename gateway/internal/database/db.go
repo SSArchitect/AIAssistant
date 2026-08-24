@@ -52,6 +52,9 @@ func Init(dbPath string) error {
 	if err := migrateLegacyKnowledgeToDrive(DB); err != nil {
 		return err
 	}
+	if err := migrateDisabledPulseTopics(DB); err != nil {
+		return err
+	}
 
 	return ensureDefaultAccount()
 }

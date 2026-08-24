@@ -17,6 +17,7 @@ PULSE_TOOL_NAMES = {
     "list_pulse_topics",
     "optimize_pulse_topics",
     "upsert_pulse_topic",
+    "delete_pulse_topic",
 }
 _DEFAULT_GATEWAY_BASE_URL = "http://localhost:8080"
 
@@ -148,6 +149,13 @@ class PulseGatewayClient:
         if not isinstance(topic, dict):
             raise PulseGatewayError("updated pulse topic was not returned")
         return topic
+
+    async def delete_topic(self, user_id: str, topic_id: str) -> dict[str, Any]:
+        return await self._request(
+            "DELETE",
+            f"/pulse/topics/{quote(topic_id, safe='')}",
+            user_id=user_id,
+        )
 
 
 class _PulseTool(Skill):
@@ -289,18 +297,10 @@ class PulseListTopicsSkill(_PulseTool):
         return SkillMetadata(
             name="list_pulse_topics",
             description=(
-                "列出当前用户订阅的 Pulse Topic、关键词和启用状态。"
+                "列出当前用户实际存在的 Pulse Topic 和关键词。"
                 "更新 Topic 但用户没有提供 topic_id 时，先调用本工具查找。"
             ),
-            parameters=[
-                SkillParameter(
-                    name="include_disabled",
-                    type="boolean",
-                    description="是否包含已停用 Topic，默认 true。",
-                    required=False,
-                    default=True,
-                ),
-            ],
+            parameters=[],
             tags=["pulse", "topic", "read"],
             source="builtin",
             domains=["pulse"],
@@ -316,8 +316,6 @@ class PulseListTopicsSkill(_PulseTool):
     async def execute(self, **kwargs) -> SkillResult:
         try:
             topics = await self._client().list_topics(self._user_id(kwargs))
-            if not _coerce_bool(kwargs.get("include_disabled"), default=True):
-                topics = [topic for topic in topics if bool(topic.get("enabled"))]
             normalized = [_topic_summary(topic) for topic in topics]
             return SkillResult(
                 success=True,
@@ -335,10 +333,10 @@ class PulseOptimizeTopicsSkill(_PulseTool):
         return SkillMetadata(
             name="optimize_pulse_topics",
             description=(
-                "读取当前用户的 Pulse Topic 优化证据：现有订阅、近 30 天对话意图、Topic 重叠、"
-                "历史信息簇质量与内容、检索查询/结果质量以及互动反馈。用户要求优化信息簇、"
-                "整理订阅或改善 Pulse 召回时调用。工具只提供分析上下文，不会修改 Topic；"
-                "Super Chat 必须结合当前会话总结保留、合并、改名和关键词方案，先展示给用户确认。"
+                "读取当前用户的 Pulse Topic 优化证据。current_topics 是当前实际存在的订阅；"
+                "candidate_interest_signals、近期对话与历史信息簇仅是分析证据，绝不是现有 Topic。"
+                "用户要求优化信息簇、整理订阅或改善 Pulse 召回时调用。工具只提供分析上下文，"
+                "不会修改 Topic；Super Chat 必须先总结保留、合并、改名、删除和关键词方案并请用户确认。"
             ),
             parameters=[
                 SkillParameter(
@@ -381,6 +379,19 @@ class PulseOptimizeTopicsSkill(_PulseTool):
                 self._user_id(kwargs),
                 lookback_days=lookback_days,
             )
+            current_topics = payload.pop("topics", payload.get("current_topics", []))
+            candidate_signals = payload.pop(
+                "memory_signals",
+                payload.get("candidate_interest_signals", []),
+            )
+            payload["current_topics"] = _dict_list(current_topics)
+            payload["candidate_interest_signals"] = _dict_list(candidate_signals)
+            payload["topic_semantics"] = {
+                "existing_topics_source": "current_topics_only",
+                "candidate_interest_signals_are_existing_topics": False,
+                "historical_clusters_are_existing_topics": False,
+                "lifecycle": "A Topic either exists or is deleted; there is no disabled state.",
+            }
             return SkillResult(
                 success=True,
                 data=payload,
@@ -398,7 +409,7 @@ class PulseUpsertTopicSkill(_PulseTool):
             name="upsert_pulse_topic",
             description=(
                 "新增或更新当前用户的 Pulse Topic。没有 topic_id 时按名称新增或覆盖同名 Topic；"
-                "提供 topic_id 时更新指定 Topic。适合订阅关注方向、修改关键词或启停 Topic。"
+                "提供 topic_id 时更新指定 Topic。适合订阅关注方向、修改名称或关键词。"
                 "批量优化前应先调用 optimize_pulse_topics，并先向用户展示方案；只有用户当前消息明确确认后才能执行。"
             ),
             parameters=[
@@ -423,17 +434,11 @@ class PulseUpsertTopicSkill(_PulseTool):
                     description="关键词，使用逗号分隔；新增时可省略并由系统扩展。",
                     required=False,
                 ),
-                SkillParameter(
-                    name="enabled",
-                    type="boolean",
-                    description="是否启用该 Topic；新增时默认 true。",
-                    required=False,
-                ),
             ],
             tags=["pulse", "topic", "write"],
             source="builtin",
             domains=["pulse"],
-            routing_keywords=["订阅主题", "修改关注方向", "停用 topic"],
+            routing_keywords=["订阅主题", "修改关注方向", "更新 topic"],
             allowed_agents=["super_chat"],
             risk_level="medium",
             access="write",
@@ -443,7 +448,6 @@ class PulseUpsertTopicSkill(_PulseTool):
                 "订阅主题",
                 "新增 topic",
                 "修改 topic",
-                "停用 topic",
                 "优化订阅",
                 "应用优化方案",
                 "应用这个方案",
@@ -457,34 +461,11 @@ class PulseUpsertTopicSkill(_PulseTool):
         topic_id = str(prepared.get("topic_id") or "").strip()
         if not topic_id:
             return prepared
-
-        topics = await self._client().list_topics(self._user_id(prepared))
-        normalized_id = topic_id.lower()
-        exact_matches = [
-            topic
-            for topic in topics
-            if str(topic.get("id") or "").strip().lower() == normalized_id
-        ]
-        if exact_matches:
-            match = exact_matches[0]
-        else:
-            if len(topic_id) < 8:
-                raise ValueError("topic_id prefix must contain at least 8 characters")
-            prefix_matches = [
-                topic
-                for topic in topics
-                if str(topic.get("id") or "").strip().lower().startswith(normalized_id)
-            ]
-            if not prefix_matches:
-                raise ValueError("topic not found")
-            if len(prefix_matches) > 1:
-                raise ValueError("topic_id prefix is ambiguous")
-            match = prefix_matches[0]
-
-        full_topic_id = str(match.get("id") or "").strip()
-        if not full_topic_id:
-            raise ValueError("matched topic has no ID")
-        prepared["topic_id"] = full_topic_id
+        match = _resolve_topic(
+            await self._client().list_topics(self._user_id(prepared)),
+            topic_id=topic_id,
+        )
+        prepared["topic_id"] = str(match.get("id") or "").strip()
         if not str(prepared.get("name") or "").strip():
             topic_name = str(match.get("name") or "").strip()
             if topic_name:
@@ -502,10 +483,6 @@ class PulseUpsertTopicSkill(_PulseTool):
             body["name"] = name
         if "keywords" in kwargs and kwargs.get("keywords") is not None:
             body["keywords"] = _coerce_keywords(kwargs.get("keywords"))
-        if "enabled" in kwargs and kwargs.get("enabled") is not None:
-            body["enabled"] = _coerce_bool(kwargs.get("enabled"), default=True)
-        elif not topic_id:
-            body["enabled"] = True
         if topic_id and not body:
             return SkillResult(success=False, error="at least one topic field is required")
 
@@ -523,6 +500,88 @@ class PulseUpsertTopicSkill(_PulseTool):
                 success=True,
                 data={"topic": normalized},
                 display_text=f"{action} Pulse topic: {_format_topic_line(normalized)}",
+            )
+        except (PulseGatewayError, ValueError) as exc:
+            return SkillResult(success=False, error=str(exc))
+
+
+class PulseDeleteTopicSkill(_PulseTool):
+    auto_discover = True
+
+    def metadata(self) -> SkillMetadata:
+        return SkillMetadata(
+            name="delete_pulse_topic",
+            description=(
+                "永久删除当前用户的一个 Pulse Topic。Topic 只有存在或删除两种状态，不支持停用。"
+                "仅在用户当前消息明确要求删除，或明确确认包含删除动作的优化方案后使用。"
+                "可以按 list_pulse_topics 返回的名称或内部 topic_id 精确定位。"
+            ),
+            parameters=[
+                SkillParameter(
+                    name="name",
+                    type="string",
+                    description="要删除的 Topic 名称；面向用户优先使用名称。",
+                    required=False,
+                ),
+                SkillParameter(
+                    name="topic_id",
+                    type="string",
+                    description=(
+                        "可选内部 Topic ID。可以使用至少 8 位的唯一前缀；"
+                        "系统会在授权前解析为完整 ID，且不会向用户展示。"
+                    ),
+                    required=False,
+                ),
+            ],
+            tags=["pulse", "topic", "delete"],
+            source="builtin",
+            domains=["pulse"],
+            routing_keywords=["删除 topic", "删掉订阅", "移除关注主题"],
+            allowed_agents=["super_chat"],
+            risk_level="high",
+            access="destructive",
+            default_policy="confirm",
+            max_calls_per_run=12,
+            confirmation_keywords=[
+                "删除 topic",
+                "删掉 topic",
+                "移除 topic",
+                "删除订阅",
+                "删掉订阅",
+                "delete topic",
+                "remove topic",
+                "应用优化方案",
+                "按这个方案",
+            ],
+        )
+
+    async def prepare_arguments(self, **kwargs) -> dict[str, Any]:
+        prepared = dict(kwargs)
+        topic_id = str(prepared.get("topic_id") or "").strip()
+        name = str(prepared.get("name") or "").strip()
+        if not topic_id and not name:
+            raise ValueError("name or topic_id is required")
+        match = _resolve_topic(
+            await self._client().list_topics(self._user_id(prepared)),
+            topic_id=topic_id,
+            name=name,
+        )
+        prepared["topic_id"] = str(match.get("id") or "").strip()
+        prepared["name"] = str(match.get("name") or "").strip()
+        return prepared
+
+    async def execute(self, **kwargs) -> SkillResult:
+        topic_id = str(kwargs.get("topic_id") or "").strip()
+        name = str(kwargs.get("name") or "").strip()
+        if not topic_id:
+            return SkillResult(success=False, error="topic_id is required after topic resolution")
+        try:
+            await self._client().delete_topic(self._user_id(kwargs), topic_id)
+            deleted = {"id": topic_id, "name": name}
+            return SkillResult(
+                success=True,
+                data={"deleted": deleted},
+                display_text=f"Deleted Pulse topic permanently: {name or 'Topic'}",
             )
         except (PulseGatewayError, ValueError) as exc:
             return SkillResult(success=False, error=str(exc))
@@ -600,6 +659,52 @@ def _coerce_keywords(value: Any) -> list[str]:
     return keywords[:20]
 
 
+def _resolve_topic(
+    topics: list[dict[str, Any]],
+    *,
+    topic_id: str = "",
+    name: str = "",
+) -> dict[str, Any]:
+    normalized_id = str(topic_id or "").strip().lower()
+    normalized_name = str(name or "").strip().casefold()
+    if normalized_id:
+        exact_matches = [
+            topic
+            for topic in topics
+            if str(topic.get("id") or "").strip().lower() == normalized_id
+        ]
+        if exact_matches:
+            match = exact_matches[0]
+        else:
+            if len(normalized_id) < 8:
+                raise ValueError("topic_id prefix must contain at least 8 characters")
+            prefix_matches = [
+                topic
+                for topic in topics
+                if str(topic.get("id") or "").strip().lower().startswith(normalized_id)
+            ]
+            if not prefix_matches:
+                raise ValueError("topic not found")
+            if len(prefix_matches) > 1:
+                raise ValueError("topic_id prefix is ambiguous")
+            match = prefix_matches[0]
+    else:
+        name_matches = [
+            topic
+            for topic in topics
+            if str(topic.get("name") or "").strip().casefold() == normalized_name
+        ]
+        if not name_matches:
+            raise ValueError("topic not found")
+        if len(name_matches) > 1:
+            raise ValueError("topic name is ambiguous")
+        match = name_matches[0]
+
+    if not str(match.get("id") or "").strip():
+        raise ValueError("matched topic has no ID")
+    return match
+
+
 def _topic_summary(topic: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": str(topic.get("id") or ""),
@@ -608,7 +713,6 @@ def _topic_summary(topic: dict[str, Any]) -> dict[str, Any]:
             str(keyword)
             for keyword in (topic.get("keywords") if isinstance(topic.get("keywords"), list) else [])
         ],
-        "enabled": bool(topic.get("enabled")),
         "created_at": str(topic.get("created_at") or ""),
         "updated_at": str(topic.get("updated_at") or ""),
     }
@@ -712,9 +816,8 @@ def _string_list(value: Any, *, limit: int) -> list[str]:
 
 def _format_topic_line(topic: dict[str, Any]) -> str:
     keywords = ", ".join(topic.get("keywords") or [])
-    state = "enabled" if topic.get("enabled") else "disabled"
     suffix = f" · {keywords}" if keywords else ""
-    return f"{topic.get('name')} ({topic.get('id')}, {state}){suffix}"
+    return f"{topic.get('name')}{suffix}"
 
 
 def _format_topics(topics: list[dict[str, Any]]) -> str:
@@ -727,7 +830,7 @@ def _format_topics(topics: list[dict[str, Any]]) -> str:
 
 
 def _format_topic_optimization_context(payload: dict[str, Any]) -> str:
-    topics = _dict_list(payload.get("topics"))
+    topics = _dict_list(payload.get("current_topics"))
     history = payload.get("history") if isinstance(payload.get("history"), dict) else {}
     summary = history.get("summary") if isinstance(history.get("summary"), dict) else {}
     overlaps = _dict_list(history.get("overlap_candidates"))
@@ -738,6 +841,7 @@ def _format_topic_optimization_context(payload: dict[str, Any]) -> str:
         f"{int(summary.get('sampled_cluster_count') or 0)} historical clusters, "
         f"{len(overlaps)} overlap candidates, "
         f"{len(runs)} retrieval runs. "
-        "Use the structured evidence with the current conversation to propose a plan; "
-        "do not modify topics until the user explicitly confirms it."
+        "Only current_topics are existing subscriptions; candidate interest signals and historical "
+        "clusters are evidence, not Topics. Use the evidence to propose a plan, and do not modify "
+        "or delete topics until the user explicitly confirms it."
     )

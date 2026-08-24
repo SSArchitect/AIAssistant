@@ -88,3 +88,23 @@ def test_pulse_information_cluster_optimization_routes_to_analysis_tool():
 
     assert route.activated_domains == ["pulse"]
     assert [tool.name for tool in route.tools] == ["optimize_pulse_topics"]
+
+
+def test_pulse_topic_deletion_routes_to_delete_tool():
+    catalog = [
+        _tool(
+            "delete_pulse_topic",
+            domains=["pulse"],
+            routing_keywords=["删除 topic", "删掉订阅"],
+        ),
+        _tool(
+            "upsert_pulse_topic",
+            domains=["pulse"],
+            routing_keywords=["新增 topic", "修改订阅"],
+        ),
+    ]
+
+    route = ToolRouter().route(catalog, query="把停用的 Pulse Topic 删除")
+
+    assert route.activated_domains == ["pulse"]
+    assert route.scored_tools[0]["name"] == "delete_pulse_topic"

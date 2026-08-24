@@ -625,9 +625,23 @@ test('Pulse AI optimization delegates read-only planning to Super Chat', () => {
 
     assert.match(zhPrompt, /optimize_pulse_topics/);
     assert.match(zhPrompt, /回溯 30 天/);
+    assert.match(zhPrompt, /只有 current_topics 是当前实际存在的订阅/);
+    assert.match(zhPrompt, /删除或调整关键词/);
+    assert.doesNotMatch(zhPrompt, /停用/);
     assert.match(zhPrompt, /不要修改任何 Topic/);
     assert.match(enPrompt, /30-day lookback/);
+    assert.match(enPrompt, /only current_topics as existing subscriptions/i);
+    assert.match(enPrompt, /rename, delete, or improve/);
+    assert.doesNotMatch(enPrompt, /disable/);
     assert.match(enPrompt, /Do not modify any Topic/);
+});
+
+test('Pulse topic UI has no disabled visual state', () => {
+    const renderTopics = extractFunctionDeclaration('renderPulseTopics');
+    const fallbackPrompt = extractFunctionDeclaration('pulseNewsFallbackPrompt');
+    assert.doesNotMatch(renderTopics, /topic\.enabled|muted/);
+    assert.doesNotMatch(fallbackPrompt, /topic\?\.enabled/);
+    assert.doesNotMatch(appSource, /\.pulse-topic-item\.muted/);
 });
 
 test('Pulse AI optimization opens Super Chat and submits the generated task', async () => {

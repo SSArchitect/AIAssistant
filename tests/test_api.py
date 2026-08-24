@@ -168,6 +168,7 @@ async def test_list_skills(client):
     assert "get_pulse" in names
     assert "optimize_pulse_topics" in names
     assert "upsert_pulse_topic" in names
+    assert "delete_pulse_topic" in names
 
 
 @pytest.mark.asyncio

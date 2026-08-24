@@ -11434,7 +11434,7 @@ function renderPulseEmptyState(title, detail) {
 }
 
 function pulseNewsFallbackPrompt() {
-    const topics = Array.isArray(pulse.topics) ? pulse.topics.filter((topic) => topic?.enabled !== false) : [];
+    const topics = Array.isArray(pulse.topics) ? pulse.topics : [];
     const selected = selectedPulseTopicId
         ? topics.filter((topic) => topic.id === selectedPulseTopicId)
         : topics.slice(0, 4);
@@ -11461,13 +11461,15 @@ function pulseTopicOptimizationPrompt() {
     if (currentLanguage === 'en') {
         return [
             'Call optimize_pulse_topics with a 30-day lookback to load my Pulse subscriptions, recent conversation intents, historical retrieval quality, and cluster content.',
-            'Use that evidence and this conversation to propose which Topics to keep, merge, rename, disable, or improve, including a focused keyword set for each resulting Topic.',
+            'Treat only current_topics as existing subscriptions. Candidate interest signals and historical clusters are evidence, not existing Topics.',
+            'Use that evidence and this conversation to propose which Topics to keep, merge, rename, delete, or improve, including a focused keyword set for each resulting Topic.',
             'Show the proposed before/after plan and reasons first. Do not modify any Topic until I explicitly confirm the plan.',
         ].join('\n\n');
     }
     return [
         '请调用 optimize_pulse_topics，回溯 30 天读取我的 Pulse 订阅、近期对话意图、历史检索质量和信息簇内容。',
-        '请结合这些证据和当前会话，分析哪些 Topic 应保留、合并、改名、停用或调整关键词，并为优化后的每个 Topic 给出聚焦的关键词集合。',
+        '只有 current_topics 是当前实际存在的订阅；候选兴趣信号和历史信息簇只是分析证据，不能称为现有 Topic。',
+        '请结合这些证据和当前会话，分析哪些 Topic 应保留、合并、改名、删除或调整关键词，并为优化后的每个 Topic 给出聚焦的关键词集合。',
         '先展示优化前后方案和理由，不要修改任何 Topic；等我明确确认方案后再应用。',
     ].join('\n\n');
 }
@@ -11579,7 +11581,7 @@ function renderPulseTopics() {
         const deleting = pendingPulseTopicDeletes.has(topic.id);
         const selected = selectedPulseTopicId && topic.id === selectedPulseTopicId;
         return `
-            <div class="pulse-topic-item ${topic.enabled ? '' : 'muted'} ${selected ? 'selected' : ''}">
+            <div class="pulse-topic-item ${selected ? 'selected' : ''}">
                 <button class="pulse-topic-select" type="button" data-pulse-select-topic="${escapeAttr(topic.id)}">
                     <strong>${escapeHtml(topic.name || '')}</strong>
                     <span>${keywords.map(escapeHtml).join(' / ') || escapeHtml(t('pulse.subscribed'))}</span>
@@ -14549,14 +14551,16 @@ function approvalVisibleArguments(toolName = '', argumentsValue = {}) {
     const args = argumentsValue && typeof argumentsValue === 'object'
         ? { ...argumentsValue }
         : {};
-    if (toolName === 'upsert_pulse_topic') delete args.topic_id;
+    if (toolName === 'upsert_pulse_topic' || toolName === 'delete_pulse_topic') delete args.topic_id;
     return args;
 }
 
 function approvalOperationSummary(operation = {}, index = 0, toolName = '') {
     const args = approvalVisibleArguments(toolName, operation.arguments);
     const target = args.name || args.path || args.item_id || args.todo_id || args.topic_id || args.url || '';
-    const action = args.enabled === false
+    const action = toolName === 'delete_pulse_topic'
+        ? (currentLanguage === 'zh' ? '删除' : 'Delete')
+        : args.enabled === false
         ? (currentLanguage === 'zh' ? '停用' : 'Disable')
         : args.enabled === true
             ? (currentLanguage === 'zh' ? '启用/更新' : 'Enable/update')

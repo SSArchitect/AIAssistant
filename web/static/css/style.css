@@ -6507,10 +6507,6 @@ button.mode-chip:focus-visible {
     gap: 8px;
 }
 
-.pulse-topic-item.muted {
-    opacity: 0.62;
-}
-
 .pulse-topic-item.selected {
     border-color: #c6d8ff;
     background: var(--primary-soft);

@@ -106,10 +106,12 @@ class ContextBuilder:
                 [
                     "- 用户要求优化 Pulse 信息簇、订阅 Topic 或关键词时，先调用 optimize_pulse_topics。"
                     "结合工具返回的近 30 天意图、Topic 重叠、历史检索质量和内容，以及当前会话，"
-                    "给出保留、合并、改名、关键词调整的明确方案与依据。",
+                    "给出保留、合并、改名、删除、关键词调整的明确方案与依据。"
+                    "只有 current_topics 是实际存在的 Topic；候选兴趣信号、近期意图和历史信息簇都只是证据，"
+                    "绝不能把它们说成现有 Topic，也不能作为删除目标。",
                     "- optimize_pulse_topics 只分析、不修改。先把变更前后方案展示给用户；"
-                    "只有用户当前消息明确确认应用方案后，才能调用 upsert_pulse_topic。"
-                    "合并 Topic 时优先停用被合并项，保留历史记录，不要直接删除。",
+                    "只有用户当前消息明确确认应用方案后，才能调用 upsert_pulse_topic 或 delete_pulse_topic。"
+                    "Topic 只有存在或删除两种状态；合并 Topic 时删除被合并项，不要停用。",
                 ]
             )
         system_config = (

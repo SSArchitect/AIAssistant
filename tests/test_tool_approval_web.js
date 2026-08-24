@@ -35,6 +35,8 @@ test('approval card exposes one-time, conversation-scoped, and deny decisions', 
 test('Pulse approval card hides internal topic ids from users', () => {
     assert.match(appSource, /function approvalVisibleArguments\(/);
     assert.match(appSource, /toolName === 'upsert_pulse_topic'/);
+    assert.match(appSource, /toolName === 'delete_pulse_topic'/);
     assert.match(appSource, /delete args\.topic_id/);
     assert.match(appSource, /approvalVisibleArguments\(approval\.toolName, operation\.arguments\)/);
+    assert.match(appSource, /toolName === 'delete_pulse_topic'[\s\S]*?'删除'/);
 });
