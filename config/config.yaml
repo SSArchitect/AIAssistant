@@ -58,6 +58,8 @@ search:
     enabled: true
     command: uvx
     args:
+      - --with
+      - mcp<2
       - minimax-coding-plan-mcp
       - -y
     api_host: https://api.minimaxi.com

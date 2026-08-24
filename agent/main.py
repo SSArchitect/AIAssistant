@@ -146,6 +146,18 @@ async def roles(user_id: Optional[str] = None):
     return RoleListResponse(roles=engine.role_memory.list_roles(user_id=user_id))
 
 
+@app.delete("/agent/users/{user_id}")
+async def delete_user_data(user_id: str):
+    if engine is None:
+        raise HTTPException(status_code=503, detail="Agent engine not ready")
+    normalized_user_id = str(user_id or "").strip()
+    if not normalized_user_id:
+        raise HTTPException(status_code=400, detail="user id is required")
+    if normalized_user_id == "0":
+        raise HTTPException(status_code=400, detail="the default account cannot be deleted")
+    return {"status": "deleted", "deleted": engine.purge_user_data(normalized_user_id)}
+
+
 @app.post("/agent/roles", response_model=RoleProfile)
 async def create_role(request: RoleCreateRequest):
     if engine is None:

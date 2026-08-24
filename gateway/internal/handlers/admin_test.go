@@ -360,6 +360,110 @@ func TestAdminLoginAndAccountPasswordEndpoint(t *testing.T) {
 	}
 }
 
+func TestAdminDeleteAccountPurgesRelatedDataAndProtectsDefault(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	if err := database.Init(filepath.Join(t.TempDir(), "assistant.db")); err != nil {
+		t.Fatalf("init database: %v", err)
+	}
+	now := time.Now()
+	accountID := "acct-delete"
+	records := []interface{}{
+		&models.Account{ID: accountID, Name: "Delete Me", NameKey: accountNameKey("Delete Me"), CreatedAt: now, UpdatedAt: now},
+		&models.AccountSession{TokenHash: "delete-session", UserID: accountID, CreatedAt: now, LastUsedAt: now},
+		&models.Conversation{ID: "delete-conv", UserID: accountID, AgentID: "super_chat", CreatedAt: now, UpdatedAt: now},
+		&models.Message{ConversationID: "delete-conv", UserID: accountID, Role: "user", Content: "private", CreatedAt: now},
+		&models.TokenUsage{UserID: accountID, ConversationID: "delete-conv", MessageID: 1, AgentID: "super_chat", TotalTokens: 3, CreatedAt: now},
+		&models.UserSetting{UserID: accountID, Key: "tool.search.enabled", Value: "true", UpdatedAt: now},
+		&models.PulseTopic{ID: "delete-topic", UserID: accountID, Name: "private", CreatedAt: now, UpdatedAt: now},
+		&models.PulseItem{ID: "delete-pulse-item", UserID: accountID, Date: "2026-08-24", Title: "private", CreatedAt: now, UpdatedAt: now},
+		&models.PulseModule{ID: "delete-pulse-module", UserID: accountID, Date: "2026-08-24", Key: "private", CreatedAt: now, UpdatedAt: now},
+		&models.PulseEvent{ID: "delete-pulse-event", UserID: accountID, Date: "2026-08-24", ItemID: "delete-pulse-item", EventType: "view", CreatedAt: now},
+		&models.PulseScheduleState{UserID: accountID, LastDate: "2026-08-24", LastAttemptAt: now, LastStatus: "succeeded", UpdatedAt: now},
+		&models.TodoItem{ID: "delete-todo", UserID: accountID, Title: "private", CreatedAt: now, UpdatedAt: now},
+		&models.TodoCompletion{ID: "delete-completion", TodoID: "delete-todo", UserID: accountID, OccurrenceDate: "2026-08-24", CompletedAt: now, CreatedAt: now, UpdatedAt: now},
+		&models.TodoSuggestion{ID: "delete-suggestion", UserID: accountID, Title: "private", CreatedAt: now, UpdatedAt: now},
+		&models.DriveItem{ID: "delete-drive-item", UserID: accountID, Type: "file", Name: "private.txt", CreatedAt: now, UpdatedAt: now},
+	}
+	for _, record := range records {
+		if err := database.DB.Create(record).Error; err != nil {
+			t.Fatalf("create %T: %v", record, err)
+		}
+	}
+
+	router := gin.New()
+	handler := NewAdminHandler(nil)
+	protected := router.Group("/api/admin")
+	protected.Use(handler.RequireAuth())
+	protected.DELETE("/accounts/:id", handler.DeleteAccount)
+	token, err := handler.createAdminSession()
+	if err != nil {
+		t.Fatalf("create admin session: %v", err)
+	}
+
+	unauthorizedReq := httptest.NewRequest(http.MethodDelete, "/api/admin/accounts/"+accountID, nil)
+	unauthorizedRecorder := httptest.NewRecorder()
+	router.ServeHTTP(unauthorizedRecorder, unauthorizedReq)
+	if unauthorizedRecorder.Code != http.StatusUnauthorized {
+		t.Fatalf("expected delete to require admin auth, got %d", unauthorizedRecorder.Code)
+	}
+
+	defaultReq := httptest.NewRequest(http.MethodDelete, "/api/admin/accounts/"+models.DefaultAccountID, nil)
+	defaultReq.Header.Set(adminSessionHeader, token)
+	defaultRecorder := httptest.NewRecorder()
+	router.ServeHTTP(defaultRecorder, defaultReq)
+	if defaultRecorder.Code != http.StatusBadRequest {
+		t.Fatalf("expected default account deletion to fail, got %d: %s", defaultRecorder.Code, defaultRecorder.Body.String())
+	}
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/admin/accounts/"+accountID, nil)
+	req.Header.Set(adminSessionHeader, token)
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("unexpected delete status %d: %s", recorder.Code, recorder.Body.String())
+	}
+
+	userModels := []interface{}{
+		&models.AccountSession{},
+		&models.Message{},
+		&models.Conversation{},
+		&models.TokenUsage{},
+		&models.UserSetting{},
+		&models.PulseEvent{},
+		&models.PulseItem{},
+		&models.PulseModule{},
+		&models.PulseTopic{},
+		&models.PulseScheduleState{},
+		&models.TodoCompletion{},
+		&models.TodoSuggestion{},
+		&models.TodoItem{},
+		&models.DriveItem{},
+	}
+	for _, model := range userModels {
+		var count int64
+		if err := database.DB.Model(model).Where("user_id = ?", accountID).Count(&count).Error; err != nil {
+			t.Fatalf("count %T: %v", model, err)
+		}
+		if count != 0 {
+			t.Fatalf("expected %T data to be deleted, got %d rows", model, count)
+		}
+	}
+	var deletedAccountCount int64
+	if err := database.DB.Model(&models.Account{}).Where("id = ?", accountID).Count(&deletedAccountCount).Error; err != nil {
+		t.Fatalf("count deleted account: %v", err)
+	}
+	if deletedAccountCount != 0 {
+		t.Fatalf("expected account to be deleted, got %d rows", deletedAccountCount)
+	}
+	var defaultAccountCount int64
+	if err := database.DB.Model(&models.Account{}).Where("id = ?", models.DefaultAccountID).Count(&defaultAccountCount).Error; err != nil {
+		t.Fatalf("count default account: %v", err)
+	}
+	if defaultAccountCount != 1 {
+		t.Fatalf("expected default account to remain, got %d rows", defaultAccountCount)
+	}
+}
+
 func TestAdminCostsUsesTraceFallbackWithoutDoubleCounting(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	if err := database.Init(filepath.Join(t.TempDir(), "assistant.db")); err != nil {

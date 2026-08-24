@@ -53,3 +53,17 @@ type PulseEvent struct {
 	MetadataJSON string    `json:"metadata_json,omitempty" gorm:"type:text"`
 	CreatedAt    time.Time `json:"created_at"`
 }
+
+// PulseScheduleState persists automatic refresh throttling per account. Keeping
+// this in the shared database prevents a gateway restart from immediately
+// retrying an expensive failed generation.
+type PulseScheduleState struct {
+	UserID              string     `json:"user_id" gorm:"primaryKey;not null"`
+	LastDate            string     `json:"last_date,omitempty" gorm:"index"`
+	LastAttemptAt       time.Time  `json:"last_attempt_at" gorm:"index"`
+	LastSuccessAt       *time.Time `json:"last_success_at,omitempty"`
+	LastStatus          string     `json:"last_status,omitempty" gorm:"index"`
+	ConsecutiveFailures int        `json:"consecutive_failures"`
+	LastError           string     `json:"last_error,omitempty" gorm:"type:text"`
+	UpdatedAt           time.Time  `json:"updated_at"`
+}

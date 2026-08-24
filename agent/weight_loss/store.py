@@ -426,6 +426,23 @@ class WeightLossStore:
         deleted["entry_type"] = entry_type
         return deleted
 
+    def purge_user(self, user_id: str | int | None) -> int:
+        self.ensure_schema()
+        normalized_user_id = self._normalize_user_id(user_id)
+        deleted = 0
+        with self._lock, self._connect() as conn:
+            for table in (
+                "weight_loss_meals",
+                "weight_loss_exercises",
+                "weight_loss_profiles",
+            ):
+                cursor = conn.execute(
+                    f"DELETE FROM {table} WHERE user_id = ?",
+                    (normalized_user_id,),
+                )
+                deleted += max(0, cursor.rowcount)
+        return deleted
+
     def summary(self, conversation_id: str, *, days: int = 7, user_id: str | int | None = None) -> dict[str, Any]:
         self.ensure_schema()
         normalized_user_id = self._normalize_user_id(user_id)

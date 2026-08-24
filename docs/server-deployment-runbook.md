@@ -1,6 +1,6 @@
 # Server Deployment Runbook
 
-最后更新：2026-06-21
+最后更新：2026-08-21
 
 这份文档记录把 Agent Assistant 推送到服务器的标准流程和已踩过的坑。目标是让后续部署只做可重复动作，不把运行期数据、API key 或 Nginx/systemd 配置搞丢。
 
@@ -8,7 +8,7 @@
 
 ```text
 Server:      ubuntu@49.235.143.82
-Public URL:  http://49.235.143.82/
+Public URL:  https://www.architect8.cn/
 Repo:        git@github.com:SSArchitect/AIAssistant.git
 Server dir:  /home/ubuntu/agent_assistant
 Deploy user: ubuntu
@@ -17,11 +17,19 @@ Deploy user: ubuntu
 服务拓扑：
 
 ```text
-Browser
-  -> Nginx :80
-      -> Go Gateway :8080
-          -> Python Agent :9090
+Browser / Android
+  -> Nginx :443 (TLS)
+      -> Go Gateway 127.0.0.1:8080
+          -> Python Agent 127.0.0.1:9090
 ```
+
+80 端口只跳转到 HTTPS。生产 `config/config.yaml` 中 Gateway host 应保持
+`127.0.0.1`；每次部署后都检查监听地址，避免重新暴露 `0.0.0.0:8080`。Android APK、
+版本发现和 OTA 的独立流程见 [android-release-runbook.md](./android-release-runbook.md)。
+
+注意：仓库里的开发配置目前仍是 `0.0.0.0`，而部署脚本会 reset 工作树。运行部署脚本后
+必须恢复服务器 `config/config.yaml` 的 `server.host: 127.0.0.1`，再重启 Gateway 并检查
+监听地址。后续若把生产配置从代码配置中彻底分离，可移除此临时检查项。
 
 systemd 服务：
 
@@ -171,14 +179,14 @@ systemctl is-active agent-assistant-agent.service agent-assistant-gateway.servic
 公网健康检查：
 
 ```bash
-curl -fsS http://49.235.143.82/api/health
-curl -fsSI http://49.235.143.82/ | sed -n '1,12p'
+curl -fsS https://www.architect8.cn/api/health
+curl -fsSI https://www.architect8.cn/ | sed -n '1,12p'
 ```
 
 模型配置检查，API key 只看是否存在，不要打印真实值：
 
 ```bash
-curl -sS http://49.235.143.82/api/admin/settings | python3 -c '
+curl -sS https://www.architect8.cn/api/admin/settings | python3 -c '
 import json, sys
 data=json.load(sys.stdin).get("settings",{})
 print("provider=" + data.get("llm.default_provider", ""))
@@ -190,12 +198,12 @@ print("model=" + data.get("llm.minimax.model", ""))
 真实聊天 smoke test：
 
 ```bash
-conv=$(curl -sS -X POST http://49.235.143.82/api/conversations \
+conv=$(curl -sS -X POST https://www.architect8.cn/api/conversations \
   -H 'Content-Type: application/json' \
   -d '{"title":"deploy smoke"}' |
   python3 -c 'import json,sys; print(json.load(sys.stdin).get("id",""))')
 
-curl -sS --max-time 90 -X POST http://49.235.143.82/api/chat \
+curl -sS --max-time 90 -X POST https://www.architect8.cn/api/chat \
   -H 'Content-Type: application/json' \
   -d "{\"conversation_id\":\"$conv\",\"query\":\"你好，回复两个字：正常\",\"agent_id\":\"general_assistant\",\"stream\":false}" |
   python3 -c 'import sys; print(sys.stdin.read()[:1200])'
@@ -216,7 +224,7 @@ curl -sS --max-time 25 -X POST http://127.0.0.1:9090/agent/search \
 Pulse smoke test：
 
 ```bash
-curl -fsS http://49.235.143.82/api/pulse | python3 -c '
+curl -fsS https://www.architect8.cn/api/pulse | python3 -c '
 import json,sys
 data=json.load(sys.stdin)
 print("date=" + str(data.get("date")))
@@ -294,7 +302,7 @@ Illegal header value b'Bearer '
 说明服务器没有模型 API key，或者 Gateway 没有把 Admin settings 同步到 Agent。处理：
 
 ```bash
-curl -sS http://49.235.143.82/api/admin/settings
+curl -sS https://www.architect8.cn/api/admin/settings
 sudo systemctl restart agent-assistant-agent.service agent-assistant-gateway.service
 ```
 
@@ -307,7 +315,7 @@ sudo systemctl restart agent-assistant-agent.service agent-assistant-gateway.ser
 排查时看：
 
 ```bash
-curl -sS 'http://49.235.143.82/api/runs/<run_id>?user_id=<user_id>'
+curl -sS 'https://www.architect8.cn/api/runs/<run_id>?user_id=<user_id>'
 sudo journalctl -u agent-assistant-agent.service -n 200 --no-pager
 ```
 
@@ -334,6 +342,7 @@ journalctl -u agent-assistant-agent.service -u agent-assistant-gateway.service -
 判断要点：
 
 - `POST "/api/pulse/refresh"` 跑几分钟后出现 `broken pipe`，通常是浏览器刷新/超时断开，不等于服务挂了。
+- 自动 Pulse 只为最近 24 小时活跃的帐号运行，正常间隔 6 小时；失败后按 12/24 小时退避，并且同一时间最多运行一个自动任务。
 - `DELETE "/api/pulse/topics/<id>"` 表示订阅主题被删除；刷新接口本身不应该删除 topic。
 - `DELETE "/api/conversations/<id>"` 会硬删除会话及消息，所以 assistant 内容会一起消失。
 - 会话和 Pulse 都按 `user_id` 隔离；切换帐号后旧数据可能还在默认帐号 `0` 下，只是当前帐号看不到。
@@ -351,6 +360,7 @@ for title, query in [
     ("messages_by_user_role", "select user_id,role,count(*) as count,max(created_at) as latest from messages group by user_id,role order by latest desc"),
     ("pulse_topics_by_user", "select user_id,count(*) as count,group_concat(name, ' | ') as topics from pulse_topics group by user_id"),
     ("pulse_items_by_user", "select user_id,date,source,count(*) as count,max(updated_at) as latest from pulse_items group by user_id,date,source order by latest desc"),
+    ("pulse_schedule_state", "select user_id,last_date,last_attempt_at,last_success_at,last_status,consecutive_failures,substr(last_error,1,160) as last_error from pulse_schedule_states order by last_attempt_at desc"),
 ]:
     print("\\n" + title)
     for row in conn.execute(query):

@@ -104,6 +104,17 @@ class TestConversationMemory:
         # Original should still have the message
         assert len(mem.get("conv1")) == 1
 
+    def test_purge_user_clears_only_scoped_conversations(self):
+        mem = ConversationMemory()
+        mem.add("user:a:conversation:shared", LLMMessage(role="user", content="a"))
+        mem.set_summary("user:a:conversation:shared", "private a")
+        mem.add("user:b:conversation:shared", LLMMessage(role="user", content="b"))
+
+        assert mem.purge_user("a") == 1
+        assert mem.get_context("user:a:conversation:shared").total_messages == 0
+        assert mem.get_context("user:a:conversation:shared").summary == ""
+        assert mem.get("user:b:conversation:shared")[0].content == "b"
+
 
 class TestRoleMemoryStore:
     def test_role_memories_are_isolated(self):
@@ -482,6 +493,27 @@ class TestRoleMemoryStore:
         assert roles["初一"].metadata["built_in"] is True
         assert roles["初一"].metadata["localized"]["en"]["name"] == "Chuyi"
         assert roles["custom_writer"].metadata["built_in"] is False
+
+    def test_purge_user_removes_roles_and_memories_without_touching_other_users(self, tmp_path):
+        storage_path = tmp_path / "agent_memory.json"
+        store = RoleMemoryStore(storage_path=storage_path)
+        store.create_role(RoleCreateRequest(user_id="a", id="private_a", name="Private A"))
+        store.create_role(RoleCreateRequest(user_id="b", id="private_b", name="Private B"))
+        store.add_memory(role_id="default", user_id="a", kind="long_term", content="memory a")
+        store.add_memory(role_id="default", user_id="b", kind="long_term", content="memory b")
+        store.add_memory(role_id="private_a", user_id="a", kind="role", content="role memory a")
+
+        deleted = store.purge_user("a")
+
+        assert deleted == {"roles": 1, "memories": 2}
+        assert store.get_role("private_a", user_id="a") is None
+        assert store.get_role("private_b", user_id="b") is not None
+        assert store.list_memories(role_id="default", user_id="a") == []
+        assert [record.content for record in store.list_memories(role_id="default", user_id="b")] == ["memory b"]
+
+        restored = RoleMemoryStore(storage_path=storage_path)
+        assert restored.get_role("private_a", user_id="a") is None
+        assert restored.get_role("private_b", user_id="b") is not None
 
 
 class TestHeuristicMemoryHook:

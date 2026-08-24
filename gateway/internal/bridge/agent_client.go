@@ -650,6 +650,24 @@ func (c *AgentClient) DeleteRole(roleID string, userID string) error {
 	return nil
 }
 
+func (c *AgentClient) DeleteUserData(userID string) error {
+	endpoint := c.baseURL + "/agent/users/" + url.PathEscape(userID)
+	httpReq, err := http.NewRequest(http.MethodDelete, endpoint, nil)
+	if err != nil {
+		return fmt.Errorf("build delete user data request: %w", err)
+	}
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		return fmt.Errorf("delete user data request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("delete user data returned status %d: %s", resp.StatusCode, string(respBody))
+	}
+	return nil
+}
+
 func (c *AgentClient) ListRoleMemories(roleID string, userID string, kind string, agentID string, includeInactive bool) (*MemoryListResponse, error) {
 	params := url.Values{}
 	if userID != "" {

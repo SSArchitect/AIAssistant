@@ -27,18 +27,23 @@ import (
 )
 
 type PulseHandler struct {
-	agent                    *bridge.AgentClient
-	syncer                   *ConfigSyncer
-	generationLocksMu        sync.Mutex
-	generationLocks          map[string]*pulseGenerationLock
-	jobsMu                   sync.Mutex
-	jobs                     map[string]struct{}
-	lastQualityRefreshByDate map[string]time.Time
+	agent               *bridge.AgentClient
+	syncer              *ConfigSyncer
+	generationLocksMu   sync.Mutex
+	generationLocks     map[string]*pulseGenerationLock
+	jobsMu              sync.Mutex
+	jobs                map[string]pulseGenerationJob
+	automaticScheduleMu sync.Mutex
 }
 
 type pulseGenerationLock struct {
 	mu         sync.Mutex
 	references int
+}
+
+type pulseGenerationJob struct {
+	StartedAt time.Time
+	Stage     string
 }
 
 type pulseTopicRequest struct {
@@ -249,33 +254,39 @@ const (
 	pulseEventUpvote   = "upvote"
 	pulseEventDownvote = "downvote"
 
-	pulseSchedulerTickInterval     = 30 * time.Minute
-	pulseScheduledRefreshInterval  = 24 * time.Hour
-	pulseSearchQueryLimit          = 16
-	pulseSearchTopicQueryBudget    = 8
-	pulseSearchMemoryQueryBudget   = 4
-	pulseSearchInterestQueryBudget = 4
-	pulseSearchResultLimit         = 6
-	pulseSearchRawResultLimit      = 8
-	pulseSearchFollowupSeedLimit   = 6
-	pulseSearchFollowupResultLimit = 6
-	pulseSearchExpandedResultLimit = 10
-	pulseSearchClusterMaxSources   = 5
-	pulseCandidateTargetCount      = 12
-	pulseCandidateMaxCount         = 18
-	pulseVisibleItemLimit          = 12
-	pulseOpenFilterThreshold       = 3
-	pulseExposureFilterThreshold   = 8
-	pulseFeatureEventLimit         = 1000
-	pulseTopicFreshnessWindow      = 45 * 24 * time.Hour
-	pulseMemoryFreshnessWindow     = 180 * 24 * time.Hour
-	pulseFutureDateTolerance       = 48 * time.Hour
-	pulseQualityRefreshCooldown    = 15 * time.Minute
-	pulseSuggestedQuestionLimit    = 3
-	pulseSuggestedQuestionMaxRunes = 32
-	pulseRecommendationMaxRunes    = 56
-	pulseSummaryMaxRunes           = 180
-	pulseContentVersion            = 2
+	pulseSchedulerTickInterval      = 30 * time.Minute
+	pulseScheduledRefreshInterval   = 6 * time.Hour
+	pulseActiveAccountWindow        = 24 * time.Hour
+	pulseAutomaticFailureRetryBase  = 12 * time.Hour
+	pulseAutomaticFailureRetryLimit = 24 * time.Hour
+	pulseSearchQueryLimit           = 16
+	pulseSearchTopicQueryBudget     = 8
+	pulseSearchMemoryQueryBudget    = 4
+	pulseSearchInterestQueryBudget  = 4
+	pulseSearchResultLimit          = 6
+	pulseSearchRawResultLimit       = 8
+	pulseSearchFollowupSeedLimit    = 6
+	pulseSearchFollowupResultLimit  = 6
+	pulseSearchExpandedResultLimit  = 10
+	pulseSearchClusterMaxSources    = 5
+	pulseCandidateTargetCount       = 12
+	pulseCandidateMaxCount          = 18
+	pulseVisibleItemLimit           = 12
+	pulseOpenFilterThreshold        = 3
+	pulseExposureFilterThreshold    = 8
+	pulseFeatureEventLimit          = 1000
+	pulseTopicFreshnessWindow       = 45 * 24 * time.Hour
+	pulseMemoryFreshnessWindow      = 180 * 24 * time.Hour
+	pulseFutureDateTolerance        = 48 * time.Hour
+	pulseSuggestedQuestionLimit     = 3
+	pulseSuggestedQuestionMaxRunes  = 32
+	pulseRecommendationMaxRunes     = 56
+	pulseSummaryMaxRunes            = 180
+	pulseContentVersion             = 2
+	pulseGenerationStagePreparing   = "preparing"
+	pulseGenerationStageSearching   = "searching"
+	pulseGenerationStageSummarizing = "summarizing"
+	pulseGenerationStageSaving      = "saving"
 )
 
 var pulseModuleOrder = []string{
@@ -285,6 +296,7 @@ var pulseModuleOrder = []string{
 }
 
 var pulseBackgroundDisabledTools = []string{
+	"search",
 	"get_pulse",
 	"refresh_pulse",
 	"list_pulse_topics",
@@ -351,16 +363,15 @@ func NewPulseHandler(agents ...*bridge.AgentClient) *PulseHandler {
 	if len(agents) > 0 {
 		agent = agents[0]
 	}
-	return &PulseHandler{agent: agent, jobs: map[string]struct{}{}}
+	return &PulseHandler{agent: agent, jobs: map[string]pulseGenerationJob{}}
 }
 
 func NewPulseHandlerWithSyncer(agent *bridge.AgentClient, syncer *ConfigSyncer) *PulseHandler {
-	return &PulseHandler{agent: agent, syncer: syncer, jobs: map[string]struct{}{}}
+	return &PulseHandler{agent: agent, syncer: syncer, jobs: map[string]pulseGenerationJob{}}
 }
 
 func (h *PulseHandler) StartScheduler() {
 	go func() {
-		h.runScheduledPulse("startup")
 		ticker := time.NewTicker(pulseSchedulerTickInterval)
 		defer ticker.Stop()
 		for range ticker.C {
@@ -370,6 +381,12 @@ func (h *PulseHandler) StartScheduler() {
 }
 
 func (h *PulseHandler) runScheduledPulse(reason string) {
+	// Automatic work is deliberately serialized. A manual refresh or another
+	// account's generation gets priority and the next scheduler tick will pick
+	// up anything still due.
+	if h.pulseGenerationAnyActive() {
+		return
+	}
 	date := time.Now().Format("2006-01-02")
 	for _, userID := range h.scheduledPulseUserIDs() {
 		needsRefresh, err := h.needsScheduledRefresh(date, userID)
@@ -380,25 +397,32 @@ func (h *PulseHandler) runScheduledPulse(reason string) {
 		if !needsRefresh {
 			continue
 		}
-		if ok := h.startPulseGeneration(date, userID, true, "scheduled:"+reason); !ok {
-			slog.Info("Pulse scheduled generation already running", "reason", reason, "date", date, "user_id", userID)
-			continue
+		if ok := h.startPulseGeneration(date, userID, true, "scheduled:"+reason); ok {
+			// Start at most one expensive automatic generation per scheduler tick.
+			return
 		}
 	}
 }
 
 func (h *PulseHandler) scheduledPulseUserIDs() []string {
-	var accounts []models.Account
-	if err := database.DB.Order("created_at asc").Find(&accounts).Error; err != nil {
-		slog.Warn("Pulse account load failed; using default account", "error", err)
-		return []string{"0"}
+	var sessions []models.AccountSession
+	cutoff := time.Now().Add(-pulseActiveAccountWindow)
+	if err := database.DB.
+		Where("last_used_at >= ?", cutoff).
+		Order("last_used_at desc").
+		Find(&sessions).Error; err != nil {
+		slog.Warn("Pulse active account load failed", "error", err)
+		return nil
 	}
-	if len(accounts) == 0 {
-		return []string{"0"}
-	}
-	userIDs := make([]string, 0, len(accounts))
-	for _, account := range accounts {
-		userIDs = append(userIDs, normalizedUserID(account.ID))
+	userIDs := make([]string, 0, len(sessions))
+	seen := map[string]bool{}
+	for _, session := range sessions {
+		userID := normalizedUserID(session.UserID)
+		if seen[userID] {
+			continue
+		}
+		seen[userID] = true
+		userIDs = append(userIDs, userID)
 	}
 	return userIDs
 }
@@ -681,19 +705,32 @@ func (h *PulseHandler) writePulseWithStatus(c *gin.Context, date string, userID 
 	} else if len(items) > 0 {
 		generatedAt = items[0].CreatedAt.Format(time.RFC3339)
 	}
+	refreshStage := ""
+	refreshStartedAt := ""
+	refreshElapsedSeconds := 0
+	if refreshing {
+		if job, ok := h.pulseGenerationSnapshot(date, userID); ok {
+			refreshStage = job.Stage
+			refreshStartedAt = job.StartedAt.Format(time.RFC3339)
+			refreshElapsedSeconds = maxInt(0, int(time.Since(job.StartedAt).Seconds()))
+		}
+	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"date":              date,
-		"user_id":           userID,
-		"generated_at":      generatedAt,
-		"topics":            topicResponses(topics),
-		"suggested_topics":  buildPulseSuggestedTopics(topics, memorySignals),
-		"candidate_count":   len(allItems),
-		"recommended_count": len(items),
-		"filtered_count":    maxInt(0, len(allItems)-len(items)),
-		"items":             itemResponsesWithFeatures(items, items, featureState),
-		"modules":           moduleResponsesWithFeatures(modules, items, items, featureState),
-		"refreshing":        refreshing,
+		"date":                    date,
+		"user_id":                 userID,
+		"generated_at":            generatedAt,
+		"topics":                  topicResponses(topics),
+		"suggested_topics":        buildPulseSuggestedTopics(topics, memorySignals),
+		"candidate_count":         len(allItems),
+		"recommended_count":       len(items),
+		"filtered_count":          maxInt(0, len(allItems)-len(items)),
+		"items":                   itemResponsesWithFeatures(items, items, featureState),
+		"modules":                 moduleResponsesWithFeatures(modules, items, items, featureState),
+		"refreshing":              refreshing,
+		"refresh_stage":           refreshStage,
+		"refresh_started_at":      refreshStartedAt,
+		"refresh_elapsed_seconds": refreshElapsedSeconds,
 	})
 }
 
@@ -703,30 +740,48 @@ func (h *PulseHandler) startPulseGeneration(date string, userID string, force bo
 
 	h.jobsMu.Lock()
 	if h.jobs == nil {
-		h.jobs = map[string]struct{}{}
+		h.jobs = map[string]pulseGenerationJob{}
 	}
 	if _, exists := h.jobs[key]; exists {
 		h.jobsMu.Unlock()
 		return false
 	}
-	if reason == "get_quality_refresh" {
-		if h.lastQualityRefreshByDate == nil {
-			h.lastQualityRefreshByDate = map[string]time.Time{}
+	if pulseGenerationReasonIsAutomatic(reason) {
+		reserved, err := h.reservePulseAutomaticAttempt(date, userID, time.Now())
+		if err != nil {
+			h.jobsMu.Unlock()
+			slog.Warn("Pulse automatic generation throttle failed closed", "reason", reason, "date", date, "user_id", userID, "error", err)
+			return false
 		}
-		if lastAttempt := h.lastQualityRefreshByDate[key]; !lastAttempt.IsZero() &&
-			time.Since(lastAttempt) < pulseQualityRefreshCooldown {
+		if !reserved {
 			h.jobsMu.Unlock()
 			return false
 		}
-		h.lastQualityRefreshByDate[key] = time.Now()
 	}
-	h.jobs[key] = struct{}{}
+	h.jobs[key] = pulseGenerationJob{
+		StartedAt: time.Now(),
+		Stage:     pulseGenerationStagePreparing,
+	}
 	h.jobsMu.Unlock()
 
 	go func() {
 		defer h.finishPulseGeneration(key)
-		if err := h.ensureDailyPulse(date, userID, force); err != nil {
-			slog.Warn("Pulse background generation failed", "reason", reason, "date", date, "user_id", userID, "error", err)
+		generationErr := h.ensureDailyPulse(date, userID, force)
+		if generationErr == nil {
+			healthy, err := h.hasCurrentPulseShape(date, userID)
+			if err != nil {
+				generationErr = err
+			} else if !healthy {
+				generationErr = fmt.Errorf("pulse generation completed without publishable items")
+			}
+		}
+		if pulseGenerationReasonIsAutomatic(reason) {
+			if err := h.finishPulseAutomaticAttempt(date, userID, generationErr, time.Now()); err != nil {
+				slog.Warn("Pulse automatic generation result persistence failed", "reason", reason, "date", date, "user_id", userID, "error", err)
+			}
+		}
+		if generationErr != nil {
+			slog.Warn("Pulse background generation failed", "reason", reason, "date", date, "user_id", userID, "error", generationErr)
 			return
 		}
 		slog.Info("Pulse background generation completed", "reason", reason, "date", date, "user_id", userID)
@@ -735,11 +790,34 @@ func (h *PulseHandler) startPulseGeneration(date string, userID string, force bo
 }
 
 func (h *PulseHandler) pulseGenerationActive(date string, userID string) bool {
+	_, ok := h.pulseGenerationSnapshot(date, userID)
+	return ok
+}
+
+func (h *PulseHandler) pulseGenerationAnyActive() bool {
+	h.jobsMu.Lock()
+	defer h.jobsMu.Unlock()
+	return len(h.jobs) > 0
+}
+
+func (h *PulseHandler) pulseGenerationSnapshot(date string, userID string) (pulseGenerationJob, bool) {
 	key := pulseGenerationJobKey(date, normalizedUserID(userID))
 	h.jobsMu.Lock()
 	defer h.jobsMu.Unlock()
-	_, exists := h.jobs[key]
-	return exists
+	job, exists := h.jobs[key]
+	return job, exists
+}
+
+func (h *PulseHandler) updatePulseGenerationStage(date string, userID string, stage string) {
+	key := pulseGenerationJobKey(date, normalizedUserID(userID))
+	h.jobsMu.Lock()
+	defer h.jobsMu.Unlock()
+	job, exists := h.jobs[key]
+	if !exists {
+		return
+	}
+	job.Stage = stage
+	h.jobs[key] = job
 }
 
 func (h *PulseHandler) finishPulseGeneration(key string) {
@@ -752,11 +830,94 @@ func pulseGenerationJobKey(date string, userID string) string {
 	return normalizedUserID(userID) + ":" + date
 }
 
+func pulseGenerationReasonIsAutomatic(reason string) bool {
+	reason = strings.TrimSpace(reason)
+	return reason == "get_quality_refresh" || strings.HasPrefix(reason, "scheduled:")
+}
+
+func pulseAutomaticRetryDelay(state models.PulseScheduleState) time.Duration {
+	if state.ConsecutiveFailures <= 0 {
+		return pulseScheduledRefreshInterval
+	}
+	// Keep the accumulated failure backoff while an automatic retry is marked
+	// running. If the process dies mid-run, a restart must not reset a 24-hour
+	// failure cooldown to the normal six-hour refresh interval.
+	if state.LastStatus != "failed" && state.LastStatus != "running" {
+		return pulseScheduledRefreshInterval
+	}
+	delay := pulseAutomaticFailureRetryBase
+	for failures := 1; failures < state.ConsecutiveFailures; failures++ {
+		delay *= 2
+		if delay >= pulseAutomaticFailureRetryLimit {
+			return pulseAutomaticFailureRetryLimit
+		}
+	}
+	if delay > pulseAutomaticFailureRetryLimit {
+		return pulseAutomaticFailureRetryLimit
+	}
+	return delay
+}
+
+func (h *PulseHandler) reservePulseAutomaticAttempt(date string, userID string, now time.Time) (bool, error) {
+	h.automaticScheduleMu.Lock()
+	defer h.automaticScheduleMu.Unlock()
+
+	userID = normalizedUserID(userID)
+	var state models.PulseScheduleState
+	err := database.DB.First(&state, "user_id = ?", userID).Error
+	if err != nil && err != gorm.ErrRecordNotFound {
+		return false, err
+	}
+	if err == nil && !state.LastAttemptAt.IsZero() && now.Sub(state.LastAttemptAt) < pulseAutomaticRetryDelay(state) {
+		return false, nil
+	}
+	state.UserID = userID
+	state.LastDate = date
+	state.LastAttemptAt = now
+	state.LastStatus = "running"
+	state.LastError = ""
+	state.UpdatedAt = now
+	if err := database.DB.Save(&state).Error; err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func (h *PulseHandler) finishPulseAutomaticAttempt(date string, userID string, generationErr error, now time.Time) error {
+	h.automaticScheduleMu.Lock()
+	defer h.automaticScheduleMu.Unlock()
+
+	userID = normalizedUserID(userID)
+	var state models.PulseScheduleState
+	err := database.DB.First(&state, "user_id = ?", userID).Error
+	if err != nil && err != gorm.ErrRecordNotFound {
+		return err
+	}
+	state.UserID = userID
+	state.LastDate = date
+	if state.LastAttemptAt.IsZero() {
+		state.LastAttemptAt = now
+	}
+	state.UpdatedAt = now
+	if generationErr == nil {
+		state.LastStatus = "succeeded"
+		state.LastSuccessAt = &now
+		state.ConsecutiveFailures = 0
+		state.LastError = ""
+	} else {
+		state.LastStatus = "failed"
+		state.ConsecutiveFailures++
+		state.LastError = limitText(generationErr.Error(), 500)
+	}
+	return database.DB.Save(&state).Error
+}
+
 func (h *PulseHandler) ensureDailyPulse(date string, userID string, force bool) error {
 	userID = normalizedUserID(userID)
 	unlock := h.lockPulseGeneration(date, userID)
 	defer unlock()
 
+	h.updatePulseGenerationStage(date, userID, pulseGenerationStagePreparing)
 	if err := h.syncConfigToAgent(); err != nil {
 		return fmt.Errorf("sync pulse config to agent: %w", err)
 	}
@@ -782,7 +943,9 @@ func (h *PulseHandler) ensureDailyPulse(date string, userID string, force bool) 
 		return err
 	}
 
+	h.updatePulseGenerationStage(date, userID, pulseGenerationStageSearching)
 	searchEvidence, searchErrors := h.collectPulseSearchEvidence(date, topics, memorySignals)
+	h.updatePulseGenerationStage(date, userID, pulseGenerationStageSummarizing)
 	modules, items, err := h.generatePulse(date, userID, topics, memorySignals, searchEvidence, searchErrors)
 	if err != nil {
 		slog.Warn("Pulse agent generation failed; using signal fallback", "date", date, "error", err)
@@ -836,6 +999,7 @@ func (h *PulseHandler) ensureDailyPulse(date string, userID string, force bool) 
 		return nil
 	}
 
+	h.updatePulseGenerationStage(date, userID, pulseGenerationStageSaving)
 	return database.DB.Transaction(func(tx *gorm.DB) error {
 		if replaceExisting {
 			if err := tx.Delete(&models.PulseItem{}, "date = ? AND user_id = ?", date, userID).Error; err != nil {
@@ -1055,7 +1219,7 @@ func (h *PulseHandler) enrichPulseSearchEvidence(date string, evidence []pulseSe
 	if h.agent == nil || len(evidence) == 0 {
 		return evidence
 	}
-	seeds := pulseSearchFollowupSeeds(evidence)
+	seeds := pulseSearchFollowupSeeds(date, evidence)
 	if len(seeds) == 0 {
 		return evidence
 	}
@@ -1172,11 +1336,14 @@ func pulseRankSearchResults(query pulseSearchQuery, results []pulseSearchResult,
 	return pulseSearchResultsFromScored(candidates, maxResults)
 }
 
-func pulseSearchFollowupSeeds(evidence []pulseSearchEvidence) []pulseSearchFollowupSeed {
+func pulseSearchFollowupSeeds(date string, evidence []pulseSearchEvidence) []pulseSearchFollowupSeed {
 	seeds := []pulseSearchFollowupSeed{}
 	seen := map[string]bool{}
 	seedIndex := 0
 	for evidenceIndex, item := range evidence {
+		if !pulseSearchEvidenceNeedsFollowup(date, item) {
+			continue
+		}
 		query := pulseSearchQueryFromEvidence(item)
 		for _, result := range item.Results {
 			key := pulseSearchResultDedupeKey(result)
@@ -1215,6 +1382,15 @@ func pulseSearchFollowupSeeds(evidence []pulseSearchEvidence) []pulseSearchFollo
 		return seeds[:pulseSearchFollowupSeedLimit]
 	}
 	return seeds
+}
+
+func pulseSearchEvidenceNeedsFollowup(date string, evidence pulseSearchEvidence) bool {
+	for _, cluster := range pulseCorroboratedSearchClusters(evidence, evidence.Results) {
+		if pulseSearchResultsFreshEnough(date, evidence.Module, cluster) {
+			return false
+		}
+	}
+	return true
 }
 
 func pulseSearchFollowupQuery(date string, queryEvidence pulseSearchEvidence, seed pulseSearchResult) (pulseSearchQuery, bool) {
@@ -1300,13 +1476,20 @@ func buildPulseSearchQueries(date string, topics []models.PulseTopic, signals []
 	topicSuffixes := pulseSearchQuerySuffixesForDate(pulseSourceTopicHot, date)
 	for suffixIndex := range topicSuffixes {
 		for _, topic := range enabledTopics {
-			terms := append([]string{topic.Name}, expandPulseTopicKeywords(topic.Name, decodeKeywords(topic.Keywords))...)
+			termGroups := pulseFocusedSearchTermGroups(
+				topic.Name,
+				expandPulseTopicKeywords(topic.Name, decodeKeywords(topic.Keywords)),
+				len(topicSuffixes),
+			)
+			if len(termGroups) == 0 {
+				continue
+			}
 			addCandidate(
 				pulseSourceTopicHot,
 				"查找订阅 topic 的近期外网热门进展",
 				topic.ID,
 				topic.Name,
-				terms,
+				termGroups[suffixIndex%len(termGroups)],
 				topicSuffixes[suffixIndex],
 			)
 		}
@@ -1315,13 +1498,16 @@ func buildPulseSearchQueries(date string, topics []models.PulseTopic, signals []
 	memorySuffixes := pulseSearchQuerySuffixesForDate(pulseSourceMemory, date)
 	for suffixIndex := range memorySuffixes {
 		for _, signal := range signals {
-			terms := append([]string{signal.Focus}, signal.Keywords...)
+			termGroups := pulseFocusedSearchTermGroups(signal.Focus, signal.Keywords, len(memorySuffixes))
+			if len(termGroups) == 0 {
+				continue
+			}
 			addCandidate(
 				pulseSourceMemory,
 				"查找近期 memory 相关的新信息",
 				"",
 				"",
-				terms,
+				termGroups[suffixIndex%len(termGroups)],
 				memorySuffixes[suffixIndex],
 			)
 		}
@@ -1329,13 +1515,18 @@ func buildPulseSearchQueries(date string, topics []models.PulseTopic, signals []
 
 	interestTerms := collectInterestTerms(topics, signals)
 	if len(interestTerms) > 0 {
-		for _, suffix := range pulseSearchQuerySuffixesForDate(pulseSourceInterestHot, date) {
+		interestSuffixes := pulseSearchQuerySuffixesForDate(pulseSourceInterestHot, date)
+		termGroups := pulseFocusedSearchTermGroups("", interestTerms, len(interestSuffixes))
+		for suffixIndex, suffix := range interestSuffixes {
+			if len(termGroups) == 0 {
+				break
+			}
 			addCandidate(
 				pulseSourceInterestHot,
 				"根据 topic 与 memory 外扩查找用户可能感兴趣的近期热门方向",
 				"",
 				"",
-				interestTerms,
+				termGroups[suffixIndex%len(termGroups)],
 				suffix,
 			)
 		}
@@ -1379,6 +1570,50 @@ func buildPulseSearchQueries(date string, topics []models.PulseTopic, signals []
 		queries[index].ID = fmt.Sprintf("q%d", index+1)
 	}
 	return queries
+}
+
+func pulseFocusedSearchTermGroups(primary string, keywords []string, maxGroups int) [][]string {
+	primaryTerms := cleanPulseSearchTerms([]string{primary})
+	primary = ""
+	if len(primaryTerms) > 0 {
+		primary = primaryTerms[0]
+	}
+	keywords = cleanPulseSearchTerms(keywords)
+	groups := [][]string{}
+	seen := map[string]bool{}
+	appendGroup := func(values ...string) {
+		cleaned := cleanPulseSearchTerms(values)
+		if len(cleaned) == 0 {
+			return
+		}
+		key := strings.ToLower(strings.Join(cleaned, "\x00"))
+		if seen[key] {
+			return
+		}
+		seen[key] = true
+		groups = append(groups, cleaned)
+	}
+	for index, keyword := range keywords {
+		if primary != "" && strings.EqualFold(primary, keyword) {
+			continue
+		}
+		if primary != "" {
+			appendGroup(primary, keyword)
+		} else {
+			nextKeyword := ""
+			if len(keywords) > 1 {
+				nextKeyword = keywords[(index+1)%len(keywords)]
+			}
+			appendGroup(keyword, nextKeyword)
+		}
+		if maxGroups > 0 && len(groups) >= maxGroups {
+			return groups
+		}
+	}
+	if len(groups) == 0 && primary != "" {
+		appendGroup(primary)
+	}
+	return groups
 }
 
 func pulseSearchQuerySuffix(module string, year string) string {

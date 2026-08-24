@@ -51,6 +51,41 @@ func TestPulseQualitySearchBudgetPreservesAllModules(t *testing.T) {
 			t.Errorf("enabled topic %q received no query within the shared budget", topic.Name)
 		}
 	}
+	for _, query := range queries {
+		if query.TopicID == "topic-ai" && strings.Contains(query.Query, "agent") &&
+			strings.Contains(query.Query, "model") {
+			t.Fatalf("topic query should focus on one keyword angle instead of stacking every keyword: %q", query.Query)
+		}
+	}
+}
+
+func TestPulseQualitySkipsFollowupForAlreadyVerifiedCluster(t *testing.T) {
+	evidence := pulseSearchEvidence{
+		Module:    pulseSourceTopicHot,
+		Query:     "OpenAI GPT-5.6 coding agent latest news 2026",
+		TopicName: "AI",
+		Results: []pulseSearchResult{
+			{
+				Title:       "OpenAI launches GPT-5.6 coding agent with terminal controls",
+				Snippet:     "OpenAI released GPT-5.6 with a coding agent and new terminal controls.",
+				URL:         "https://openai.com/news/gpt-5-6-coding-agent",
+				PublishedAt: "2026-07-26",
+			},
+			{
+				Title:       "OpenAI releases GPT-5.6 coding agent and terminal controls",
+				Snippet:     "The GPT-5.6 release adds a coding agent with terminal controls.",
+				URL:         "https://technology.example.com/openai-gpt-5-6-agent",
+				PublishedAt: "2026-07-25",
+			},
+		},
+	}
+
+	if pulseSearchEvidenceNeedsFollowup("2026-07-27", evidence) {
+		t.Fatal("already corroborated, recent evidence should not trigger another search round")
+	}
+	if seeds := pulseSearchFollowupSeeds("2026-07-27", []pulseSearchEvidence{evidence}); len(seeds) != 0 {
+		t.Fatalf("expected no follow-up seeds for verified evidence, got %#v", seeds)
+	}
 }
 
 func TestPulseQualityGetSelfHealsEmptyCachedModules(t *testing.T) {
@@ -102,13 +137,18 @@ func TestPulseQualityGetSelfHealsEmptyCachedModules(t *testing.T) {
 		t.Fatalf("unexpected get status %d: %s", recorder.Code, recorder.Body.String())
 	}
 	var response struct {
-		Refreshing bool `json:"refreshing"`
+		Refreshing       bool   `json:"refreshing"`
+		RefreshStage     string `json:"refresh_stage"`
+		RefreshStartedAt string `json:"refresh_started_at"`
 	}
 	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
 		t.Fatalf("decode pulse response: %v", err)
 	}
 	if !response.Refreshing {
 		t.Fatal("expected cached modules without verified items to trigger background self-healing")
+	}
+	if response.RefreshStage == "" || response.RefreshStartedAt == "" {
+		t.Fatalf("expected live refresh progress metadata, got %#v", response)
 	}
 	select {
 	case <-generationStarted:

@@ -1,4 +1,4 @@
-const API_BASE = '';
+const API_BASE = String(globalThis.AGENT_ASSISTANT_CONFIG?.apiBase || '').replace(/\/+$/, '');
 const CHAT_RECOVERY = globalThis.ChatRecovery;
 const LANGUAGE_KEY = 'agent_assistant_language';
 const MODE_STORAGE_KEY = 'super_chat_mode_ids';
@@ -263,6 +263,8 @@ const I18N = {
             createTitle: '文件夹名称',
             createPlaceholder: '例如：产品资料',
             sourceLibrary: '网盘内容',
+            mobileLibraryTab: '文件',
+            mobileDetailTab: '当前目录',
             knowledgeMap: '当前文件夹',
             contextChat: '网盘问答',
             search: '检索网盘文件',
@@ -661,6 +663,11 @@ const I18N = {
             generatedAt: '已预计算：{time}',
             neverGenerated: '等待生成',
             refreshing: '正在生成新的 Pulse...',
+            refreshPreparing: '正在准备个性化信号...',
+            refreshSearching: '正在检索并核验新闻来源...',
+            refreshSummarizing: '正在聚类和整理新闻...',
+            refreshSaving: '正在保存今日 Pulse...',
+            refreshProgress: '{status} · 已用 {seconds} 秒',
             refreshTimedOut: '本次刷新耗时较长，后台仍在继续；完成后会自动更新。',
             loading: '正在加载 Pulse...',
             emptyTitle: '还没有信息簇',
@@ -673,6 +680,8 @@ const I18N = {
             emptyModule: '这个模块暂时没有推荐',
             emptyFiltered: '这个 Topic 暂时没有信息簇',
             emptySuggestedTopics: '暂无可推荐 Topic',
+            searchNews: '直接搜索今日新闻',
+            searchNewsHint: '不等预计算，带着当前 Topic 去聊天检索并汇总近期新闻。',
             subscribed: '订阅',
             suggestedTopics: '推荐 Topic',
             topicFilterAll: '全部信息簇',
@@ -870,6 +879,11 @@ const I18N = {
         },
         welcome: {
             prompt: '把问题或任务发给我就好。',
+            suggestions: '你可能想问',
+            todayPulse: '今天有什么值得关注？',
+            unfinished: '最近还有什么问题没解决？',
+            priorities: '我今天最该先做什么？',
+            explore: '推荐一个值得深入的方向',
             imageCreate: '直接生图',
             imagePolish: '专业修饰生图',
             imageReference: '参考素材生图',
@@ -1117,6 +1131,8 @@ const I18N = {
             createTitle: 'Folder name',
             createPlaceholder: 'e.g. Product notes',
             sourceLibrary: 'Drive Contents',
+            mobileLibraryTab: 'Files',
+            mobileDetailTab: 'Current folder',
             knowledgeMap: 'Current Folder',
             contextChat: 'Drive Q&A',
             search: 'Search drive files',
@@ -1515,6 +1531,11 @@ const I18N = {
             generatedAt: 'Precomputed: {time}',
             neverGenerated: 'Waiting to generate',
             refreshing: 'Generating a fresh Pulse...',
+            refreshPreparing: 'Preparing personalized signals...',
+            refreshSearching: 'Searching and verifying news sources...',
+            refreshSummarizing: 'Clustering and summarizing the news...',
+            refreshSaving: "Saving today's Pulse...",
+            refreshProgress: '{status} · {seconds}s elapsed',
             refreshTimedOut: 'This refresh is taking longer than expected. It is still running and will update automatically.',
             loading: 'Loading Pulse...',
             emptyTitle: 'No clusters yet',
@@ -1527,6 +1548,8 @@ const I18N = {
             emptyModule: 'No recommendations in this module yet',
             emptyFiltered: 'No clusters for this topic yet',
             emptySuggestedTopics: 'No suggested topics',
+            searchNews: "Search today's news",
+            searchNewsHint: 'Skip precomputation and search recent news in chat using the current topics.',
             subscribed: 'Topic',
             suggestedTopics: 'Suggested Topics',
             topicFilterAll: 'All clusters',
@@ -1724,6 +1747,11 @@ const I18N = {
         },
         welcome: {
             prompt: 'Send me a question or task to get started.',
+            suggestions: 'You might ask',
+            todayPulse: 'What is worth following today?',
+            unfinished: 'What recent questions remain unresolved?',
+            priorities: 'What should I prioritize today?',
+            explore: 'Suggest a topic worth exploring',
             imageCreate: 'Generate Image',
             imagePolish: 'Polished Prompt',
             imageReference: 'Use References',
@@ -1873,6 +1901,7 @@ const ACTIVE_RUN_START_MAX_POLLS = 40;
 const CONVERSATION_RENDER_CACHE_LIMIT = 20;
 const FOLLOW_UP_QUESTION_COUNT = 3;
 const FOLLOW_UP_POLL_DELAYS_MS = [500, 1000, 1500, 2000, 3000, 4000];
+const SUPER_CHAT_WELCOME_ACTION_LIMIT = 4;
 const PULSE_REFRESH_POLL_MS = 5000;
 const PULSE_REFRESH_SLOW_POLL_MS = 30000;
 const PULSE_REFRESH_FAST_MAX_POLLS = 24;
@@ -1955,6 +1984,7 @@ let projectSearchRequestSeq = 0;
 let projectOpenClickTimer = null;
 let projectInlineFileId = '';
 let projectInlineFileDetail = { item: null, loading: false, error: '' };
+let mobileDrivePane = 'library';
 let projectError = '';
 let projectStatusText = '';
 let projectStatusType = 'muted';
@@ -2333,16 +2363,43 @@ function setLanguage(language) {
     refreshMediaPreviewLabels();
 }
 
+function apiUsesCrossOriginTransport() {
+    if (!API_BASE) return false;
+    try {
+        return new URL(API_BASE, window.location.href).origin !== window.location.origin;
+    } catch (_) {
+        return false;
+    }
+}
+
+function authenticatedApiUrl(path) {
+    const target = `${API_BASE}${path}`;
+    if (!apiUsesCrossOriginTransport() || !currentAccountToken) return target;
+
+    const url = new URL(target, window.location.href);
+    url.searchParams.set('account_session', currentAccountToken);
+    if (currentUserId) url.searchParams.set('user_id', currentUserId);
+    return url.toString();
+}
+
+function apiHeaders(body = null) {
+    const headers = {};
+    if (body) headers['Content-Type'] = 'application/json';
+    if (!apiUsesCrossOriginTransport()) {
+        if (currentAccountToken) headers['X-Account-Session'] = currentAccountToken;
+        if (currentUserId) headers['X-User-ID'] = currentUserId;
+    }
+    return headers;
+}
+
 async function apiCall(method, path, body = null) {
     const opts = {
         method,
-        headers: { 'Content-Type': 'application/json' },
+        headers: apiHeaders(body),
     };
-    if (currentAccountToken) opts.headers['X-Account-Session'] = currentAccountToken;
-    if (currentUserId) opts.headers['X-User-ID'] = currentUserId;
     if (body) opts.body = JSON.stringify(body);
 
-    const resp = await fetch(API_BASE + path, opts);
+    const resp = await fetch(authenticatedApiUrl(path), opts);
     if (!resp.ok) {
         const err = await resp.json().catch(() => ({ error: resp.statusText }));
         throw new Error(err.error || err.detail || 'Request failed');
@@ -2703,7 +2760,7 @@ async function enterGuestAccount(options = {}) {
 async function publicApiCall(method, path, body = null) {
     const opts = {
         method,
-        headers: { 'Content-Type': 'application/json' },
+        headers: body ? { 'Content-Type': 'application/json' } : {},
     };
     if (body) opts.body = JSON.stringify(body);
 
@@ -3629,6 +3686,7 @@ async function loadConversations() {
     if (current) applyConversationAgent(current);
     renderConversationList();
     updateTopbar();
+    refreshWelcomeIfEmpty();
 }
 
 async function createConversation() {
@@ -3830,6 +3888,7 @@ async function reorderProject(id, direction) {
 }
 
 async function selectProject(id) {
+    mobileDrivePane = 'detail';
     const item = id ? driveItemById(id) : driveRootItem();
     if (!id || item?.type === 'folder') {
         currentProjectId = item?.id || '';
@@ -4711,6 +4770,7 @@ function toggleProjectDocumentSelection(documentId, selected) {
 function openProjectDocument(documentId, options = {}) {
     const item = driveItemById(documentId);
     if (item?.type === 'folder') {
+        mobileDrivePane = 'detail';
         enterDriveFolder(item.id);
         return;
     }
@@ -4722,6 +4782,7 @@ function openProjectDocument(documentId, options = {}) {
             renderProjects();
             return;
         }
+        mobileDrivePane = 'detail';
         void openDriveFileInline(item.id);
         return;
     }
@@ -7933,6 +7994,7 @@ async function loadPulse() {
         pulseErrorType = 'load';
     }
     renderPulse();
+    refreshWelcomeIfEmpty();
     syncPulseRefreshPolling(false);
     return true;
 }
@@ -7954,6 +8016,7 @@ async function refreshPulse() {
     }
     pulseRefreshRequestPending = false;
     renderPulse();
+    refreshWelcomeIfEmpty();
     syncPulseRefreshPolling(true);
     return true;
 }
@@ -9256,6 +9319,7 @@ async function refreshAll() {
     if (activeView === 'eval') await loadConversationEval();
     renderModes();
     updateTopbar();
+    refreshWelcomeIfEmpty();
 }
 
 async function bootApp() {
@@ -9487,6 +9551,7 @@ function renderProjectList() {
 
 function renderProjects() {
     if (!projectWorkbench) return;
+    projectWorkbench.dataset.mobilePane = mobileDrivePane;
     if (projectError) {
         projectWorkbench.innerHTML = `<div class="project-panel">${emptyState(projectError, '')}</div>`;
         return;
@@ -9516,6 +9581,16 @@ function renderProjects() {
     if (activeDoc && activeProjectDocumentId !== activeDoc.id) activeProjectDocumentId = activeDoc.id;
 
     projectWorkbench.innerHTML = `
+        <nav class="mobile-drive-tabs" aria-label="${escapeAttr(t('projects.sourceLibrary'))}">
+            <button class="mobile-drive-tab ${mobileDrivePane === 'library' ? 'active' : ''}" type="button"
+                    data-mobile-drive-pane="library" aria-pressed="${mobileDrivePane === 'library' ? 'true' : 'false'}">
+                ${escapeHtml(t('projects.mobileLibraryTab'))}
+            </button>
+            <button class="mobile-drive-tab ${mobileDrivePane === 'detail' ? 'active' : ''}" type="button"
+                    data-mobile-drive-pane="detail" aria-pressed="${mobileDrivePane === 'detail' ? 'true' : 'false'}">
+                ${escapeHtml(projectInlineFileId ? t('projects.activeDocument') : t('projects.mobileDetailTab'))}
+            </button>
+        </nav>
         <aside class="project-panel project-library-panel">
             <div class="project-panel-head">
                 <div>
@@ -10292,7 +10367,10 @@ function driveItemMeta(item) {
 function driveShareUrl(item) {
     const token = String(item?.share_token || '').trim();
     if (!token || !item?.share_enabled) return '';
-    return new URL(`/share/drive/${encodeURIComponent(token)}`, window.location.origin).href;
+    const shareOrigin = API_BASE
+        ? new URL(API_BASE, window.location.href).origin
+        : window.location.origin;
+    return new URL(`/share/drive/${encodeURIComponent(token)}`, shareOrigin).href;
 }
 
 function driveShareItem(itemId = '') {
@@ -10708,7 +10786,18 @@ function renderProjects() {
         ? (projectInlineFileDetail.item?.id === projectInlineFileId ? projectInlineFileDetail.item : driveItemById(projectInlineFileId))
         : null;
 
+    projectWorkbench.dataset.mobilePane = mobileDrivePane;
     projectWorkbench.innerHTML = `
+        <nav class="mobile-drive-tabs" aria-label="${escapeAttr(t('projects.sourceLibrary'))}">
+            <button class="mobile-drive-tab ${mobileDrivePane === 'library' ? 'active' : ''}" type="button"
+                    data-mobile-drive-pane="library" aria-pressed="${mobileDrivePane === 'library' ? 'true' : 'false'}">
+                ${escapeHtml(t('projects.mobileLibraryTab'))}
+            </button>
+            <button class="mobile-drive-tab ${mobileDrivePane === 'detail' ? 'active' : ''}" type="button"
+                    data-mobile-drive-pane="detail" aria-pressed="${mobileDrivePane === 'detail' ? 'true' : 'false'}">
+                ${escapeHtml(projectInlineFileId ? t('projects.activeDocument') : t('projects.mobileDetailTab'))}
+            </button>
+        </nav>
         <aside class="project-panel project-library-panel">
             <div class="project-panel-head">
                 <div>
@@ -11213,7 +11302,7 @@ function renderPulse() {
         pulseGeneratedAt.textContent = pulseError && items.length
             ? formatPulseError()
             : pulse.refreshing
-            ? t('pulse.refreshing')
+            ? pulseRefreshStatusText()
             : pulse.generated_at
                 ? t('pulse.generatedAt', { time: formatFullTime(pulse.generated_at) })
                 : t('pulse.neverGenerated');
@@ -11227,26 +11316,81 @@ function renderPulse() {
     renderPulseSuggestedTopics();
 
     if (pulseError && !items.length) {
-        pulseItems.innerHTML = emptyState(formatPulseError(), '');
+        pulseItems.innerHTML = renderPulseEmptyState(formatPulseError(), '');
         return;
     }
 
     renderPulseTopicFilter(items);
     if (!items.length) {
         const empty = pulseEmptyStateContent();
-        pulseItems.innerHTML = emptyState(empty.title, empty.detail);
+        pulseItems.innerHTML = renderPulseEmptyState(empty.title, empty.detail);
         return;
     }
 
     const filteredItems = filterPulseItemsByTopic(items);
     if (!filteredItems.length) {
-        pulseItems.innerHTML = emptyState(t('pulse.emptyFiltered'), '');
+        pulseItems.innerHTML = renderPulseEmptyState(t('pulse.emptyFiltered'), '');
         return;
     }
 
     pulseItems.innerHTML = renderPulseModules(filteredItems, pulse.modules);
     renderPulsePostWindow();
     observePulseExposures();
+}
+
+function pulseRefreshStatusText() {
+    const stageKeys = {
+        preparing: 'pulse.refreshPreparing',
+        searching: 'pulse.refreshSearching',
+        summarizing: 'pulse.refreshSummarizing',
+        saving: 'pulse.refreshSaving',
+    };
+    const status = t(stageKeys[pulse.refresh_stage] || 'pulse.refreshing');
+    const seconds = Math.max(0, Number(pulse.refresh_elapsed_seconds) || 0);
+    return seconds >= 5 ? t('pulse.refreshProgress', { status, seconds }) : status;
+}
+
+function renderPulseEmptyState(title, detail) {
+    return `
+        <div class="empty-state pulse-empty-state">
+            <strong>${escapeHtml(title)}</strong>
+            <span>${escapeHtml(detail || '')}</span>
+            <div class="pulse-empty-actions">
+                <button class="btn-primary" type="button" data-pulse-search-news>
+                    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.3">
+                        <circle cx="11" cy="11" r="7"/>
+                        <path d="m20 20-4-4"/>
+                    </svg>
+                    ${escapeHtml(t('pulse.searchNews'))}
+                </button>
+                <small>${escapeHtml(t('pulse.searchNewsHint'))}</small>
+            </div>
+        </div>
+    `;
+}
+
+function pulseNewsFallbackPrompt() {
+    const topics = Array.isArray(pulse.topics) ? pulse.topics.filter((topic) => topic?.enabled !== false) : [];
+    const selected = selectedPulseTopicId
+        ? topics.filter((topic) => topic.id === selectedPulseTopicId)
+        : topics.slice(0, 4);
+    const topicLines = selected.map((topic) => {
+        const keywords = normalizePulseKeywordList(topic.keywords || []).slice(0, 5);
+        return `- ${topic.name}${keywords.length ? `（${keywords.join('、')}）` : ''}`;
+    });
+    const date = pulse.date || todoTodayKey();
+    if (currentLanguage === 'en') {
+        return [
+            `Search for and summarize recent news as of ${date}.`,
+            topicLines.length ? `Focus on:\n${topicLines.join('\n')}` : 'Use my recent conversation interests to choose the most relevant topics.',
+            'Prioritize official or primary sources and reputable reporting. Group duplicate coverage into events, attach source links and dates, distinguish confirmed facts from claims, and end with 3 items worth tracking next.',
+        ].join('\n\n');
+    }
+    return [
+        `请搜索并整理截至 ${date} 的近期新闻。`,
+        topicLines.length ? `重点关注：\n${topicLines.join('\n')}` : '请结合我最近的对话兴趣选择最相关的方向。',
+        '优先使用官方/一手来源和权威媒体；把重复报道聚合成事件，附来源链接与发布日期，区分已确认事实和待核验说法，最后给出 3 个值得继续追踪的方向。',
+    ].join('\n\n');
 }
 
 function pulseEmptyStateContent() {
@@ -13935,12 +14079,74 @@ function readModels(providerKey) {
     }
 }
 
+function superChatWelcomeActions() {
+    const actions = [];
+    const seen = new Set();
+    const addAction = (label, query, source) => {
+        label = String(label || '').trim();
+        query = String(query || '').trim();
+        const key = label.toLocaleLowerCase();
+        if (!label || !query || seen.has(key) || actions.length >= SUPER_CHAT_WELCOME_ACTION_LIMIT) return;
+        seen.add(key);
+        actions.push({ label, query, source, autoSend: false });
+    };
+
+    const pulseItems = Array.isArray(pulse?.items) ? pulse.items : [];
+    for (let round = 0; round < 3 && actions.length < SUPER_CHAT_WELCOME_ACTION_LIMIT; round += 1) {
+        pulseItems.forEach((item) => {
+            if (actions.length >= SUPER_CHAT_WELCOME_ACTION_LIMIT) return;
+            const questions = Array.isArray(item?.detail?.suggested_questions)
+                ? item.detail.suggested_questions.map((question) => String(question || '').trim()).filter(Boolean)
+                : [];
+            const question = questions[round] || '';
+            if (question) addAction(question, buildPulseChatPrompt(item, question), 'pulse');
+        });
+    }
+
+    const recentConversations = (Array.isArray(conversations) ? conversations : [])
+        .filter((conversation) => (
+            conversation?.id !== currentConversationId
+            && conversationAgentId(conversation) === SUPER_CHAT_AGENT_ID
+            && String(conversation?.title || '').trim()
+            && String(conversation.title).trim() !== 'New Conversation'
+        ));
+    for (const conversation of recentConversations) {
+        if (actions.length >= SUPER_CHAT_WELCOME_ACTION_LIMIT) break;
+        const title = truncateText(String(conversation.title).trim(), 28);
+        const label = currentLanguage === 'zh'
+            ? `继续解决「${title}」`
+            : `Continue “${title}”`;
+        const query = currentLanguage === 'zh'
+            ? `请回顾我最近关于「${title}」的对话，找出尚未解决但最值得继续推进的一个问题，并直接帮我往下做。`
+            : `Review my recent conversation about “${title}”, identify the most valuable unresolved question, and help me move it forward.`;
+        addAction(label, query, 'conversation');
+    }
+
+    const fallbackActions = currentLanguage === 'zh'
+        ? [
+            [t('welcome.todayPulse'), '请读取我的今日 Pulse，推荐 3 个最值得关注、可以继续追问的问题。'],
+            [t('welcome.unfinished'), '请结合最近对话，找出尚未解决且最值得继续推进的 3 个问题。'],
+            [t('welcome.priorities'), '请结合我的 Todo、最近对话和长期偏好，告诉我今天最应该先推进什么。'],
+            [t('welcome.explore'), '请结合我的 Pulse 和最近对话，推荐一个今天值得深入研究的方向。'],
+        ]
+        : [
+            [t('welcome.todayPulse'), 'Read my Pulse and suggest three timely questions worth following up on today.'],
+            [t('welcome.unfinished'), 'Use my recent conversations to identify three valuable unresolved questions.'],
+            [t('welcome.priorities'), 'Use my todos, recent conversations, and preferences to identify today\'s top priority.'],
+            [t('welcome.explore'), 'Use my Pulse and recent conversations to suggest one topic worth exploring today.'],
+        ];
+    fallbackActions.forEach(([label, query]) => addAction(label, query, 'fallback'));
+    return actions;
+}
+
 function showWelcome() {
     const currentAgent = getCurrentAgent();
     const isImageAgent = currentAgentId === 'image_generation_v1';
     const title = currentAgent?.name || 'Super Chat';
     const agentActions = currentAgentQuickActions(currentAgent);
-    const quickActions = agentActions.length
+    const quickActions = currentAgentId === SUPER_CHAT_AGENT_ID
+        ? [...superChatWelcomeActions(), ...agentActions].slice(0, SUPER_CHAT_WELCOME_ACTION_LIMIT)
+        : agentActions.length
         ? agentActions
         : isImageAgent
         ? [
@@ -13960,15 +14166,18 @@ function showWelcome() {
         : [];
     const quickActionsHtml = quickActions.length
         ? `
-            <div class="quick-actions">
-                ${quickActions.map((item) => `
-                    <button class="quick-action" type="button"
-                            data-query="${escapeAttr(item.query)}"
-                            ${item.modeId ? `data-quick-mode="${escapeAttr(item.modeId)}"` : ''}
-                            ${item.autoSend ? 'data-quick-send="true"' : ''}>
-                        <span>${escapeHtml(item.label)}</span>
-                    </button>
-                `).join('')}
+            <div class="welcome-suggestions ${currentAgentId === SUPER_CHAT_AGENT_ID ? 'super-chat-suggestions' : ''}">
+                ${currentAgentId === SUPER_CHAT_AGENT_ID ? `<div class="welcome-suggestions-title">${escapeHtml(t('welcome.suggestions'))}</div>` : ''}
+                <div class="quick-actions">
+                    ${quickActions.map((item) => `
+                        <button class="quick-action" type="button"
+                                data-query="${escapeAttr(item.query)}"
+                                ${item.modeId ? `data-quick-mode="${escapeAttr(item.modeId)}"` : ''}
+                                ${item.autoSend ? 'data-quick-send="true"' : ''}>
+                            <span>${escapeHtml(item.label)}</span>
+                        </button>
+                    `).join('')}
+                </div>
             </div>
         `
         : '';
@@ -15149,13 +15358,9 @@ async function sendMessageStream(conversationId, query, streamView, attachmentCo
 
     let resp;
     try {
-        resp = await fetch(API_BASE + '/api/chat', {
+        resp = await fetch(authenticatedApiUrl('/api/chat'), {
             method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                ...(currentAccountToken ? { 'X-Account-Session': currentAccountToken } : {}),
-                ...(currentUserId ? { 'X-User-ID': currentUserId } : {}),
-            },
+            headers: apiHeaders(true),
             signal,
             body: JSON.stringify({
                 conversation_id: conversationId,
@@ -17936,6 +18141,14 @@ document.addEventListener('click', async (event) => {
         return;
     }
 
+    const mobileDrivePaneButton = event.target.closest('[data-mobile-drive-pane]');
+    if (mobileDrivePaneButton) {
+        event.preventDefault();
+        mobileDrivePane = mobileDrivePaneButton.dataset.mobileDrivePane === 'detail' ? 'detail' : 'library';
+        renderProjects();
+        return;
+    }
+
     const selectProjectButton = event.target.closest('[data-select-project]');
     if (selectProjectButton) {
         event.preventDefault();
@@ -18193,6 +18406,13 @@ document.addEventListener('click', async (event) => {
     if (pulseClosePostButton) {
         event.preventDefault();
         closePulsePost();
+        return;
+    }
+
+    const pulseSearchNewsButton = event.target.closest('[data-pulse-search-news]');
+    if (pulseSearchNewsButton) {
+        event.preventDefault();
+        openPulseChat(pulseNewsFallbackPrompt());
         return;
     }
 

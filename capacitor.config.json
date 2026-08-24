@@ -1,0 +1,30 @@
+{
+  "appId": "com.aan.agentassistant",
+  "appName": "阿安的工作台",
+  "webDir": "dist/android-web",
+  "backgroundColor": "#f7f9fc",
+  "loggingBehavior": "debug",
+  "android": {
+    "backgroundColor": "#f7f9fc",
+    "captureInput": false,
+    "allowMixedContent": false
+  },
+  "server": {
+    "androidScheme": "https",
+    "cleartext": false
+  },
+  "plugins": {
+    "CapacitorUpdater": {
+      "autoUpdate": "off",
+      "statsUrl": "",
+      "appReadyTimeout": 15000,
+      "autoDeleteFailed": true,
+      "autoDeletePrevious": true,
+      "resetWhenUpdate": true
+    },
+    "SystemBars": {
+      "insetsHandling": "disable",
+      "style": "LIGHT"
+    }
+  }
+}

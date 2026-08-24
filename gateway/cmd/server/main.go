@@ -71,6 +71,7 @@ func main() {
 	convHandler := handlers.NewConversationHandler(agentClient)
 	accountHandler := handlers.NewAccountHandler()
 	healthHandler := handlers.NewHealthHandler(agentClient)
+	appVersionHandler := handlers.NewAppVersionHandler(projectRoot)
 	adminHandler := handlers.NewAdminHandler(agentClient, configSyncer)
 	mediaHandler := handlers.NewMediaHandler()
 	pulseHandler := handlers.NewPulseHandlerWithSyncer(agentClient, configSyncer)
@@ -86,6 +87,7 @@ func main() {
 	api := r.Group("/api")
 	{
 		api.GET("/health", healthHandler.Health)
+		api.GET("/app/version", appVersionHandler.Version)
 		api.GET("/accounts", accountHandler.List)
 		api.POST("/accounts", accountHandler.Create)
 		api.POST("/accounts/login", accountHandler.Login)
@@ -161,11 +163,14 @@ func main() {
 			admin.PUT("/settings", adminHandler.UpdateSettings)
 			admin.GET("/costs", adminHandler.GetCosts)
 			admin.GET("/accounts/:id/password", adminHandler.GetAccountPassword)
+			admin.DELETE("/accounts/:id", adminHandler.DeleteAccount)
 			admin.POST("/test-provider", adminHandler.TestProvider)
 			admin.POST("/validate-provider", adminHandler.ValidateProvider)
 			admin.POST("/list-models", adminHandler.ListModels)
 		}
 	}
+	r.GET("/updates/android/:version/files/*filepath", appVersionHandler.OTAFile)
+	r.HEAD("/updates/android/:version/files/*filepath", appVersionHandler.OTAFile)
 
 	// Sync settings to agent on startup (non-blocking). Gateway and Agent can
 	// start at the same time under launchd, so retry briefly if Agent is not up yet.
@@ -186,9 +191,10 @@ func main() {
 			slog.Warn("Failed to sync settings to agent after startup retries")
 		}
 	}()
-	// Pulse generation is intentionally user-triggered only. The previous
-	// scheduler fanned out across every account every 30 minutes and could
-	// repeatedly regenerate incomplete/fallback feeds.
+	// Pulse precomputation runs only for recently active accounts. The handler
+	// serializes automatic jobs and persists success/failure cooldowns so a bad
+	// provider or restart cannot fan out repeated token-consuming retries.
+	pulseHandler.StartScheduler()
 
 	// Serve static files (Web UI)
 	webDir := filepath.Join(projectRoot, "web")

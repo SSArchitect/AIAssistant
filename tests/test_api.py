@@ -36,6 +36,28 @@ async def test_health(client):
 
 
 @pytest.mark.asyncio
+async def test_delete_user_data_endpoint(client, monkeypatch):
+    seen = []
+    monkeypatch.setattr(
+        main_module.engine,
+        "purge_user_data",
+        lambda user_id: seen.append(user_id) or {"roles": 1, "memories": 2},
+    )
+
+    response = await client.delete("/agent/users/acct-a")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "deleted",
+        "deleted": {"roles": 1, "memories": 2},
+    }
+    assert seen == ["acct-a"]
+
+    protected = await client.delete("/agent/users/0")
+    assert protected.status_code == 400
+
+
+@pytest.mark.asyncio
 async def test_search_endpoint_forwards_image_validation_options(client, monkeypatch):
     seen = {}
 

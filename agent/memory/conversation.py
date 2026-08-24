@@ -140,6 +140,18 @@ class ConversationMemory:
         self._history.pop(conversation_id, None)
         self._summary_blocks.pop(conversation_id, None)
 
+    def purge_user(self, user_id: str | int | None) -> int:
+        normalized_user_id = str(user_id if user_id not in (None, "") else "0").strip() or "0"
+        prefix = f"user:{normalized_user_id}:conversation:"
+        keys = {
+            key
+            for key in (*self._history.keys(), *self._summary_blocks.keys())
+            if key.startswith(prefix)
+        }
+        for key in keys:
+            self.clear(key)
+        return len(keys)
+
     def _truncate(self, conversation_id: str) -> None:
         history = self._history[conversation_id]
         if len(history) > self._max_messages:

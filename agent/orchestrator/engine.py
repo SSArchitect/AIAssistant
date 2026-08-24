@@ -187,6 +187,16 @@ class AgentEngine:
         self._providers.clear()
         logger.info("Provider cache cleared")
 
+    def purge_user_data(self, user_id: str) -> dict[str, int]:
+        normalized_user_id = str(user_id or "0").strip() or "0"
+        role_counts = self.role_memory.purge_user(normalized_user_id)
+        return {
+            **role_counts,
+            "conversations": self.memory.purge_user(normalized_user_id),
+            "runs": self.trace_store.purge_user(normalized_user_id),
+            "weight_loss_records": self.weight_loss_store.purge_user(normalized_user_id),
+        }
+
     def _get_provider(self, name: str | None = None) -> LLMProvider:
         key = name or "default"
         if key not in self._providers:

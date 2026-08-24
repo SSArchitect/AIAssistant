@@ -2825,6 +2825,8 @@ class TestSearchSkill:
     def test_minimax_mcp_payload_to_search_results(self):
         provider = MiniMaxMCPSearchProvider(api_key="test-key")
 
+        assert provider._args == ["--with", "mcp<2", "minimax-coding-plan-mcp", "-y"]
+
         results = provider._coerce_payload(
             {
                 "organic": [
@@ -2856,6 +2858,40 @@ class TestSearchSkill:
         assert results[0].media_url == "https://example.com/demo.mp4"
         assert results[0].media_type == "video"
 
+    @pytest.mark.asyncio
+    async def test_minimax_mcp_allows_large_stdio_responses(self, monkeypatch):
+        provider = MiniMaxMCPSearchProvider(api_key="test-key")
+        captured = {}
+        proc = object()
+
+        async def fake_create_subprocess_exec(*args, **kwargs):
+            captured.update(kwargs)
+            return proc
+
+        async def fake_mcp_request(_proc, *, request_id, method, params):
+            if request_id == 1:
+                return {"result": {}}
+            return {
+                "result": {
+                    "content": [
+                        {"type": "text", "text": '{"organic": []}'},
+                    ]
+                }
+            }
+
+        async def no_op(*args, **kwargs):
+            return None
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+        monkeypatch.setattr(provider, "_mcp_request", fake_mcp_request)
+        monkeypatch.setattr(provider, "_mcp_notification", no_op)
+        monkeypatch.setattr(provider, "_stop_process", no_op)
+
+        payload = await provider._call_web_search("latest AI agent news")
+
+        assert payload == {"organic": []}
+        assert captured["limit"] == 4 * 1024 * 1024
+
     def test_search_service_registers_minimax_mcp_provider(self):
         keys = [
             "llm.minimax.api_key",
@@ -2879,6 +2915,8 @@ class TestSearchSkill:
             service = SearchService.from_runtime_config()
 
             assert "minimax-mcp" in service.provider_names
+            provider = next(item for item in service._providers if item.name == "minimax-mcp")
+            assert provider._args == ["--with", "mcp<2", "minimax-coding-plan-mcp", "-y"]
         finally:
             runtime_config.update(previous)
 

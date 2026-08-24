@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="120" y1="80" x2="904" y2="944" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#7867FF"/>
+      <stop offset="1" stop-color="#3157D5"/>
+    </linearGradient>
+    <linearGradient id="gem" x1="330" y1="258" x2="694" y2="766" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#DCE5FF"/>
+    </linearGradient>
+  </defs>
+  <rect width="1024" height="1024" rx="224" fill="url(#bg)"/>
+  <path d="M512 206 774 358 512 510 250 358 512 206Z" fill="url(#gem)"/>
+  <path d="M250 468 512 620 774 468V582L512 734 250 582V468Z" fill="#FFFFFF" fill-opacity=".92"/>
+  <path d="M250 634 512 786 774 634V716L512 868 250 716V634Z" fill="#FFFFFF" fill-opacity=".72"/>
+</svg>

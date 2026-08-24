@@ -1,4 +1,4 @@
-const API_BASE = '';
+const API_BASE = String(globalThis.AGENT_ASSISTANT_CONFIG?.apiBase || '').replace(/\/+$/, '');
 const LANGUAGE_KEY = 'agent_assistant_language';
 const CURRENT_USER_ID_STORAGE_KEY = 'agent_assistant_current_user_id';
 const ACCOUNT_SESSION_STORAGE_KEY = 'agent_assistant_account_session';
@@ -169,11 +169,19 @@ const I18N = {
         },
         members: {
             title: '用户管理',
-            desc: '查看成员账号和可恢复密码。',
+            desc: '查看成员账号和可恢复密码，或永久删除账号及其数据。',
             created: '创建时间',
             updated: '更新时间',
+            actions: '操作',
             count: '{count} 个成员',
             noAccounts: '暂无成员',
+            delete: '删除',
+            deleting: '删除中...',
+            deleteConfirm: '确定删除账号「{name}」吗？该账号的会话、记忆、网盘、待办和其他数据将被永久删除，且无法恢复。',
+            deleted: '已删除账号「{name}」。',
+            deleteFailed: '删除失败：{message}',
+            defaultProtected: '默认账号不可删除',
+            unavailable: '账号记录不存在',
         },
         cost: {
             title: '成本管理',
@@ -314,11 +322,19 @@ const I18N = {
         },
         members: {
             title: 'User Management',
-            desc: 'View member accounts and recoverable passwords.',
+            desc: 'View member accounts and recoverable passwords, or permanently delete an account and its data.',
             created: 'Created',
             updated: 'Updated',
+            actions: 'Actions',
             count: '{count} members',
             noAccounts: 'No members',
+            delete: 'Delete',
+            deleting: 'Deleting...',
+            deleteConfirm: 'Delete account “{name}”? Its conversations, memories, drive files, todos, and other data will be permanently deleted and cannot be recovered.',
+            deleted: 'Deleted account “{name}”.',
+            deleteFailed: 'Delete failed: {message}',
+            defaultProtected: 'The default account cannot be deleted',
+            unavailable: 'Account record is unavailable',
         },
         cost: {
             title: 'Cost',
@@ -900,7 +916,7 @@ function renderMemberAccounts(accounts) {
     const tbody = document.getElementById('member-account-rows');
     if (!tbody) return;
     if (!accounts.length) {
-        tbody.innerHTML = emptyCostRow(4, t('members.noAccounts'));
+        tbody.innerHTML = emptyCostRow(5, t('members.noAccounts'));
         return;
     }
     tbody.innerHTML = accounts.map((account) => `
@@ -909,8 +925,19 @@ function renderMemberAccounts(accounts) {
             <td>${renderPasswordCell(account)}</td>
             <td>${escapeHtml(formatDateTime(account.created_at))}</td>
             <td>${escapeHtml(formatDateTime(account.updated_at))}</td>
+            <td>${renderAccountDeleteAction(account)}</td>
         </tr>
     `).join('');
+}
+
+function renderAccountDeleteAction(account) {
+    if (account.id === '0') {
+        return `<span class="cost-muted">${escapeHtml(t('members.defaultProtected'))}</span>`;
+    }
+    if (account.exists === false) {
+        return `<span class="cost-muted">${escapeHtml(t('members.unavailable'))}</span>`;
+    }
+    return `<button class="member-delete-action" type="button" data-delete-account="${escapeAttr(account.id)}">${escapeHtml(t('members.delete'))}</button>`;
 }
 
 function renderDailyUserCosts(accounts) {
@@ -1043,6 +1070,44 @@ function hideAccountPassword(accountId) {
     renderMemberAccounts(costReport?.accounts || []);
 }
 
+function showMemberActionResult(message, ok, visible = true) {
+    const resultEl = document.getElementById('member-action-result');
+    if (!resultEl) return;
+    resultEl.textContent = message;
+    resultEl.className = ok ? 'save-result success' : 'save-result error';
+    resultEl.style.display = visible && message ? 'block' : 'none';
+}
+
+async function deleteMemberAccount(accountId, button = null) {
+    const account = (costReport?.accounts || []).find((item) => item.id === accountId);
+    if (!account || account.id === '0' || account.exists === false) return;
+    const accountName = account.name || account.id;
+    if (!window.confirm(t('members.deleteConfirm', { name: accountName }))) return;
+
+    if (button) {
+        button.disabled = true;
+        button.textContent = t('members.deleting');
+    }
+    showMemberActionResult('', true, false);
+    try {
+        await apiCall('DELETE', `/api/admin/accounts/${encodeURIComponent(account.id)}`);
+        delete visibleAccountPasswords[account.id];
+        localStorage.removeItem(`${ACCOUNT_SESSION_STORAGE_KEY}:${account.id}`);
+        if (loadCurrentUserId() === account.id) {
+            localStorage.removeItem(CURRENT_USER_ID_STORAGE_KEY);
+        }
+        await loadCosts();
+        showMemberActionResult(t('members.deleted', { name: accountName }), true);
+    } catch (e) {
+        if (handleAdminAuthError(e)) return;
+        showMemberActionResult(t('members.deleteFailed', { message: e.message }), false);
+        if (button) {
+            button.disabled = false;
+            button.textContent = t('members.delete');
+        }
+    }
+}
+
 function emptyCostRow(colspan, message = t('cost.noUsage')) {
     return `<tr><td class="cost-empty" colspan="${colspan}">${escapeHtml(message)}</td></tr>`;
 }
@@ -1054,7 +1119,7 @@ function renderCostError(message) {
     const historicalRows = document.getElementById('cost-historical-user-rows');
     const moduleRows = document.getElementById('cost-module-rows');
     const chart = document.getElementById('cost-trend-chart');
-    if (accountRows) accountRows.innerHTML = `<tr><td class="cost-empty error" colspan="4">${escapeHtml(message || t('cost.loadFailed'))}</td></tr>`;
+    if (accountRows) accountRows.innerHTML = `<tr><td class="cost-empty error" colspan="5">${escapeHtml(message || t('cost.loadFailed'))}</td></tr>`;
     if (dailyRows) dailyRows.innerHTML = `<tr><td class="cost-empty error" colspan="8">${escapeHtml(message || t('cost.loadFailed'))}</td></tr>`;
     if (historicalRows) historicalRows.innerHTML = `<tr><td class="cost-empty error" colspan="10">${escapeHtml(message || t('cost.loadFailed'))}</td></tr>`;
     if (moduleRows) moduleRows.innerHTML = `<tr><td class="cost-empty error" colspan="12">${escapeHtml(message || t('cost.loadFailed'))}</td></tr>`;
@@ -1407,6 +1472,12 @@ document.addEventListener('click', async (event) => {
     const hidePasswordButton = event.target.closest('[data-hide-account-password]');
     if (hidePasswordButton) {
         hideAccountPassword(hidePasswordButton.dataset.hideAccountPassword);
+        return;
+    }
+
+    const deleteAccountButton = event.target.closest('[data-delete-account]');
+    if (deleteAccountButton) {
+        await deleteMemberAccount(deleteAccountButton.dataset.deleteAccount, deleteAccountButton);
         return;
     }
 

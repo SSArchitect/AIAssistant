@@ -117,6 +117,64 @@ test('Pulse empty state does not concatenate verbose module failure summaries', 
     assert.doesNotMatch(result, /弱证据为主|另一段很长/);
 });
 
+test('Pulse empty state offers a direct news-search recovery action', () => {
+    const source = extractFunctionDeclaration('renderPulseEmptyState');
+    const html = vm.runInNewContext(`
+        ${source}
+        renderPulseEmptyState('No valid clusters', 'Search is unavailable.');
+    `, {
+        escapeHtml: String,
+        t: (key) => ({
+            'pulse.searchNews': "Search today's news",
+            'pulse.searchNewsHint': 'Use the current topics in chat.',
+        })[key] || key,
+    });
+
+    assert.match(html, /data-pulse-search-news/);
+    assert.match(html, /Search today&#39;s news|Search today's news/);
+    assert.match(html, /Use the current topics in chat\./);
+});
+
+test('Pulse news fallback prompt respects the selected topic and asks for sourced events', () => {
+    const source = extractFunctionDeclaration('pulseNewsFallbackPrompt');
+    const prompt = vm.runInNewContext(`
+        const pulse = {
+            date: '2026-08-21',
+            topics: [
+                { id: 'ai', name: 'AI', keywords: ['Agent', 'RAG'], enabled: true },
+                { id: 'travel', name: 'Travel', keywords: ['Tokyo'], enabled: true },
+            ],
+        };
+        const selectedPulseTopicId = 'ai';
+        const currentLanguage = 'zh';
+        ${source}
+        pulseNewsFallbackPrompt();
+    `, {
+        normalizePulseKeywordList: (values) => values,
+        todoTodayKey: () => 'fallback-date',
+    });
+
+    assert.match(prompt, /2026-08-21/);
+    assert.match(prompt, /AI（Agent、RAG）/);
+    assert.doesNotMatch(prompt, /Travel|Tokyo/);
+    assert.match(prompt, /来源链接与发布日期/);
+});
+
+test('Pulse refresh copy exposes the active backend stage and elapsed time', () => {
+    const source = extractFunctionDeclaration('pulseRefreshStatusText');
+    const label = vm.runInNewContext(`
+        const pulse = { refresh_stage: 'searching', refresh_elapsed_seconds: 17 };
+        ${source}
+        pulseRefreshStatusText();
+    `, {
+        t: (key, values = {}) => key === 'pulse.refreshSearching'
+            ? 'Searching sources'
+            : `${values.status} · ${values.seconds}s`,
+    });
+
+    assert.equal(label, 'Searching sources · 17s');
+});
+
 test('a stale Pulse load cannot overwrite a newer refresh response', async () => {
     const source = [
         extractFunctionDeclaration('invalidatePulseRequests'),
@@ -151,6 +209,7 @@ test('a stale Pulse load cannot overwrite a newer refresh response', async () =>
                 pending[method] = resolve;
             });
             const renderPulse = () => { renderCount += 1; };
+            const refreshWelcomeIfEmpty = () => {};
             const syncPulseRefreshPolling = (reset) => { syncCalls.push(reset); };
             ${source}
 
@@ -190,6 +249,69 @@ test('a stale Pulse load cannot overwrite a newer refresh response', async () =>
     assert.equal(state.pulseRefreshRequestPending, false);
     assert.equal(state.renderCount, 1);
     assert.deepEqual(state.syncCalls, [true]);
+});
+
+test('Super Chat welcome actions prefer Pulse questions, then recent work, then safe fallbacks', () => {
+    const source = extractFunctionDeclaration('superChatWelcomeActions');
+    const actions = vm.runInNewContext(`
+        const SUPER_CHAT_WELCOME_ACTION_LIMIT = 4;
+        const SUPER_CHAT_AGENT_ID = 'super_chat';
+        const currentConversationId = '';
+        const currentLanguage = 'zh';
+        const pulse = {
+            items: [
+                { id: 'pulse-1', detail: { suggested_questions: ['Pulse question one?'] } },
+                { id: 'pulse-2', detail: { suggested_questions: ['Pulse question two?'] } },
+            ],
+        };
+        const conversations = [
+            { id: 'recent-1', agent_id: 'super_chat', title: 'Recent project' },
+            { id: 'image-1', agent_id: 'image_generation_v1', title: 'Image task' },
+        ];
+        ${source}
+        superChatWelcomeActions();
+    `, {
+        buildPulseChatPrompt: (item, question) => `pulse:${item.id}:${question}`,
+        conversationAgentId: (conversation) => conversation.agent_id,
+        truncateText: (value) => value,
+        t: (key) => key,
+    });
+
+    assert.equal(actions.length, 4);
+    assert.deepEqual(Array.from(actions, (action) => action.source), ['pulse', 'pulse', 'conversation', 'fallback']);
+    assert.equal(actions[0].label, 'Pulse question one?');
+    assert.equal(actions[0].query, 'pulse:pulse-1:Pulse question one?');
+    assert.match(actions[2].label, /Recent project/);
+    assert.equal(actions[3].label, 'welcome.todayPulse');
+    assert.ok(actions.every((action) => action.autoSend === false));
+});
+
+test('Super Chat welcome always has four fallback questions when Pulse is empty', () => {
+    const source = extractFunctionDeclaration('superChatWelcomeActions');
+    const actions = vm.runInNewContext(`
+        const SUPER_CHAT_WELCOME_ACTION_LIMIT = 4;
+        const SUPER_CHAT_AGENT_ID = 'super_chat';
+        const currentConversationId = '';
+        const currentLanguage = 'en';
+        const pulse = { items: [] };
+        const conversations = [];
+        ${source}
+        superChatWelcomeActions();
+    `, {
+        buildPulseChatPrompt: () => '',
+        conversationAgentId: () => 'super_chat',
+        truncateText: (value) => value,
+        t: (key) => key,
+    });
+
+    assert.equal(actions.length, 4);
+    assert.ok(actions.every((action) => action.source === 'fallback'));
+    assert.deepEqual(Array.from(actions, (action) => action.label), [
+        'welcome.todayPulse',
+        'welcome.unfinished',
+        'welcome.priorities',
+        'welcome.explore',
+    ]);
 });
 
 test('invalidating Pulse requests clears polling and rejects the old account token', () => {

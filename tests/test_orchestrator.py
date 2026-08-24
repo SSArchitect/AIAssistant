@@ -5065,6 +5065,22 @@ async def test_weight_loss_records_are_scoped_by_user_id(registry, tmp_path):
     assert "鸡胸饭" not in history1_result.response
 
 
+def test_weight_loss_store_purges_only_target_user(tmp_path):
+    store = WeightLossStore(tmp_path / "weight_loss_purge.db")
+    store.upsert_profile("ignored", {"height_cm": 168}, user_id="a")
+    store.add_meal("ignored", {"meal_name": "meal a", "total_calories": 300}, user_id="a")
+    store.add_exercise("ignored", {"activity": "run a", "calories_burned": 100}, user_id="a")
+    store.upsert_profile("ignored", {"height_cm": 180}, user_id="b")
+    store.add_meal("ignored", {"meal_name": "meal b", "total_calories": 400}, user_id="b")
+
+    assert store.purge_user("a") == 3
+    assert store.get_profile("ignored", user_id="a") == {}
+    assert store.list_meals("ignored", user_id="a") == []
+    assert store.list_exercises("ignored", user_id="a") == []
+    assert store.get_profile("ignored", user_id="b")["height_cm"] == 180
+    assert store.list_meals("ignored", user_id="b")[0]["meal_name"] == "meal b"
+
+
 def test_weight_loss_store_migrates_legacy_conversation_scope(tmp_path):
     db_path = tmp_path / "legacy_weight_loss.db"
     now = datetime.now(timezone.utc).isoformat()

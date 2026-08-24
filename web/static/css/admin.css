@@ -612,6 +612,27 @@ body {
     background: var(--accent-light);
 }
 
+.member-delete-action {
+    min-height: 26px;
+    padding: 4px 8px;
+    border: 1px solid var(--error-border);
+    border-radius: var(--radius-sm);
+    background: var(--error-bg);
+    color: var(--error);
+    font-size: 11px;
+    font-weight: 700;
+    cursor: pointer;
+}
+
+.member-delete-action:hover:not(:disabled) {
+    filter: brightness(0.97);
+}
+
+.member-delete-action:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
 .cost-note {
     margin-top: 8px;
     color: var(--text-secondary);

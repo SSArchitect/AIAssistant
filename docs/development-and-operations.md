@@ -4,7 +4,9 @@
 
 这份文档记录当前代码落地后的服务启动方式、开发流程、测试要求和已知限制。架构方向见 [agent-workbench-architecture.md](./agent-workbench-architecture.md)。
 
-生产服务器部署、Git bundle 兜底、systemd/Nginx 检查和线上配置同步流程见 [server-deployment-runbook.md](./server-deployment-runbook.md)。
+生产服务器部署、Git bundle 兜底、systemd/Nginx 检查和线上配置同步流程见
+[server-deployment-runbook.md](./server-deployment-runbook.md)。Android APK、HTTPS、版本发现和
+增量 OTA 发布见 [android-release-runbook.md](./android-release-runbook.md)。
 
 ## 1. 当前服务边界
 
@@ -315,7 +317,9 @@ Pulse 内置工具：
 - `list_pulse_topics`：列出订阅 Topic、关键词和启用状态。
 - `upsert_pulse_topic`：按名称新增/覆盖 Topic，或按 `topic_id` 更新、启停 Topic。
 
-Pulse 工具只暴露给 `super_chat`。Pulse 后台预计算使用嵌套的 `super_chat` 请求，但该请求会禁用全部 Pulse 工具，防止刷新流程递归调用自身。
+Pulse 工具只暴露给 `super_chat`。Pulse 后台先通过专用搜索阶段收集证据，再使用嵌套的 `super_chat` 请求仅基于已收集证据做总结；该请求会禁用 `search` 和全部 Pulse 工具，既避免重复搜索，也防止刷新流程递归调用自身。
+
+Pulse 自动预计算只覆盖最近 24 小时使用过有效帐号会话的活跃用户，正常成功间隔为 6 小时。自动任务全局串行，尝试时间和结果持久化在 `pulse_schedule_states`：首次失败退避 12 小时，连续失败最多退避 24 小时，因此 gateway 重启不会清空冷却并触发密集重试。用户显式点击刷新不受自动调度冷却限制。
 
 Search 已作为一个内置 skill 接入：
 
@@ -325,7 +329,7 @@ Search 已作为一个内置 skill 接入：
 - `search.http.query_param`：可选查询参数名，默认 `q`。
 - `search.minimax.enabled`：启用 MiniMax Token Plan MCP 网络搜索，默认 `true`。需要可用的 `llm.minimax.api_key` 或 `search.minimax.api_key`。
 - `search.minimax.command`：MCP 启动命令，默认 `uvx`。
-- `search.minimax.args`：MCP 启动参数 JSON，默认 `["minimax-coding-plan-mcp","-y"]`。
+- `search.minimax.args`：MCP 启动参数 JSON，默认 `["--with","mcp<2","minimax-coding-plan-mcp","-y"]`；`mcp<2` 用于兼容当前 `minimax-coding-plan-mcp` 使用的 FastMCP API。
 - `search.minimax.api_host`：MiniMax API Host，默认 `https://api.minimaxi.com`。
 - `search.minimax.timeout`：单次 MCP 请求超时时间，默认 `60` 秒。
 - `search.min_provider_coverage`：通用 web 检索至少等待多少个 provider 完成后才允许提前收敛，默认 `2`；设为 `1` 可恢复更偏速度的首个相关结果策略。

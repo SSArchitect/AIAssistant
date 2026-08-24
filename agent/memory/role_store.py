@@ -306,6 +306,30 @@ class RoleMemoryStore:
                 self._records.pop(role_id, None)
             self._persist_locked()
 
+    def purge_user(self, user_id: str | None) -> dict[str, int]:
+        owner_user_id = self._normalize_user_id(user_id)
+        with self._lock:
+            role_keys = [
+                role_key
+                for role_key, role in self._roles.items()
+                if not role.metadata.get("built_in")
+                and self._role_owner_user_id(role) == owner_user_id
+            ]
+            for role_key in role_keys:
+                self._roles.pop(role_key, None)
+
+            memory_count = 0
+            for role_id, records in list(self._records.items()):
+                kept = [record for record in records if record.user_id != owner_user_id]
+                memory_count += len(records) - len(kept)
+                if kept:
+                    self._records[role_id] = kept
+                else:
+                    self._records.pop(role_id, None)
+
+            self._persist_locked()
+            return {"roles": len(role_keys), "memories": memory_count}
+
     def list_roles(self, *, user_id: str | None = None) -> list[RoleProfile]:
         owner_user_id = self._normalize_user_id(user_id)
         with self._lock:

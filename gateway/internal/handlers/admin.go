@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -20,6 +21,7 @@ import (
 	"github.com/aan/agent-assistant-gateway/internal/models"
 	"github.com/gin-gonic/gin"
 	"golang.org/x/crypto/bcrypt"
+	"gorm.io/gorm"
 )
 
 type AdminHandler struct {
@@ -164,6 +166,7 @@ func (h *AdminHandler) GetCosts(c *gin.Context) {
 		accountSummary := &CostAccountSummary{
 			ID:                account.ID,
 			Name:              account.Name,
+			Exists:            true,
 			PasswordSet:       account.PasswordHash != "",
 			PasswordAvailable: available,
 			PasswordNote:      note,
@@ -372,6 +375,101 @@ func (h *AdminHandler) GetAccountPassword(c *gin.Context) {
 	})
 }
 
+func (h *AdminHandler) DeleteAccount(c *gin.Context) {
+	accountID := strings.TrimSpace(c.Param("id"))
+	if accountID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "account id is required"})
+		return
+	}
+	accountID = normalizedUserID(accountID)
+	if accountID == models.DefaultAccountID {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "the default account cannot be deleted"})
+		return
+	}
+
+	var account models.Account
+	if err := database.DB.First(&account, "id = ?", accountID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "account was not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load account"})
+		return
+	}
+
+	if h.agent != nil {
+		if err := h.agent.DeleteUserData(accountID); err != nil {
+			slog.Error("Failed to delete account data from agent", "account_id", accountID, "error", err)
+			c.JSON(http.StatusBadGateway, gin.H{"error": "failed to delete account data from agent"})
+			return
+		}
+	}
+
+	if err := database.DB.Transaction(func(tx *gorm.DB) error {
+		userModels := []interface{}{
+			&models.AccountSession{},
+			&models.Message{},
+			&models.Conversation{},
+			&models.TokenUsage{},
+			&models.UserSetting{},
+			&models.PulseEvent{},
+			&models.PulseItem{},
+			&models.PulseModule{},
+			&models.PulseTopic{},
+			&models.PulseScheduleState{},
+			&models.TodoCompletion{},
+			&models.TodoSuggestion{},
+			&models.TodoItem{},
+			&models.DriveItem{},
+		}
+		for _, model := range userModels {
+			if err := tx.Where("user_id = ?", accountID).Delete(model).Error; err != nil {
+				return err
+			}
+		}
+
+		legacyModels := []interface{}{
+			&models.KnowledgeLink{},
+			&models.KnowledgeDocument{},
+			&models.KnowledgeProject{},
+		}
+		for _, model := range legacyModels {
+			if tx.Migrator().HasTable(model) {
+				if err := tx.Where("user_id = ?", accountID).Delete(model).Error; err != nil {
+					return err
+				}
+			}
+		}
+
+		for _, table := range []string{"weight_loss_meals", "weight_loss_exercises", "weight_loss_profiles"} {
+			if tx.Migrator().HasTable(table) {
+				if err := tx.Exec("DELETE FROM "+table+" WHERE user_id = ?", accountID).Error; err != nil {
+					return err
+				}
+			}
+		}
+
+		result := tx.Delete(&models.Account{}, "id = ?", accountID)
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return gorm.ErrRecordNotFound
+		}
+		return nil
+	}); err != nil {
+		slog.Error("Failed to delete account", "account_id", accountID, "error", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete account"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"status": "deleted",
+		"id":     account.ID,
+		"name":   account.Name,
+	})
+}
+
 type UpdateSettingsRequest struct {
 	Settings  map[string]string `json:"settings" binding:"required"`
 	Validate  bool              `json:"validate"`
@@ -437,6 +535,7 @@ type CostDailySummary struct {
 type CostAccountSummary struct {
 	ID                string            `json:"id"`
 	Name              string            `json:"name"`
+	Exists            bool              `json:"exists"`
 	Password          string            `json:"password,omitempty"`
 	PasswordSet       bool              `json:"password_set"`
 	PasswordAvailable bool              `json:"password_available"`

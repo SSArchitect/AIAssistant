@@ -60,6 +60,7 @@ SEARCH_LLM_RERANK_ENABLED = True
 SEARCH_LLM_RERANK_MAX_CANDIDATES = 10
 SEARCH_LLM_RERANK_TIMEOUT_SECONDS = 20.0
 SEARCH_LLM_RERANK_MIN_SCORE = 0.5
+MCP_STDIO_READ_LIMIT_BYTES = 4 * 1024 * 1024
 WEB_USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -806,7 +807,9 @@ class MiniMaxMCPSearchProvider:
         self._api_key = api_key
         self._api_host = api_host
         self._command = command
-        self._args = args or ["minimax-coding-plan-mcp", "-y"]
+        # minimax-coding-plan-mcp 0.0.4 imports the FastMCP API removed in
+        # mcp 2.x. Keep the transient uvx environment on the compatible SDK.
+        self._args = args or ["--with", "mcp<2", "minimax-coding-plan-mcp", "-y"]
         self._timeout = timeout
 
     async def search(self, query: str, *, limit: int = 5) -> list[SearchResult]:
@@ -830,6 +833,9 @@ class MiniMaxMCPSearchProvider:
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            # asyncio's 64 KiB default is smaller than a normal web_search
+            # JSON-RPC response once snippets and metadata are included.
+            limit=MCP_STDIO_READ_LIMIT_BYTES,
             env=env,
         )
         try:
@@ -1545,7 +1551,7 @@ class SearchService:
                     args=_parse_command_args(
                         runtime_config.get(
                             "search.minimax.args",
-                            '["minimax-coding-plan-mcp", "-y"]',
+                            '["--with", "mcp<2", "minimax-coding-plan-mcp", "-y"]',
                         )
                     ),
                     timeout=_parse_float(
@@ -2921,11 +2927,14 @@ def _truncate_text(text: Any, max_chars: int) -> str:
 def _parse_command_args(raw: str) -> list[str]:
     raw = (raw or "").strip()
     if not raw:
-        return ["minimax-coding-plan-mcp", "-y"]
+        return ["--with", "mcp<2", "minimax-coding-plan-mcp", "-y"]
     try:
         parsed = json.loads(raw)
         if isinstance(parsed, list):
-            return [str(item) for item in parsed]
+            args = [str(item) for item in parsed]
+            if args == ["minimax-coding-plan-mcp", "-y"]:
+                return ["--with", "mcp<2", *args]
+            return args
     except json.JSONDecodeError:
         pass
     return shlex.split(raw)

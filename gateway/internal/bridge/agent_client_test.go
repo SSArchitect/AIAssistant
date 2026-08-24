@@ -478,6 +478,22 @@ func TestAgentClientRolesCRUD(t *testing.T) {
 	}
 }
 
+func TestAgentClientDeleteUserData(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete || r.URL.EscapedPath() != "/agent/users/user%20one" {
+			t.Fatalf("unexpected %s %s", r.Method, r.URL.EscapedPath())
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"deleted"}`))
+	}))
+	defer server.Close()
+
+	client := NewAgentClient(server.URL, time.Second)
+	if err := client.DeleteUserData("user one"); err != nil {
+		t.Fatalf("DeleteUserData returned error: %v", err)
+	}
+}
+
 func TestAgentClientRoleMemoriesCRUD(t *testing.T) {
 	var created bool
 	var updated bool

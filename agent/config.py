@@ -120,7 +120,10 @@ class RuntimeConfig:
             "search.minimax.enabled": str(_search_minimax_cfg.get("enabled", True)).lower(),
             "search.minimax.command": _search_minimax_cfg.get("command", "uvx"),
             "search.minimax.args": json.dumps(
-                _search_minimax_cfg.get("args", ["minimax-coding-plan-mcp", "-y"])
+                _search_minimax_cfg.get(
+                    "args",
+                    ["--with", "mcp<2", "minimax-coding-plan-mcp", "-y"],
+                )
             ),
             "search.minimax.api_host": _search_minimax_cfg.get("api_host", "https://api.minimaxi.com"),
             "search.minimax.timeout": str(_search_minimax_cfg.get("timeout", 60)),

@@ -91,6 +91,28 @@ def test_trace_store_filters_runs_by_user_id():
     assert run_b.run_id not in {run.run_id for run in user_a_runs}
 
 
+def test_trace_store_purges_only_target_user_runs():
+    store = TraceStore()
+    run_a = store.start_run(
+        conversation_id="shared-conv",
+        user_id="a",
+        input_text="a",
+        agent_id="general_assistant",
+        runtime="self",
+    )
+    run_b = store.start_run(
+        conversation_id="shared-conv",
+        user_id="b",
+        input_text="b",
+        agent_id="general_assistant",
+        runtime="self",
+    )
+
+    assert store.purge_user("a") == 1
+    assert store.get_run(run_a.run_id) is None
+    assert store.get_run(run_b.run_id) is not None
+
+
 def test_trace_store_marks_failed_run():
     store = TraceStore()
     run = store.start_run(

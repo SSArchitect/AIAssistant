@@ -3,6 +3,7 @@ package handlers
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -224,6 +225,80 @@ func TestPulseChatPersistsBackgroundTokenUsage(t *testing.T) {
 	}
 	if !strings.Contains(usage.UsageJSON, "input_cached") {
 		t.Fatalf("expected raw token JSON to be persisted, got %q", usage.UsageJSON)
+	}
+}
+
+func TestPulseAutomaticRefreshThrottlePersistsAcrossHandlers(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	if err := database.Init(filepath.Join(t.TempDir(), "assistant.db")); err != nil {
+		t.Fatalf("init database: %v", err)
+	}
+
+	now := time.Date(2026, 8, 24, 8, 0, 0, 0, time.UTC)
+	handler := NewPulseHandler()
+	reserved, err := handler.reservePulseAutomaticAttempt("2026-08-24", "active-user", now)
+	if err != nil || !reserved {
+		t.Fatalf("expected first automatic attempt reservation, reserved=%v err=%v", reserved, err)
+	}
+	if err := handler.finishPulseAutomaticAttempt("2026-08-24", "active-user", fmt.Errorf("provider unavailable"), now.Add(time.Minute)); err != nil {
+		t.Fatalf("persist failed attempt: %v", err)
+	}
+
+	// A fresh handler simulates a gateway restart. The failed attempt must still
+	// suppress the old 30-minute retry loop and use the 12-hour failure backoff.
+	restarted := NewPulseHandler()
+	reserved, err = restarted.reservePulseAutomaticAttempt("2026-08-24", "active-user", now.Add(6*time.Hour))
+	if err != nil {
+		t.Fatalf("check persisted throttle: %v", err)
+	}
+	if reserved {
+		t.Fatal("expected failed automatic generation to remain throttled after restart")
+	}
+	reserved, err = restarted.reservePulseAutomaticAttempt("2026-08-24", "active-user", now.Add(12*time.Hour))
+	if err != nil || !reserved {
+		t.Fatalf("expected retry after failure backoff, reserved=%v err=%v", reserved, err)
+	}
+	crashRestart := NewPulseHandler()
+	reserved, err = crashRestart.reservePulseAutomaticAttempt("2026-08-24", "active-user", now.Add(18*time.Hour))
+	if err != nil {
+		t.Fatalf("check running retry throttle: %v", err)
+	}
+	if reserved {
+		t.Fatal("expected an interrupted retry to retain its failure backoff")
+	}
+	if err := restarted.finishPulseAutomaticAttempt("2026-08-24", "active-user", nil, now.Add(12*time.Hour+time.Minute)); err != nil {
+		t.Fatalf("persist successful attempt: %v", err)
+	}
+
+	var state models.PulseScheduleState
+	if err := database.DB.First(&state, "user_id = ?", "active-user").Error; err != nil {
+		t.Fatalf("load schedule state: %v", err)
+	}
+	if state.LastStatus != "succeeded" || state.ConsecutiveFailures != 0 || state.LastSuccessAt == nil {
+		t.Fatalf("unexpected recovered schedule state: %#v", state)
+	}
+}
+
+func TestPulseSchedulerTargetsOnlyRecentlyActiveAccounts(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	if err := database.Init(filepath.Join(t.TempDir(), "assistant.db")); err != nil {
+		t.Fatalf("init database: %v", err)
+	}
+
+	now := time.Now()
+	sessions := []models.AccountSession{
+		{TokenHash: "active-new", UserID: "active-user", CreatedAt: now, LastUsedAt: now.Add(-time.Hour)},
+		{TokenHash: "active-old", UserID: "active-user", CreatedAt: now, LastUsedAt: now.Add(-2 * time.Hour)},
+		{TokenHash: "second-active", UserID: "second-user", CreatedAt: now, LastUsedAt: now.Add(-3 * time.Hour)},
+		{TokenHash: "inactive", UserID: "inactive-user", CreatedAt: now, LastUsedAt: now.Add(-48 * time.Hour)},
+	}
+	if err := database.DB.Create(&sessions).Error; err != nil {
+		t.Fatalf("seed sessions: %v", err)
+	}
+
+	got := NewPulseHandler().scheduledPulseUserIDs()
+	if strings.Join(got, ",") != "active-user,second-user" {
+		t.Fatalf("expected unique recently active users ordered by recency, got %#v", got)
 	}
 }
 

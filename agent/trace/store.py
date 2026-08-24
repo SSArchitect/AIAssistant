@@ -245,6 +245,19 @@ class TraceStore:
         runs.sort(key=lambda r: r.started_at, reverse=True)
         return runs[:limit]
 
+    def purge_user(self, user_id: str | None) -> int:
+        normalized_user_id = self._normalize_user_id(user_id)
+        with self._lock:
+            run_ids = [
+                run_id
+                for run_id, run in self._runs.items()
+                if run.user_id == normalized_user_id
+            ]
+            for run_id in run_ids:
+                self._runs.pop(run_id, None)
+                self._created_at.pop(run_id, None)
+        return len(run_ids)
+
     @staticmethod
     def _normalize_user_id(value: str | int | None) -> str:
         text = str(value if value not in (None, "") else "0").strip()
