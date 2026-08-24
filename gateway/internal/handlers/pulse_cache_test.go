@@ -179,6 +179,45 @@ func TestPulseGetHidesUnsupportedFutureCacheVersion(t *testing.T) {
 	}
 }
 
+func TestPulseCurrentCacheRevalidatesSourceFreshness(t *testing.T) {
+	const date = "2026-08-24"
+	item := qualityTestPulseItem(date, "stale-current-cache", []pulseNewsSource{
+		{
+			Title:       "OpenAI releases enterprise agent controls",
+			URL:         "https://openai.com/news/agent-controls",
+			Snippet:     "OpenAI released enterprise agent controls to business customers.",
+			PublishedAt: "2026-08-20",
+		},
+		{
+			Title:       "OpenAI enterprise agent controls launch",
+			URL:         "https://reuters.com/technology/openai-agent-controls",
+			Snippet:     "The same OpenAI enterprise agent controls launched for business customers.",
+			PublishedAt: "2026-08-20",
+		},
+	})
+	var detail pulseItemDetail
+	if err := json.Unmarshal([]byte(item.DetailJSON), &detail); err != nil {
+		t.Fatalf("decode detail: %v", err)
+	}
+	detail.ContentVersion = pulseContentVersion
+	detail.SuggestedQuestions = []string{
+		"OpenAI agent controls 发布了什么？",
+		"企业控制能力有哪些具体变化？",
+		"哪些官方材料确认了发布时间？",
+	}
+	item.DetailJSON = mustJSON(detail)
+	if !pulseNewsCopyMeetsQualityGate(item.Title, item.Summary) {
+		t.Fatalf("test fixture must satisfy the copy quality gate: %#v", item)
+	}
+	if pulseItemMeetsQualityGate(item) {
+		t.Fatal("expected four-day-old Topic sources to fail the 72-hour freshness gate")
+	}
+	items, _ := revalidatePulseCachedItems([]models.PulseItem{item})
+	if len(items) != 0 {
+		t.Fatalf("expected stale current-version cache to be hidden, got %#v", items)
+	}
+}
+
 func TestPulseGeneratedItemsCarryCurrentContentVersion(t *testing.T) {
 	item := searchFallbackClusterItem("2026-07-27", pulseSearchEvidence{
 		Module: pulseSourceTopicHot,

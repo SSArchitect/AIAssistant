@@ -141,6 +141,38 @@ func TestPulseGetUsesRecentHealthyItemsForWelcomeSuggestions(t *testing.T) {
 	}
 }
 
+func TestPulseMemorySignalsOnlyUseMessagesFromLastThirtyDays(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	if err := database.Init(filepath.Join(t.TempDir(), "assistant.db")); err != nil {
+		t.Fatalf("init database: %v", err)
+	}
+	now := time.Now().UTC()
+	messages := []models.Message{
+		{ConversationID: "recent", UserID: "memory-user", Role: "user", Content: "最近在研究 AI Agent 和模型能力", CreatedAt: now.Add(-2 * time.Hour)},
+		{ConversationID: "old", UserID: "memory-user", Role: "user", Content: "旅行路线和住宿规划", CreatedAt: now.Add(-31 * 24 * time.Hour)},
+	}
+	for _, message := range messages {
+		if err := database.DB.Create(&message).Error; err != nil {
+			t.Fatalf("seed message: %v", err)
+		}
+	}
+
+	signals, err := NewPulseHandler().loadMemorySignals("memory-user")
+	if err != nil {
+		t.Fatalf("load Memory signals: %v", err)
+	}
+	themes := map[string]bool{}
+	for _, signal := range signals {
+		themes[signal.Theme] = true
+	}
+	if !themes["AI 应用与 Agent"] {
+		t.Fatalf("expected recent AI memory signal, got %#v", signals)
+	}
+	if themes["旅行规划"] {
+		t.Fatalf("expected messages older than 30 days to be excluded, got %#v", signals)
+	}
+}
+
 func TestPulseUsesAgentGeneratedModules(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	if err := database.Init(filepath.Join(t.TempDir(), "assistant.db")); err != nil {

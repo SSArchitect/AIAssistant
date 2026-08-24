@@ -275,8 +275,8 @@ const (
 	pulseOpenFilterThreshold        = 3
 	pulseExposureFilterThreshold    = 8
 	pulseFeatureEventLimit          = 1000
-	pulseTopicFreshnessWindow       = 45 * 24 * time.Hour
-	pulseMemoryFreshnessWindow      = 180 * 24 * time.Hour
+	pulseTopicFreshnessWindow       = 72 * time.Hour
+	pulseMemoryFreshnessWindow      = 30 * 24 * time.Hour
 	pulseWelcomeSuggestionMaxAge    = 7 * 24 * time.Hour
 	pulseFutureDateTolerance        = 48 * time.Hour
 	pulseSuggestedQuestionLimit     = 3
@@ -1196,7 +1196,12 @@ func (h *PulseHandler) loadTopics(userID string) ([]models.PulseTopic, error) {
 
 func (h *PulseHandler) loadMemorySignals(userID string) ([]memoryPulseSignal, error) {
 	var messages []models.Message
-	if err := database.DB.Where("user_id = ?", normalizedUserID(userID)).Order(messageReverseChronologicalOrder).Limit(60).Find(&messages).Error; err != nil {
+	cutoff := time.Now().Add(-pulseMemoryFreshnessWindow)
+	if err := database.DB.
+		Where("user_id = ? AND created_at >= ?", normalizedUserID(userID), cutoff).
+		Order(messageReverseChronologicalOrder).
+		Limit(60).
+		Find(&messages).Error; err != nil {
 		return nil, err
 	}
 	return inferMemorySignals(messages), nil
@@ -3869,13 +3874,7 @@ func inferMemorySignals(messages []models.Message) []memoryPulseSignal {
 			Snippets: []string{"近期消息：" + compactSnippet(recentUserMessages[0], 52)},
 		}}
 	}
-	return []memoryPulseSignal{{
-		Theme:    "工作台探索",
-		Focus:    "建立一套适合你的每日推荐偏好",
-		Count:    1,
-		Keywords: []string{"冷启动"},
-		Snippets: []string{"暂无近期 memory，先用冷启动推荐帮助建立偏好。"},
-	}}
+	return nil
 }
 
 func collectInterestTerms(topics []models.PulseTopic, signals []memoryPulseSignal) []string {

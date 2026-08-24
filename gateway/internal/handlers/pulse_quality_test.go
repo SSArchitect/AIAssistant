@@ -476,6 +476,38 @@ func TestPulseQualityFreshnessRequiresRecentCorroboration(t *testing.T) {
 	}
 }
 
+func TestPulseQualityFreshnessUsesModuleSpecificWindows(t *testing.T) {
+	const date = "2026-08-24"
+	results := func(leftDate string, rightDate string) []pulseSearchResult {
+		return []pulseSearchResult{
+			{URL: "https://openai.com/news/update", PublishedAt: leftDate},
+			{URL: "https://reuters.com/technology/update", PublishedAt: rightDate},
+		}
+	}
+
+	if !pulseSearchResultsFreshEnough(date, pulseSourceTopicHot, results("2026-08-21", "2026-08-22")) {
+		t.Fatal("expected Topic sources inside the 72-hour window to pass")
+	}
+	if pulseSearchResultsFreshEnough(date, pulseSourceInterestHot, results("2026-08-20", "2026-08-21")) {
+		t.Fatal("expected hot-news sources outside the 72-hour window to fail")
+	}
+	if !pulseSearchResultsFreshEnough(date, pulseSourceMemory, results("2026-07-25", "2026-08-01")) {
+		t.Fatal("expected Memory sources inside the 30-day window to pass")
+	}
+	if pulseSearchResultsFreshEnough(date, pulseSourceMemory, results("2026-07-24", "2026-07-23")) {
+		t.Fatal("expected Memory sources older than 30 days to fail")
+	}
+
+	topicSuffixes := pulseSearchQuerySuffixesForDate(pulseSourceTopicHot, date)
+	memorySuffixes := pulseSearchQuerySuffixesForDate(pulseSourceMemory, date)
+	if !strings.Contains(strings.Join(topicSuffixes, " "), "after 2026-08-21") {
+		t.Fatalf("expected Topic queries to request the 72-hour window, got %#v", topicSuffixes)
+	}
+	if !strings.Contains(strings.Join(memorySuffixes, " "), "after 2026-07-25") {
+		t.Fatalf("expected Memory queries to request the 30-day window, got %#v", memorySuffixes)
+	}
+}
+
 func TestPulseQualitySearchFallbackPreservesModuleDiversity(t *testing.T) {
 	const date = "2026-07-27"
 	evidence := make([]pulseSearchEvidence, 0, pulseCandidateTargetCount+2)
