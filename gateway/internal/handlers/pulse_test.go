@@ -388,8 +388,8 @@ func TestPulseSchedulerTargetsOnlyRecentlyActiveAccounts(t *testing.T) {
 	sessions := []models.AccountSession{
 		{TokenHash: "active-new", UserID: "active-user", CreatedAt: now, LastUsedAt: now.Add(-time.Hour)},
 		{TokenHash: "active-old", UserID: "active-user", CreatedAt: now, LastUsedAt: now.Add(-2 * time.Hour)},
-		{TokenHash: "second-active", UserID: "second-user", CreatedAt: now, LastUsedAt: now.Add(-3 * time.Hour)},
-		{TokenHash: "inactive", UserID: "inactive-user", CreatedAt: now, LastUsedAt: now.Add(-48 * time.Hour)},
+		{TokenHash: "second-active", UserID: "second-user", CreatedAt: now, LastUsedAt: now.Add(-6 * 24 * time.Hour)},
+		{TokenHash: "inactive", UserID: "inactive-user", CreatedAt: now, LastUsedAt: now.Add(-8 * 24 * time.Hour)},
 	}
 	if err := database.DB.Create(&sessions).Error; err != nil {
 		t.Fatalf("seed sessions: %v", err)

@@ -256,7 +256,7 @@ const (
 
 	pulseSchedulerTickInterval      = 30 * time.Minute
 	pulseScheduledRefreshInterval   = 6 * time.Hour
-	pulseActiveAccountWindow        = 24 * time.Hour
+	pulseActiveAccountWindow        = 7 * 24 * time.Hour
 	pulseAutomaticFailureRetryBase  = 12 * time.Hour
 	pulseAutomaticFailureRetryLimit = 24 * time.Hour
 	pulseSearchQueryLimit           = 16
