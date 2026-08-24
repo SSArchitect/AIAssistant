@@ -3633,7 +3633,8 @@ class TestPulseSkills:
 
         assert result.success is True
         assert result.data["total"] == 1
-        assert result.data["topics"][0]["id"] == "topic-1"
+        assert result.data["topics"][0]["name"] == "AI"
+        assert "id" not in result.data["topics"][0]
 
     @pytest.mark.asyncio
     async def test_upsert_pulse_topic_prepares_unique_prefix_for_approval(self):
@@ -3690,6 +3691,33 @@ class TestPulseSkills:
             await skill.prepare_arguments(topic_id="abcddcba", _user_id="alice")
         with pytest.raises(ValueError, match="not found"):
             await skill.prepare_arguments(topic_id="deadbeef", _user_id="alice")
+
+    @pytest.mark.asyncio
+    async def test_upsert_pulse_topic_resolves_original_name_for_rename(self):
+        def handler(_: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={
+                    "topics": [
+                        {
+                            "id": "c16e9bfc-3165-41d9-86be-14631e245253",
+                            "name": "旧名称",
+                            "keywords": ["Agent"],
+                        }
+                    ]
+                },
+            )
+
+        skill = PulseUpsertTopicSkill(client_factory=lambda: self.client(handler))
+        prepared = await skill.prepare_arguments(
+            original_name="旧名称",
+            name="新名称",
+            _user_id="alice",
+        )
+
+        assert prepared["topic_id"] == "c16e9bfc-3165-41d9-86be-14631e245253"
+        assert prepared["original_name"] == "旧名称"
+        assert prepared["name"] == "新名称"
 
     @pytest.mark.asyncio
     async def test_upsert_pulse_topic_creates_and_updates(self):
@@ -3771,6 +3799,7 @@ class TestPulseSkills:
         result = await skill.execute(**prepared)
         assert result.success is True
         assert result.data["deleted"]["name"] == "旧关注"
+        assert "id" not in result.data["deleted"]
         assert requests == [
             ("GET", "/api/pulse/topics"),
             ("DELETE", "/api/pulse/topics/c16e9bfc-3165-41d9-86be-14631e245253"),
@@ -3809,9 +3838,12 @@ class TestPulseSkills:
         assert result.success is True
         assert result.data["workflow"]["analysis_only"] is True
         assert result.data["current_topics"][0]["name"] == "AI Agent"
+        assert "id" not in result.data["current_topics"][0]
         assert result.data["candidate_interest_signals"][0]["theme"] == "AI 应用与 Agent"
         assert result.data["topic_semantics"]["existing_topics_source"] == "current_topics_only"
         assert result.data["history"]["summary"]["sampled_cluster_count"] == 4
+        assert "left_topic_id" not in result.data["history"]["overlap_candidates"][0]
+        assert "right_topic_id" not in result.data["history"]["overlap_candidates"][0]
         assert "Only current_topics are existing subscriptions" in result.display_text
         assert skill.metadata().access == "read"
         assert skill.metadata().default_policy == "auto"

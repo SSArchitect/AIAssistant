@@ -384,8 +384,11 @@ class PulseOptimizeTopicsSkill(_PulseTool):
                 "memory_signals",
                 payload.get("candidate_interest_signals", []),
             )
-            payload["current_topics"] = _dict_list(current_topics)
+            payload["current_topics"] = [
+                _topic_summary(topic) for topic in _dict_list(current_topics)
+            ]
             payload["candidate_interest_signals"] = _dict_list(candidate_signals)
+            payload["history"] = _strip_internal_topic_ids(payload.get("history"))
             payload["topic_semantics"] = {
                 "existing_topics_source": "current_topics_only",
                 "candidate_interest_signals_are_existing_topics": False,
@@ -419,6 +422,15 @@ class PulseUpsertTopicSkill(_PulseTool):
                     description=(
                         "可选 Topic ID；更新指定 Topic 时提供，必须使用 list_pulse_topics 返回的完整 ID。"
                         "若上下文中只有至少 8 位的唯一 ID 前缀，系统会在授权前解析为完整 ID。"
+                    ),
+                    required=False,
+                ),
+                SkillParameter(
+                    name="original_name",
+                    type="string",
+                    description=(
+                        "改名时填写当前 Topic 名称，系统会在授权前解析内部 ID；"
+                        "name 填写改名后的名称。普通新增或关键词更新不需要此参数。"
                     ),
                     required=False,
                 ),
@@ -459,11 +471,13 @@ class PulseUpsertTopicSkill(_PulseTool):
     async def prepare_arguments(self, **kwargs) -> dict[str, Any]:
         prepared = dict(kwargs)
         topic_id = str(prepared.get("topic_id") or "").strip()
-        if not topic_id:
+        original_name = str(prepared.get("original_name") or "").strip()
+        if not topic_id and not original_name:
             return prepared
         match = _resolve_topic(
             await self._client().list_topics(self._user_id(prepared)),
             topic_id=topic_id,
+            name=original_name,
         )
         prepared["topic_id"] = str(match.get("id") or "").strip()
         if not str(prepared.get("name") or "").strip():
@@ -577,7 +591,7 @@ class PulseDeleteTopicSkill(_PulseTool):
             return SkillResult(success=False, error="topic_id is required after topic resolution")
         try:
             await self._client().delete_topic(self._user_id(kwargs), topic_id)
-            deleted = {"id": topic_id, "name": name}
+            deleted = {"name": name}
             return SkillResult(
                 success=True,
                 data={"deleted": deleted},
@@ -705,9 +719,20 @@ def _resolve_topic(
     return match
 
 
+def _strip_internal_topic_ids(value: Any) -> Any:
+    if isinstance(value, list):
+        return [_strip_internal_topic_ids(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+    return {
+        key: _strip_internal_topic_ids(item)
+        for key, item in value.items()
+        if "topic_id" not in str(key).casefold()
+    }
+
+
 def _topic_summary(topic: dict[str, Any]) -> dict[str, Any]:
     return {
-        "id": str(topic.get("id") or ""),
         "name": str(topic.get("name") or ""),
         "keywords": [
             str(keyword)
@@ -759,7 +784,6 @@ def _pulse_item_summary(item: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": str(item.get("id") or ""),
         "date": str(item.get("date") or ""),
-        "topic_id": str(item.get("topic_id") or ""),
         "topic_name": str(item.get("topic_name") or ""),
         "source": str(item.get("source") or ""),
         "category": str(item.get("category") or ""),

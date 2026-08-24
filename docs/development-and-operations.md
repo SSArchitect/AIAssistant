@@ -322,6 +322,8 @@ Pulse 内置工具：
 
 `upsert_pulse_topic` 和 `delete_pulse_topic` 会在 Tool Governance 生成授权卡片前，把至少 8 位的唯一 Topic ID 前缀解析为当前用户的完整 UUID，并补充 Topic 名称；删除也可以直接按当前 Topic 名称定位。找不到或目标不唯一时直接拒绝参数。授权卡片面向用户只展示 Topic 名称和具体变更，内部完整 ID 仅用于精确执行和 Trace 审计。
 
+模型可见的 Pulse 工具结果同样不返回 Topic ID。改名时使用 `original_name` 定位当前 Topic、用 `name` 提供新名称，内部 ID 只在授权准备与执行阶段解析；用户可见的方案和最终回答只展示 Topic 名称。
+
 `optimize_pulse_topics` 的 `current_topics` 是现有订阅的唯一事实源；`candidate_interest_signals`、近期对话意图和历史信息簇仅用于生成候选建议，不能被描述为现有 Topic，也不能直接作为删除目标。
 
 Pulse 工具只暴露给 `super_chat`。Pulse 后台先通过专用搜索阶段收集证据，再使用嵌套的 `super_chat` 请求仅基于已收集证据做总结；该请求会禁用 `search` 和全部 Pulse 工具，既避免重复搜索，也防止刷新流程递归调用自身。
