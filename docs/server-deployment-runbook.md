@@ -1,6 +1,6 @@
 # Server Deployment Runbook
 
-最后更新：2026-08-21
+最后更新：2026-08-27
 
 这份文档记录把 Agent Assistant 推送到服务器的标准流程和已踩过的坑。目标是让后续部署只做可重复动作，不把运行期数据、API key 或 Nginx/systemd 配置搞丢。
 
@@ -25,7 +25,7 @@ Browser / Android
 
 80 端口只跳转到 HTTPS。生产 `config/config.yaml` 中 Gateway host 应保持
 `127.0.0.1`；每次部署后都检查监听地址，避免重新暴露 `0.0.0.0:8080`。Android APK、
-版本发现和 OTA 的独立流程见 [android-release-runbook.md](./android-release-runbook.md)。
+版本发现和 OTA 的具体发布步骤见 [android-release-runbook.md](./android-release-runbook.md)。
 
 注意：仓库里的开发配置目前仍是 `0.0.0.0`，而部署脚本会 reset 工作树。运行部署脚本后
 必须恢复服务器 `config/config.yaml` 的 `server.host: 127.0.0.1`，再重启 Gateway 并检查
@@ -61,6 +61,30 @@ git diff --stat
 ```bash
 ./scripts/test.sh
 ```
+
+### 2.1 客户端发布门禁（每次生产部署必做）
+
+每次用户要求“推上服务器”“上线”或“部署生产”时，都必须先比较上一生产提交与候选提交的
+文件清单，并明确记录本次属于后端部署、Web OTA、原生 APK，还是它们的组合。不能把 OTA
+留作用户另行提醒的可选后续。
+
+```bash
+git diff --name-only <previous-production-commit>..<candidate-commit>
+```
+
+判定规则：
+
+- 改动包含 `web/**`、`mobile/android-bridge.js`、`scripts/build_android_web.mjs` 或其他会进入
+  `dist/android-web` 的资源：后端部署完成后，必须在同一个部署任务中发布一个新版本、
+  更高 sequence 的 OTA。
+- 改动包含 `android/**`、Capacitor 原生插件、权限、Manifest、图标或签名配置：按 Android
+  发布手册判断是否需要新 APK；OTA 不能代替原生发布。
+- 只有 Gateway、Agent、测试或纯文档改动，且不会改变 Android Web 资源：可以不发 OTA，
+  但交付结果中必须明确写出“不需要 OTA”及判定依据。
+
+含 Web 资源的部署只有同时满足以下条件才算完成：生产代码健康、新 OTA sequence 已高于
+旧 sequence、版本接口已返回新版本、清单内所有公网文件哈希一致，并且 OTA 文件 HEAD
+响应为 `200` 且带 `immutable` 缓存。具体命令和原子发布顺序见 Android 发布手册第 4 节。
 
 敏感信息扫描。命中测试里的 `sk-test`、注释或 placeholder 可以接受；真实 key 不应该出现在 Git diff 里。
 

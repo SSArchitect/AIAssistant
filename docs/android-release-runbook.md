@@ -1,6 +1,6 @@
 # Android APK 与增量 OTA 发布 Runbook
 
-最后验证：2026-08-25
+最后验证：2026-08-27
 
 本文记录 Agent Assistant 安卓内测版在当前生产服务器上的发布、验证、回退和排障流程。
 Android 容器的实现原理和本地开发说明见 [android-app.md](./android-app.md)，通用后端部署见
@@ -25,8 +25,8 @@ TLS private key:     /etc/letsencrypt/live/architect8.cn/privkey.pem
 ```text
 Native versionName:  0.3.0
 Native versionCode:  3
-OTA version:         0.3.0-ota.3
-OTA sequence:        5
+OTA version:         0.3.0-ota.5
+OTA sequence:        7
 OTA native range:    versionCode >= 3
 APK URL:             https://www.architect8.cn/downloads/agent-assistant-0.3.0-debug.apk
 ```
@@ -54,6 +54,11 @@ Nginx 和 TLS 直接访问 8080/9090。
 | 同时涉及网页和原生能力 | 先发新 APK，再发限定原生版本的 OTA | 安装 APK 后应用 OTA |
 
 OTA 不能更新原生代码。第一次使用 OTA 前，设备必须先安装包含更新器的 APK。
+
+通用生产部署如果包含会进入 Android Web 包的资源，OTA 不是独立的可选后续，而是同一个
+部署任务的完成条件。主部署流程必须先执行
+[server-deployment-runbook.md](./server-deployment-runbook.md) 的“客户端发布门禁”，后端健康
+后继续完成本节的 OTA 发布与公网哈希验证；只有纯后端或纯文档改动才可以明确跳过 OTA。
 
 ## 3. 发布规则
 
