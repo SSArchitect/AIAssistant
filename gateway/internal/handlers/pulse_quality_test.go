@@ -131,13 +131,13 @@ func TestPulseQualityFollowupTargetsUnsupportedSeedInsidePartlyVerifiedQuery(t *
 	}
 }
 
-func TestPulseQualityFollowupSeedCountIsBounded(t *testing.T) {
+func TestPulseQualityFollowupSearchesUseThreeEventsAndSixBoundedQueries(t *testing.T) {
 	evidence := pulseSearchEvidence{
 		Module:    pulseSourceTopicHot,
 		Query:     "ModelCo acquisitions latest news 2026",
 		TopicName: "AI",
 	}
-	for index := 0; index < pulseSearchFollowupSeedLimit+3; index++ {
+	for index := 0; index < pulseSearchFollowupEventLimit+3; index++ {
 		name := fmt.Sprintf("ModelCo%d", index)
 		evidence.Results = append(evidence.Results, pulseSearchResult{
 			Title:       fmt.Sprintf("%s acquires SafeLab%d in $%dM deal", name, index, 100+index),
@@ -147,8 +147,23 @@ func TestPulseQualityFollowupSeedCountIsBounded(t *testing.T) {
 		})
 	}
 
-	if seeds := pulseSearchFollowupSeeds("2026-07-27", []pulseSearchEvidence{evidence}); len(seeds) != pulseSearchFollowupSeedLimit {
-		t.Fatalf("expected follow-up searches to stay capped at %d, got %d", pulseSearchFollowupSeedLimit, len(seeds))
+	seeds := pulseSearchFollowupSeeds("2026-07-27", []pulseSearchEvidence{evidence})
+	if len(seeds) != pulseSearchFollowupEventLimit {
+		t.Fatalf("expected follow-up events to stay capped at %d, got %d", pulseSearchFollowupEventLimit, len(seeds))
+	}
+	plans := pulseSearchFollowupPlans("2026-07-27", []pulseSearchEvidence{evidence})
+	if len(plans) != pulseSearchFollowupQueryLimit {
+		t.Fatalf("expected two searches per event capped at %d, got %#v", pulseSearchFollowupQueryLimit, plans)
+	}
+	kinds := map[string]int{}
+	for _, plan := range plans {
+		kinds[plan.Kind]++
+		if strings.Count(strings.ToLower(plan.Query.Query), strings.ToLower(strings.Fields(plan.Query.Query)[0])) > 1 {
+			t.Fatalf("follow-up query repeated its subject anchor: %q", plan.Query.Query)
+		}
+	}
+	if kinds["official"] != pulseSearchFollowupEventLimit || kinds["independent"] != pulseSearchFollowupEventLimit {
+		t.Fatalf("expected official and independent searches for every event, got %#v", kinds)
 	}
 }
 
@@ -163,6 +178,54 @@ func TestPulseQualityRanksPrimaryAndAuthoritativeSourcesFirst(t *testing.T) {
 	ranked := pulseRankSearchResults(query, results, len(results))
 	if len(ranked) != 3 || !strings.Contains(ranked[0].URL, "openai.com") || !strings.Contains(ranked[1].URL, "reuters.com") {
 		t.Fatalf("expected primary source then authoritative reporting, got %#v", ranked)
+	}
+}
+
+func TestPulseQualityVerifiedClustersMergeSameEventAcrossQueries(t *testing.T) {
+	const date = "2026-07-27"
+	evidence := []pulseSearchEvidence{
+		{
+			QueryID: "q1", Module: pulseSourceTopicHot, TopicID: "topic-ai", TopicName: "AI",
+			Query: "OpenAI GPT-5.6 official release",
+			Results: []pulseSearchResult{{
+				Title: "OpenAI launches GPT-5.6 coding agent controls", Snippet: "OpenAI released GPT-5.6 with new coding agent controls.",
+				URL: "https://openai.com/news/gpt-5-6-agent", PublishedAt: "2026-07-26",
+			}},
+		},
+		{
+			QueryID: "q2", Module: pulseSourceTopicHot, TopicID: "topic-ai", TopicName: "AI",
+			Query: "GPT-5.6 independent report",
+			Results: []pulseSearchResult{{
+				Title: "GPT-5.6 coding agent controls launch", Snippet: "An independent report confirms OpenAI launched GPT-5.6 coding agent controls.",
+				URL: "https://www.reuters.com/technology/openai-gpt-5-6", PublishedAt: "2026-07-25",
+			}},
+		},
+	}
+
+	clusters := pulseVerifiedSearchClusters(date, evidence)
+	if len(clusters) != 1 || len(clusters[0].Results) != 2 {
+		t.Fatalf("expected cross-query results to form one verified event cluster, got %#v", clusters)
+	}
+}
+
+func TestPulseQualityClusterRequiresTrustedSourceAndEveryPairToMatch(t *testing.T) {
+	const date = "2026-07-27"
+	unknownSources := []pulseNewsSource{
+		{Title: "OpenAI launches GPT-5.6 agent controls", Snippet: "OpenAI released GPT-5.6 agent controls.", URL: "https://unknown-one.example/news/gpt-5-6", PublishedAt: "2026-07-26"},
+		{Title: "GPT-5.6 agent controls launch", Snippet: "OpenAI launched GPT-5.6 agent controls.", URL: "https://unknown-two.example/report/gpt-5-6", PublishedAt: "2026-07-25"},
+	}
+	if issues := pulseNewsSourceQualityIssues(date, pulseSourceTopicHot, unknownSources); !containsString(issues, "missing_trusted_source") {
+		t.Fatalf("expected unknown sites to require a trusted source, got %#v", issues)
+	}
+
+	mixed := append([]pulseNewsSource{}, unknownSources...)
+	mixed[0].URL = "https://openai.com/news/gpt-5-6"
+	mixed = append(mixed, pulseNewsSource{
+		Title: "OpenAI launches Sora video editor", Snippet: "OpenAI released a Sora timeline editor for video creators.",
+		URL: "https://www.theverge.com/ai/openai-sora-editor", PublishedAt: "2026-07-26",
+	})
+	if pulseNewsSourcesMeetQualityGate(date, pulseSourceTopicHot, mixed) {
+		t.Fatalf("a trusted but unrelated third source must not ride along with a verified pair: %#v", mixed)
 	}
 }
 
@@ -190,19 +253,8 @@ func TestPulseQualityGetSelfHealsEmptyCachedModules(t *testing.T) {
 		t.Fatalf("seed empty modules: %v", err)
 	}
 
-	generationStarted := make(chan struct{}, 1)
-	releaseGeneration := make(chan struct{})
 	agentServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/agent/chat" {
-			http.NotFound(w, r)
-			return
-		}
-		select {
-		case generationStarted <- struct{}{}:
-		default:
-		}
-		<-releaseGeneration
-		http.Error(w, "generation unavailable", http.StatusServiceUnavailable)
+		http.NotFound(w, r)
 	}))
 	defer agentServer.Close()
 
@@ -228,12 +280,6 @@ func TestPulseQualityGetSelfHealsEmptyCachedModules(t *testing.T) {
 	if response.RefreshStage == "" || response.RefreshStartedAt == "" {
 		t.Fatalf("expected live refresh progress metadata, got %#v", response)
 	}
-	select {
-	case <-generationStarted:
-	case <-time.After(time.Second):
-		t.Fatal("background generation did not start")
-	}
-	close(releaseGeneration)
 	deadline := time.Now().Add(2 * time.Second)
 	for handler.pulseGenerationActive(date, "0") && time.Now().Before(deadline) {
 		time.Sleep(10 * time.Millisecond)
@@ -881,7 +927,7 @@ func TestPulseQualityGeneratedItemsMustReferenceSearchEvidence(t *testing.T) {
 			Items: []generatedPulseItem{
 				{
 					Title:   "OpenAI 发布企业 Agent 权限控制",
-					Summary: "OpenAI 发布企业 Agent 权限控制，并开放管理员配置。",
+					Summary: "OpenAI 发布企业 Agent 权限控制，并向企业管理员开放新的配置入口。官方材料显示，这次更新覆盖权限审批、工具调用范围和运行记录查看，目标是让企业能够限制 Agent 可执行的操作。独立报道确认了相同的发布时间与产品名称，并补充说明首批能力将面向企业客户逐步开放。两份来源对核心功能和开放对象的描述一致，但对后续扩展范围尚未给出更多细节。",
 					NewsSources: []pulseNewsSource{
 						{URL: "https://openai.com/news/agent-controls"},
 						{URL: "https://www.reuters.com/technology/openai-agent-controls"},
@@ -1039,6 +1085,8 @@ func TestPulseQualityGenerationPromptRequiresCompactNonRepeatingCopy(t *testing.
 		"禁止“用 5 分钟帮我读懂",
 		"可识别主体",
 		"具体动作/事件",
+		"150-400 个中文字符",
+		"verified_clusters",
 		"无法提取具体事实，不要生成这个 item",
 	}
 	for _, fragment := range required {
@@ -1135,6 +1183,12 @@ func TestPulseQualityDeterministicFallbackDetailIsCompactAndDeduplicated(t *test
 	if strings.Contains(item.Summary, "推荐") || strings.Contains(item.Summary, "打开原文核验") {
 		t.Fatalf("summary should be the news content only, got %q", item.Summary)
 	}
+	if length := len([]rune(item.Summary)); length < pulseSummaryMinRunes || length > pulseSummaryMaxRunes {
+		t.Fatalf("fallback summary must contain %d-%d characters, got %d: %q", pulseSummaryMinRunes, pulseSummaryMaxRunes, length, item.Summary)
+	}
+	if strings.Contains(item.Title, "、") {
+		t.Fatalf("fallback title must describe one event subject instead of joining entities: %q", item.Title)
+	}
 }
 
 func qualityFallbackEvidence(date string, module string, eventID string) pulseSearchEvidence {
@@ -1188,4 +1242,13 @@ func emptyPulseQualityFeatureState() pulseFeatureState {
 		topicScores:    map[string]int{},
 		sourceScores:   map[string]int{},
 	}
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }

@@ -55,7 +55,7 @@ func TestPulseGetUpgradesValidLegacyCacheBeforeServing(t *testing.T) {
 		Source:     pulseSourceTopicHot,
 		Category:   "AI 产品",
 		Title:      "OpenAI 发布 AgentKit 2.0，新增工作流控制",
-		Summary:    "OpenAI 发布 AgentKit 2.0，新增面向生产 Agent 的工作流控制。独立报道确认这是同一次产品发布。第三句不应继续展示。",
+		Summary:    "OpenAI 正式发布 AgentKit 2.0，重点补强面向生产环境的 Agent 工作流控制。官方公告说明了新版本的发布范围和核心能力，独立报道也确认这些变化属于同一次产品发布。新增控制主要服务于长时间运行、多步协作和需要人工审核的任务，目标是降低 Agent 在真实业务中失控的风险。两个来源在发布事实和主要能力上一致，但官方更强调功能完整性，报道则更关注企业部署的安全和可管理性。对正在评估生产级 Agent 的团队来说，值得继续核实实际权限边界、故障恢复机制以及成本变化。这些信息可以用于判断是否进入试点，但真实收益仍需要用自己的任务链和观测指标验证。第七句不应继续展示。",
 		HeatScore:  88,
 		DetailJSON: mustJSON(legacyDetail),
 		CreatedAt:  now,
@@ -94,7 +94,7 @@ func TestPulseGetUpgradesValidLegacyCacheBeforeServing(t *testing.T) {
 	if got.Detail.ContentVersion != pulseContentVersion {
 		t.Fatalf("expected content version %d, got %#v", pulseContentVersion, got.Detail)
 	}
-	if strings.Contains(got.Summary, "第三句") {
+	if strings.Contains(got.Summary, "第七句") {
 		t.Fatalf("expected legacy summary to be compacted, got %q", got.Summary)
 	}
 	if len(got.Detail.SuggestedQuestions) != pulseSuggestedQuestionLimit {

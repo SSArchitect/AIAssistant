@@ -114,7 +114,7 @@ func TestPulseGetUsesRecentHealthyItemsForWelcomeSuggestions(t *testing.T) {
 		Date:          previousDate,
 		Source:        pulseSourceTopicHot,
 		Title:         "DeepSeek 发布 V4 Pro 并调整 API 定价",
-		Summary:       "DeepSeek 发布 V4 Pro，并为 Pro 与 Flash 引入新的 API 分时定价。",
+		Summary:       "DeepSeek 发布 V4 Pro，并为 Pro 与 Flash 引入新的 API 分时定价。官方信息显示，V4 Pro 此次更新集中在 Agent 任务的调用、规划与工具协作能力，同时保留 Flash 作为更低延迟的选项。独立报道确认了这次发布与价格调整属于同一轮产品更新，峰谷时段的调用成本会出现明显差异。对已经使用 DeepSeek API 的团队，影响不只是模型选型，还包括批处理、离线任务和高峰期流量的调度方式。值得后续核实实际计费区间、速率差异和兼容性，再决定是否迁移生产负载。",
 		DetailJSON:    mustJSON(detail),
 		ExplorePrompt: "对比 DeepSeek V4 Pro 与 Flash 的能力和成本",
 		HeatScore:     90,
@@ -868,7 +868,7 @@ func TestPulseEventsUpdateFeedbackAndRanking(t *testing.T) {
 			Source:     pulseSourceTopicHot,
 			Category:   "关注 Topic",
 			Title:      "OpenAI 发布 AgentGuard-2 权限控制",
-			Summary:    "OpenAI 发布 AgentGuard-2，并新增企业权限控制。",
+			Summary:    pulseTestLongSummary("OpenAI AgentGuard-2 企业权限控制"),
 			HeatScore:  90,
 			DetailJSON: pulseTestVerifiedDetail(date),
 			CreatedAt:  now,
@@ -881,7 +881,7 @@ func TestPulseEventsUpdateFeedbackAndRanking(t *testing.T) {
 			Source:     pulseSourceTopicHot,
 			Category:   "关注 Topic",
 			Title:      "OpenAI 开放 AgentGuard-2 审计日志",
-			Summary:    "OpenAI 开放 AgentGuard-2 审计日志，并支持企业客户接入。",
+			Summary:    pulseTestLongSummary("OpenAI AgentGuard-2 审计日志"),
 			HeatScore:  70,
 			DetailJSON: pulseTestVerifiedDetail(date),
 			CreatedAt:  now.Add(time.Second),
@@ -969,7 +969,7 @@ func TestPulseEventsBoostFutureItemsByTopic(t *testing.T) {
 			Source:     pulseSourceTopicHot,
 			Category:   "关注 Topic",
 			Title:      "OpenAI 发布 AgentGuard-2 权限控制",
-			Summary:    "OpenAI 发布 AgentGuard-2，并新增企业权限控制。",
+			Summary:    pulseTestLongSummary("OpenAI AgentGuard-2 企业权限控制"),
 			HeatScore:  70,
 			DetailJSON: pulseTestVerifiedDetail("2026-06-20"),
 			CreatedAt:  now,
@@ -984,7 +984,7 @@ func TestPulseEventsBoostFutureItemsByTopic(t *testing.T) {
 			Source:     pulseSourceTopicHot,
 			Category:   "关注 Topic",
 			Title:      "Anthropic 发布 Claude 企业审计功能",
-			Summary:    "Anthropic 发布 Claude 企业审计功能，并开放管理员接入。",
+			Summary:    pulseTestLongSummary("Anthropic Claude 企业审计功能"),
 			HeatScore:  78,
 			DetailJSON: pulseTestVerifiedDetail("2026-06-20"),
 			CreatedAt:  now.Add(time.Second),
@@ -1502,21 +1502,15 @@ func TestSearchFallbackClusterSummarizesNewsCluster(t *testing.T) {
 		TopicName: "AI",
 		Results: []pulseSearchResult{
 			{
-				Title:   "GPT-5.6 reportedly supports longer context and new tool use",
-				Snippet: "Several reports say OpenAI is expected to release GPT-5.6 later this year, but official timing is not confirmed.",
-				URL:     "https://example.com/gpt-56-release",
-				Source:  "web",
+				Title:   "GPT-5.6 release reportedly adds terminal controls and longer context",
+				Snippet: "OpenAI is expected to preview GPT-5.6 with terminal controls and longer context, but official timing is not confirmed.",
+				URL:     "https://openai.com/news/gpt-56-release",
+				Source:  "official",
 			},
 			{
-				Title:   "OpenAI GPT-5.6 release date rumors point to an August preview",
-				Snippet: "The coverage focuses on possible launch timing, version naming, and availability for developers.",
-				URL:     "https://example.com/openai-gpt-rumor",
-				Source:  "web",
-			},
-			{
-				Title:   "Anthropic unveils Claude Fable 5 with restricted access",
-				Snippet: "Anthropic's model update highlights safety guardrails, access limits, and frontier capability claims.",
-				URL:     "https://example.com/claude-fable-5",
+				Title:   "OpenAI GPT-5.6 release preview with terminal controls points to August",
+				Snippet: "The independent coverage describes the same expected GPT-5.6 preview with terminal controls, longer context, and developer availability.",
+				URL:     "https://www.reuters.com/technology/openai-gpt-rumor",
 				Source:  "web",
 			},
 		},
@@ -1536,6 +1530,9 @@ func TestSearchFallbackClusterSummarizesNewsCluster(t *testing.T) {
 	}
 	if !strings.Contains(item.Summary, "发布") || !strings.Contains(item.Summary, "版本") {
 		t.Fatalf("expected summary to explain the actionable news angle, got %q", item.Summary)
+	}
+	if length := len([]rune(item.Summary)); length < pulseSummaryMinRunes || length > pulseSummaryMaxRunes {
+		t.Fatalf("expected a %d-%d character cluster summary, got %d: %q", pulseSummaryMinRunes, pulseSummaryMaxRunes, length, item.Summary)
 	}
 
 	var detail pulseItemDetail
@@ -1631,15 +1628,15 @@ func TestPulseSearchFallbackClustersGroupsCorroboratedResultsFirst(t *testing.T)
 			{
 				Title:       "Anthropic launches Agent Harness 2.0 for Claude Code",
 				Snippet:     "The Agent Harness 2.0 release adds shared controls for Claude Code and Gemini CLI.",
-				URL:         "https://github.com/duanyytop/agents-radar/issues/1280",
-				Source:      "github",
+				URL:         "https://anthropic.com/news/agent-harness-2",
+				Source:      "official",
 				PublishedAt: "2026-06-19",
 			},
 			{
 				Title:       "Agent Harness 2.0 launch adds Claude Code controls",
 				Snippet:     "An independent report confirms the new Agent Harness 2.0 release for Claude Code.",
-				URL:         "https://research.example.org/agent-harness-claude-gemini",
-				Source:      "web",
+				URL:         "https://reuters.com/technology/anthropic-agent-harness-2",
+				Source:      "Reuters",
 				PublishedAt: "2026-06-18",
 			},
 			{
@@ -1755,18 +1752,18 @@ func TestPulseSearchEvidenceFollowupAddsCorroboratingResults(t *testing.T) {
 	if len(searchErrors) != 0 {
 		t.Fatalf("expected no search errors, got %#v", searchErrors)
 	}
+	followupKinds := map[string]bool{}
 	for _, item := range evidence {
 		if pulseSearchIndependentSourceCount(item.Results) >= 2 {
 			if item.Stage != "followup" || item.ParentQueryID == "" {
 				t.Fatalf("expected separately recorded follow-up evidence, got %#v", item)
 			}
-			if !strings.Contains(item.Query, "official announcement") || !strings.Contains(item.Query, "independent report") {
-				t.Fatalf("expected official and independent source expansion query, got %q", item.Query)
-			}
-			return
+			followupKinds[item.Intent] = true
 		}
 	}
-	t.Fatalf("expected follow-up search to add an independent corroborating source, got %#v", evidence)
+	if !followupKinds["official"] || !followupKinds["independent"] {
+		t.Fatalf("expected separate official and independent corroboration searches, got %#v", evidence)
+	}
 }
 
 func TestSearchFallbackMarksSingleSourceAsUnverified(t *testing.T) {
@@ -1812,16 +1809,16 @@ func TestGeneratedPulseRewritesSearchDumpCopy(t *testing.T) {
 						HeatScore: 92,
 						NewsSources: []pulseNewsSource{
 							{
-								Title:   "GPT-5.6 reportedly supports longer context and new tool use",
-								Snippet: "OpenAI is expected to release GPT-5.6 later this year, but official timing is not confirmed.",
-								URL:     "https://example.com/gpt-56-release",
-								Source:  "web",
+								Title:   "OpenAI releases GPT-5.6 with longer context and new tool use",
+								Snippet: "OpenAI released GPT-5.6 with longer context, new tool use controls, and phased API access.",
+								URL:     "https://openai.com/news/gpt-56-release",
+								Source:  "official",
 							},
 							{
-								Title:   "Anthropic unveils Claude Fable 5 with restricted access",
-								Snippet: "Anthropic's model update highlights safety guardrails and access limits.",
-								URL:     "https://example.com/claude-fable-5",
-								Source:  "web",
+								Title:   "GPT-5.6 launch adds longer context and phased API access",
+								Snippet: "An independent report confirms the same GPT-5.6 launch, including longer context and phased API availability.",
+								URL:     "https://reuters.com/technology/openai-gpt-56-release",
+								Source:  "Reuters",
 							},
 						},
 					},
@@ -1840,10 +1837,8 @@ func TestGeneratedPulseRewritesSearchDumpCopy(t *testing.T) {
 	if strings.HasPrefix(items[0].Summary, "聚合 ") || strings.Contains(items[0].Summary, "关键线索是") {
 		t.Fatalf("expected rewritten summary, got %q", items[0].Summary)
 	}
-	if strings.Contains(items[0].Summary, "核验") ||
-		strings.Contains(items[0].Summary, "推荐") ||
-		strings.Count(items[0].Summary, "。") > 2 {
-		t.Fatalf("expected summary to contain only one or two news-content sentences, got %q", items[0].Summary)
+	if length := len([]rune(items[0].Summary)); length < pulseSummaryMinRunes || length > pulseSummaryMaxRunes {
+		t.Fatalf("expected rewritten cluster summary to contain %d-%d characters, got %d: %q", pulseSummaryMinRunes, pulseSummaryMaxRunes, length, items[0].Summary)
 	}
 }
 
@@ -1871,8 +1866,8 @@ func writePulseTestSearchResponse(w http.ResponseWriter, r *http.Request) {
 			{
 				Title:   "独立报道确认 RoboControl-7 机器人控制器发布",
 				Snippet: "另一家独立来源确认 RoboControl-7 控制器完成同一次发布，用于交叉核验。",
-				URL:     "https://industry.example.org/robotics-latest",
-				Source:  "web",
+				URL:     "https://reuters.com/technology/robocontrol-7-launch",
+				Source:  "Reuters",
 				Metadata: map[string]interface{}{
 					"rank":         2,
 					"published_at": "2026-06-18",
@@ -1904,6 +1899,10 @@ func pulseTestVerifiedDetail(date string) string {
 			},
 		},
 	})
+}
+
+func pulseTestLongSummary(subject string) string {
+	return subject + "已在近期正式发布，官方材料说明了产品范围、开放对象和主要能力。独立报道确认了同一次发布的主体、版本和时间线，并补充了企业用户接入与部署时需要注意的条件。两个来源对核心事实的表述一致，差异主要在于官方更强调功能设计，媒体更关注实际应用和风险边界。对正在评估这项能力的团队，后续应继续核对实际权限、兼容性和上线成本。"
 }
 
 func TestPulseRejectsInvalidDate(t *testing.T) {
