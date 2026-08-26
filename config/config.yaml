@@ -33,6 +33,13 @@ llm:
       model: MiniMax-M3
       thinking: disabled
       timeout: 60
+    dgx:
+      # API key is read from DGX_API_KEY env var or admin settings
+      base_url: https://steven-design-job-newfoundland.trycloudflare.com/v1
+      model: qwen38-27b
+      max_tokens: 10000
+      streaming: true
+      timeout: 1800
     ollama:
       base_url: http://localhost:11434
       model: llama3

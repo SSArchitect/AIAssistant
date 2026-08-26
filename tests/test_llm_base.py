@@ -1,7 +1,11 @@
 """Unit tests for LLM base classes and factory."""
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
 import pytest
 from agent.llm.base import LLMMessage, LLMResponse, PromptCacheOptions, ToolCall, ToolDefinition
 from agent.llm.claude_provider import ClaudeProvider
+from agent.llm.dgx_provider import DGXSparkProvider
 from agent.llm.factory import create_provider
 from agent.llm.minimax_provider import MiniMaxProvider
 from agent.llm.openai_provider import OpenAIProvider
@@ -62,6 +66,129 @@ def test_openai_compatible_provider_accepts_explicit_timeout():
 def test_openai_compatible_provider_rejects_empty_api_key():
     with pytest.raises(ValueError, match="MiniMax API key not configured"):
         MiniMaxProvider(api_key="")
+
+
+@pytest.mark.asyncio
+async def test_dgx_provider_streams_tool_calls_and_applies_max_tokens():
+    provider = DGXSparkProvider(
+        api_key="test-key",
+        max_tokens=10000,
+    )
+
+    class FakeStream:
+        def __aiter__(self):
+            self._chunks = iter(
+                [
+                    SimpleNamespace(
+                        model="qwen38-27b",
+                        usage=None,
+                        choices=[SimpleNamespace(delta=SimpleNamespace(
+                            content=None,
+                            reasoning="checking tool arguments",
+                            tool_calls=[SimpleNamespace(
+                                index=0,
+                                id="call_dgx",
+                                function=SimpleNamespace(
+                                    name="echo",
+                                    arguments='{"text":',
+                                ),
+                            )],
+                        ))],
+                    ),
+                    SimpleNamespace(
+                        model="qwen38-27b",
+                        usage=None,
+                        choices=[SimpleNamespace(delta=SimpleNamespace(
+                            content=None,
+                            tool_calls=[SimpleNamespace(
+                                index=0,
+                                id=None,
+                                function=SimpleNamespace(
+                                    name=None,
+                                    arguments='"hello"}',
+                                ),
+                            )],
+                        ))],
+                    ),
+                ]
+            )
+            return self
+
+        async def __anext__(self):
+            try:
+                return next(self._chunks)
+            except StopIteration as exc:
+                raise StopAsyncIteration from exc
+
+    provider.client.chat.completions.create = AsyncMock(return_value=FakeStream())
+    chunks = [
+        chunk
+        async for chunk in provider.chat_stream_response(
+            [LLMMessage(role="user", content="echo hello")],
+            tools=[ToolDefinition(
+                name="echo",
+                description="Echo text",
+                parameters={"type": "object"},
+            )],
+            thinking_enabled=True,
+        )
+    ]
+
+    kwargs = provider.client.chat.completions.create.await_args.kwargs
+    assert kwargs["stream"] is True
+    assert kwargs["max_tokens"] == 10000
+    assert kwargs["extra_body"]["chat_template_kwargs"]["enable_thinking"] is True
+    assert chunks[0].reasoning == "checking tool arguments"
+    assert chunks[-1].response is not None
+    assert chunks[-1].response.reasoning == "checking tool arguments"
+    assert chunks[-1].response.tool_calls[0].name == "echo"
+    assert chunks[-1].response.tool_calls[0].arguments == {"text": "hello"}
+
+
+def test_dgx_provider_explicitly_disables_thinking():
+    provider = DGXSparkProvider(api_key="test-key")
+
+    assert provider._extra_chat_kwargs(thinking_enabled=False) == {
+        "extra_body": {
+            "chat_template_kwargs": {
+                "enable_thinking": False,
+            }
+        }
+    }
+
+
+def test_dgx_provider_uses_runtime_configuration():
+    keys = [
+        "llm.dgx.api_key",
+        "llm.dgx.base_url",
+        "llm.dgx.model",
+        "llm.dgx.max_tokens",
+        "llm.dgx.streaming",
+        "llm.dgx.timeout",
+    ]
+    previous = {key: runtime_config.get(key) for key in keys}
+    try:
+        runtime_config.update(
+            {
+                "llm.dgx.api_key": "test-key",
+                "llm.dgx.base_url": "https://dgx.example/v1",
+                "llm.dgx.model": "qwen38-27b",
+                "llm.dgx.max_tokens": "10000",
+                "llm.dgx.streaming": "true",
+                "llm.dgx.timeout": "1800",
+            }
+        )
+
+        provider = create_provider("dgx")
+
+        assert isinstance(provider, DGXSparkProvider)
+        assert provider.model == "qwen38-27b"
+        assert provider.max_tokens == 10000
+        assert provider.streaming_enabled is True
+        assert provider.supports_streaming_tool_calls is True
+        assert str(provider.client.base_url) == "https://dgx.example/v1/"
+    finally:
+        runtime_config.update(previous)
 
 
 def test_claude_provider_caches_only_stable_system_prefix():

@@ -254,6 +254,18 @@ class AgentEngine:
         index = min(attempt - 1, len(MODEL_RETRY_DELAYS_SECONDS) - 1)
         return MODEL_RETRY_DELAYS_SECONDS[index]
 
+    @staticmethod
+    def _provider_thinking_kwargs(
+        provider: LLMProvider,
+        request: ChatRequest,
+    ) -> dict[str, bool]:
+        if (
+            request.thinking_enabled is None
+            or getattr(provider, "provider_name", "") != "dgx"
+        ):
+            return {}
+        return {"thinking_enabled": request.thinking_enabled}
+
     async def _chat_with_retry(
         self,
         provider: LLMProvider,
@@ -275,6 +287,7 @@ class AgentEngine:
                     tools=tools,
                     temperature=temperature,
                     cache=cache,
+                    **self._provider_thinking_kwargs(current_provider, request),
                 )
             except Exception as error:
                 should_retry = (
@@ -315,6 +328,7 @@ class AgentEngine:
         temperature: float = 0.7,
         cache: PromptCacheOptions | None = None,
         on_token: Callable[[str], Awaitable[None]] | None = None,
+        on_reasoning: Callable[[str], Awaitable[None]] | None = None,
         retry_context: dict[str, Any] | None = None,
     ) -> LLMResponse:
         current_provider = provider
@@ -322,14 +336,34 @@ class AgentEngine:
         for attempt in range(1, MODEL_RETRY_MAX_ATTEMPTS + 1):
             chunks: list[str] = []
             try:
-                async for token in current_provider.chat_stream(
-                    messages,
-                    tools=tools,
-                    temperature=temperature,
-                    cache=cache,
-                ):
-                    chunks.append(token)
-                    await self._emit_token(on_token, token)
+                completed_response: LLMResponse | None = None
+                if getattr(current_provider, "supports_streaming_tool_calls", False) is True:
+                    async for chunk in current_provider.chat_stream_response(
+                        messages,
+                        tools=tools,
+                        temperature=temperature,
+                        cache=cache,
+                        **self._provider_thinking_kwargs(current_provider, request),
+                    ):
+                        if chunk.reasoning:
+                            await self._emit_token(on_reasoning, chunk.reasoning)
+                        if chunk.text:
+                            chunks.append(chunk.text)
+                            await self._emit_token(on_token, chunk.text)
+                        if chunk.response is not None:
+                            completed_response = chunk.response
+                else:
+                    async for token in current_provider.chat_stream(
+                        messages,
+                        tools=tools,
+                        temperature=temperature,
+                        cache=cache,
+                        **self._provider_thinking_kwargs(current_provider, request),
+                    ):
+                        chunks.append(token)
+                        await self._emit_token(on_token, token)
+                if completed_response is not None:
+                    return completed_response
                 return LLMResponse(
                     content="".join(chunks),
                     tool_calls=[],
@@ -955,6 +989,18 @@ class AgentEngine:
         if not on_token or not token:
             return
         result = on_token(token)
+        if inspect.isawaitable(result):
+            await result
+
+    async def _emit_intermediate(
+        self,
+        on_intermediate: Callable[[str, int], Awaitable[None] | None] | None,
+        text: str,
+        round_index: int,
+    ) -> None:
+        if not on_intermediate or not text:
+            return
+        result = on_intermediate(text, round_index)
         if inspect.isawaitable(result):
             await result
 
@@ -2688,23 +2734,6 @@ class AgentEngine:
             for block in (request.context_blocks or [])[-3:]
             if str(block or "").strip()
         )
-        drive_context = request.drive_context
-        if drive_context is not None:
-            current_path = str(getattr(drive_context, "current_path", "") or "").strip()
-            if current_path:
-                parts.append(f"Drive path: {current_path}")
-            for item in (getattr(drive_context, "items", None) or [])[:8]:
-                parts.append(
-                    " ".join(
-                        value
-                        for value in (
-                            str(getattr(item, "name", "") or "").strip(),
-                            str(getattr(item, "path", "") or "").strip(),
-                            str(getattr(item, "summary", "") or "").strip(),
-                        )
-                        if value
-                    )
-                )
         for attachment in (request.attachments or [])[:4]:
             parts.append(
                 " ".join(
@@ -10999,6 +11028,8 @@ class AgentEngine:
         self,
         request: ChatRequest,
         on_token: Callable[[str], Awaitable[None] | None] | None = None,
+        on_reasoning: Callable[[str], Awaitable[None] | None] | None = None,
+        on_intermediate: Callable[[str, int], Awaitable[None] | None] | None = None,
     ) -> ChatResponse:
         agent_id = request.agent_id or "general_assistant"
         request = self._sanitize_request_modes(request, agent_id)
@@ -11459,6 +11490,8 @@ class AgentEngine:
                 "exposed_tools": [tool.name for tool in tools],
                 "activated_domains": tool_route.activated_domains,
                 "scored_tools": tool_route.scored_tools,
+                "deferred_count": len(tool_route.deferred_tools),
+                "deferred_tools": tool_route.deferred_tools,
                 "policy": {
                     "always_on_tools": [
                         tool.name
@@ -11467,6 +11500,7 @@ class AgentEngine:
                         or tool.name in CORE_ALWAYS_ON_TOOL_NAMES
                     ],
                     "max_dynamic_tools": self.tool_router.max_dynamic_tools,
+                    "min_dynamic_score": self.tool_router.min_dynamic_score,
                     "tool_search_enabled": "tool_search" in catalog_tool_names,
                 },
             },
@@ -11544,6 +11578,7 @@ class AgentEngine:
                 "tools": [tool.model_dump(mode="json") for tool in tools],
                 "tool_choice": "auto" if tools else "none",
                 "model_preference": request.model_preference,
+                "thinking_enabled": request.thinking_enabled,
                 "temperature": "provider_default",
                 "prompt_cache": prompt_cache.model_dump(mode="json"),
                 "workflow": workflow_name,
@@ -11617,6 +11652,7 @@ class AgentEngine:
 
         # Tool-use loop
         response = None
+        reasoning_parts: list[str] = []
         max_rounds_reached = False
         budget_exhausted = False
         budget_reason = ""
@@ -11627,24 +11663,27 @@ class AgentEngine:
         failed_tool_call_count = 0
         approval_pending = False
         auto_search_forced = False
-        force_tool_capable_next_round = False
         for round_index in range(MAX_MODEL_ROUNDS):
             model_rounds_used = round_index + 1
             model_started = perf_counter()
-            force_tools_this_round = force_tool_capable_next_round
-            force_tool_capable_next_round = False
-            stream_final_answer = (
+            has_tool_results = any(message.role == "tool" for message in messages)
+            stream_tool_capable_round = (
+                getattr(provider, "supports_streaming_tool_calls", False) is True
+                and bool(tools)
+            )
+            stream_model_round = (
                 on_token is not None
-                and any(message.role == "tool" for message in messages)
+                and getattr(provider, "streaming_enabled", True) is not False
+                and (stream_tool_capable_round or has_tool_results or not tools)
                 and getattr(provider, "disable_stream_after_tools", False) is not True
-                and not force_tools_this_round
             )
             model_started_payload = {
                 "round": round_index + 1,
                 "message_count": len(messages),
                 "tools_count": len(tools),
                 "model_preference": request.model_preference,
-                "streaming": stream_final_answer,
+                "thinking_enabled": request.thinking_enabled,
+                "streaming": stream_model_round,
                 "prompt_cache": prompt_cache.model_dump(mode="json"),
             }
             if agent_loop_enabled:
@@ -11664,14 +11703,15 @@ class AgentEngine:
                 payload=model_started_payload,
             )
             try:
-                if stream_final_answer:
+                if stream_model_round:
                     response = await self._chat_stream_response_with_retry(
                         provider,
                         request=request,
                         run_id=run.run_id,
                         messages=messages,
-                        tools=None,
+                        tools=tools if stream_tool_capable_round else None,
                         on_token=on_token,
+                        on_reasoning=on_reasoning,
                         cache=prompt_cache,
                         retry_context=model_started_payload,
                     )
@@ -11910,6 +11950,8 @@ class AgentEngine:
                 )
                 raise
 
+            if request.thinking_enabled is True and response.reasoning:
+                reasoning_parts.append(response.reasoning)
             model_duration_ms = int((perf_counter() - model_started) * 1000)
             model_completed_payload = {
                 "round": round_index + 1,
@@ -11920,6 +11962,7 @@ class AgentEngine:
                     for tc in response.tool_calls
                 ],
                 "content_preview": response.content[:300],
+                "reasoning_chars": len(response.reasoning),
             }
             if agent_loop_enabled:
                 model_completed_payload.update(
@@ -11938,6 +11981,26 @@ class AgentEngine:
                 payload=model_completed_payload,
                 duration_ms=model_duration_ms,
             )
+
+            intermediate_text = response.content.strip() if response.tool_calls else ""
+            if intermediate_text:
+                self.trace_store.append_event(
+                    run.run_id,
+                    type="model.intermediate",
+                    status="completed",
+                    title=f"Model call {round_index + 1} intermediate output",
+                    payload={
+                        "round": round_index + 1,
+                        "content": intermediate_text[:4000],
+                        "content_chars": len(intermediate_text),
+                        "truncated": len(intermediate_text) > 4000,
+                    },
+                )
+                await self._emit_intermediate(
+                    on_intermediate,
+                    response.content,
+                    round_index + 1,
+                )
 
             if not response.tool_calls:
                 if (
@@ -12142,7 +12205,6 @@ class AgentEngine:
                                 prompt_sources=prompt_sources,
                                 tool_names=tool_names,
                             )
-                            force_tool_capable_next_round = True
                             self.trace_store.append_event(
                                 run.run_id,
                                 type="tools.expanded",
@@ -12276,6 +12338,8 @@ class AgentEngine:
                     else None
                 ),
             )
+            if request.thinking_enabled is True and response.reasoning:
+                reasoning_parts.append(response.reasoning)
             all_new_messages.append(LLMMessage(role="assistant", content=response.content))
 
         if agent_loop_enabled:
@@ -12405,6 +12469,7 @@ class AgentEngine:
         return ChatResponse(
             conversation_id=request.conversation_id,
             response=final_content,
+            reasoning="\n\n".join(reasoning_parts),
             skills_used=unique_skills,
             citations=citations,
             artifacts=artifacts,

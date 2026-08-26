@@ -36,9 +36,18 @@ class ToolCall(BaseModel):
 
 class LLMResponse(BaseModel):
     content: str = ""
+    reasoning: str = ""
     tool_calls: list[ToolCall] = []
     model: str = ""
     usage: dict[str, int] = {}
+
+
+class LLMStreamChunk(BaseModel):
+    """One text delta or the completed response from a model stream."""
+
+    text: str = ""
+    reasoning: str = ""
+    response: Optional[LLMResponse] = None
 
 
 class RateLimitError(Exception):

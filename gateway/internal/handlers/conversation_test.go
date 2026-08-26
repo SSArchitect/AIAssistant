@@ -124,6 +124,7 @@ func TestConversationGetOmitsTraceEventsByDefault(t *testing.T) {
 		UserID:         conv.UserID,
 		Role:           "assistant",
 		Content:        "done",
+		Reasoning:      "saved reasoning",
 		RunID:          "run-heavy",
 		TraceEvents:    `[{"type":"run.completed","payload":{"prompt":"very large"}}]`,
 		TraceSummary:   `[{"type":"run.completed","payload":{}}]`,
@@ -153,6 +154,9 @@ func TestConversationGetOmitsTraceEventsByDefault(t *testing.T) {
 	}
 	if !strings.Contains(recorder.Body.String(), `"run_id":"run-heavy"`) {
 		t.Fatalf("expected run id to remain available, got %s", recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), `"reasoning":"saved reasoning"`) {
+		t.Fatalf("expected saved reasoning in conversation response, got %s", recorder.Body.String())
 	}
 }
 

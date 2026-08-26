@@ -17,6 +17,7 @@ type Message struct {
 	UserID         string    `json:"user_id" gorm:"index;not null;default:0"`
 	Role           string    `json:"role"` // "user", "assistant"
 	Content        string    `json:"content"`
+	Reasoning      string    `json:"reasoning,omitempty"`
 	SkillsUsed     string    `json:"skills_used,omitempty"` // JSON array
 	Citations      string    `json:"citations,omitempty"`   // JSON array
 	Artifacts      string    `json:"artifacts,omitempty"`   // JSON array

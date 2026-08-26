@@ -7,10 +7,9 @@ from typing import Any, Iterable
 from agent.llm.base import ToolDefinition
 
 
-DEFAULT_MAX_DYNAMIC_TOOLS = 8
+DEFAULT_MAX_DYNAMIC_TOOLS = 3
+DEFAULT_MIN_DYNAMIC_SCORE = 60
 CORE_ALWAYS_ON_TOOL_NAMES = {
-    "calculator",
-    "datetime",
     "open_url",
     "search",
     "tool_search",
@@ -30,8 +29,9 @@ _DOMAIN_TRIGGERS: dict[str, tuple[str, ...]] = {
         "热点推荐", "今天看什么", "信息簇", "优化订阅", "优化 topic",
     ),
     "image": (
-        "生图", "生成图片", "画图", "海报", "封面", "配图", "视觉设计",
-        "image generation", "poster", "cover image",
+        "生图", "生成图片", "生成一个图", "画图", "做图", "图给我", "对比图",
+        "信息图", "图表", "可视化", "海报", "封面", "配图", "视觉设计",
+        "image generation", "poster", "cover image", "infographic", "chart",
     ),
     "weight_loss": (
         "减肥", "减脂", "热量", "卡路里", "体重", "饮食记录", "运动记录",
@@ -45,13 +45,20 @@ class ToolRoute:
     tools: list[ToolDefinition]
     activated_domains: list[str]
     scored_tools: list[dict[str, Any]]
+    deferred_tools: list[dict[str, Any]]
 
 
 class ToolRouter:
     """Select a compact initial tool set and search the remaining catalog."""
 
-    def __init__(self, *, max_dynamic_tools: int = DEFAULT_MAX_DYNAMIC_TOOLS):
+    def __init__(
+        self,
+        *,
+        max_dynamic_tools: int = DEFAULT_MAX_DYNAMIC_TOOLS,
+        min_dynamic_score: int = DEFAULT_MIN_DYNAMIC_SCORE,
+    ):
         self.max_dynamic_tools = max(0, max_dynamic_tools)
+        self.min_dynamic_score = max(1, min_dynamic_score)
 
     def route(
         self,
@@ -78,7 +85,19 @@ class ToolRouter:
                 scored.append((score, tool, reasons))
 
         scored.sort(key=lambda item: (-item[0], item[1].name))
-        dynamic = [tool for _, tool, _ in scored[: self.max_dynamic_tools]]
+        high_priority = [
+            item
+            for item in scored
+            if self._is_high_priority_match(item[0], item[2])
+        ]
+        initial_dynamic = high_priority[: self.max_dynamic_tools]
+        initial_dynamic_names = {tool.name for _, tool, _ in initial_dynamic}
+        deferred = [
+            item
+            for item in scored
+            if item[1].name not in initial_dynamic_names
+        ]
+        dynamic = [tool for _, tool, _ in initial_dynamic]
         selected_names = always_names | {tool.name for tool in dynamic}
         selected = [tool for tool in tools if tool.name in selected_names]
         return ToolRoute(
@@ -86,7 +105,11 @@ class ToolRouter:
             activated_domains=activated_domains,
             scored_tools=[
                 {"name": tool.name, "score": score, "reasons": reasons}
-                for score, tool, reasons in scored[: self.max_dynamic_tools]
+                for score, tool, reasons in initial_dynamic
+            ],
+            deferred_tools=[
+                {"name": tool.name, "score": score, "reasons": reasons}
+                for score, tool, reasons in deferred
             ],
         )
 
@@ -120,7 +143,6 @@ class ToolRouter:
                 "access": str(tool.metadata.get("access") or "read"),
                 "score": score,
                 "match_reasons": reasons,
-                "parameters": tool.parameters,
             }
             for score, tool, reasons in scored[: max(1, min(limit, 10))]
         ]
@@ -185,6 +207,13 @@ class ToolRouter:
         if not normalized_query and tool.metadata.get("always_on"):
             score += 1
         return score, list(dict.fromkeys(reasons))
+
+    def _is_high_priority_match(self, score: int, reasons: list[str]) -> bool:
+        return (
+            score >= self.min_dynamic_score
+            or "name" in reasons
+            or any(reason.startswith("keyword:") for reason in reasons)
+        )
 
     def _activated_domains(self, query: str) -> list[str]:
         normalized = self._normalize(query)

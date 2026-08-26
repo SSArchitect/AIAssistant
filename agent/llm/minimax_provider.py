@@ -31,7 +31,7 @@ class MiniMaxProvider(OpenAIProvider):
         self.thinking = thinking
         self.provider_name = "minimax"
 
-    def _extra_chat_kwargs(self) -> dict:
+    def _extra_chat_kwargs(self, *, thinking_enabled: bool | None = None) -> dict:
         if self.model != "MiniMax-M3" or not self.thinking:
             return {}
         return {

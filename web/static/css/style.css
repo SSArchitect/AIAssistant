@@ -2823,6 +2823,7 @@ button.mode-chip:focus-visible {
 }
 
 .mode-toggle,
+.thinking-toggle,
 .attachment-toggle {
     width: 36px;
     height: 36px;
@@ -2839,11 +2840,28 @@ button.mode-chip:focus-visible {
 
 .mode-toggle:hover,
 .mode-toggle.active,
+.thinking-toggle:hover,
+.thinking-toggle.active,
 .attachment-toggle:hover,
 .attachment-toggle.active {
     border-color: var(--primary);
     background: var(--primary-soft);
     color: var(--primary);
+}
+
+.thinking-toggle {
+    width: auto;
+    min-width: 68px;
+    flex: 0 0 auto;
+    gap: 5px;
+    padding: 0 9px;
+    font-size: 12px;
+    font-weight: 750;
+    white-space: nowrap;
+}
+
+.thinking-toggle[hidden] {
+    display: none;
 }
 
 .mode-count {
@@ -3291,6 +3309,21 @@ button.mode-chip:focus-visible {
 
 .process-item.error .process-item-dot {
     background: var(--red);
+}
+
+.process-item.reasoning .process-item-dot {
+    background: var(--primary);
+}
+
+.process-item.reasoning.running .process-item-dot {
+    animation: pulse 1.2s ease-in-out infinite;
+}
+
+.process-item.reasoning .process-item-body {
+    border-color: #d7e3f7;
+    background: #f7faff;
+    user-select: text;
+    -webkit-user-select: text;
 }
 
 .process-item-body {
@@ -10576,10 +10609,21 @@ body.drive-selecting {
     }
 
     .mode-toggle,
+    .thinking-toggle,
     .attachment-toggle,
     .btn-send {
         width: 38px;
         height: 38px;
+    }
+
+    .thinking-toggle {
+        width: auto;
+        min-width: 68px;
+        padding: 0 9px;
+    }
+
+    .thinking-toggle span {
+        display: inline;
     }
 
     .mode-popover {

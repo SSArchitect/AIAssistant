@@ -11,7 +11,7 @@ def _tool(name: str, **metadata) -> ToolDefinition:
     )
 
 
-def test_router_keeps_core_tools_and_caps_dynamic_exposure():
+def test_router_keeps_core_tools_and_caps_high_priority_dynamic_exposure():
     catalog = [
         _tool(name, always_on=True)
         for name in sorted(CORE_ALWAYS_ON_TOOL_NAMES)
@@ -24,12 +24,92 @@ def test_router_keeps_core_tools_and_caps_dynamic_exposure():
         for index in range(12)
     ]
 
-    route = ToolRouter(max_dynamic_tools=8).route(catalog, query="整理我的网盘文件")
+    route = ToolRouter().route(catalog, query="整理我的网盘文件")
     names = {tool.name for tool in route.tools}
 
     assert CORE_ALWAYS_ON_TOOL_NAMES.issubset(names)
-    assert len(route.tools) == len(CORE_ALWAYS_ON_TOOL_NAMES) + 8
+    assert len(route.tools) == len(CORE_ALWAYS_ON_TOOL_NAMES) + 3
+    assert len(route.deferred_tools) == 9
     assert route.activated_domains == ["drive"]
+
+
+def test_calculator_and_datetime_are_not_default_core_tools():
+    catalog = [
+        _tool("open_url", always_on=True),
+        _tool("search", always_on=True),
+        _tool("tool_search", always_on=True, discoverable=False),
+        _tool("calculator", routing_keywords=["计算", "calculate"]),
+        _tool("datetime", routing_keywords=["几点", "current time"]),
+    ]
+    router = ToolRouter()
+
+    default_route = router.route(catalog, query="你好")
+    calculation_route = router.route(catalog, query="calculate 42 * 17")
+    time_route = router.route(catalog, query="上海现在几点")
+
+    assert [tool.name for tool in default_route.tools] == [
+        "open_url", "search", "tool_search",
+    ]
+    assert "calculator" in {tool.name for tool in calculation_route.tools}
+    assert "datetime" in {tool.name for tool in time_route.tools}
+
+
+def test_router_defers_weak_domain_matches_to_tool_search():
+    catalog = [
+        _tool("tool_search", always_on=True, discoverable=False),
+        ToolDefinition(
+            name="format_notes",
+            description="Organize content into readable notes.",
+            parameters={"type": "object", "properties": {}},
+            metadata={"domains": ["notes"]},
+        ),
+        ToolDefinition(
+            name="summarize_notes",
+            description="Summarize content into concise notes.",
+            parameters={"type": "object", "properties": {}},
+            metadata={"domains": ["notes"]},
+        ),
+    ]
+    router = ToolRouter()
+
+    route = router.route(catalog, query="organize and summarize content")
+    matches = router.search(
+        catalog,
+        query="organize and summarize content",
+        exclude_names={tool.name for tool in route.tools},
+    )
+
+    assert [tool.name for tool in route.tools] == ["tool_search"]
+    assert {item["name"] for item in route.deferred_tools} == {
+        "format_notes",
+        "summarize_notes",
+    }
+    assert {item["name"] for item in matches} == {
+        "format_notes",
+        "summarize_notes",
+    }
+    assert all("parameters" not in item for item in matches)
+
+
+def test_router_exposes_explicit_keyword_match_on_first_round():
+    catalog = [
+        _tool("tool_search", always_on=True, discoverable=False),
+        _tool(
+            "save_drive",
+            domains=["drive"],
+            routing_keywords=["保存到网盘"],
+        ),
+        _tool(
+            "delete_drive",
+            domains=["drive"],
+            routing_keywords=["删除网盘文件"],
+        ),
+    ]
+
+    route = ToolRouter().route(catalog, query="把回答保存到网盘")
+
+    assert [tool.name for tool in route.tools] == ["tool_search", "save_drive"]
+    assert [item["name"] for item in route.deferred_tools] == ["delete_drive"]
 
 
 def test_tool_search_only_returns_unexposed_matches():

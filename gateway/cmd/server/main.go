@@ -88,6 +88,7 @@ func main() {
 	{
 		api.GET("/health", healthHandler.Health)
 		api.GET("/app/version", appVersionHandler.Version)
+		api.GET("/model-settings", adminHandler.GetModelSettings)
 		api.GET("/accounts", accountHandler.List)
 		api.POST("/accounts", accountHandler.Create)
 		api.POST("/accounts/login", accountHandler.Login)

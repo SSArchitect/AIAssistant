@@ -64,7 +64,10 @@ class AgentToolSkill(Skill):
                 else ["agent"]
             ),
             routing_keywords=(
-                ["生图", "生成图片", "海报", "封面", "视觉设计"]
+                [
+                    "生图", "生成图片", "生成一个图", "画图", "做图", "图给我",
+                    "对比图", "信息图", "图表", "可视化", "海报", "封面", "视觉设计",
+                ]
                 if self.agent.id == "image_generation_v1"
                 else ["减肥", "减脂", "热量", "饮食记录", "体重"]
                 if self.agent.id == "weight_loss_v1"

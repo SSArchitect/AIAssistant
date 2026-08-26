@@ -73,6 +73,17 @@ class Settings(BaseSettings):
     minimax_thinking: str = _providers.get("minimax", {}).get("thinking", "disabled")
     minimax_timeout: str = str(_providers.get("minimax", {}).get("timeout", 1800))
 
+    # DGX Spark - API key from env var DGX_API_KEY or admin settings
+    dgx_api_key: str = ""
+    dgx_base_url: str = _providers.get("dgx", {}).get(
+        "base_url",
+        "https://steven-design-job-newfoundland.trycloudflare.com/v1",
+    )
+    dgx_model: str = _providers.get("dgx", {}).get("model", "qwen38-27b")
+    dgx_max_tokens: str = str(_providers.get("dgx", {}).get("max_tokens", 10000))
+    dgx_streaming: str = str(_providers.get("dgx", {}).get("streaming", True)).lower()
+    dgx_timeout: str = str(_providers.get("dgx", {}).get("timeout", 1800))
+
     # MiniMax AIGC defaults
     minimax_image_model: str = _aigc_minimax_cfg.get("image_model", "image-01")
     minimax_speech_model: str = _aigc_minimax_cfg.get("speech_model", "speech-2.8-turbo")
@@ -113,6 +124,12 @@ class RuntimeConfig:
             "llm.minimax.model": settings.minimax_model,
             "llm.minimax.thinking": settings.minimax_thinking,
             "llm.minimax.timeout": settings.minimax_timeout,
+            "llm.dgx.api_key": settings.dgx_api_key,
+            "llm.dgx.base_url": settings.dgx_base_url,
+            "llm.dgx.model": settings.dgx_model,
+            "llm.dgx.max_tokens": settings.dgx_max_tokens,
+            "llm.dgx.streaming": settings.dgx_streaming,
+            "llm.dgx.timeout": settings.dgx_timeout,
             "aigc.minimax.base_url": settings.minimax_aigc_base_url,
             "aigc.minimax.image_model": settings.minimax_image_model,
             "aigc.minimax.speech_model": settings.minimax_speech_model,
@@ -226,6 +243,48 @@ class RuntimeConfig:
     @property
     def minimax_timeout(self) -> float:
         value = self.get("llm.minimax.timeout", "1800")
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            return 1800.0
+        return parsed if parsed > 0 else 1800.0
+
+    @property
+    def dgx_api_key(self) -> str:
+        return self.get("llm.dgx.api_key")
+
+    @property
+    def dgx_base_url(self) -> str:
+        return self.get(
+            "llm.dgx.base_url",
+            "https://steven-design-job-newfoundland.trycloudflare.com/v1",
+        )
+
+    @property
+    def dgx_model(self) -> str:
+        return self.get("llm.dgx.model", "qwen38-27b")
+
+    @property
+    def dgx_max_tokens(self) -> int:
+        value = self.get("llm.dgx.max_tokens", "10000")
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            return 10000
+        return parsed if parsed > 0 else 10000
+
+    @property
+    def dgx_streaming(self) -> bool:
+        return self.get("llm.dgx.streaming", "true").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+
+    @property
+    def dgx_timeout(self) -> float:
+        value = self.get("llm.dgx.timeout", "1800")
         try:
             parsed = float(value)
         except (TypeError, ValueError):

@@ -23,6 +23,7 @@ type ChatRequest struct {
 	Message         string                 `json:"message"`
 	Stream          bool                   `json:"stream"`
 	ModelPreference *string                `json:"model_preference,omitempty"`
+	ThinkingEnabled *bool                  `json:"thinking_enabled,omitempty"`
 	AgentID         string                 `json:"agent_id,omitempty"`
 	RoleID          string                 `json:"role_id,omitempty"`
 	ModeIDs         []string               `json:"mode_ids,omitempty"`
@@ -184,6 +185,7 @@ type ChatResponse struct {
 	ConversationID string          `json:"conversation_id"`
 	UserID         string          `json:"user_id,omitempty"`
 	Response       string          `json:"response"`
+	Reasoning      string          `json:"reasoning,omitempty"`
 	SkillsUsed     []string        `json:"skills_used"`
 	Citations      []Citation      `json:"citations,omitempty"`
 	Artifacts      []ChatArtifact  `json:"artifacts,omitempty"`

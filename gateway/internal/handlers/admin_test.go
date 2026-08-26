@@ -14,6 +14,63 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+func TestModelSettingsReturnsOnlySafeSelectorFields(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	if err := database.Init(filepath.Join(t.TempDir(), "assistant.db")); err != nil {
+		t.Fatalf("init database: %v", err)
+	}
+	settings := []models.Setting{
+		{Key: "llm.default_provider", Value: "dgx"},
+		{Key: "llm.dgx.api_key", Value: "secret-dgx-key"},
+		{Key: "llm.dgx.base_url", Value: "https://private.example/v1"},
+		{Key: "llm.dgx.model", Value: "qwen38-27b"},
+		{Key: "llm.dgx.models", Value: `["qwen38-27b"]`},
+		{Key: "llm.dgx.validation_status", Value: "verified"},
+		{Key: "llm.openai.model", Value: "gpt-test"},
+		{Key: "admin.password", Value: "secret-admin-password"},
+	}
+	if err := database.DB.Create(&settings).Error; err != nil {
+		t.Fatalf("create settings: %v", err)
+	}
+
+	router := gin.New()
+	handler := NewAdminHandler(nil)
+	router.GET("/api/model-settings", handler.GetModelSettings)
+	recorder := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/model-settings", nil)
+	router.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("unexpected status %d: %s", recorder.Code, recorder.Body.String())
+	}
+	var payload struct {
+		Settings map[string]string `json:"settings"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if payload.Settings["llm.default_provider"] != "dgx" ||
+		payload.Settings["llm.dgx.configured"] != "true" ||
+		payload.Settings["llm.dgx.model"] != "qwen38-27b" ||
+		payload.Settings["llm.dgx.models"] != `["qwen38-27b"]` ||
+		payload.Settings["llm.dgx.validation_status"] != "verified" {
+		t.Fatalf("unexpected DGX model settings: %#v", payload.Settings)
+	}
+	if payload.Settings["llm.openai.configured"] != "false" {
+		t.Fatalf("provider without an API key should not be configured: %#v", payload.Settings)
+	}
+	for key := range payload.Settings {
+		if strings.HasSuffix(key, ".api_key") || strings.HasSuffix(key, ".base_url") || key == adminPasswordSettingKey {
+			t.Fatalf("public model settings leaked secret or admin field %q", key)
+		}
+	}
+	if strings.Contains(recorder.Body.String(), "secret-dgx-key") ||
+		strings.Contains(recorder.Body.String(), "private.example") ||
+		strings.Contains(recorder.Body.String(), "secret-admin-password") {
+		t.Fatalf("public model settings leaked a secret value: %s", recorder.Body.String())
+	}
+}
+
 func TestAdminCostsReturnsAccountsAndModuleUsage(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	if err := database.Init(filepath.Join(t.TempDir(), "assistant.db")); err != nil {

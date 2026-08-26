@@ -7,7 +7,7 @@ import sys
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException
@@ -578,10 +578,9 @@ def _chunk_text(text: str, size: int = 24) -> list[str]:
 async def chat_stream(request: ChatRequest):
     """Stream run events and the final response over Server-Sent Events.
 
-    This endpoint currently streams trace events as they are produced and sends
-    the final answer in small chunks after the self-runtime tool loop completes.
-    Provider-level token streaming can be added later without changing the
-    gateway/frontend SSE contract.
+    Provider tokens are forwarded as they arrive. Providers without native
+    token streaming retain the bounded final-response chunk fallback so the
+    gateway/frontend SSE contract stays consistent.
     """
     if engine is None:
         raise HTTPException(status_code=503, detail="Agent engine not ready")
@@ -592,14 +591,31 @@ async def chat_stream(request: ChatRequest):
     async def generate():
         yielded_events = 0
         streamed_text = ""
-        token_queue: asyncio.Queue[str] = asyncio.Queue()
+        output_queue: asyncio.Queue[tuple[str, Any]] = asyncio.Queue()
 
         async def on_token(token: str) -> None:
-            await token_queue.put(token)
+            await output_queue.put(("token", token))
+
+        async def on_reasoning(reasoning: str) -> None:
+            if stream_request.thinking_enabled is True:
+                await output_queue.put(("reasoning", reasoning))
+
+        async def on_intermediate(text: str, round_index: int) -> None:
+            await output_queue.put((
+                "intermediate",
+                {"text": text, "round": round_index},
+            ))
 
         yield _sse("meta", {"run_id": run_id})
 
-        task = asyncio.create_task(engine.process(stream_request, on_token=on_token))
+        task = asyncio.create_task(
+            engine.process(
+                stream_request,
+                on_token=on_token,
+                on_reasoning=on_reasoning,
+                on_intermediate=on_intermediate,
+            )
+        )
         active_stream_tasks[run_id] = task
         loop = asyncio.get_running_loop()
         last_stream_output_at = loop.time()
@@ -613,10 +629,16 @@ async def chat_stream(request: ChatRequest):
                     for event in events:
                         yield _sse("trace", _jsonable_model(event))
                         emitted_output = True
-                while not token_queue.empty():
-                    token = token_queue.get_nowait()
-                    streamed_text += token
-                    yield _sse("token", {"text": token})
+                while not output_queue.empty():
+                    event_type, payload = output_queue.get_nowait()
+                    if event_type == "token":
+                        streamed_text += str(payload)
+                        yield _sse(event_type, {"text": payload})
+                    elif event_type == "intermediate":
+                        streamed_text = ""
+                        yield _sse(event_type, payload)
+                    else:
+                        yield _sse(event_type, {"text": payload})
                     emitted_output = True
                 now = loop.time()
                 if emitted_output:
@@ -634,10 +656,16 @@ async def chat_stream(request: ChatRequest):
                 for event in events:
                     yield _sse("trace", _jsonable_model(event))
 
-            while not token_queue.empty():
-                token = token_queue.get_nowait()
-                streamed_text += token
-                yield _sse("token", {"text": token})
+            while not output_queue.empty():
+                event_type, payload = output_queue.get_nowait()
+                if event_type == "token":
+                    streamed_text += str(payload)
+                    yield _sse(event_type, {"text": payload})
+                elif event_type == "intermediate":
+                    streamed_text = ""
+                    yield _sse(event_type, payload)
+                else:
+                    yield _sse(event_type, {"text": payload})
 
             if not streamed_text:
                 for chunk in _chunk_text(response.response):
@@ -880,6 +908,7 @@ def _provider_api_key(provider_name: str) -> str:
         "deepseek": runtime_config.deepseek_api_key,
         "doubao": runtime_config.doubao_api_key,
         "minimax": runtime_config.minimax_api_key,
+        "dgx": runtime_config.dgx_api_key,
     }
     return keys.get(provider_name, "")
 
@@ -901,13 +930,21 @@ async def _fetch_models(provider_name: str) -> list[dict]:
         models.sort(key=lambda x: x["id"], reverse=True)
         return models
 
-    elif provider_name == "openai":
+    elif provider_name in {"openai", "dgx"}:
         import openai
-        api_key = runtime_config.openai_api_key
+        api_key = (
+            runtime_config.openai_api_key
+            if provider_name == "openai"
+            else runtime_config.dgx_api_key
+        )
         if not api_key:
-            raise ValueError("OpenAI API key not configured")
+            raise ValueError(f"{provider_name} API key not configured")
         kwargs = {"api_key": api_key}
-        base_url = runtime_config.openai_base_url
+        base_url = (
+            runtime_config.openai_base_url
+            if provider_name == "openai"
+            else runtime_config.dgx_base_url
+        )
         if base_url:
             kwargs["base_url"] = base_url
         client = openai.AsyncOpenAI(**kwargs)

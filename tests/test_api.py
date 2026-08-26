@@ -9,7 +9,7 @@ from httpx import ASGITransport, AsyncClient
 from unittest.mock import AsyncMock, patch
 
 import agent.main as main_module
-from agent.llm.base import LLMResponse
+from agent.llm.base import LLMResponse, LLMStreamChunk, ToolCall
 from agent.main import app, skill_registry, lifespan, trace_store
 from agent.search import SearchResult, SearchService, WebPageContent
 
@@ -581,6 +581,119 @@ async def test_chat_stream_sends_keep_alive_during_silent_model_wait(client):
     assert ": keep-alive\n\n" in resp.text
     assert "event: response" in resp.text
     assert "event: done" in resp.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("thinking_enabled", "expects_reasoning_event"),
+    [(True, True), (False, False)],
+)
+async def test_chat_stream_respects_dgx_thinking_switch(
+    client,
+    thinking_enabled,
+    expects_reasoning_event,
+):
+    """DGX reasoning is streamed only when the request explicitly enables it."""
+    assert main_module.engine is not None
+    forwarded = []
+
+    class StreamingReasoningProvider:
+        provider_name = "dgx"
+        model = "qwen38-27b"
+        streaming_enabled = True
+        supports_streaming_tool_calls = True
+
+        async def chat_stream_response(self, messages, **kwargs):
+            forwarded.append(kwargs["thinking_enabled"])
+            yield LLMStreamChunk(reasoning="private chain")
+            yield LLMStreamChunk(text="final answer")
+            yield LLMStreamChunk(
+                response=LLMResponse(
+                    content="final answer",
+                    reasoning="private chain",
+                    model=self.model,
+                    usage={"input": 3, "output": 2},
+                )
+            )
+
+    with patch.object(
+        main_module.engine,
+        "_get_provider",
+        return_value=StreamingReasoningProvider(),
+    ):
+        resp = await client.post(
+            "/agent/chat/stream",
+            json={
+                "conversation_id": f"api-stream-thinking-{thinking_enabled}",
+                "message": "answer briefly",
+                "agent_id": "general_assistant",
+                "run_id": f"run_stream_thinking_{thinking_enabled}",
+                "thinking_enabled": thinking_enabled,
+            },
+        )
+
+    assert resp.status_code == 200
+    assert forwarded == [thinking_enabled]
+    assert ("event: reasoning" in resp.text) is expects_reasoning_event
+    assert ('"reasoning": "private chain"' in resp.text) is expects_reasoning_event
+
+
+@pytest.mark.asyncio
+async def test_chat_stream_migrates_intermediate_tool_round_and_streams_next_round(client):
+    """Tool-round prose becomes process output while the next answer still streams."""
+    assert main_module.engine is not None
+
+    class MultiRoundStreamingProvider:
+        provider_name = "dgx"
+        model = "qwen38-27b"
+        streaming_enabled = True
+        supports_streaming_tool_calls = True
+
+        def __init__(self):
+            self.calls = 0
+
+        async def chat_stream_response(self, messages, **kwargs):
+            self.calls += 1
+            assert kwargs["tools"]
+            if self.calls == 1:
+                yield LLMStreamChunk(text="I will inspect that. ")
+                yield LLMStreamChunk(response=LLMResponse(
+                    content="I will inspect that. ",
+                    tool_calls=[ToolCall(
+                        id="call_api_stream_echo",
+                        name="echo",
+                        arguments={"text": "tool result"},
+                    )],
+                    model=self.model,
+                ))
+                return
+            assert any(message.role == "tool" for message in messages)
+            yield LLMStreamChunk(text="final answer")
+            yield LLMStreamChunk(response=LLMResponse(
+                content="final answer",
+                model=self.model,
+            ))
+
+    provider = MultiRoundStreamingProvider()
+    with patch.object(main_module.engine, "_get_provider", return_value=provider):
+        resp = await client.post(
+            "/agent/chat/stream",
+            json={
+                "conversation_id": "api-stream-intermediate",
+                "message": "use a tool then answer",
+                "agent_id": "general_assistant",
+                "run_id": "run_stream_intermediate",
+            },
+        )
+
+    assert resp.status_code == 200
+    assert provider.calls == 2
+    assert "event: intermediate" in resp.text
+    assert '"type": "model.intermediate"' in resp.text
+    intermediate_position = resp.text.index("event: intermediate")
+    final_position = resp.text.index('"text": "final answer"', intermediate_position)
+    assert intermediate_position < final_position
+    assert '"response": "final answer"' in resp.text
 
 
 @pytest.mark.asyncio

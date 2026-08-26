@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="referrer" content="no-referrer">
     <title>阿安的工作台</title>
-    <link rel="stylesheet" href="/static/css/style.css?v=89">
+    <link rel="stylesheet" href="/static/css/style.css?v=92">
 </head>
 <body>
     <div class="app">
@@ -315,6 +315,15 @@
                                 <div class="mode-options" id="mode-options"></div>
                             </div>
                         </div>
+                        <button class="thinking-toggle" id="btn-thinking-toggle" type="button"
+                                title="开启思考模式" aria-label="开启思考模式" aria-pressed="false" hidden>
+                            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2">
+                                <path d="M9 18h6"/>
+                                <path d="M10 22h4"/>
+                                <path d="M8.2 14.5A7 7 0 1 1 15.8 14.5C14.7 15.3 14 16.1 14 18h-4c0-1.9-.7-2.7-1.8-3.5Z"/>
+                            </svg>
+                            <span data-i18n="thinking.label">思考</span>
+                        </button>
                         <button class="attachment-toggle" id="btn-attach" type="button" title="上传附件" data-i18n-title="actions.attach">
                             <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.4">
                                 <path d="m21.4 11.6-8.5 8.5a6 6 0 0 1-8.5-8.5l9.2-9.2a4 4 0 0 1 5.7 5.7l-9.2 9.2a2 2 0 1 1-2.8-2.8l8.5-8.5"/>
@@ -751,7 +760,7 @@
     <script src="/static/js/runtime-config.js?v=2"></script>
     <script src="/static/js/chat-recovery.js?v=1"></script>
     <script src="/static/js/share-card.js?v=3"></script>
-    <script src="/static/js/app.js?v=129"></script>
+    <script src="/static/js/app.js?v=134"></script>
     <script src="/static/js/android-bridge.js?v=2"></script>
 </body>
 </html>

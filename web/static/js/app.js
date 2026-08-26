@@ -2,6 +2,7 @@ const API_BASE = String(globalThis.AGENT_ASSISTANT_CONFIG?.apiBase || '').replac
 const CHAT_RECOVERY = globalThis.ChatRecovery;
 const LANGUAGE_KEY = 'agent_assistant_language';
 const MODE_STORAGE_KEY = 'super_chat_mode_ids';
+const THINKING_STORAGE_KEY = 'super_chat_thinking_enabled';
 const SUPER_CHAT_AGENT_ID = 'super_chat';
 const DEEP_RESEARCH_MODE_ID = 'deep_research';
 const DEEP_RESEARCH_AGENT_ID = 'deep_research_v1';
@@ -773,6 +774,12 @@ const I18N = {
                 image_generation: ['AI 生图', '强制交给 AI 生图 Agent 执行'],
                 image_prompt_refine: ['专业修饰', '先审查并补全画面提示词，再生图'],
             },
+        },
+        thinking: {
+            label: '思考',
+            enable: '开启思考模式',
+            disable: '关闭思考模式',
+            reasoningTitle: '思考过程',
         },
         agents: {
             emptyTitle: '还没有可展示的 Agent',
@@ -1673,6 +1680,12 @@ const I18N = {
                 image_prompt_refine: ['Prompt Polish', 'Review and enrich the visual prompt before generation'],
             },
         },
+        thinking: {
+            label: 'Think',
+            enable: 'Enable thinking mode',
+            disable: 'Disable thinking mode',
+            reasoningTitle: 'Reasoning',
+        },
         agents: {
             emptyTitle: 'No agents to show yet',
             emptyDetail: 'Make sure the Python Agent Service is running.',
@@ -1856,6 +1869,7 @@ const PROVIDERS = [
     { key: 'deepseek', label: 'DeepSeek', checkKey: 'llm.deepseek.api_key' },
     { key: 'doubao', label: 'Doubao', checkKey: 'llm.doubao.api_key' },
     { key: 'minimax', label: 'MiniMax', checkKey: 'llm.minimax.api_key' },
+    { key: 'dgx', label: 'DGX Spark', checkKey: 'llm.dgx.api_key' },
     { key: 'ollama', label: 'Ollama', checkKey: 'llm.ollama.base_url' },
 ];
 
@@ -2033,6 +2047,9 @@ let todoState = {
 let currentLanguage = localStorage.getItem(LANGUAGE_KEY) || 'zh';
 let currentUserId = loadCurrentUserId();
 let currentAccountToken = '';
+let appBootstrapping = true;
+let appBootPromise = Promise.resolve();
+let startupSendPending = false;
 let accounts = [];
 let currentAgentId = SUPER_CHAT_AGENT_ID;
 let projects = [];
@@ -2148,6 +2165,7 @@ let pulseRefreshRequestPending = false;
 let pinnedAgentIds = loadPinnedAgents();
 let collapsedSidebarSections = loadCollapsedSidebarSections();
 let selectedModeIds = loadSelectedModes();
+let thinkingEnabled = loadThinkingEnabled();
 let attachedContexts = [];
 let attachmentSeq = 0;
 let activeRunWatcher = null;
@@ -2204,6 +2222,7 @@ const chatHistoryList = document.getElementById('chat-history-list');
 const chatHistoryCount = document.getElementById('chat-history-count');
 const messageInput = document.getElementById('message-input');
 const btnSend = document.getElementById('btn-send');
+const btnThinkingToggle = document.getElementById('btn-thinking-toggle');
 const btnNewChat = document.getElementById('btn-new-chat');
 const btnToggleSidebar = document.getElementById('btn-toggle-sidebar');
 const btnRefresh = document.getElementById('btn-refresh');
@@ -2390,6 +2409,7 @@ function applyI18n() {
     if (languageToggle) languageToggle.textContent = currentLanguage === 'zh' ? 'EN' : '中';
     setGuestLoginBusy(guestLoginBusy);
     renderShareCardDialog();
+    renderThinkingToggle();
 }
 
 function setLanguage(language) {
@@ -2624,6 +2644,52 @@ function loadSelectedModes(conversationId = currentConversationId) {
 
 function saveSelectedModes(conversationId = currentConversationId) {
     localStorage.setItem(modeStorageKey(conversationId), JSON.stringify(normalizeModeIds(selectedModeIds)));
+}
+
+function thinkingStorageKey(conversationId = currentConversationId) {
+    const suffix = conversationId ? `conversation:${conversationId}` : 'draft';
+    return accountStorageKey(`${THINKING_STORAGE_KEY}:${suffix}`);
+}
+
+function loadThinkingEnabled(conversationId = currentConversationId) {
+    return localStorage.getItem(thinkingStorageKey(conversationId)) === 'true';
+}
+
+function saveThinkingEnabled(conversationId = currentConversationId) {
+    localStorage.setItem(thinkingStorageKey(conversationId), String(Boolean(thinkingEnabled)));
+}
+
+function setThinkingForConversation(conversationId = currentConversationId, enabled = null, { persist = false } = {}) {
+    thinkingEnabled = typeof enabled === 'boolean' ? enabled : loadThinkingEnabled(conversationId);
+    if (persist) saveThinkingEnabled(conversationId);
+    renderThinkingToggle();
+}
+
+function selectedModelProviderKey() {
+    const value = String(modelSelect?.value || '');
+    if (value) return value.split(':', 1)[0];
+    return String(settings['llm.default_provider'] || '');
+}
+
+function selectedModelSupportsThinking() {
+    return selectedModelProviderKey() === 'dgx';
+}
+
+function thinkingRequestPayload() {
+    if (!selectedModelSupportsThinking()) return {};
+    return { thinking_enabled: Boolean(thinkingEnabled) };
+}
+
+function renderThinkingToggle() {
+    if (!btnThinkingToggle) return;
+    const supported = selectedModelSupportsThinking();
+    const active = supported && Boolean(thinkingEnabled);
+    const label = active ? t('thinking.disable') : t('thinking.enable');
+    btnThinkingToggle.hidden = !supported;
+    btnThinkingToggle.classList.toggle('active', active);
+    btnThinkingToggle.setAttribute('aria-pressed', String(active));
+    btnThinkingToggle.setAttribute('aria-label', label);
+    btnThinkingToggle.title = label;
 }
 
 function setSelectedModesForConversation(conversationId = currentConversationId, modeIds = null, { persist = false } = {}) {
@@ -2923,10 +2989,12 @@ async function switchAccount(userId, options = {}) {
         window.location.reload();
         return;
     }
-    currentConversationId = loadCurrentConversationId();
+    currentConversationId = null;
+    saveCurrentConversationId(null);
     currentProjectId = loadCurrentProjectId();
     chatDrivePathId = loadChatDrivePathId();
     selectedModeIds = loadSelectedModes(currentConversationId);
+    thinkingEnabled = loadThinkingEnabled(currentConversationId);
     currentRoleId = loadCurrentRoleId();
     roles = [];
     selectedRoleConfigId = 'default';
@@ -3238,7 +3306,9 @@ function isCurrentConversationLoading() {
 }
 
 function updateSendState() {
-    btnSend.disabled = isCurrentConversationLoading()
+    btnSend.disabled = appBootstrapping
+        || startupSendPending
+        || isCurrentConversationLoading()
         || hasPendingAttachments()
         || (!messageInput.value.trim() && !hasReadyAttachments());
     if (btnAttach) {
@@ -3762,6 +3832,7 @@ async function createConversation() {
     currentConversationId = conv.id;
     saveCurrentConversationId(currentConversationId);
     saveSelectedModes(currentConversationId);
+    saveThinkingEnabled(currentConversationId);
     renderConversationList();
     updateTopbar();
     return conv;
@@ -9352,7 +9423,7 @@ async function openTraceRun(runId) {
 }
 
 async function loadSettings() {
-    const data = await apiCall('GET', '/api/admin/settings');
+    const data = await apiCall('GET', '/api/model-settings');
     settings = data.settings || {};
     renderModelSelect();
     renderSettings();
@@ -9425,7 +9496,8 @@ async function bootApp() {
 
     currentUserId = selectedAccount.id;
     currentAccountToken = storedToken;
-    currentConversationId = loadCurrentConversationId();
+    currentConversationId = null;
+    saveCurrentConversationId(null);
     currentRoleId = loadCurrentRoleId();
     renderAccountControls();
     await refreshAll();
@@ -13297,6 +13369,7 @@ function traceEventDisplay(event = {}) {
     if (type === 'aigc.summary.completed') return { label: traceCopy('结果汇总完成', 'Summary completed'), detail: traceCopy(`图片 ${payload.image_count || 0} / 来源 ${payload.citation_count || 0}`, `Images ${payload.image_count || 0} / citations ${payload.citation_count || 0}`) };
 
     if (type === 'model.started') return { label: traceCopy(`模型 #${round || '?' } 开始`, `Model #${round || '?'} started`), detail: payload.model_preference || '' };
+    if (type === 'model.intermediate') return { label: traceCopy(`模型 #${round || '?'} 中间输出`, `Model #${round || '?'} intermediate output`), detail: payload.content || '' };
     if (type === 'model.completed') return { label: traceCopy(`模型 #${round || '?' } 完成`, `Model #${round || '?'} completed`), detail: traceModelEventDetail(payload) };
     if (type === 'model.failed') return { label: traceCopy('模型调用失败', 'Model call failed'), detail: payload.error_message || payload.provider || '' };
     if (type === 'tool.started') return { label: traceCopy(`调用工具：${payload.name || 'tool'}`, `Call tool: ${payload.name || 'tool'}`), detail: event.step_id || '' };
@@ -14142,9 +14215,14 @@ function renderModelSelect() {
 
     defaultModelText = defaultModelDisplay;
     currentModelEl.textContent = defaultModelDisplay || '';
+    renderThinkingToggle();
 }
 
 function isProviderConfigured(provider) {
+    const explicit = settings[`llm.${provider.key}.configured`];
+    if (explicit !== undefined) {
+        return explicit === true || explicit === 'true';
+    }
     const value = settings[provider.checkKey] || '';
     return Boolean(value);
 }
@@ -14317,6 +14395,18 @@ function isMessagePaneEmpty() {
     return !messagesContainer.children.length || Boolean(messagesContainer.querySelector('.welcome-screen'));
 }
 
+function ensureWelcomeStartsNewTopic() {
+    if (!messagesContainer.querySelector('.welcome-screen')) return false;
+
+    stopActiveRunWatcher();
+    currentConversationId = null;
+    saveCurrentConversationId(null);
+    clearQuestionHistory();
+    renderConversationList();
+    updateTopbar();
+    return true;
+}
+
 function ensureCurrentConversationVisible() {
     if (!currentConversationId) {
         if (isMessagePaneEmpty()) showWelcome();
@@ -14470,7 +14560,8 @@ function renderConversationMessageListHtml(messages = []) {
             citations,
             artifacts,
             null,
-            msg.role === 'assistant' ? latestUserQuery : ''
+            msg.role === 'assistant' ? latestUserQuery : '',
+            msg.reasoning || ''
         );
         const shouldShowFollowUps = msg.role === 'assistant'
             && index === lastMessageIndex
@@ -14695,7 +14786,7 @@ async function resolveToolApproval(button) {
 }
 
 function renderProcessPanel(events = [], options = {}) {
-    const items = buildProcessTimeline(events);
+    const items = buildProcessTimeline(events, options);
     if (!items.length) return '';
 
     const expanded = Boolean(options.expanded);
@@ -14772,12 +14863,33 @@ function formatProcessDuration(ms) {
     return seconds ? `${minutes}m ${seconds}s` : `${minutes}m`;
 }
 
-function buildProcessTimeline(events = []) {
-    if (!Array.isArray(events)) return [];
-    return events
+function buildProcessTimeline(events = [], options = {}) {
+    const items = (Array.isArray(events) ? events : [])
         .filter(isProcessEventVisible)
         .map((event, index) => processTimelineItem(event, index))
         .filter(Boolean);
+    const reasoning = String(options.reasoning || '').trim();
+    if (!reasoning) return items;
+
+    const reasoningItem = {
+        id: 'thinking-reasoning',
+        type: 'thinking.reasoning',
+        kind: 'reasoning',
+        status: options.live ? 'running' : 'completed',
+        label: t('thinking.reasoningTitle'),
+        detail: reasoning,
+        meta: [],
+        links: [],
+    };
+    const terminalIndex = items.findIndex((item) => (
+        item.type === 'run.completed'
+        || item.type === 'run.partial'
+        || item.type === 'run.failed'
+        || item.type === 'run.cancelled'
+    ));
+    if (terminalIndex >= 0) items.splice(terminalIndex, 0, reasoningItem);
+    else items.push(reasoningItem);
+    return items;
 }
 
 function isProcessEventVisible(event = {}) {
@@ -14807,6 +14919,7 @@ function processTimelineItem(event = {}, index = 0) {
     const duration = Number.isInteger(event.duration_ms) ? formatDuration(event.duration_ms) : '';
     return {
         id: event.id || `${event.type || 'event'}-${index}`,
+        type: event.type || '',
         kind: processEventKind(event),
         status,
         label: display.label || event.title || event.type || t('trace.event'),
@@ -14875,6 +14988,8 @@ function processEventDetail(event = {}, fallback = '') {
             `授权结果：${payload.decision || '-'}；成功 ${payload.succeeded_count || 0}，失败 ${payload.failed_count || 0}。`,
             `Decision: ${payload.decision || '-'}; ${payload.succeeded_count || 0} succeeded, ${payload.failed_count || 0} failed.`,
         ));
+    } else if (type === 'model.intermediate') {
+        if (payload.content) parts.push(payload.content);
     } else if (type === 'model.started') {
         const round = payload.round ? `${traceCopy('轮次', 'Round')} ${payload.round}` : '';
         const tools = Number.isFinite(payload.tools_count) ? traceCopy(`可用工具 ${payload.tools_count}`, `${payload.tools_count} tools`) : '';
@@ -15044,6 +15159,7 @@ function conversationMessagesSignature(messages = []) {
         msg.artifacts || '',
         msg.trace_summary || msg.trace_events || '',
         msg.follow_ups || '',
+        msg.reasoning || '',
         msg.content || '',
     ].join('\u001f')).join('\u001e');
 }
@@ -15351,6 +15467,7 @@ function reconcileChatAfterPageResume() {
 function chatResponseFromRun(run = {}) {
     return {
         response: run.output || run.error_message || '',
+        reasoning: run.reasoning || '',
         error_type: run.error_type || (run.status === 'failed' ? 'run_failed' : ''),
         events: run.events || [],
         run_id: run.run_id || '',
@@ -15370,25 +15487,17 @@ async function selectConversation(id) {
     saveCurrentConversationId(id);
     applyConversationAgent(currentConversationRecord(id));
     setSelectedModesForConversation(id);
+    setThinkingForConversation(id);
     setView('chat', { restore: false });
     renderConversationList();
     await renderConversationMessages(id);
 }
 
 async function restoreInitialConversation() {
-    const storedValue = localStorage.getItem(accountStorageKey(CURRENT_CONVERSATION_STORAGE_KEY));
-    const hasStoredPreference = storedValue !== null;
-    const storedConversationExists = currentConversationId
-        && conversations.some((conv) => conv.id === currentConversationId);
-
-    if (!storedConversationExists && !hasStoredPreference && conversations.length) {
-        currentConversationId = conversations[0].id;
-        saveCurrentConversationId(currentConversationId);
-    }
-
     if (currentConversationId && conversations.some((conv) => conv.id === currentConversationId)) {
         applyConversationAgent(currentConversationRecord(currentConversationId));
         setSelectedModesForConversation(currentConversationId);
+        setThinkingForConversation(currentConversationId);
         renderConversationList();
         await renderConversationMessages(currentConversationId);
     } else {
@@ -15398,6 +15507,7 @@ async function restoreInitialConversation() {
         clearQuestionHistory();
         setCurrentAgent(SUPER_CHAT_AGENT_ID);
         setSelectedModesForConversation(null, [], { persist: true });
+        setThinkingForConversation(null, false, { persist: true });
         showWelcome();
     }
 }
@@ -15411,6 +15521,7 @@ async function startAgentTask(agentId) {
     saveCurrentConversationId(null);
     clearQuestionHistory();
     setSelectedModesForConversation(null, [], { persist: true });
+    setThinkingForConversation(null, false, { persist: true });
     setCurrentAgent(agentId || 'super_chat');
     setView('chat', { restore: false });
     showWelcome();
@@ -15429,6 +15540,7 @@ function openPulseChat(query = '') {
 	clearQuestionHistory();
 	clearAttachments();
 	setSelectedModesForConversation(null, [], { persist: true });
+	setThinkingForConversation(null, false, { persist: true });
 	setCurrentAgent(SUPER_CHAT_AGENT_ID);
 	setView('chat', { restore: false });
 	showWelcome();
@@ -15453,23 +15565,19 @@ async function startNewTopic() {
 	stopActiveRunWatcher();
 	setView('chat', { restore: false });
 	clearQuestionHistory();
+    currentConversationId = null;
+    saveCurrentConversationId(null);
     setCurrentAgent(SUPER_CHAT_AGENT_ID);
     setSelectedModesForConversation(null, [], { persist: true });
+    setThinkingForConversation(null, false, { persist: true });
     messageInput.value = '';
     clearAttachments();
     updateSendState();
     autoResizeInput();
 
-    try {
-        await createConversation();
-        showWelcome();
-    } catch (err) {
-        currentConversationId = null;
-        saveCurrentConversationId(null);
-        renderConversationList();
-        showWelcome();
-        appendMessage('assistant', t('chat.createConversationFailed', { message: err.message }), [], '', 'error');
-    }
+    renderConversationList();
+    updateTopbar();
+    showWelcome();
 
     focusMessageInput();
 }
@@ -15516,6 +15624,18 @@ function recoverInterruptedChatStream({
 }
 
 async function handleSend(queryOverride = '') {
+    if (appBootstrapping) {
+        if (startupSendPending) return;
+        startupSendPending = true;
+        updateSendState();
+        try {
+            await appBootPromise;
+        } finally {
+            startupSendPending = false;
+            updateSendState();
+        }
+    }
+
     if (!currentUserId) {
         showAccountLogin();
         return;
@@ -15529,6 +15649,8 @@ async function handleSend(queryOverride = '') {
     const attachmentPayload = chatAttachmentPayload(attachmentsForTurn);
     const query = typedQuery || (attachmentsForTurn.length ? defaultAttachmentPrompt() : '');
     if (!query) return;
+
+    ensureWelcomeStartsNewTopic();
 
     if (!currentConversationId) {
         try {
@@ -15680,6 +15802,7 @@ async function sendMessage(conversationId, query, attachmentContext = '', attach
         drive_context: driveContext || undefined,
         attachments,
         ...modePayload,
+        ...thinkingRequestPayload(),
     });
 }
 
@@ -15713,6 +15836,7 @@ async function sendMessageStream(conversationId, query, streamView, attachmentCo
                 attachments,
                 ...modePayload,
                 ...requestPayload,
+                ...thinkingRequestPayload(),
                 run_id: runId,
             }),
         });
@@ -15732,6 +15856,7 @@ async function sendMessageStream(conversationId, query, streamView, attachmentCo
     const decoder = new TextDecoder();
     let buffer = '';
     let streamedText = '';
+    let streamedReasoning = '';
     let finalResponse = null;
     const traceEvents = [];
     let runtime = '';
@@ -15762,6 +15887,12 @@ async function sendMessageStream(conversationId, query, streamView, attachmentCo
                 } else if (event === 'token') {
                     streamedText += data.text || '';
                     streamView.setContent(streamedText);
+                } else if (event === 'intermediate') {
+                    streamedText = '';
+                    streamView.moveContentToProcess(data);
+                } else if (event === 'reasoning') {
+                    streamedReasoning += data.text || '';
+                    streamView.setReasoning(streamedReasoning);
                 } else if (event === 'response') {
                     finalResponse = data;
                     runId = data.run_id || runId;
@@ -15770,6 +15901,10 @@ async function sendMessageStream(conversationId, query, streamView, attachmentCo
                     if (!streamedText) {
                         streamedText = data.response || '';
                         streamView.setContent(streamedText);
+                    }
+                    if (!streamedReasoning && data.reasoning) {
+                        streamedReasoning = data.reasoning;
+                        streamView.setReasoning(streamedReasoning);
                     }
                     streamView.setTrace(traceEvents.length ? traceEvents : (data.events || []), { runId, runtime, modelUsed });
                 } else if (event === 'error') {
@@ -15834,6 +15969,7 @@ function appendStreamingAssistantMessage(regenerateQuery = '', conversationId = 
     const approvalsEl = div.querySelector('.streaming-approvals');
     const cancelActionsEl = div.querySelector('.streaming-task-actions');
     let lastContent = '';
+    let lastReasoning = '';
     let lastEvents = [];
     let lastMeta = {};
     let processExpanded = true;
@@ -15870,14 +16006,40 @@ function appendStreamingAssistantMessage(regenerateQuery = '', conversationId = 
             div.dataset.copyText = lastContent;
             updateCopyButtonState(div, Boolean(lastContent));
             statusEl.hidden = true;
-            if (wasEmpty && lastContent && lastEvents.length) {
+            if (wasEmpty && lastContent && (lastEvents.length || lastReasoning)) {
                 if (!processTouched) processExpanded = false;
                 renderProcessPanelInto(traceEl, renderProcessPanel(lastEvents, {
                     expanded: processExpanded,
                     live: false,
+                    reasoning: lastReasoning,
                 }));
             }
             contentEl.innerHTML = formatContent(lastContent);
+            scrollToBottom();
+        },
+        setReasoning(text) {
+            lastReasoning = String(text || '');
+            if (!processTouched && !lastContent) processExpanded = true;
+            renderProcessPanelInto(traceEl, renderProcessPanel(lastEvents, {
+                expanded: processExpanded,
+                live: !lastContent,
+                reasoning: lastReasoning,
+            }));
+            scrollToBottom();
+        },
+        moveContentToProcess() {
+            lastContent = '';
+            div.classList.remove('has-final-content');
+            div.dataset.copyText = '';
+            updateCopyButtonState(div, false);
+            if (!processTouched) processExpanded = true;
+            renderProcessPanelInto(traceEl, renderProcessPanel(lastEvents, {
+                expanded: processExpanded,
+                live: true,
+                reasoning: lastReasoning,
+            }));
+            statusEl.hidden = true;
+            contentEl.innerHTML = '<div class="loading-dots"><span></span><span></span><span></span></div>';
             scrollToBottom();
         },
         setMeta(meta) {
@@ -15904,6 +16066,7 @@ function appendStreamingAssistantMessage(regenerateQuery = '', conversationId = 
             const processPanel = renderProcessPanel(lastEvents, {
                 expanded: shouldExpand,
                 live: !lastContent,
+                reasoning: lastReasoning,
             });
             renderProcessPanelInto(traceEl, processPanel);
             if (!lastContent && !processPanel) {
@@ -15932,6 +16095,7 @@ function appendStreamingAssistantMessage(regenerateQuery = '', conversationId = 
                 this.showError(resp.response || t('errors.requestFailed'), displayError);
                 return;
             }
+            this.setReasoning(resp.reasoning || lastReasoning);
             this.setContent(resp.response || lastContent);
             artifactsEl.innerHTML = renderArtifactPanel(resp.artifacts || []);
             citationsEl.innerHTML = renderCitationPanel(resp.citations || []);
@@ -15964,11 +16128,12 @@ function appendStreamingAssistantMessage(regenerateQuery = '', conversationId = 
             div.dataset.copyText = message || '';
             div.classList.toggle('has-final-content', Boolean(message));
             updateCopyButtonState(div, Boolean(message));
-            if (lastEvents.length) {
+            if (lastEvents.length || lastReasoning) {
                 if (!processTouched) processExpanded = false;
                 renderProcessPanelInto(traceEl, renderProcessPanel(lastEvents, {
                     expanded: processExpanded,
                     live: false,
+                    reasoning: lastReasoning,
                 }));
             }
             contentEl.innerHTML = errorBanner(
@@ -15994,6 +16159,14 @@ function appendStreamingAssistantMessage(regenerateQuery = '', conversationId = 
             div.dataset.copyText = message || '';
             div.classList.toggle('has-final-content', Boolean(message));
             updateCopyButtonState(div, Boolean(message));
+            if (lastEvents.length || lastReasoning) {
+                if (!processTouched) processExpanded = false;
+                renderProcessPanelInto(traceEl, renderProcessPanel(lastEvents, {
+                    expanded: processExpanded,
+                    live: false,
+                    reasoning: lastReasoning,
+                }));
+            }
             contentEl.innerHTML = `<div class="streaming-cancelled">${escapeHtml(message)}</div>`;
             div.classList.remove('streaming');
             updateAssistantActions(div, {
@@ -16146,7 +16319,8 @@ function appendMessage(
     citations = [],
     artifacts = [],
     inputMeta = null,
-    regenerateQuery = ''
+    regenerateQuery = '',
+    reasoning = ''
 ) {
     const welcome = messagesContainer.querySelector('.welcome-screen');
     if (welcome) welcome.remove();
@@ -16163,7 +16337,8 @@ function appendMessage(
         citations,
         artifacts,
         inputMeta,
-        regenerateQuery
+        regenerateQuery,
+        reasoning
     ));
     updateChatHistoryControls();
 }
@@ -16180,7 +16355,8 @@ function renderMessageHtml(
     citations = [],
     artifacts = [],
     inputMeta = null,
-    regenerateQuery = ''
+    regenerateQuery = '',
+    reasoning = ''
 ) {
     const avatar = role === 'user' ? 'You' : 'AI';
     const assistantActions = role === 'assistant'
@@ -16203,17 +16379,17 @@ function renderMessageHtml(
 
     let bubbleContent = '';
     if (displayError === 'rate_limit') {
-        const processPanel = renderProcessPanel(traceEvents, { expanded: false });
+        const processPanel = renderProcessPanel(traceEvents, { expanded: false, reasoning });
         bubbleContent = `${processPanel}${processPanel ? renderMessageDivider() : ''}${errorBanner(t('errors.rateLimit'), content, 'rate-limit')}${assistantActions}`;
     } else if (displayError === 'error') {
-        const processPanel = renderProcessPanel(traceEvents, { expanded: false });
+        const processPanel = renderProcessPanel(traceEvents, { expanded: false, reasoning });
         bubbleContent = `${processPanel}${processPanel ? renderMessageDivider() : ''}${errorBanner(t('errors.error'), content, 'generic-error')}${assistantActions}`;
     } else {
         const skillBadges = skillsUsed && skillsUsed.length
             ? `<div class="skill-badges">${skillsUsed.map((s) => `<span class="skill-badge">${escapeHtml(s)}</span>`).join('')}</div>`
             : '';
         const processPanel = role === 'assistant'
-            ? renderProcessPanel(traceEvents, { expanded: false })
+            ? renderProcessPanel(traceEvents, { expanded: false, reasoning })
             : '';
         const approvalPanel = role === 'assistant'
             ? renderApprovalPanel(traceEvents)
@@ -18893,6 +19069,7 @@ document.addEventListener('click', async (event) => {
 
     const quickAction = event.target.closest('[data-query]');
     if (quickAction) {
+        ensureWelcomeStartsNewTopic();
         if (quickAction.dataset.quickMode) {
             setModeSelected(quickAction.dataset.quickMode, true);
         }
@@ -19765,11 +19942,22 @@ modelSelect.addEventListener('change', () => {
     const val = modelSelect.value;
     if (!val) {
         currentModelEl.textContent = defaultModelText;
+        renderThinkingToggle();
         return;
     }
     const parts = val.split(':');
     currentModelEl.textContent = parts.length > 1 ? parts.slice(1).join(':') : parts[0];
+    renderThinkingToggle();
 });
+
+if (btnThinkingToggle) {
+    btnThinkingToggle.addEventListener('click', () => {
+        if (!selectedModelSupportsThinking()) return;
+        thinkingEnabled = !thinkingEnabled;
+        saveThinkingEnabled();
+        renderThinkingToggle();
+    });
+}
 
 if (agentSelect) {
     agentSelect.addEventListener('change', () => {
@@ -19798,4 +19986,7 @@ renderHealth();
 updateSendState();
 showWelcome();
 
-bootApp();
+appBootPromise = bootApp().finally(() => {
+    appBootstrapping = false;
+    updateSendState();
+});

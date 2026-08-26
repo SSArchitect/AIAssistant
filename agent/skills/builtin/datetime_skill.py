@@ -26,8 +26,11 @@ class DateTimeSkill(Skill):
             ],
             tags=["utility", "time"],
             domains=["utility", "time"],
-            routing_keywords=["时间", "日期", "几点", "今天", "时区"],
-            always_on=True,
+            routing_keywords=[
+                "时间", "日期", "几点", "几号", "星期几", "时区",
+                "current time", "current date", "time zone",
+            ],
+            always_on=False,
             parallel_safe=True,
             idempotent=True,
         )

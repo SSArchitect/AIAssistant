@@ -2,6 +2,7 @@ from __future__ import annotations
 from .base import LLMProvider
 from .claude_provider import ClaudeProvider
 from .deepseek_provider import DeepSeekProvider
+from .dgx_provider import DGXSparkProvider
 from .doubao_provider import DoubaoProvider
 from .gemini_provider import GeminiProvider
 from .minimax_provider import MiniMaxProvider
@@ -55,6 +56,15 @@ def create_provider(name: str | None = None) -> LLMProvider:
             base_url=runtime_config.minimax_base_url,
             thinking=runtime_config.minimax_thinking,
             timeout_seconds=runtime_config.minimax_timeout,
+        )
+    elif provider_name == "dgx":
+        return DGXSparkProvider(
+            api_key=runtime_config.dgx_api_key,
+            model=model_override or runtime_config.dgx_model,
+            base_url=runtime_config.dgx_base_url,
+            max_tokens=runtime_config.dgx_max_tokens,
+            streaming_enabled=runtime_config.dgx_streaming,
+            timeout_seconds=runtime_config.dgx_timeout,
         )
     elif provider_name == "ollama":
         return OllamaProvider(

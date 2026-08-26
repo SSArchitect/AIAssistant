@@ -47,7 +47,7 @@ test('Android keeps the standard WebView input connection for voice IMEs', () =>
 test('Super Chat renders its welcome prompt before asynchronous app startup', () => {
     assert.match(
         appSource,
-        /renderHealth\(\);\s*updateSendState\(\);\s*showWelcome\(\);\s*bootApp\(\);\s*$/,
+        /renderHealth\(\);\s*updateSendState\(\);\s*showWelcome\(\);\s*appBootPromise = bootApp\(\)/,
     );
     assert.match(appSource, /prompt: '把问题或任务发给我就好。'/);
 });

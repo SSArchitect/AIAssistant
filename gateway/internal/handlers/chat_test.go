@@ -24,6 +24,18 @@ func TestCompactTraceEventsKeepsTimelineDetailsWithoutLargePayloads(t *testing.T
 	resultPreview := `{"success":true,"data":{"query":"2026 movies","results":[{"title":"A useful result","url":"https://example.com/a","snippet":"` + largeContent + `"},{"title":"Second result","url":"https://example.com/b"}]},"display_text":"` + largeContent + `"}`
 	events := []bridge.RunEvent{
 		{
+			ID:     "evt_intermediate",
+			RunID:  "run_summary",
+			Type:   "model.intermediate",
+			Status: "completed",
+			Title:  "Intermediate model output",
+			Payload: map[string]interface{}{
+				"round":         1,
+				"content":       "Let me inspect the available tools.",
+				"content_chars": 35,
+			},
+		},
+		{
 			ID:     "evt_tool",
 			RunID:  "run_summary",
 			Type:   "tool.completed",
@@ -57,7 +69,7 @@ func TestCompactTraceEventsKeepsTimelineDetailsWithoutLargePayloads(t *testing.T
 	if len(text) >= len(resultPreview) {
 		t.Fatalf("expected compact summary to be smaller than raw preview")
 	}
-	for _, want := range []string{"tool.completed", "run.completed", "2026 movies", "A useful result", "https://example.com/a"} {
+	for _, want := range []string{"model.intermediate", "Let me inspect the available tools.", "tool.completed", "run.completed", "2026 movies", "A useful result", "https://example.com/a"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("expected summary to contain %q, got %s", want, text)
 		}
@@ -226,6 +238,83 @@ func TestChatSyncsSettingsBeforeAgentRequest(t *testing.T) {
 	}
 	if usage.UserID != models.DefaultAccountID || usage.AgentID != "super_chat" || usage.InputTokens != 5 || usage.OutputTokens != 2 || usage.TotalTokens != 7 || usage.CachedInputTokens != 1 {
 		t.Fatalf("unexpected token usage: %#v", usage)
+	}
+}
+
+func TestChatForwardsThinkingSwitchAndPersistsReasoning(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	if err := database.Init(filepath.Join(t.TempDir(), "assistant.db")); err != nil {
+		t.Fatalf("init database: %v", err)
+	}
+	conv := models.Conversation{
+		ID:        "conv-thinking-switch",
+		UserID:    "0",
+		Title:     "New Conversation",
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+	if err := database.DB.Create(&conv).Error; err != nil {
+		t.Fatalf("create conversation: %v", err)
+	}
+
+	var upstreamRequest bridge.ChatRequest
+	agentServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/agent/chat" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&upstreamRequest); err != nil {
+			t.Fatalf("decode upstream request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"conversation_id":"conv-thinking-switch",
+			"response":"answer",
+			"reasoning":"reasoning trace",
+			"skills_used":[],
+			"citations":[],
+			"model_used":"qwen38-27b",
+			"tokens_used":{},
+			"agent_id":"super_chat",
+			"runtime":"self",
+			"run_id":"run-thinking"
+		}`))
+	}))
+	defer agentServer.Close()
+
+	router := gin.New()
+	handler := NewChatHandler(bridge.NewAgentClient(agentServer.URL, time.Second))
+	router.POST("/api/chat", handler.Chat)
+
+	body := bytes.NewBufferString(`{
+		"conversation_id":"conv-thinking-switch",
+		"query":"answer briefly",
+		"stream":false,
+		"thinking_enabled":false,
+		"suppress_follow_ups":true
+	}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", body)
+	req.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("unexpected status %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if upstreamRequest.ThinkingEnabled == nil || *upstreamRequest.ThinkingEnabled {
+		t.Fatalf("expected explicit false thinking switch, got %#v", upstreamRequest.ThinkingEnabled)
+	}
+
+	var assistant models.Message
+	if err := database.DB.Where(
+		"conversation_id = ? AND role = ?",
+		conv.ID,
+		"assistant",
+	).First(&assistant).Error; err != nil {
+		t.Fatalf("load assistant message: %v", err)
+	}
+	if assistant.Reasoning != "reasoning trace" {
+		t.Fatalf("expected persisted reasoning, got %q", assistant.Reasoning)
 	}
 }
 

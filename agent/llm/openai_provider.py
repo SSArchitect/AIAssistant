@@ -8,6 +8,7 @@ from .base import (
     LLMMessage,
     LLMProvider,
     LLMResponse,
+    LLMStreamChunk,
     PromptCacheOptions,
     RateLimitError,
     ToolCall,
@@ -24,6 +25,9 @@ class OpenAIProvider(LLMProvider):
         base_url: str | None = None,
         timeout_seconds: float | None = None,
         provider_label: str = "OpenAI",
+        max_tokens: int | None = None,
+        streaming_enabled: bool = True,
+        supports_streaming_tool_calls: bool = False,
     ):
         api_key = (api_key or "").strip()
         if not api_key:
@@ -42,6 +46,9 @@ class OpenAIProvider(LLMProvider):
             )
         self.client = openai.AsyncOpenAI(**kwargs)
         self.model = model
+        self.max_tokens = max_tokens if max_tokens and max_tokens > 0 else None
+        self.streaming_enabled = streaming_enabled
+        self.supports_streaming_tool_calls = supports_streaming_tool_calls
         self.provider_name = "openai"
 
     def _convert_messages(self, messages: list[LLMMessage]) -> list[dict]:
@@ -93,7 +100,7 @@ class OpenAIProvider(LLMProvider):
             for t in tools
         ]
 
-    def _extra_chat_kwargs(self) -> dict:
+    def _extra_chat_kwargs(self, *, thinking_enabled: bool | None = None) -> dict:
         return {}
 
     def _supports_prompt_cache_key(self) -> bool:
@@ -134,6 +141,7 @@ class OpenAIProvider(LLMProvider):
         tools: list[ToolDefinition] | None = None,
         temperature: float = 0.7,
         cache: PromptCacheOptions | None = None,
+        thinking_enabled: bool | None = None,
     ) -> LLMResponse:
         converted = self._convert_messages(messages)
         kwargs = {
@@ -141,7 +149,9 @@ class OpenAIProvider(LLMProvider):
             "messages": converted,
             "temperature": temperature,
         }
-        kwargs.update(self._extra_chat_kwargs())
+        if self.max_tokens is not None:
+            kwargs["max_tokens"] = self.max_tokens
+        kwargs.update(self._extra_chat_kwargs(thinking_enabled=thinking_enabled))
         openai_tools = self._convert_tools(tools)
         if openai_tools:
             kwargs["tools"] = openai_tools
@@ -174,6 +184,11 @@ class OpenAIProvider(LLMProvider):
 
         return LLMResponse(
             content=message.content or "",
+            reasoning=(
+                getattr(message, "reasoning", None)
+                or getattr(message, "reasoning_content", None)
+                or ""
+            ),
             tool_calls=tool_calls,
             model=response.model,
             usage=self._usage_payload(response.usage),
@@ -185,7 +200,27 @@ class OpenAIProvider(LLMProvider):
         tools: list[ToolDefinition] | None = None,
         temperature: float = 0.7,
         cache: PromptCacheOptions | None = None,
+        thinking_enabled: bool | None = None,
     ) -> AsyncIterator[str]:
+        async for chunk in self.chat_stream_response(
+            messages,
+            tools=tools,
+            temperature=temperature,
+            cache=cache,
+            thinking_enabled=thinking_enabled,
+        ):
+            if chunk.text:
+                yield chunk.text
+
+    async def chat_stream_response(
+        self,
+        messages: list[LLMMessage],
+        tools: list[ToolDefinition] | None = None,
+        temperature: float = 0.7,
+        cache: PromptCacheOptions | None = None,
+        thinking_enabled: bool | None = None,
+    ) -> AsyncIterator[LLMStreamChunk]:
+        """Stream text while retaining OpenAI tool-call deltas for the final response."""
         converted = self._convert_messages(messages)
         kwargs = {
             "model": self.model,
@@ -193,13 +228,74 @@ class OpenAIProvider(LLMProvider):
             "temperature": temperature,
             "stream": True,
         }
-        kwargs.update(self._extra_chat_kwargs())
+        if self.max_tokens is not None:
+            kwargs["max_tokens"] = self.max_tokens
+        kwargs.update(self._extra_chat_kwargs(thinking_enabled=thinking_enabled))
         openai_tools = self._convert_tools(tools)
         if openai_tools:
             kwargs["tools"] = openai_tools
         self._apply_cache_options(kwargs, cache)
 
         stream = await self.client.chat.completions.create(**kwargs)
+        content_parts: list[str] = []
+        reasoning_parts: list[str] = []
+        tool_call_parts: dict[int, dict[str, str]] = {}
+        response_model = self.model
+        usage: dict[str, int] = {}
         async for chunk in stream:
-            if chunk.choices and chunk.choices[0].delta.content:
-                yield chunk.choices[0].delta.content
+            response_model = getattr(chunk, "model", None) or response_model
+            chunk_usage = getattr(chunk, "usage", None)
+            if chunk_usage:
+                usage = self._usage_payload(chunk_usage)
+            if not chunk.choices:
+                continue
+            delta = chunk.choices[0].delta
+            reasoning = (
+                getattr(delta, "reasoning", None)
+                or getattr(delta, "reasoning_content", None)
+                or ""
+            )
+            if reasoning:
+                reasoning_parts.append(reasoning)
+                yield LLMStreamChunk(reasoning=reasoning)
+            text = delta.content or ""
+            if text:
+                content_parts.append(text)
+                yield LLMStreamChunk(text=text)
+            for tool_delta in getattr(delta, "tool_calls", None) or []:
+                index = int(getattr(tool_delta, "index", 0) or 0)
+                part = tool_call_parts.setdefault(
+                    index,
+                    {"id": "", "name": "", "arguments": ""},
+                )
+                part["id"] += getattr(tool_delta, "id", None) or ""
+                function = getattr(tool_delta, "function", None)
+                if function:
+                    part["name"] += getattr(function, "name", None) or ""
+                    part["arguments"] += getattr(function, "arguments", None) or ""
+
+        tool_calls: list[ToolCall] = []
+        for index in sorted(tool_call_parts):
+            part = tool_call_parts[index]
+            raw_arguments = part["arguments"] or "{}"
+            try:
+                arguments = json.loads(raw_arguments)
+            except json.JSONDecodeError:
+                arguments = {"_raw": raw_arguments}
+            tool_calls.append(
+                ToolCall(
+                    id=part["id"] or f"stream_tool_{index}",
+                    name=part["name"],
+                    arguments=arguments,
+                )
+            )
+
+        yield LLMStreamChunk(
+            response=LLMResponse(
+                content="".join(content_parts),
+                reasoning="".join(reasoning_parts),
+                tool_calls=tool_calls,
+                model=response_model,
+                usage=usage,
+            )
+        )

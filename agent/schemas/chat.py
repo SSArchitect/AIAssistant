@@ -46,6 +46,7 @@ class ChatRequest(BaseModel):
     message: str
     stream: bool = False
     model_preference: Optional[str] = None
+    thinking_enabled: Optional[bool] = None
     agent_id: str = "general_assistant"
     role_id: Optional[str] = None
     mode_ids: list[str] = Field(default_factory=list)
@@ -92,6 +93,7 @@ class ChatArtifact(BaseModel):
 class ChatResponse(BaseModel):
     conversation_id: str
     response: str
+    reasoning: str = ""
     skills_used: list[str] = Field(default_factory=list)
     citations: list[Citation] = Field(default_factory=list)
     artifacts: list[ChatArtifact] = Field(default_factory=list)

@@ -55,8 +55,8 @@ class CalculatorSkill(Skill):
             ],
             tags=["utility", "math"],
             domains=["utility", "math"],
-            routing_keywords=["计算", "算一下", "数学", "公式"],
-            always_on=True,
+            routing_keywords=["计算", "算一下", "数学", "公式", "calculate", "calculation"],
+            always_on=False,
             parallel_safe=True,
             idempotent=True,
         )

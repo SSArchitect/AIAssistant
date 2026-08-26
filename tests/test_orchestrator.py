@@ -10,8 +10,8 @@ from unittest.mock import AsyncMock, patch, MagicMock
 
 from agent.aigc.share_card_renderer import ShareCardRenderResult
 from agent.orchestrator.engine import AgentEngine, DEEP_RESEARCH_PLAN_MARKER
-from agent.llm.base import LLMResponse, ToolCall, LLMMessage
-from agent.schemas.chat import ChatAttachment, ChatRequest
+from agent.llm.base import LLMResponse, LLMStreamChunk, ToolCall, LLMMessage
+from agent.schemas.chat import ChatAttachment, ChatRequest, DriveContext, DriveContextItem
 from agent.schemas.memory import MemoryCandidate, MemoryContext, RoleProfile
 from agent.skills.registry import SkillRegistry
 from agent.skills.builtin.echo import EchoSkill
@@ -305,6 +305,67 @@ async def test_tool_search_expands_real_tool_schema_on_next_round(engine):
 
 
 @pytest.mark.asyncio
+async def test_ambient_drive_index_does_not_expose_drive_tools_on_first_round(engine):
+    class ListDriveDocumentsSkill(Skill):
+        def metadata(self) -> SkillMetadata:
+            return SkillMetadata(
+                name="list_drive_documents",
+                description="List documents in the selected Drive folder.",
+                parameters=[],
+                domains=["drive"],
+                routing_keywords=["列出网盘", "查看文件夹"],
+                idempotent=True,
+            )
+
+        async def execute(self, **kwargs) -> SkillResult:
+            return SkillResult(success=True, data={"items": []})
+
+    engine.skill_registry.register(ListDriveDocumentsSkill())
+    provider = AsyncMock()
+    provider.chat = AsyncMock(
+        return_value=LLMResponse(
+            content="在呢。",
+            tool_calls=[],
+            model="test-model",
+            usage={},
+        )
+    )
+
+    request = ChatRequest(
+        conversation_id="conv-ambient-drive-routing",
+        message="歪",
+        agent_id="super_chat",
+        drive_context=DriveContext(
+            current_folder_id="root",
+            current_path="/",
+            items=[
+                DriveContextItem(
+                    id="doc-1",
+                    type="file",
+                    name="notes.md",
+                    path="/notes.md",
+                    summary="A saved note.",
+                )
+            ],
+        ),
+    )
+    with patch.object(engine, "_get_provider", return_value=provider):
+        result = await engine.process(request)
+
+    first_call = provider.chat.await_args_list[0]
+    initial_tools = {tool.name for tool in first_call.kwargs["tools"]}
+    messages = first_call.kwargs.get("messages") or first_call.args[0]
+    routed = next(event for event in result.events if event.type == "tools.routed")
+
+    assert engine._tool_routing_query(request) == "歪"
+    assert "list_drive_documents" not in initial_tools
+    assert "tool_search" in initial_tools
+    assert "notes.md" in messages[0].content
+    assert routed.payload["policy"]["max_dynamic_tools"] == 3
+    assert routed.payload["policy"]["min_dynamic_score"] == 60
+
+
+@pytest.mark.asyncio
 async def test_disabled_tools_are_filtered_per_request(engine):
     mock_response = LLMResponse(
         content="No calculator needed.",
@@ -329,7 +390,7 @@ async def test_disabled_tools_are_filtered_per_request(engine):
     tools = provider.chat.await_args.kwargs["tools"]
     tool_names = {tool.name for tool in tools}
     assert "calculator" not in tool_names
-    assert "datetime" in tool_names
+    assert "datetime" not in tool_names
     context_event = next(event for event in result.events if event.type == "context.built")
     assert "calculator" not in context_event.payload["tool_names"]
 
@@ -346,6 +407,8 @@ async def test_drive_tools_are_super_chat_only_and_get_user_context(engine):
                 parameters=[
                     SkillParameter(name="path", type="string", description="Drive path", required=False)
                 ],
+                domains=["drive"],
+                routing_keywords=["列一下"],
             )
 
         async def execute(self, **kwargs) -> SkillResult:
@@ -440,6 +503,8 @@ async def test_pulse_tools_are_super_chat_only_and_get_user_context(engine):
                 parameters=[
                     SkillParameter(name="date", type="string", description="Date", required=False)
                 ],
+                domains=["pulse"],
+                routing_keywords=["今天有什么值得关注"],
             )
 
         async def execute(self, **kwargs) -> SkillResult:
@@ -582,6 +647,8 @@ async def test_save_drive_tool_result_becomes_chat_artifact(engine):
                     SkillParameter(name="name", type="string", description="Name", required=True),
                     SkillParameter(name="content", type="string", description="Content", required=True),
                 ],
+                domains=["drive"],
+                routing_keywords=["生成报告并保存"],
             )
 
         async def execute(self, **kwargs) -> SkillResult:
@@ -709,6 +776,8 @@ async def test_model_error_after_read_drive_retries_then_returns_final_answer(en
                 parameters=[
                     SkillParameter(name="item_id", type="string", description="Item ID"),
                 ],
+                domains=["drive"],
+                routing_keywords=["完整内容读出来"],
             )
 
         async def execute(self, **kwargs) -> SkillResult:
@@ -788,6 +857,8 @@ async def test_model_error_after_read_drive_returns_tool_result_fallback_after_r
                 parameters=[
                     SkillParameter(name="item_id", type="string", description="Item ID"),
                 ],
+                domains=["drive"],
+                routing_keywords=["完整内容读出来"],
             )
 
         async def execute(self, **kwargs) -> SkillResult:
@@ -973,7 +1044,7 @@ async def test_tool_call_calculator(engine):
 
         request = ChatRequest(
             conversation_id="test-conv",
-            message="What is 42 * 17 + 3?",
+            message="Calculate 42 * 17 + 3.",
         )
         result = await engine.process(request)
 
@@ -1108,6 +1179,7 @@ async def test_tool_governance_blocks_unconfirmed_high_risk_call(engine):
                 access="destructive",
                 default_policy="confirm",
                 confirmation_keywords=["删除测试项"],
+                routing_keywords=["查看测试项"],
             )
 
         async def execute(self, **kwargs) -> SkillResult:
@@ -1178,6 +1250,7 @@ async def test_denied_tool_approval_returns_structured_result_and_resumes_model(
                 risk_level="medium",
                 access="write",
                 default_policy="confirm",
+                routing_keywords=["Review this write"],
             )
 
         async def execute(self, **kwargs) -> SkillResult:
@@ -1862,7 +1935,10 @@ async def test_multiple_tool_calls(engine):
         provider.chat = AsyncMock(side_effect=[tool_response, final_response])
         mock_provider.return_value = provider
 
-        request = ChatRequest(conversation_id="conv1", message="Test")
+        request = ChatRequest(
+            conversation_id="conv1",
+            message="Calculate 1+1 and echo hello",
+        )
         result = await engine.process(request)
 
     assert len(result.plan) == 2
@@ -2336,7 +2412,8 @@ async def test_super_chat_agent_loop_mode_prompts_are_injected(engine):
     ]
     assert all(node["id"] != "prompt.section.agent_context" for node in context_event.payload["context_nodes"])
     tool_names = {tool["name"] for tool in context_event.payload["final_model_request"]["tools"]}
-    assert {"image_generation_v1", "weight_loss_v1"}.issubset(tool_names)
+    assert {"image_generation_v1", "weight_loss_v1"}.isdisjoint(tool_names)
+    assert "tool_search" in tool_names
     event_types = [event.type for event in result.events]
     assert "workflow.started" in event_types
     assert "workflow.completed" in event_types
@@ -4191,6 +4268,133 @@ async def test_streams_final_answer_after_tool_call(engine):
         if event.type == "model.started" and event.payload.get("streaming")
     ]
     assert len(streaming_events) == 1
+
+
+@pytest.mark.asyncio
+async def test_provider_can_stream_tool_choice_and_direct_summary(engine):
+    """Providers that retain streamed tool calls can stream the first model round."""
+    tokens = []
+    reasoning = []
+    forwarded_kwargs = []
+
+    class StreamingToolProvider:
+        model = "stream-tool-model"
+        provider_name = "dgx"
+        streaming_enabled = True
+        supports_streaming_tool_calls = True
+
+        async def chat_stream_response(self, messages, **kwargs):
+            forwarded_kwargs.append(kwargs)
+            assert kwargs["tools"]
+            yield LLMStreamChunk(reasoning="inspect the request")
+            yield LLMStreamChunk(text="streamed ")
+            yield LLMStreamChunk(text="summary")
+            yield LLMStreamChunk(
+                response=LLMResponse(
+                    content="streamed summary",
+                    reasoning="inspect the request",
+                    model=self.model,
+                    usage={"input": 12, "output": 2},
+                )
+            )
+
+    with patch.object(engine, "_get_provider", return_value=StreamingToolProvider()):
+        result = await engine.process(
+            ChatRequest(
+                conversation_id="conv-stream-direct-summary",
+                message="Summarize the supplied context",
+                role_id="default",
+                stream=True,
+                thinking_enabled=True,
+            ),
+            on_token=tokens.append,
+            on_reasoning=reasoning.append,
+        )
+
+    assert tokens == ["streamed ", "summary"]
+    assert reasoning == ["inspect the request"]
+    assert result.response == "streamed summary"
+    assert result.reasoning == "inspect the request"
+    assert forwarded_kwargs[0]["thinking_enabled"] is True
+    assert result.tokens_used == {"input": 12, "output": 2}
+    streaming_events = [
+        event
+        for event in result.events
+        if event.type == "model.started" and event.payload.get("streaming")
+    ]
+    assert len(streaming_events) == 1
+
+
+@pytest.mark.asyncio
+async def test_provider_preserves_streamed_tool_call_before_final_tokens(engine):
+    """A streamed tool call should execute before the next streamed answer round."""
+    tokens = []
+    intermediate = []
+
+    class StreamingToolProvider:
+        model = "stream-tool-model"
+        streaming_enabled = True
+        supports_streaming_tool_calls = True
+
+        def __init__(self):
+            self.calls = 0
+
+        async def chat_stream_response(self, messages, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                assert kwargs["tools"]
+                yield LLMStreamChunk(text="Checking first. ")
+                yield LLMStreamChunk(
+                    response=LLMResponse(
+                        content="Checking first. ",
+                        tool_calls=[ToolCall(
+                            id="call_stream_echo",
+                            name="echo",
+                            arguments={"text": "tool result"},
+                        )],
+                        model=self.model,
+                    )
+                )
+                return
+
+            assert kwargs["tools"]
+            assert any(message.role == "tool" for message in messages)
+            yield LLMStreamChunk(text="final ")
+            yield LLMStreamChunk(text="summary")
+            yield LLMStreamChunk(
+                response=LLMResponse(
+                    content="final summary",
+                    model=self.model,
+                )
+            )
+
+    provider = StreamingToolProvider()
+    with patch.object(engine, "_get_provider", return_value=provider):
+        result = await engine.process(
+            ChatRequest(
+                conversation_id="conv-stream-tool-choice",
+                message="Use echo then summarize",
+                role_id="default",
+                stream=True,
+            ),
+            on_token=tokens.append,
+            on_intermediate=lambda text, round_index: intermediate.append((text, round_index)),
+        )
+
+    assert provider.calls == 2
+    assert tokens == ["Checking first. ", "final ", "summary"]
+    assert intermediate == [("Checking first. ", 1)]
+    assert result.response == "final summary"
+    assert result.skills_used == ["echo"]
+    intermediate_event = next(event for event in result.events if event.type == "model.intermediate")
+    assert intermediate_event.payload["round"] == 1
+    assert intermediate_event.payload["content"] == "Checking first."
+    streaming_rounds = [
+        event.payload["round"]
+        for event in result.events
+        if event.type == "model.started" and event.payload.get("streaming")
+    ]
+    assert streaming_rounds == [1, 2]
 
 
 @pytest.mark.asyncio

@@ -38,6 +38,7 @@ type ChatRequestBody struct {
 	Query             string                  `json:"query" binding:"required"`
 	Stream            bool                    `json:"stream"`
 	ModelPreference   *string                 `json:"model_preference,omitempty"`
+	ThinkingEnabled   *bool                   `json:"thinking_enabled,omitempty"`
 	AgentID           string                  `json:"agent_id,omitempty"`
 	RoleID            string                  `json:"role_id,omitempty"`
 	ModeIDs           []string                `json:"mode_ids,omitempty"`
@@ -129,6 +130,7 @@ func (h *ChatHandler) Chat(c *gin.Context) {
 		Message:         req.Query,
 		Stream:          req.Stream,
 		ModelPreference: req.ModelPreference,
+		ThinkingEnabled: req.ThinkingEnabled,
 		AgentID:         req.AgentID,
 		RoleID:          req.RoleID,
 		ModeIDs:         req.ModeIDs,
@@ -492,6 +494,7 @@ func compactTracePayload(payload map[string]interface{}) map[string]interface{} 
 		"access": true, "approval_id": true, "approval_resume": true,
 		"budget_error_type": true, "budget_reason": true, "citation_count": true,
 		"command_text": true, "count": true, "error_message": true,
+		"content": true, "content_chars": true,
 		"error_type": true, "failed_tool_call_count": true, "final_prompt_char_count": true,
 		"finalization_status": true, "image_count": true,
 		"information_strategy": true, "max_failed_tool_calls": true, "max_model_rounds": true,
@@ -500,6 +503,7 @@ func compactTracePayload(payload map[string]interface{}) map[string]interface{} 
 		"decision": true, "expires_at": true, "failed_count": true, "operations": true,
 		"result_preview": true, "round": true, "skills_used": true, "source_agent_id": true,
 		"status": true, "step": true, "steps": true, "streaming": true, "summary": true,
+		"truncated":     true,
 		"request_count": true, "risk_level": true, "succeeded_count": true,
 		"target_agent_id": true, "tool_calls": true, "tool_name": true, "tools_count": true, "total": true,
 		"tool_call_count": true, "usage": true, "urls": true, "workflow_node": true,
@@ -542,6 +546,8 @@ func compactTraceValue(key string, value interface{}) interface{} {
 		return compactTraceStringSlice(value, 12, 80)
 	case "result_preview":
 		return compactToolResultPreview(value)
+	case "content":
+		return truncateRunes(interfaceToString(value), 4000)
 	case "brief_preview", "result", "summary", "error_message", "reason", "command_text":
 		return truncateRunes(interfaceToString(value), 500)
 	default:
@@ -761,6 +767,7 @@ func (h *ChatHandler) saveAssistantMessage(conversationID string, userID string,
 		UserID:         normalizedUserID(userID),
 		Role:           "assistant",
 		Content:        agentResp.Response,
+		Reasoning:      agentResp.Reasoning,
 		SkillsUsed:     string(skillsJSON),
 		Citations:      string(citationsJSON),
 		Artifacts:      string(artifactsJSON),

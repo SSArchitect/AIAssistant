@@ -31,7 +31,7 @@ type AdminHandler struct {
 	sessions   map[string]time.Time
 }
 
-var llmProviders = []string{"claude", "openai", "gemini", "deepseek", "doubao", "minimax", "ollama"}
+var llmProviders = []string{"claude", "openai", "gemini", "deepseek", "doubao", "minimax", "dgx", "ollama"}
 
 const (
 	adminPasswordSettingKey = "admin.password"
@@ -82,6 +82,34 @@ func (h *AdminHandler) GetSettings(c *gin.Context) {
 		} else {
 			result[s.Key] = s.Value
 		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{"settings": result})
+}
+
+// GetModelSettings returns the non-secret subset of LLM settings needed by the
+// chat UI to populate its model selector. This endpoint is intentionally public
+// so regular chat users do not need an admin session to choose a configured
+// model.
+func (h *AdminHandler) GetModelSettings(c *gin.Context) {
+	settings, err := h.syncer.SettingsMap()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load model settings"})
+		return
+	}
+
+	result := make(map[string]string, 1+len(llmProviders)*4)
+	result["llm.default_provider"] = settings["llm.default_provider"]
+	configured := make(map[string]bool, len(llmProviders))
+	for _, provider := range configuredProviders(settings) {
+		configured[provider] = true
+	}
+	for _, provider := range llmProviders {
+		prefix := "llm." + provider + "."
+		result[prefix+"configured"] = strconv.FormatBool(configured[provider])
+		result[prefix+"model"] = settings[prefix+"model"]
+		result[prefix+"models"] = settings[prefix+"models"]
+		result[prefix+"validation_status"] = settings[prefix+"validation_status"]
 	}
 
 	c.JSON(http.StatusOK, gin.H{"settings": result})
@@ -824,7 +852,7 @@ func providerForValidationSetting(key string) (string, bool) {
 	if field == "api_key" {
 		return provider, true
 	}
-	if (provider == "openai" || provider == "minimax") && field == "base_url" {
+	if (provider == "openai" || provider == "minimax" || provider == "dgx") && field == "base_url" {
 		return provider, true
 	}
 	if provider == "ollama" && field == "base_url" {
