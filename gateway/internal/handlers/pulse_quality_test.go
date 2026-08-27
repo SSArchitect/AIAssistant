@@ -78,8 +78,50 @@ func TestPulseQualityBuildsLatestAndHotQueriesForEveryKeyword(t *testing.T) {
 			t.Fatalf("keyword %q did not receive both discovery variants: %#v", keyword, keywordVariants)
 		}
 	}
-	if queries[0].Query != "agent 智能体 最新进展" || queries[1].Query != "agent 智能体 近期热点" {
-		t.Fatalf("expected the Agent alias and two fixed templates, got %#v", queries[:2])
+	if queries[0].Query != "AI agent 智能体 最新进展" || queries[1].Query != "AI agent 智能体 近期热点" {
+		t.Fatalf("expected topic context, the Agent alias, and two fixed templates, got %#v", queries[:2])
+	}
+}
+
+func TestPulseQualitySearchQuerySubjectAddsTopicContextWithoutDuplication(t *testing.T) {
+	tests := []struct {
+		name      string
+		topicName string
+		keyword   string
+		expected  string
+	}{
+		{name: "topic plus keyword", topicName: "AI 厂商与产品动态", keyword: "Anthropic", expected: "AI 厂商与产品动态 Anthropic"},
+		{name: "topic already contains agent", topicName: "AI 应用与 Agent", keyword: "Agent", expected: "AI 应用与 Agent 智能体"},
+		{name: "same topic and keyword", topicName: "RAG", keyword: "RAG", expected: "RAG"},
+		{name: "keyword already contains topic", topicName: "AI", keyword: "AI 公司", expected: "AI 公司"},
+		{name: "memory has no topic context", keyword: "workflow", expected: "workflow"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := pulseSearchQuerySubject(test.topicName, test.keyword); got != test.expected {
+				t.Fatalf("expected %q, got %q", test.expected, got)
+			}
+		})
+	}
+
+	queries := buildPulseSearchQueries("2026-08-28", []models.PulseTopic{{
+		ID:       "topic-ai",
+		Name:     "AI 应用与 Agent",
+		Keywords: `["Agent","RAG"]`,
+	}}, nil)
+	want := []string{
+		"AI 应用与 Agent 智能体 最新进展",
+		"AI 应用与 Agent 智能体 近期热点",
+		"AI 应用与 Agent RAG 最新进展",
+		"AI 应用与 Agent RAG 近期热点",
+	}
+	if len(queries) != len(want) {
+		t.Fatalf("expected %d queries, got %#v", len(want), queries)
+	}
+	for index, expected := range want {
+		if queries[index].Query != expected {
+			t.Fatalf("query %d: expected %q, got %q", index, expected, queries[index].Query)
+		}
 	}
 }
 

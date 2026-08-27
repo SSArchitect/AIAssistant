@@ -2432,7 +2432,7 @@ func buildPulseSearchQueries(_ string, topics []models.PulseTopic, signals []mem
 			return
 		}
 		keyword = terms[0]
-		subject := pulseSearchKeywordSubject(keyword)
+		subject := pulseSearchQuerySubject(topicName, keyword)
 		variants := []struct {
 			Suffix string
 			Intent string
@@ -2489,6 +2489,35 @@ func pulseSearchKeywordSubject(keyword string) string {
 		return keyword + " 智能体"
 	}
 	return keyword
+}
+
+func pulseSearchQuerySubject(topicName string, keyword string) string {
+	topicTerms := cleanPulseSearchTerms([]string{topicName})
+	subject := pulseSearchKeywordSubject(keyword)
+	if len(topicTerms) != 1 {
+		return subject
+	}
+	topicName = topicTerms[0]
+	if subject == "" {
+		return topicName
+	}
+	if pulseSearchTextContainsTerm(topicName, keyword) {
+		// Some keyword aliases add useful retrieval language even when the raw
+		// keyword is already present in the topic name. Keep only that extra
+		// context instead of emitting duplicated text such as "Agent Agent".
+		extra := subject
+		if len(subject) >= len(keyword) && strings.EqualFold(subject[:len(keyword)], keyword) {
+			extra = strings.TrimSpace(subject[len(keyword):])
+		}
+		if extra != "" && !pulseSearchTextContainsTerm(topicName, extra) {
+			return strings.TrimSpace(topicName + " " + extra)
+		}
+		return topicName
+	}
+	if pulseSearchTextContainsTerm(subject, topicName) {
+		return subject
+	}
+	return strings.TrimSpace(topicName + " " + subject)
 }
 
 func pulseTopicDiscoveryTerms(topic models.PulseTopic) []string {
@@ -6874,7 +6903,8 @@ func pulseSearchTermLooksGeneric(term string) bool {
 }
 
 func pulseSearchTextContainsTerm(text string, term string) bool {
-	haystack := strings.ToLower(text)
+	haystack := strings.ToLower(strings.Join(strings.Fields(text), " "))
+	term = strings.ToLower(strings.Join(strings.Fields(term), " "))
 	if haystack == "" || term == "" {
 		return false
 	}
