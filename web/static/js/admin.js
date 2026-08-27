@@ -163,14 +163,14 @@ const I18N = {
             saveAndValidate: '保存并检测',
             validate: '检测 Key',
             validating: '检测中...',
-            fetchModels: '拉取模型',
+            fetchModels: '刷新模型',
             addModel: '添加模型',
             save: '保存',
         },
         messages: {
             noModels: '还没有添加模型',
             fetchingModels: '正在拉取模型...',
-            modelsAvailable: '已找到 {count} 个模型，可输入搜索后添加',
+            modelsAvailable: '已同步并保存 {count} 个模型',
             noModelsFound: '没有找到模型',
             fetchFailed: '拉取失败：{message}',
             saving: '保存中...',
@@ -319,14 +319,14 @@ const I18N = {
             saveAndValidate: 'Save & Validate',
             validate: 'Validate Key',
             validating: 'Validating...',
-            fetchModels: 'Fetch Models',
+            fetchModels: 'Refresh Models',
             addModel: 'Add model',
             save: 'Save',
         },
         messages: {
             noModels: 'No models added',
             fetchingModels: 'Fetching models...',
-            modelsAvailable: '{count} models available. Type to search and add one.',
+            modelsAvailable: '{count} models synced and saved.',
             noModelsFound: 'No models found',
             fetchFailed: 'Fetch failed: {message}',
             saving: 'Saving...',
@@ -576,6 +576,7 @@ function renderProviderPanels() {
                     </button>
                     <button class="btn-fetch-models" type="button" data-fetch-models="${escapeAttr(provider.key)}" title="${escapeAttr(t('actions.fetchModels'))}">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+                        <span>${escapeHtml(t('actions.fetchModels'))}</span>
                     </button>
                 </div>
                 <div class="fetch-status" id="fetch-status-${escapeAttr(provider.key)}"></div>
@@ -1305,19 +1306,29 @@ async function fetchModels(provider, button) {
             return;
         }
 
-        const models = result.models || [];
-        if (!models.length) {
+        const currentDefault = providerModels[provider]?.[0] || settingsCache[`llm.${provider}.model`] || '';
+        const refreshedModels = normalizeFetchedModels(result.models, currentDefault);
+        if (!refreshedModels.length) {
             statusEl.textContent = t('messages.noModelsFound');
             statusEl.className = 'fetch-status visible error';
             return;
         }
 
+        const refreshedSettings = collectSettings();
+        refreshedSettings[`llm.${provider}.models`] = JSON.stringify(refreshedModels);
+        refreshedSettings[`llm.${provider}.model`] = refreshedModels[0];
+        await apiCall('PUT', '/api/admin/settings', { settings: refreshedSettings });
+
+        providerModels[provider] = refreshedModels;
+        settingsCache = { ...settingsCache, ...refreshedSettings };
+        renderModelList(provider);
+
         const datalist = document.getElementById(`model-datalist-${provider}`);
         if (datalist) {
-            datalist.innerHTML = models.map((model) => `<option value="${escapeAttr(model.id)}">`).join('');
+            datalist.innerHTML = refreshedModels.map((model) => `<option value="${escapeAttr(model)}">`).join('');
         }
 
-        statusEl.textContent = t('messages.modelsAvailable', { count: models.length });
+        statusEl.textContent = t('messages.modelsAvailable', { count: refreshedModels.length });
         statusEl.className = 'fetch-status visible';
 
         const input = document.getElementById(`model-input-${provider}`);
@@ -1334,6 +1345,22 @@ async function fetchModels(provider, button) {
         button.disabled = false;
         button.classList.remove('loading');
     }
+}
+
+function normalizeFetchedModels(models = [], currentDefault = '') {
+    const normalized = [];
+    const seen = new Set();
+    const items = Array.isArray(models) ? models : [];
+    items.forEach((item) => {
+        const id = String(typeof item === 'string' ? item : (item?.id || '')).trim();
+        if (!id || seen.has(id)) return;
+        seen.add(id);
+        normalized.push(id);
+    });
+
+    const preferred = String(currentDefault || '').trim();
+    if (!preferred || !seen.has(preferred)) return normalized;
+    return [preferred, ...normalized.filter((model) => model !== preferred)];
 }
 
 function collectSettings() {
