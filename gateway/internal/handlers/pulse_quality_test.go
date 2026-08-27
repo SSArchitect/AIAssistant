@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -16,7 +17,28 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func TestPulseQualitySearchBudgetPreservesAllModules(t *testing.T) {
+func TestPulseQualityGenerationBudgetIsThreeMinutes(t *testing.T) {
+	if pulseGenerationBudget != 180*time.Second {
+		t.Fatalf("expected a 180-second Pulse budget, got %s", pulseGenerationBudget)
+	}
+	if pulseSearchBudget != 85*time.Second {
+		t.Fatalf("expected an 85-second retrieval sub-budget, got %s", pulseSearchBudget)
+	}
+}
+
+func TestPulseQualityUsesLightweightDiscoveryForLargeQuerySets(t *testing.T) {
+	lightweight, concurrency := pulseInitialSearchMode(pulseSearchFullModeQueryLimit + 1)
+	if !lightweight || concurrency != pulseSearchLightConcurrency {
+		t.Fatalf("expected large query sets to use lightweight discovery at concurrency %d, got lightweight=%v concurrency=%d", pulseSearchLightConcurrency, lightweight, concurrency)
+	}
+
+	lightweight, concurrency = pulseInitialSearchMode(pulseSearchFullModeQueryLimit)
+	if lightweight || concurrency != pulseSearchConcurrency {
+		t.Fatalf("expected small query sets to retain full rewrite and rerank at concurrency %d, got lightweight=%v concurrency=%d", pulseSearchConcurrency, lightweight, concurrency)
+	}
+}
+
+func TestPulseQualityBuildsLatestAndHotQueriesForEveryKeyword(t *testing.T) {
 	topics := []models.PulseTopic{
 		{ID: "topic-ai", Name: "AI", Keywords: `["agent","model"]`},
 		{ID: "topic-engineering", Name: "工程效率", Keywords: `["devops","toolchain"]`},
@@ -30,32 +52,72 @@ func TestPulseQualitySearchBudgetPreservesAllModules(t *testing.T) {
 	}
 
 	queries := buildPulseSearchQueries("2026-07-27", topics, signals)
-	if len(queries) > pulseSearchQueryLimit {
-		t.Fatalf("query budget exceeded: got %d, limit %d", len(queries), pulseSearchQueryLimit)
-	}
-
 	moduleCounts := map[string]int{}
 	coveredTopics := map[string]bool{}
+	variants := map[string]map[string]bool{}
 	for _, query := range queries {
 		moduleCounts[normalizePulseModuleKey(query.Module)]++
 		if query.TopicID != "" {
 			coveredTopics[query.TopicID] = true
 		}
-	}
-	for _, module := range pulseModuleOrder {
-		if moduleCounts[module] < 2 {
-			t.Errorf("expected at least two reserved queries for %s, got %d (all counts: %#v)", module, moduleCounts[module], moduleCounts)
+		if variants[query.Keyword] == nil {
+			variants[query.Keyword] = map[string]bool{}
 		}
+		variants[query.Keyword][query.Intent] = true
+	}
+	if moduleCounts[pulseSourceTopicHot] != 20 || moduleCounts[pulseSourceMemory] != 8 || moduleCounts[pulseSourceInterestHot] != 0 {
+		t.Fatalf("expected two queries for every topic and memory keyword, got %#v", moduleCounts)
 	}
 	for _, topic := range topics {
 		if !coveredTopics[topic.ID] {
 			t.Errorf("enabled topic %q received no query within the shared budget", topic.Name)
 		}
 	}
+	for keyword, keywordVariants := range variants {
+		if !keywordVariants["keyword_latest"] || !keywordVariants["keyword_hot"] {
+			t.Fatalf("keyword %q did not receive both discovery variants: %#v", keyword, keywordVariants)
+		}
+	}
+	if queries[0].Query != "agent 智能体 最新进展" || queries[1].Query != "agent 智能体 近期热点" {
+		t.Fatalf("expected the Agent alias and two fixed templates, got %#v", queries[:2])
+	}
+}
+
+func TestPulseQualityDoesNotTruncateStoredKeywordDiscoveryQueries(t *testing.T) {
+	topics := []models.PulseTopic{
+		{
+			ID:       "vendors",
+			Name:     "AI 厂商与产品动态",
+			Keywords: `["Anthropic","Claude","DeepSeek","GPT","Gemini","Grok","OpenAI"]`,
+		},
+		{
+			ID:       "agents",
+			Name:     "AI 应用与 Agent",
+			Keywords: `["Agent","Function Calling","RAG","Structured Output","vLLM"]`,
+		},
+		{
+			ID:       "markets",
+			Name:     "AI 行业研究与估值",
+			Keywords: `["AI 公司","IPO","S-1","估值","商业化","招股书"]`,
+		},
+	}
+
+	queries := buildPulseSearchQueries("2026-08-27", topics, nil)
+	expectedKeywordCount := 7 + 5 + 6
+	if len(queries) != expectedKeywordCount*2 {
+		t.Fatalf("expected every stored keyword to receive two queries, got %d queries", len(queries))
+	}
+	seen := map[string]map[string]bool{}
 	for _, query := range queries {
-		if query.TopicID == "topic-ai" && strings.Contains(query.Query, "agent") &&
-			strings.Contains(query.Query, "model") {
-			t.Fatalf("topic query should focus on one keyword angle instead of stacking every keyword: %q", query.Query)
+		key := query.TopicID + ":" + query.Keyword
+		if seen[key] == nil {
+			seen[key] = map[string]bool{}
+		}
+		seen[key][query.Intent] = true
+	}
+	for key, variants := range seen {
+		if len(variants) != 2 || !variants["keyword_latest"] || !variants["keyword_hot"] {
+			t.Fatalf("stored keyword %q was truncated or lost a variant: %#v", key, variants)
 		}
 	}
 }
@@ -131,39 +193,74 @@ func TestPulseQualityFollowupTargetsUnsupportedSeedInsidePartlyVerifiedQuery(t *
 	}
 }
 
-func TestPulseQualityFollowupSearchesUseThreeEventsAndSixBoundedQueries(t *testing.T) {
-	evidence := pulseSearchEvidence{
-		Module:    pulseSourceTopicHot,
-		Query:     "ModelCo acquisitions latest news 2026",
-		TopicName: "AI",
-	}
-	for index := 0; index < pulseSearchFollowupEventLimit+3; index++ {
+func TestPulseQualityFollowupSelectsOneEventAndOneQueryPerKeyword(t *testing.T) {
+	evidence := []pulseSearchEvidence{}
+	for index := 0; index < 4; index++ {
 		name := fmt.Sprintf("ModelCo%d", index)
-		evidence.Results = append(evidence.Results, pulseSearchResult{
-			Title:       fmt.Sprintf("%s acquires SafeLab%d in $%dM deal", name, index, 100+index),
-			Snippet:     fmt.Sprintf("%s acquired SafeLab%d for $%dM to expand its AI safety research.", name, index, 100+index),
-			URL:         fmt.Sprintf("https://%s.example.com/news/safelab-%d", strings.ToLower(name), index),
-			PublishedAt: "2026-07-26",
+		evidence = append(evidence, pulseSearchEvidence{
+			QueryID: "q" + fmt.Sprint(index+1), Module: pulseSourceTopicHot, TopicID: "topic-ai", TopicName: "AI",
+			Keyword: name, Query: name + " 最新进展",
+			Results: []pulseSearchResult{{
+				Title:       fmt.Sprintf("%s acquires SafeLab%d in $%dM deal", name, index, 100+index),
+				Snippet:     fmt.Sprintf("%s acquired SafeLab%d for $%dM to expand its AI safety research.", name, index, 100+index),
+				URL:         fmt.Sprintf("https://%s.example.com/news/safelab-%d", strings.ToLower(name), index),
+				PublishedAt: "2026-07-26",
+			}},
 		})
 	}
 
-	seeds := pulseSearchFollowupSeeds("2026-07-27", []pulseSearchEvidence{evidence})
-	if len(seeds) != pulseSearchFollowupEventLimit {
-		t.Fatalf("expected follow-up events to stay capped at %d, got %d", pulseSearchFollowupEventLimit, len(seeds))
+	seeds := pulseSearchFollowupSeeds("2026-07-27", evidence)
+	if len(seeds) != len(evidence) {
+		t.Fatalf("expected one event per keyword, got %d", len(seeds))
 	}
-	plans := pulseSearchFollowupPlans("2026-07-27", []pulseSearchEvidence{evidence})
-	if len(plans) != pulseSearchFollowupQueryLimit {
-		t.Fatalf("expected two searches per event capped at %d, got %#v", pulseSearchFollowupQueryLimit, plans)
+	plans := pulseSearchFollowupPlans("2026-07-27", evidence)
+	if len(plans) != len(evidence) {
+		t.Fatalf("expected one event-verification query per keyword, got %#v", plans)
 	}
-	kinds := map[string]int{}
 	for _, plan := range plans {
-		kinds[plan.Kind]++
-		if strings.Count(strings.ToLower(plan.Query.Query), strings.ToLower(strings.Fields(plan.Query.Query)[0])) > 1 {
-			t.Fatalf("follow-up query repeated its subject anchor: %q", plan.Query.Query)
+		if plan.Kind != "event_verification" || plan.Query.Keyword == "" {
+			t.Fatalf("unexpected follow-up plan: %#v", plan)
+		}
+		if !strings.Contains(plan.Query.Query, "2026") {
+			t.Fatalf("expected the result-derived year in the event query, got %q", plan.Query.Query)
 		}
 	}
-	if kinds["official"] != pulseSearchFollowupEventLimit || kinds["independent"] != pulseSearchFollowupEventLimit {
-		t.Fatalf("expected official and independent searches for every event, got %#v", kinds)
+}
+
+func TestPulseQualityFollowupUsesConcreteEventTitleInsteadOfDigestAnchor(t *testing.T) {
+	evidence := pulseSearchEvidence{
+		Module:    pulseSourceTopicHot,
+		Query:     "Anthropic Claude Agent latest news 2026",
+		TopicName: "AI",
+		Results: []pulseSearchResult{
+			{
+				Title:       "AI Daily Digest: Anthropic and OpenAI updates",
+				Snippet:     "The daily digest covers several unrelated model and agent launches.",
+				URL:         "https://digest.example.com/ai-daily",
+				PublishedAt: "2026-08-23",
+			},
+			{
+				Title:       "Anthropic launches browser use and Agent Skills GA — Example News",
+				Snippet:     "Anthropic launched browser use, computer use, Files API, and Agent Skills as generally available on August 19, 2026.",
+				URL:         "https://event.example.com/anthropic-agent-tools-ga",
+				PublishedAt: "2026-08-22",
+			},
+		},
+	}
+
+	seeds := pulseSearchFollowupSeeds("2026-08-27", []pulseSearchEvidence{evidence})
+	if len(seeds) != 1 || strings.Contains(strings.ToLower(seeds[0].Result.Title), "digest") {
+		t.Fatalf("expected only the concrete event page to seed verification, got %#v", seeds)
+	}
+	plans := pulseSearchFollowupPlans("2026-08-27", []pulseSearchEvidence{evidence})
+	if len(plans) != 1 || plans[0].Kind != "event_verification" {
+		t.Fatalf("expected one event-verification follow-up, got %#v", plans)
+	}
+	for _, plan := range plans {
+		if !strings.Contains(plan.Query.Query, "Anthropic launches browser use and Agent Skills GA") ||
+			strings.Contains(plan.Query.Query, "Example News") {
+			t.Fatalf("expected the clean concrete title to anchor follow-up search, got %q", plan.Query.Query)
+		}
 	}
 }
 
@@ -208,6 +305,257 @@ func TestPulseQualityVerifiedClustersMergeSameEventAcrossQueries(t *testing.T) {
 	}
 }
 
+func TestPulseQualityTrustedFirstStageEventPublishesWithoutFollowupSupport(t *testing.T) {
+	const date = "2026-08-28"
+	result := pulseSearchResult{
+		Title:       "OpenAI 发布 GPT-5.6 AgentKit-2.0 企业权限控制",
+		Snippet:     "OpenAI 于 8 月 27 日发布 GPT-5.6 AgentKit-2.0，新增企业审批、工具调用范围和运行记录控制，并开始向企业开发者开放。",
+		URL:         "https://openai.com/news/agentkit-2-enterprise-controls",
+		Source:      "official",
+		PublishedAt: "2026-08-27",
+	}
+	evidence := []pulseSearchEvidence{{
+		QueryID:   "q-agentkit-latest",
+		Stage:     "initial",
+		Module:    pulseSourceTopicHot,
+		Keyword:   "GPT",
+		Query:     "GPT 最新进展",
+		Intent:    "keyword_latest",
+		TopicID:   "topic-ai",
+		TopicName: "AI",
+		Results:   []pulseSearchResult{result},
+	}}
+
+	clusters := pulseVerifiedSearchClusters(date, evidence)
+	if len(clusters) != 1 || len(clusters[0].Results) != 1 {
+		t.Fatalf("expected one publishable first-stage event, got %#v", clusters)
+	}
+	if !strings.Contains(clusters[0].Intent, "二次检索仅用于内容扩展") {
+		t.Fatalf("expected optional follow-up semantics, got %q", clusters[0].Intent)
+	}
+	if !pulseNewsSourcesMeetQualityGate(date, pulseSourceTopicHot, newsSourcesFromSearchResults([]pulseSearchResult{result}, 5)) {
+		t.Fatalf("recent official event should pass without follow-up support: %#v", pulseNewsSourceQualityIssues(date, pulseSourceTopicHot, newsSourcesFromSearchResults([]pulseSearchResult{result}, 5)))
+	}
+	if plans := pulseSearchFollowupPlans(date, evidence); len(plans) != 1 {
+		t.Fatalf("follow-up should still be scheduled as enrichment, got %#v", plans)
+	}
+
+	payload := generatedPulsePayload{Modules: []generatedPulseModule{{
+		Key: pulseSourceTopicHot,
+		Items: []generatedPulseItem{{
+			Title:       "OpenAI 发布 GPT-5.6 AgentKit-2.0，新增企业级 Agent 权限控制",
+			Summary:     "OpenAI 于 8 月 27 日发布 GPT-5.6 AgentKit-2.0，并开始向企业开发者开放新的 Agent 权限控制。官方发布页显示，此次更新覆盖管理员审批、工具调用范围和运行记录查看，让企业能够限制智能体可执行的操作及可访问的数据。新版本还调整了企业接入流程和控制入口，重点面向需要审计与治理能力的生产环境。当前可以确认的变化来自 OpenAI 发布材料；后续二次检索只用于补充外部评价和使用反馈，不影响这条发布信息进入 Pulse。",
+			NewsSources: []pulseNewsSource{{URL: result.URL}},
+		}},
+	}}}
+	filtered, rejections := filterGeneratedPulsePayloadByEvidenceWithDiagnostics(date, payload, clusters)
+	if len(rejections) != 0 || generatedPulseItemCount(filtered) != 1 {
+		t.Fatalf("trusted singleton should remain grounded, filtered=%#v rejections=%#v", filtered, rejections)
+	}
+	_, converted := generatedPayloadToModels(date, filtered, []models.PulseTopic{{ID: "topic-ai", Name: "AI"}})
+	published, publishingRejections := filterPulseItemsForPublishingWithDiagnostics(converted)
+	if len(published) != 1 || len(publishingRejections) != 0 {
+		t.Fatalf("trusted singleton should publish, published=%#v rejected=%#v", published, publishingRejections)
+	}
+
+	// Models sometimes preserve the verified claim while dropping or rewriting
+	// its URL. The short evidence id should recover the canonical official source
+	// without relaxing the source-quality gate.
+	payload.Modules[0].Items[0].EvidenceID = clusters[0].QueryID
+	payload.Modules[0].Items[0].NewsSources = nil
+	filtered, rejections = filterGeneratedPulsePayloadByEvidenceWithDiagnostics(date, payload, clusters)
+	if len(rejections) != 0 || generatedPulseItemCount(filtered) != 1 {
+		t.Fatalf("trusted evidence id should recover a dropped official URL, filtered=%#v rejections=%#v", filtered, rejections)
+	}
+	if got := filtered.Modules[0].Items[0].NewsSources; len(got) != 1 || got[0].URL != result.URL {
+		t.Fatalf("expected the canonical official source to be restored, got %#v", got)
+	}
+
+	duplicatePayload := generatedPulsePayload{Modules: []generatedPulseModule{
+		{Key: pulseSourceTopicHot, Items: []generatedPulseItem{payload.Modules[0].Items[0]}},
+		{Key: pulseSourceMemory, Items: []generatedPulseItem{payload.Modules[0].Items[0]}},
+	}}
+	filtered, rejections = filterGeneratedPulsePayloadByEvidenceWithDiagnostics(date, duplicatePayload, clusters)
+	if generatedPulseItemCount(filtered) != 1 || len(rejections) != 1 ||
+		!containsString(rejections[0].Reasons, "duplicate_evidence_cluster") {
+		t.Fatalf("one verified cluster must publish at most once, filtered=%#v rejections=%#v", filtered, rejections)
+	}
+	duplicateCachedItem := converted[0]
+	duplicateCachedItem.ID = "duplicate-cache-item"
+	duplicateCachedItem.Source = pulseSourceMemory
+	revalidated, _ := revalidatePulseCachedItems([]models.PulseItem{converted[0], duplicateCachedItem})
+	if len(revalidated) != 1 {
+		t.Fatalf("cached Pulse items must also deduplicate the same grounded cluster, got %#v", revalidated)
+	}
+}
+
+func TestPulseQualityOrdinaryFirstStageSingletonStillNeedsCorroboration(t *testing.T) {
+	const date = "2026-08-28"
+	result := pulseSearchResult{
+		Title:       "AgentKit-2.0 发布企业权限控制",
+		Snippet:     "一篇普通站点文章称 AgentKit-2.0 已发布，并介绍企业审批、工具调用范围和运行记录控制。",
+		URL:         "https://ordinary.example.com/agentkit-2-controls",
+		PublishedAt: "2026-08-27",
+	}
+	evidence := []pulseSearchEvidence{{
+		Stage: "initial", Module: pulseSourceTopicHot, Keyword: "AgentKit", Query: "AgentKit 最新进展", Results: []pulseSearchResult{result},
+	}}
+	if clusters := pulseVerifiedSearchClusters(date, evidence); len(clusters) != 0 {
+		t.Fatalf("ordinary singleton must still require corroboration, got %#v", clusters)
+	}
+	if pulseNewsSourcesMeetQualityGate(date, pulseSourceTopicHot, newsSourcesFromSearchResults([]pulseSearchResult{result}, 5)) {
+		t.Fatal("ordinary singleton unexpectedly passed the publication gate")
+	}
+}
+
+func TestPulseQualityKeywordDigestPublishesWithoutEventFollowup(t *testing.T) {
+	const date = "2026-08-28"
+	results := []pulseSearchResult{
+		{
+			Title:       "Ingest-Time Compilation Takes On Query-Time RAG",
+			Snippet:     "A recent RAG review compares ingest-time compilation with query-time retrieval and explains where agentic retrieval reaches its limits.",
+			URL:         "https://dev.to/example/ingest-time-rag",
+			PublishedAt: "2026-08-25",
+		},
+		{
+			Title:   "Trends and Transitions in RAG: From Naive Pipelines to Agentic Retrieval",
+			Snippet: "The report describes RAG moving from fixed vector pipelines toward graph retrieval, adaptive routing, memory systems, and agent-driven retrieval.",
+			URL:     "https://research.example.org/rag-transitions",
+		},
+	}
+	evidence := []pulseSearchEvidence{
+		{QueryID: "rag-latest", Stage: "initial", Module: pulseSourceTopicHot, Keyword: "RAG", Query: "RAG 最新进展", TopicID: "topic-ai", TopicName: "AI", Results: results[:1]},
+		{QueryID: "rag-hot", Stage: "initial", Module: pulseSourceTopicHot, Keyword: "RAG", Query: "RAG 近期热点", TopicID: "topic-ai", TopicName: "AI", Results: results[1:]},
+	}
+	clusters := pulseVerifiedSearchClusters(date, evidence)
+	if len(clusters) != 1 || clusters[0].Intent != "keyword_digest" || len(clusters[0].Results) != 2 {
+		t.Fatalf("expected a first-stage keyword digest, got %#v", clusters)
+	}
+
+	payload := generatedPulsePayload{Modules: []generatedPulseModule{{
+		Key: pulseSourceTopicHot,
+		Items: []generatedPulseItem{{
+			Title:       "RAG 从固定检索管线转向编译式与 Agentic Retrieval",
+			Summary:     "近期 RAG 讨论的重点正在从传统向量检索管线，转向摄取阶段编译、图检索、自适应路由与 Agentic Retrieval。两份材料分别从处理时机和系统架构解释这一变化：前者把部分查询成本前移到数据摄取阶段，后者强调由智能体根据任务动态选择检索策略。它们共同指出，固定的 query-time RAG 在复杂任务、长期记忆和多步推理中存在边界。这里归纳的是同一关键词下的技术方向，不代表两份来源报道了同一个产品发布。",
+			NewsSources: []pulseNewsSource{{URL: results[0].URL}, {URL: results[1].URL}},
+		}},
+	}}}
+	filtered, rejections := filterGeneratedPulsePayloadByEvidenceWithDiagnostics(date, payload, clusters)
+	if len(rejections) != 0 || generatedPulseItemCount(filtered) != 1 {
+		t.Fatalf("keyword digest should remain grounded, filtered=%#v rejections=%#v", filtered, rejections)
+	}
+	if filtered.Modules[0].Items[0].EvidenceMode != "keyword_digest" {
+		t.Fatalf("expected grounding to retain digest mode, got %#v", filtered.Modules[0].Items[0])
+	}
+	_, converted := generatedPayloadToModels(date, filtered, []models.PulseTopic{{ID: "topic-ai", Name: "AI"}})
+	published, publishingRejections := filterPulseItemsForPublishingWithDiagnostics(converted)
+	if len(published) != 1 || len(publishingRejections) != 0 {
+		t.Fatalf("keyword digest should publish, published=%#v rejected=%#v", published, publishingRejections)
+	}
+
+	// A digest can also be recovered conservatively from its copy when the model
+	// omitted both URLs and evidence_id. The title must still identify a trend,
+	// and the best verified cluster must be unambiguous.
+	payload.Modules[0].Items[0].EvidenceID = ""
+	payload.Modules[0].Items[0].Title = "Agentic RAG 路线被重点押注，固定检索管线继续转向编译式检索"
+	payload.Modules[0].Items[0].NewsSources = nil
+	filtered, rejections = filterGeneratedPulsePayloadByEvidenceWithDiagnostics(date, payload, clusters)
+	if len(rejections) != 0 || generatedPulseItemCount(filtered) != 1 {
+		t.Fatalf("unambiguous RAG digest copy should recover dropped URLs, filtered=%#v rejections=%#v", filtered, rejections)
+	}
+	if got := len(filtered.Modules[0].Items[0].NewsSources); got != 2 {
+		t.Fatalf("expected both verified digest sources to be restored, got %d", got)
+	}
+
+	payload.Modules[0].Items[0].Title = "RAG 准确率提升 99%，Agentic 路线持续演进"
+	filtered, rejections = filterGeneratedPulsePayloadByEvidenceWithDiagnostics(date, payload, clusters)
+	if len(rejections) != 1 || generatedPulseItemCount(filtered) != 0 ||
+		!containsString(rejections[0].Reasons, "unsupported_digest_title_claim") {
+		t.Fatalf("unsupported hard claim must not be rescued as a trend digest, filtered=%#v rejections=%#v", filtered, rejections)
+	}
+
+	if !pulseKeywordDigestTitleClaimsSupported("RAG 调研覆盖 32% 的复杂任务并持续演进", []pulseNewsSource{
+		{Title: "RAG survey covers 32% of complex tasks", URL: "https://research.example.com/rag-32"},
+		{Title: "Independent RAG report confirms 32% coverage", URL: "https://news.example.org/rag-coverage"},
+	}) {
+		t.Fatal("a quantitative digest claim supported by two independent sources should remain publishable")
+	}
+	if !pulseKeywordDigestTitleClaimsSupported("AI Agent 生态在 2026 年继续扩张", []pulseNewsSource{
+		{Title: "AI Agent tools expand", URL: "https://research.example.com/agent-tools"},
+		{Title: "Agent tutorials grow", URL: "https://news.example.org/agent-tutorials"},
+	}) {
+		t.Fatal("a calendar year must not be treated as an unsupported quantitative performance claim")
+	}
+}
+
+func TestPulseQualityPromptRequiresVerifiedEvidenceID(t *testing.T) {
+	prompt := pulseGenerationPrompt()
+	if !strings.Contains(prompt, `"evidence_id":"vc1"`) ||
+		!strings.Contains(prompt, "query_id 原样复制到 evidence_id") {
+		t.Fatalf("Pulse generation prompt must bind every item to a verified cluster: %s", prompt)
+	}
+}
+
+func TestPulseQualityGenerationContextKeepsVerifiedClustersBounded(t *testing.T) {
+	clusters := make([]pulseSearchEvidence, 0, 20)
+	for clusterIndex := 0; clusterIndex < 20; clusterIndex++ {
+		cluster := pulseSearchEvidence{
+			QueryID:   fmt.Sprintf("vc%d", clusterIndex+1),
+			Stage:     "cluster",
+			Module:    pulseSourceTopicHot,
+			Query:     fmt.Sprintf("topic-%d", clusterIndex),
+			Intent:    "keyword_digest",
+			Keyword:   fmt.Sprintf("keyword-%d", clusterIndex),
+			TopicID:   fmt.Sprintf("topic-%d", clusterIndex%6),
+			TopicName: fmt.Sprintf("Topic %d", clusterIndex%6),
+		}
+		for sourceIndex := 0; sourceIndex < 5; sourceIndex++ {
+			cluster.Results = append(cluster.Results, pulseSearchResult{
+				Title:       fmt.Sprintf("Verified result %d-%d", clusterIndex, sourceIndex),
+				Snippet:     strings.Repeat("可信来源正文摘录", 100),
+				URL:         fmt.Sprintf("https://source-%d.example.com/article/%d?utm_source=pulse#section", sourceIndex, clusterIndex),
+				PublishedAt: "2026-08-27",
+			})
+		}
+		clusters = append(clusters, cluster)
+	}
+
+	selected := pulseSelectGenerationClusters(clusters)
+	compact := pulseCompactGenerationClusters(selected)
+	if len(compact) != pulseGenerationClusterLimit {
+		t.Fatalf("expected %d bounded clusters, got %d", pulseGenerationClusterLimit, len(compact))
+	}
+	for _, cluster := range compact {
+		if len(cluster.Results) > pulseGenerationSourceLimit {
+			t.Fatalf("cluster exceeded source limit: %#v", cluster)
+		}
+		for _, result := range cluster.Results {
+			if len([]rune(result.Snippet)) > pulseGenerationSnippetLimit {
+				t.Fatalf("snippet exceeded compact limit: %d", len([]rune(result.Snippet)))
+			}
+			if strings.Contains(result.URL, "?") || strings.Contains(result.URL, "#") {
+				t.Fatalf("generation URL retained tracking noise: %s", result.URL)
+			}
+		}
+	}
+
+	encoded, err := json.Marshal(pulseGenerationInput{
+		Date:             "2026-08-28",
+		UserID:           "user",
+		VerifiedClusters: compact,
+		RetrievalSummary: map[string]int{"query_count": 64, "verified_cluster_count": len(compact)},
+	})
+	if err != nil {
+		t.Fatalf("marshal compact generation input: %v", err)
+	}
+	if runeCount := len([]rune(string(encoded))); runeCount >= 22000 {
+		t.Fatalf("verified generation context must leave room below the 24k context-block cap, got %d characters", runeCount)
+	}
+	if bytes.Contains(encoded, []byte(`"search_evidence"`)) || bytes.Contains(encoded, []byte(`"search_queries"`)) {
+		t.Fatalf("raw discovery data leaked into generation input: %s", encoded)
+	}
+}
+
 func TestPulseQualityClusterRequiresTrustedSourceAndEveryPairToMatch(t *testing.T) {
 	const date = "2026-07-27"
 	unknownSources := []pulseNewsSource{
@@ -226,6 +574,102 @@ func TestPulseQualityClusterRequiresTrustedSourceAndEveryPairToMatch(t *testing.
 	})
 	if pulseNewsSourcesMeetQualityGate(date, pulseSourceTopicHot, mixed) {
 		t.Fatalf("a trusted but unrelated third source must not ride along with a verified pair: %#v", mixed)
+	}
+}
+
+func TestPulseQualityAcceptsThreeDatedIndependentSpecialistSources(t *testing.T) {
+	const date = "2026-08-27"
+	sources := []pulseNewsSource{
+		{Title: "Anthropic launches browser use and Agent Skills GA", Snippet: "Anthropic launched browser use, computer use, Files API, and Agent Skills on August 19, 2026.", URL: "https://specialistone.com/anthropic-agent-tools-ga", PublishedAt: "2026-08-22"},
+		{Title: "Anthropic browser use and Agent Skills reach GA", Snippet: "The August 19 Anthropic launch made browser use, computer use, Files API, and Agent Skills generally available.", URL: "https://specialisttwo.net/claude-agent-tools", PublishedAt: "2026-08-21"},
+		{Title: "Anthropic ships browser use, Files API, and Agent Skills GA", Snippet: "Anthropic launched browser use, computer use, Files API, and Agent Skills as generally available on August 19.", URL: "https://specialistthree.org/anthropic-ga", PublishedAt: "2026-08-20"},
+	}
+	if !pulseNewsSourcesMeetQualityGate(date, pulseSourceTopicHot, sources) {
+		t.Fatalf("expected three dated independent specialist sources describing one event to pass, issues=%#v", pulseNewsSourceQualityIssues(date, pulseSourceTopicHot, sources))
+	}
+	if pulseNewsSourcesMeetQualityGate(date, pulseSourceTopicHot, sources[:2]) {
+		t.Fatal("two untrusted specialist sources must still require an official or authoritative source")
+	}
+}
+
+func TestPulseQualityCorroboratesAnthropicAgentToolsGAFromLiveRetrievalShape(t *testing.T) {
+	const date = "2026-08-27"
+	if !pulseCopyContainsConcreteEvent("Anthropic把Browser Use与Agent Skills推向GA") {
+		t.Fatal("expected a compact GA headline from the live summarizer to count as a concrete product event")
+	}
+	sources := []pulseNewsSource{
+		{
+			Title:       "Anthropic Makes AI Agent Tools Production-Ready — Enterprise DNA",
+			Snippet:     "Anthropic's August 19 update moves browser use, computer use, and Agent Skills to GA. The Files API and Agent Skills API moved out of beta on the same day.",
+			URL:         "https://enterprisedna.co/resources/news/anthropic-browser-use-computer-use-skills-api-enterprise-ga-august-2026/",
+			PublishedAt: "2026-08-22",
+		},
+		{
+			Title:       "Claude Platform: Computer Use Skills API Files API 正式 GA — Anthropic's agent stack is now production-ready",
+			Snippet:     "On August 20, Anthropic pushed computer use, browser use, the Skills API, and the Files API out of beta in one launch.",
+			URL:         "https://topaiproduct.com/2026/08/22/claude-platform-computer-use-skills-api-files-api/",
+			PublishedAt: "2026-08-23",
+		},
+		{
+			Title:       "Claude Agent Stack Goes GA: Computer Use, Skills, Files — Web Pulse",
+			Snippet:     "Anthropic made computer use, browser use, the Skills API, and the Files API generally available on August 20, 2026.",
+			URL:         "https://wpnews.pro/news/claude-agent-stack-goes-ga-computer-use-skills-files",
+			PublishedAt: "2026-08-23",
+		},
+	}
+	results := pulseSearchResultsFromNewsSources(sources)
+	if !pulseNewsSourcesMeetQualityGate(date, pulseSourceTopicHot, sources) {
+		t.Fatalf(
+			"expected the live Anthropic GA retrieval shape to corroborate, issues=%#v terms=%#v/%#v/%#v pairs=%v/%v/%v",
+			pulseNewsSourceQualityIssues(date, pulseSourceTopicHot, sources),
+			pulseCorroborationTerms(results[0]), pulseCorroborationTerms(results[1]), pulseCorroborationTerms(results[2]),
+			pulseSearchResultsShareConcreteEvent(results[0], results[1]),
+			pulseSearchResultsShareConcreteEvent(results[0], results[2]),
+			pulseSearchResultsShareConcreteEvent(results[1], results[2]),
+		)
+	}
+	evidence := pulseSearchEvidence{
+		Module:  pulseSourceTopicHot,
+		Query:   "Anthropic Makes AI Agent Tools Production-Ready independent news report after 2026-07-28",
+		Results: results,
+	}
+	for left := range results {
+		for right := left + 1; right < len(results); right++ {
+			if !pulseSearchResultsCorroborate(evidence, results[left], results[right]) {
+				t.Fatalf("expected live follow-up pair %d/%d to corroborate", left, right)
+			}
+		}
+	}
+	seen := map[string]bool{}
+	for _, result := range results[:2] {
+		seen[pulseSearchResultDedupeKey(result)] = true
+	}
+	expanded := pulseExpandGeneratedItemSources(sources[:2], []pulseSearchEvidence{evidence}, seen)
+	if len(expanded) != 3 {
+		t.Fatalf("expected grounding to attach the third corroborating follow-up source, got %#v", expanded)
+	}
+}
+
+func TestPulseQualitySearchEvidenceEmptyStateDoesNotClaimSearchUnavailable(t *testing.T) {
+	const date = "2026-08-27"
+	evidence := []pulseSearchEvidence{{
+		Module: pulseSourceTopicHot,
+		Query:  "Anthropic latest news",
+		Results: []pulseSearchResult{{
+			Title:       "Anthropic agent platform commentary",
+			Snippet:     "A single source discusses Anthropic agent platform changes.",
+			URL:         "https://commentary.example.com/anthropic-agent",
+			PublishedAt: "2026-08-26",
+		}},
+	}}
+	modules, items := buildSearchFallbackPulse(date, []models.PulseTopic{{ID: "ai", Name: "AI"}}, nil, evidence, nil)
+	if len(items) != 0 {
+		t.Fatalf("expected uncorroborated evidence to remain unpublished, got %#v", items)
+	}
+	for _, module := range modules {
+		if strings.Contains(module.Summary, "外网搜索暂不可用") {
+			t.Fatalf("retrieval-aware empty state must not claim search was unavailable: %#v", module)
+		}
 	}
 }
 
@@ -529,6 +973,87 @@ func TestPulseQualityIndependentSourcesUseRegistrableDomain(t *testing.T) {
 	}
 }
 
+func TestPulseQualitySyndicatedHeadlineDoesNotCountAsIndependentCoverage(t *testing.T) {
+	const headline = "智能体的下一站，不在聊天框里"
+	results := []pulseSearchResult{
+		{
+			Title:       headline,
+			Snippet:     "同一篇稿件介绍智能体调度从线程转向意图与任务。",
+			URL:         "https://new.qq.com/rain/a/20260827A01",
+			PublishedAt: "2026-08-27",
+		},
+		{
+			Title:       "智能体的下一站, 不在聊天框里",
+			Snippet:     "同一篇稿件介绍智能体调度从线程转向意图与任务。",
+			URL:         "https://www.toutiao.com/article/123456",
+			PublishedAt: "2026-08-27",
+		},
+	}
+
+	if got := pulseSearchIndependentSourceCount(results); got != 1 {
+		t.Fatalf("syndicated copies must count as one publication, got %d", got)
+	}
+	if pulseClusterAddsIndependentSource(results[:1], results[1]) {
+		t.Fatal("a verbatim syndicated headline must not extend a corroborated cluster")
+	}
+	if pulseSearchResultsShareConcreteEvent(results[0], results[1]) {
+		t.Fatal("syndicated copies must not pass the independent same-event check")
+	}
+	sources := newsSourcesFromSearchResults(results, 5)
+	if pulseNewsSourcesMeetQualityGate("2026-08-28", pulseSourceTopicHot, sources) {
+		t.Fatalf("syndicated copies passed the publishing quality gate: %#v", sources)
+	}
+}
+
+func TestPulseQualityDistinctHeadlinesRemainIndependent(t *testing.T) {
+	results := []pulseSearchResult{
+		{
+			Title: "OpenAI 发布 AgentGuard-2 权限控制",
+			URL:   "https://openai.com/news/agentguard-2-controls",
+		},
+		{
+			Title: "独立报道确认 AgentGuard-2 已向开发者开放",
+			URL:   "https://www.reuters.com/technology/agentguard-2-controls",
+		},
+	}
+	if got := pulseSearchIndependentSourceCount(results); got != 2 {
+		t.Fatalf("distinct independently written headlines should remain independent, got %d", got)
+	}
+	if !pulseClusterAddsIndependentSource(results[:1], results[1]) {
+		t.Fatal("distinct independently written coverage should extend the cluster")
+	}
+}
+
+func TestPulseQualityFallbackPrefersConcreteChineseSourceHeadline(t *testing.T) {
+	results := []pulseSearchResult{
+		{
+			Title:       "OpenAI 公布 GPT-5.6 AgentGuard-2 权限控制",
+			Snippet:     "OpenAI 于2026年8月27日发布 GPT-5.6 AgentGuard-2，并向开发者开放新的权限控制。",
+			URL:         "https://openai.com/news/gpt-56-agentguard-2",
+			PublishedAt: "2026-08-27",
+		},
+		{
+			Title:       "GPT-5.6 AgentGuard-2 权限控制已向开发者开放",
+			Snippet:     "独立报道确认 OpenAI 已发布 GPT-5.6 AgentGuard-2 权限控制。",
+			URL:         "https://www.reuters.com/technology/gpt-56-agentguard-2",
+			PublishedAt: "2026-08-27",
+		},
+	}
+	if got := searchFallbackClusterPreferredHeadline(results); got != results[0].Title {
+		t.Fatalf("expected primary-source headline, got %q", got)
+	}
+	item := searchFallbackClusterItem("2026-08-28", pulseSearchEvidence{
+		Module:    pulseSourceTopicHot,
+		Query:     "GPT 最新进展",
+		Keyword:   "GPT",
+		TopicName: "AI",
+		Results:   results,
+	}, 0)
+	if item.Title != results[0].Title {
+		t.Fatalf("fallback title should retain the concrete event headline, got %q", item.Title)
+	}
+}
+
 func TestPulseQualityGateRejectsHistoricalUnsafeSourceURLs(t *testing.T) {
 	const date = "2026-07-27"
 	unsafeURLs := []string{
@@ -588,6 +1113,14 @@ func TestPulseQualityFreshnessRequiresRecentCorroboration(t *testing.T) {
 		},
 	}
 	oneRecentOneStale := []pulseSearchResult{recent[0], stale[1]}
+	oneRecentOneUndated := []pulseSearchResult{
+		recent[0],
+		{
+			Title:   "Independent report confirms OpenAI enterprise agent controls",
+			Snippet: "The report describes the same OpenAI enterprise agent controls release.",
+			URL:     "https://www.reuters.com/technology/openai-agent-controls-undated",
+		},
+	}
 
 	if !pulseSearchResultsFreshEnough(date, pulseSourceTopicHot, recent) {
 		t.Fatal("expected two recent corroborating sources to pass freshness")
@@ -597,6 +1130,9 @@ func TestPulseQualityFreshnessRequiresRecentCorroboration(t *testing.T) {
 	}
 	if pulseSearchResultsFreshEnough(date, pulseSourceTopicHot, oneRecentOneStale) {
 		t.Fatal("expected a single recent source to be insufficient corroboration")
+	}
+	if !pulseSearchResultsFreshEnough(date, pulseSourceTopicHot, oneRecentOneUndated) {
+		t.Fatal("expected one recent source plus an undated independent corroborating source to pass")
 	}
 }
 
@@ -609,11 +1145,11 @@ func TestPulseQualityFreshnessUsesModuleSpecificWindows(t *testing.T) {
 		}
 	}
 
-	if !pulseSearchResultsFreshEnough(date, pulseSourceTopicHot, results("2026-08-21", "2026-08-22")) {
-		t.Fatal("expected Topic sources inside the 72-hour window to pass")
+	if !pulseSearchResultsFreshEnough(date, pulseSourceTopicHot, results("2026-07-25", "2026-08-22")) {
+		t.Fatal("expected Topic sources inside the 30-day window to pass")
 	}
-	if pulseSearchResultsFreshEnough(date, pulseSourceInterestHot, results("2026-08-20", "2026-08-21")) {
-		t.Fatal("expected hot-news sources outside the 72-hour window to fail")
+	if pulseSearchResultsFreshEnough(date, pulseSourceInterestHot, results("2026-07-24", "2026-08-21")) {
+		t.Fatal("expected hot-news sources outside the 30-day window to fail")
 	}
 	if !pulseSearchResultsFreshEnough(date, pulseSourceMemory, results("2026-07-25", "2026-08-01")) {
 		t.Fatal("expected Memory sources inside the 30-day window to pass")
@@ -624,11 +1160,46 @@ func TestPulseQualityFreshnessUsesModuleSpecificWindows(t *testing.T) {
 
 	topicSuffixes := pulseSearchQuerySuffixesForDate(pulseSourceTopicHot, date)
 	memorySuffixes := pulseSearchQuerySuffixesForDate(pulseSourceMemory, date)
-	if !strings.Contains(strings.Join(topicSuffixes, " "), "after 2026-08-21") {
-		t.Fatalf("expected Topic queries to request the 72-hour window, got %#v", topicSuffixes)
+	if !strings.Contains(strings.Join(topicSuffixes, " "), "after 2026-07-25") {
+		t.Fatalf("expected Topic queries to request the 30-day window, got %#v", topicSuffixes)
 	}
 	if !strings.Contains(strings.Join(memorySuffixes, " "), "after 2026-07-25") {
 		t.Fatalf("expected Memory queries to request the 30-day window, got %#v", memorySuffixes)
+	}
+}
+
+func TestPulseQualityRecoversPublishedDateFromSearchSnippet(t *testing.T) {
+	result := pulseSearchResult{
+		Title:   "Claude in Chrome launches for all users",
+		Snippet: "Anthropic announced the general availability release on August 26, 2026.",
+		URL:     "https://claude.com/blog/claude-in-chrome",
+	}
+	publishedAt, ok := pulseSearchResultPublishedAt(result)
+	if !ok || publishedAt.Format("2006-01-02") != "2026-08-26" {
+		t.Fatalf("expected embedded English publication date to be recovered, got %v, %v", publishedAt, ok)
+	}
+	normalized := normalizePulseSearchResults(
+		"2026-08-27",
+		pulseSearchQuery{Module: pulseSourceTopicHot, Query: "Claude Chrome launch", TopicName: "Claude"},
+		[]bridge.SearchResult{{
+			Title:   result.Title,
+			Snippet: result.Snippet,
+			URL:     result.URL,
+			Source:  "web",
+		}},
+		1,
+	)
+	if len(normalized) != 1 || normalized[0].PublishedAt != "2026-08-26" {
+		t.Fatalf("expected normalized evidence to expose the inferred date to the summarizer, got %#v", normalized)
+	}
+}
+
+func TestPulseQualityClaudeFollowupUsesCurrentAnnouncementDomain(t *testing.T) {
+	if got := pulseOfficialDomainForAnchor([]string{"Anthropic", "Claude", "Chrome"}); got != "claude.com" {
+		t.Fatalf("expected Claude product follow-up to use claude.com, got %q", got)
+	}
+	if !pulseAuthoritativeSearchSource(pulseSearchResult{URL: "https://new.qq.com/rain/a/20260819A02YB300"}) {
+		t.Fatal("expected a Tencent News report used by the reference trace to count as authoritative")
 	}
 }
 
@@ -822,6 +1393,28 @@ func TestPulseNewsCopyQualityRequiresSubjectActionAndConcreteFact(t *testing.T) 
 	}
 }
 
+func TestValidateGeneratedPulsePayloadAllowsMissingModuleCopy(t *testing.T) {
+	payload := generatedPulsePayload{Modules: []generatedPulseModule{
+		{Key: pulseSourceTopicHot, Items: []generatedPulseItem{{Title: "OpenAI 发布 GPT-5.6"}}},
+		{Key: pulseSourceMemory},
+		{Key: pulseSourceInterestHot},
+	}}
+
+	if err := validateGeneratedPulsePayload(payload, false); err != nil {
+		t.Fatalf("module copy should be optional because model conversion supplies defaults: %v", err)
+	}
+
+	modules, _ := generatedPayloadToModels("2026-08-27", payload, nil)
+	if len(modules) != 3 {
+		t.Fatalf("expected all modules, got %#v", modules)
+	}
+	for _, module := range modules {
+		if strings.TrimSpace(module.Title) == "" || strings.TrimSpace(module.Summary) == "" {
+			t.Fatalf("expected default copy for %q, got %#v", module.Key, module)
+		}
+	}
+}
+
 func TestPulseQualityRecommendedItemsDoNotResurrectFilteredPool(t *testing.T) {
 	item := qualityTestPulseItem("2026-07-27", "downvoted", []pulseNewsSource{
 		{Title: "OpenAI releases agent controls", URL: "https://openai.com/news/agent-controls", PublishedAt: "2026-07-26"},
@@ -946,7 +1539,14 @@ func TestPulseQualityGeneratedItemsMustReferenceSearchEvidence(t *testing.T) {
 		},
 	}}
 
-	filtered, rejections := filterGeneratedPulsePayloadByEvidenceWithDiagnostics(date, payload, evidence)
+	verifiedClusters := pulseVerifiedSearchClusters(date, evidence)
+	if len(verifiedClusters) != 1 {
+		t.Fatalf("expected one verified OpenAI cluster, got %#v", verifiedClusters)
+	}
+	// Even an exact evidence id cannot rescue unrelated copy.
+	payload.Modules[0].Items[1].EvidenceID = verifiedClusters[0].QueryID
+	groundingEvidence := append(append([]pulseSearchEvidence{}, evidence...), verifiedClusters...)
+	filtered, rejections := filterGeneratedPulsePayloadByEvidenceWithDiagnostics(date, payload, groundingEvidence)
 	if len(rejections) != 1 {
 		t.Fatalf("expected one hallucinated item to be rejected, got %#v", rejections)
 	}
@@ -964,6 +1564,43 @@ func TestPulseQualityGeneratedItemsMustReferenceSearchEvidence(t *testing.T) {
 	published, publishingRejections := filterPulseItemsForPublishingWithDiagnostics(converted)
 	if len(published) != 1 || len(publishingRejections) != 0 {
 		t.Fatalf("grounded valid copy must remain publishable after model conversion, published=%#v rejected=%#v", published, publishingRejections)
+	}
+}
+
+func TestPulseQualityGroundingCanCorroborateAcrossPresentationModules(t *testing.T) {
+	const date = "2026-08-27"
+	results := []pulseSearchResult{
+		{Title: "Anthropic Makes AI Agent Tools Production-Ready", Snippet: "Anthropic moved browser use, computer use, Files API, and Agent Skills to GA on August 19.", URL: "https://enterprisedna.co/news/anthropic-agent-tools-ga", PublishedAt: "2026-08-22"},
+		{Title: "Claude Platform computer use and Skills API reach GA", Snippet: "Anthropic made browser use, computer use, Files API, and Agent Skills generally available on August 20.", URL: "https://topaiproduct.com/claude-agent-tools-ga", PublishedAt: "2026-08-22"},
+		{Title: "Claude Agent Stack Goes GA: Computer Use, Skills, Files", Snippet: "Anthropic shipped browser use, computer use, Files API, and Agent Skills out of beta on August 20.", URL: "https://wpnews.pro/news/claude-agent-stack-ga", PublishedAt: "2026-08-23"},
+	}
+	evidence := []pulseSearchEvidence{
+		{Module: pulseSourceTopicHot, Query: "Anthropic Agent tools latest", Results: results[:2]},
+		{Module: pulseSourceInterestHot, Query: "Anthropic Makes AI Agent Tools Production-Ready independent news report", Results: results},
+	}
+	payload := generatedPulsePayload{Modules: []generatedPulseModule{{
+		Key: pulseSourceTopicHot,
+		Items: []generatedPulseItem{{
+			Title:   "Anthropic 推进 Agent 工具生产化：browser use、computer use 与 Skills 全面 GA",
+			Summary: "Anthropic 在 8 月将 browser use、computer use、Files API 与 Agent Skills 推进至正式可用阶段。三个独立专业来源对产品名称、GA 状态和发布时间给出了相互一致的描述，并共同指出相关能力已经退出测试状态。现阶段可以确认的是工具与 API 的可用性变化；各来源未共同支持的性能数字、迁移成本和商业影响不纳入结论，后续仍应以官方文档更新为准。",
+			NewsSources: []pulseNewsSource{
+				{URL: results[0].URL},
+				{URL: results[1].URL},
+			},
+		}},
+	}}}
+
+	filtered, rejections := filterGeneratedPulsePayloadByEvidenceWithDiagnostics(date, payload, evidence)
+	if len(rejections) != 0 || generatedPulseItemCount(filtered) != 1 {
+		t.Fatalf("expected cross-module evidence to ground the item, filtered=%#v rejections=%#v", filtered, rejections)
+	}
+	if got := len(filtered.Modules[0].Items[0].NewsSources); got != 3 {
+		t.Fatalf("expected the corroborating interest result to be attached to the topic item, got %d", got)
+	}
+	_, converted := generatedPayloadToModels(date, filtered, nil)
+	published, publishingRejections := filterPulseItemsForPublishingWithDiagnostics(converted)
+	if len(published) != 1 || len(publishingRejections) != 0 {
+		t.Fatalf("expected the grounded GA item to publish, published=%#v rejected=%#v", published, publishingRejections)
 	}
 }
 

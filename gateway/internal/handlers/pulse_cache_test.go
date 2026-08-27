@@ -186,15 +186,16 @@ func TestPulseCurrentCacheRevalidatesSourceFreshness(t *testing.T) {
 			Title:       "OpenAI releases enterprise agent controls",
 			URL:         "https://openai.com/news/agent-controls",
 			Snippet:     "OpenAI released enterprise agent controls to business customers.",
-			PublishedAt: "2026-08-20",
+			PublishedAt: "2026-07-20",
 		},
 		{
 			Title:       "OpenAI enterprise agent controls launch",
 			URL:         "https://reuters.com/technology/openai-agent-controls",
 			Snippet:     "The same OpenAI enterprise agent controls launched for business customers.",
-			PublishedAt: "2026-08-20",
+			PublishedAt: "2026-07-20",
 		},
 	})
+	item.Summary = "OpenAI 发布企业 Agent 权限控制，并向企业管理员开放新的配置入口。官方材料显示，这次更新覆盖权限审批、工具调用范围和运行记录查看，目标是让企业能够限制 Agent 可执行的操作。独立报道确认了相同的产品名称，并补充说明首批能力将面向企业客户逐步开放。两份来源对核心功能和开放对象的描述一致，但它们的发布日期已经超出当前 Pulse 的近 30 天窗口，因此不应继续出现在今日信息流中。"
 	var detail pulseItemDetail
 	if err := json.Unmarshal([]byte(item.DetailJSON), &detail); err != nil {
 		t.Fatalf("decode detail: %v", err)
@@ -209,8 +210,11 @@ func TestPulseCurrentCacheRevalidatesSourceFreshness(t *testing.T) {
 	if !pulseNewsCopyMeetsQualityGate(item.Title, item.Summary) {
 		t.Fatalf("test fixture must satisfy the copy quality gate: %#v", item)
 	}
+	if issues := pulseSummaryLengthIssues(item.Summary); len(issues) != 0 {
+		t.Fatalf("test fixture must satisfy the summary length gate, got %#v", issues)
+	}
 	if pulseItemMeetsQualityGate(item) {
-		t.Fatal("expected four-day-old Topic sources to fail the 72-hour freshness gate")
+		t.Fatal("expected Topic sources older than 30 days to fail the freshness gate")
 	}
 	items, _ := revalidatePulseCachedItems([]models.PulseItem{item})
 	if len(items) != 0 {

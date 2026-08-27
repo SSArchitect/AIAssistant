@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -444,8 +445,11 @@ func TestPulseUsesAgentGeneratedModules(t *testing.T) {
 			t.Fatalf("decode request: %v", err)
 		}
 		contextText := strings.Join(req.ContextBlocks, "\n")
-		if !strings.Contains(contextText, "search_evidence") || !strings.Contains(contextText, "https://example.com/robotics-latest") {
-			t.Fatalf("expected search evidence in generation context, got %s", contextText)
+		if !strings.Contains(contextText, "verified_clusters") || !strings.Contains(contextText, "https://example.com/robotics-latest") {
+			t.Fatalf("expected verified clusters in generation context, got %s", contextText)
+		}
+		if strings.Contains(contextText, `"search_evidence"`) || strings.Contains(contextText, `"search_queries"`) {
+			t.Fatalf("raw discovery evidence must stay out of the bounded generation context, got %s", contextText)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{
@@ -549,7 +553,7 @@ func TestPulseChatPersistsBackgroundTokenUsage(t *testing.T) {
 	defer agentServer.Close()
 
 	handler := NewPulseHandler(bridge.NewAgentClient(agentServer.URL, time.Second))
-	response, err := handler.requestPulseChat("pulse-acct-a-2026-07-06", "acct-a", "generate pulse", []string{"system"}, []string{"context"})
+	response, err := handler.requestPulseChat(context.Background(), "pulse-acct-a-2026-07-06", "acct-a", "generate pulse", []string{"system"}, []string{"context"})
 	if err != nil {
 		t.Fatalf("request pulse chat: %v", err)
 	}
@@ -1703,12 +1707,14 @@ func TestSearchFallbackClusterEntitiesPreferSharedTerms(t *testing.T) {
 	}
 }
 
-func TestPulseSearchEvidenceFollowupAddsCorroboratingResults(t *testing.T) {
+func TestPulseSearchEvidenceUsesTwoDiscoveryQueriesAndOneEventFollowupPerKeyword(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	if err := database.Init(filepath.Join(t.TempDir(), "assistant.db")); err != nil {
 		t.Fatalf("init database: %v", err)
 	}
 
+	requestCount := 0
+	var requestMu sync.Mutex
 	agentServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/agent/search" {
 			t.Fatalf("unexpected path: %s", r.URL.Path)
@@ -1718,51 +1724,64 @@ func TestPulseSearchEvidenceFollowupAddsCorroboratingResults(t *testing.T) {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+		requestMu.Lock()
+		requestCount++
+		requestMu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
+		subject := "Claude Code"
+		slug := "claude-code"
+		if strings.Contains(strings.ToLower(req.Query), "gemini") {
+			subject = "Gemini CLI"
+			slug = "gemini-cli"
+		}
 		results := []bridge.SearchResult{
 			{
-				Title:   "Anthropic launches Agent Harness 2.0 for Claude Code",
-				Snippet: "The Agent Harness 2.0 release adds shared controls for Claude Code and Gemini CLI.",
-				URL:     "https://github.com/duanyytop/agents-radar/issues/1280",
+				Title:   "Model vendor launches Agent Harness 2.0 for " + subject,
+				Snippet: "The Agent Harness 2.0 release adds shared controls for " + subject + ".",
+				URL:     "https://github.com/duanyytop/agents-radar/issues/" + slug,
 				Source:  "github",
 			},
-		}
-		if req.Limit == pulseSearchFollowupResultLimit {
-			results = []bridge.SearchResult{
-				{
-					Title:   "Agent Harness 2.0 launch adds Claude Code controls",
-					Snippet: "An independent report confirms the new Agent Harness 2.0 release for Claude Code.",
-					URL:     "https://research.example.org/agent-harness-claude-gemini",
-					Source:  "web",
-				},
-			}
 		}
 		_ = json.NewEncoder(w).Encode(bridge.SearchResponse{
 			Query:   req.Query,
 			Sources: []string{"web"},
 			Results: results,
+			TraceNodes: []map[string]interface{}{{
+				"node": "query_rewrite",
+				"queries": []string{
+					req.Query + " latest product updates",
+					"最新 " + req.Query + " 产品动态",
+				},
+			}},
 		})
 	}))
 	defer agentServer.Close()
 
 	handler := NewPulseHandler(bridge.NewAgentClient(agentServer.URL, time.Second))
-	evidence, searchErrors := handler.collectPulseSearchEvidence("2026-06-20", []models.PulseTopic{
+	evidence, searchErrors := handler.collectPulseSearchEvidence(context.Background(), "2026-06-20", []models.PulseTopic{
 		{ID: "topic-ai", Name: "AI 工程", Keywords: encodeKeywords([]string{"Claude Code", "Gemini CLI"})},
 	}, nil)
 	if len(searchErrors) != 0 {
 		t.Fatalf("expected no search errors, got %#v", searchErrors)
 	}
-	followupKinds := map[string]bool{}
+	if requestCount != 6 {
+		t.Fatalf("expected four discovery requests and two event follow-ups, got %d", requestCount)
+	}
+	stageCounts := map[string]int{}
 	for _, item := range evidence {
-		if pulseSearchIndependentSourceCount(item.Results) >= 2 {
-			if item.Stage != "followup" || item.ParentQueryID == "" {
-				t.Fatalf("expected separately recorded follow-up evidence, got %#v", item)
-			}
-			followupKinds[item.Intent] = true
+		stageCounts[item.Stage]++
+		if item.Keyword == "" {
+			t.Fatalf("expected keyword attribution on every query, got %#v", item)
+		}
+		if item.Stage == "followup" && item.ParentQueryID == "" {
+			t.Fatalf("expected event follow-up to reference its discovery query, got %#v", item)
+		}
+		if len(item.RewrittenQueries) != 2 {
+			t.Fatalf("expected SearchService rewrite variants to be retained, got %#v", item)
 		}
 	}
-	if !followupKinds["official"] || !followupKinds["independent"] {
-		t.Fatalf("expected separate official and independent corroboration searches, got %#v", evidence)
+	if stageCounts["initial"] != 4 || stageCounts["followup"] != 2 {
+		t.Fatalf("unexpected two-stage evidence shape: %#v", stageCounts)
 	}
 }
 

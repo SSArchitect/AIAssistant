@@ -1,7 +1,9 @@
 package bridge
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -9,6 +11,24 @@ import (
 	"testing"
 	"time"
 )
+
+func TestAgentClientSearchContextCancelsInFlightRequest(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-r.Context().Done():
+		case <-time.After(250 * time.Millisecond):
+		}
+	}))
+	defer server.Close()
+
+	client := NewAgentClient(server.URL, time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	_, err := client.SearchContext(ctx, SearchRequest{Query: "slow base query"})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected context deadline to cancel search, got %v", err)
+	}
+}
 
 func TestAgentClientChatSendsAgentIDAndDecodesTrace(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -202,6 +222,7 @@ func TestAgentClientSearch(t *testing.T) {
 			"query": "AI Agent latest",
 			"sources": ["web"],
 			"provider_errors": [],
+			"trace_nodes": [{"node":"query_rewrite","queries":["AI Agent latest news","最新 AI Agent 动态"]}],
 			"results": [
 				{
 					"title": "Agent frameworks ship new release",
@@ -228,6 +249,9 @@ func TestAgentClientSearch(t *testing.T) {
 	}
 	if resp.Query != "AI Agent latest" || len(resp.Sources) != 1 || resp.Sources[0] != "web" {
 		t.Fatalf("unexpected search response metadata: %#v", resp)
+	}
+	if len(resp.TraceNodes) != 1 {
+		t.Fatalf("expected query rewrite trace metadata, got %#v", resp.TraceNodes)
 	}
 	if len(resp.Results) != 1 || resp.Results[0].URL != "https://example.com/agent-release" {
 		t.Fatalf("unexpected search results: %#v", resp.Results)

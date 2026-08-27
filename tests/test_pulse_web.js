@@ -113,11 +113,11 @@ test('Pulse empty state does not concatenate verbose module failure summaries', 
         pulseFallbackModuleDetail();
     `, {
         t: (key) => key === 'pulse.emptyUnavailableDetail'
-            ? '本轮没有找到由至少两个近期独立来源共同证实的具体事件，因此不展示卡片。'
+            ? '本轮没有找到由至少两个独立来源共同证实、且至少一个来源在近 30 天内的具体事件，因此不展示卡片。'
             : key,
     });
 
-    assert.equal(result, '本轮没有找到由至少两个近期独立来源共同证实的具体事件，因此不展示卡片。');
+    assert.equal(result, '本轮没有找到由至少两个独立来源共同证实、且至少一个来源在近 30 天内的具体事件，因此不展示卡片。');
     assert.doesNotMatch(result, /弱证据为主|另一段很长/);
 });
 

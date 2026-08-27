@@ -70,6 +70,7 @@ class SearchRequest(BaseModel):
     query: str
     sources: list[str] | None = None
     limit: int = 5
+    lightweight: bool = False
     open_results: bool = False
     include_images: bool = True
     image_limit: int = 3
@@ -510,6 +511,8 @@ async def search(request: SearchRequest):
             query,
             sources=sources,
             limit=limit,
+            rewrite_query=not request.lightweight,
+            rerank=not request.lightweight,
             open_results=bool(request.open_results),
             include_images=bool(request.include_images),
             image_limit=max(1, min(int(request.image_limit or 3), 5)),

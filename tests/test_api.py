@@ -88,6 +88,7 @@ async def test_search_endpoint_forwards_image_validation_options(client, monkeyp
         json={
             "query": "validated images",
             "limit": 2,
+            "lightweight": True,
             "include_images": True,
             "image_limit": 4,
         },
@@ -97,6 +98,8 @@ async def test_search_endpoint_forwards_image_validation_options(client, monkeyp
     assert response.json()["results"][0]["image_url"].endswith("validated.jpg")
     assert seen["include_images"] is True
     assert seen["image_limit"] == 4
+    assert seen["rewrite_query"] is False
+    assert seen["rerank"] is False
 
 
 @pytest.mark.asyncio

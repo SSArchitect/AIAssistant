@@ -2,6 +2,7 @@ package bridge
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -40,12 +41,14 @@ type ChatRequest struct {
 }
 
 type SearchRequest struct {
-	Query       string   `json:"query"`
-	Sources     []string `json:"sources,omitempty"`
-	Limit       int      `json:"limit,omitempty"`
-	OpenResults bool     `json:"open_results,omitempty"`
-	OpenLimit   int      `json:"open_limit,omitempty"`
-	PageChars   int      `json:"page_chars,omitempty"`
+	Query         string   `json:"query"`
+	Sources       []string `json:"sources,omitempty"`
+	Limit         int      `json:"limit,omitempty"`
+	Lightweight   bool     `json:"lightweight,omitempty"`
+	OpenResults   bool     `json:"open_results,omitempty"`
+	IncludeImages bool     `json:"include_images"`
+	OpenLimit     int      `json:"open_limit,omitempty"`
+	PageChars     int      `json:"page_chars,omitempty"`
 }
 
 type SearchResult struct {
@@ -57,10 +60,11 @@ type SearchResult struct {
 }
 
 type SearchResponse struct {
-	Query          string         `json:"query"`
-	Sources        []string       `json:"sources"`
-	ProviderErrors []string       `json:"provider_errors,omitempty"`
-	Results        []SearchResult `json:"results"`
+	Query          string                   `json:"query"`
+	Sources        []string                 `json:"sources"`
+	ProviderErrors []string                 `json:"provider_errors,omitempty"`
+	Results        []SearchResult           `json:"results"`
+	TraceNodes     []map[string]interface{} `json:"trace_nodes,omitempty"`
 }
 
 type ChatAttachment struct {
@@ -410,16 +414,26 @@ func NewAgentClient(baseURL string, timeout time.Duration) *AgentClient {
 }
 
 func (c *AgentClient) Chat(req ChatRequest) (*ChatResponse, error) {
+	return c.ChatContext(context.Background(), req)
+}
+
+func (c *AgentClient) ChatContext(ctx context.Context, req ChatRequest) (*ChatResponse, error) {
 	body, err := json.Marshal(req)
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 
-	resp, err := c.httpClient.Post(
+	httpReq, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodPost,
 		c.baseURL+"/agent/chat",
-		"application/json",
 		bytes.NewReader(body),
 	)
+	if err != nil {
+		return nil, fmt.Errorf("build agent request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("agent request failed: %w", err)
 	}
@@ -439,16 +453,26 @@ func (c *AgentClient) Chat(req ChatRequest) (*ChatResponse, error) {
 }
 
 func (c *AgentClient) Search(req SearchRequest) (*SearchResponse, error) {
+	return c.SearchContext(context.Background(), req)
+}
+
+func (c *AgentClient) SearchContext(ctx context.Context, req SearchRequest) (*SearchResponse, error) {
 	body, err := json.Marshal(req)
 	if err != nil {
 		return nil, fmt.Errorf("marshal search request: %w", err)
 	}
 
-	resp, err := c.httpClient.Post(
+	httpReq, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodPost,
 		c.baseURL+"/agent/search",
-		"application/json",
 		bytes.NewReader(body),
 	)
+	if err != nil {
+		return nil, fmt.Errorf("build agent search request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("agent search request failed: %w", err)
 	}

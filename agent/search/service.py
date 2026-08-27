@@ -1651,6 +1651,8 @@ class SearchService:
         *,
         sources: list[str] | None = None,
         limit: int = 5,
+        rewrite_query: bool = True,
+        rerank: bool = True,
         open_results: bool = False,
         open_limit: int = WEB_PAGE_OPEN_RESULT_LIMIT,
         page_chars: int = WEB_PAGE_DEFAULT_CHARS,
@@ -1668,7 +1670,19 @@ class SearchService:
             SEARCH_PROVIDER_LIMIT_MAX,
             max(limit, limit * self._provider_limit_multiplier),
         )
-        query_rewrite = await self._build_query_rewrite(query)
+        if rewrite_query:
+            query_rewrite = await self._build_query_rewrite(query)
+        else:
+            query_rewrite = {
+                "node": "query_rewrite",
+                "status": "skipped",
+                "policy_id": "caller_exact_query_v1",
+                "policy": "The caller supplied an already-expanded discovery query.",
+                "strategy": "exact_query",
+                "original_query": query,
+                "queries": [query],
+                "reason": "caller_disabled_rewrite",
+            }
         query_variants = list(query_rewrite.get("queries") or [])
         self._last_query_variants = query_variants
         self._last_query_rewrite = query_rewrite
@@ -1716,9 +1730,9 @@ class SearchService:
         rank_started = perf_counter()
         raw_results = results
         ranked_results = _rank_results_by_query_relevance(query, raw_results)
-        rerank_candidate_limit = self._rerank_candidate_limit(limit)
+        rerank_candidate_limit = self._rerank_candidate_limit(limit) if rerank else limit
         ranking_output_results = ranked_results[:rerank_candidate_limit]
-        if self._reranker is None:
+        if self._reranker is None or not rerank:
             rerank_candidates = ranking_output_results
         else:
             rerank_candidates = _build_rerank_candidates(
@@ -1737,12 +1751,23 @@ class SearchService:
             )
         )
         rerank_started = perf_counter()
-        limited_results, rerank_node = await self._rerank_results(
-            query,
-            rerank_candidates,
-            limit=limit,
-            query_context=query_rewrite,
-        )
+        if rerank:
+            limited_results, rerank_node = await self._rerank_results(
+                query,
+                rerank_candidates,
+                limit=limit,
+                query_context=query_rewrite,
+            )
+        else:
+            limited_results = rerank_candidates[:limit]
+            rerank_node = _llm_rerank_trace_node(
+                status="skipped",
+                provider="",
+                input_count=len(rerank_candidates),
+                output_results=limited_results,
+                limit=limit,
+                reason="caller_disabled_rerank",
+            )
         rerank_node["duration_ms"] = int((perf_counter() - rerank_started) * 1000)
         self._last_trace_nodes.append(rerank_node)
         if open_results:

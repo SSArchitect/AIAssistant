@@ -1029,6 +1029,63 @@ class TestSearchSkill:
         assert rewrite_node["queries"] == [original_query, rewrite_query]
 
     @pytest.mark.asyncio
+    async def test_search_service_lightweight_mode_skips_llm_rewrite_and_rerank(self):
+        query = "Anthropic 近期热点"
+
+        class Rewriter:
+            name = "must-not-run"
+            max_queries = 2
+
+            async def rewrite(self, query, *, max_queries, lexical_plan=None):
+                raise AssertionError("lightweight discovery must not call the LLM rewriter")
+
+        class Reranker:
+            name = "must-not-run"
+            max_candidates = 5
+
+            async def rerank(self, query, results, *, limit, query_context=None):
+                raise AssertionError("lightweight discovery must not call the LLM reranker")
+
+        class Provider:
+            name = "web"
+
+            def __init__(self):
+                self.calls = []
+
+            async def search(self, query, *, limit=5):
+                self.calls.append(query)
+                return [
+                    SearchResult(
+                        title="Anthropic 发布 Claude 更新",
+                        snippet="Anthropic 发布了新的 Claude 产品更新。",
+                        url="https://example.com/anthropic-update",
+                        source=self.name,
+                    )
+                ]
+
+        provider = Provider()
+        service = SearchService(
+            providers=[provider],
+            query_rewriter=Rewriter(),
+            reranker=Reranker(),
+            retry_attempts=1,
+            retry_delay=0,
+        )
+
+        results = await service.search(
+            query,
+            limit=1,
+            rewrite_query=False,
+            rerank=False,
+        )
+
+        assert provider.calls == [query]
+        assert len(results) == 1
+        assert service.last_query_rewrite["strategy"] == "exact_query"
+        assert service.last_trace_nodes[0]["status"] == "skipped"
+        assert service.last_trace_nodes[-1]["reason"] == "caller_disabled_rerank"
+
+    @pytest.mark.asyncio
     async def test_search_service_preserves_specialized_market_query_results(self):
         class Provider:
             name = "web"
