@@ -41,16 +41,16 @@ type PulseModule struct {
 
 type PulseEvent struct {
 	ID           string    `json:"id" gorm:"primaryKey"`
-	UserID       string    `json:"user_id" gorm:"index;not null;default:0"`
+	UserID       string    `json:"user_id" gorm:"index;not null;default:0;index:idx_pulse_event_user_type_created,priority:1"`
 	Date         string    `json:"date" gorm:"index"`
 	ItemID       string    `json:"item_id" gorm:"index;not null"`
 	TopicID      string    `json:"topic_id,omitempty" gorm:"index"`
 	TopicName    string    `json:"topic_name,omitempty"`
 	Source       string    `json:"source,omitempty" gorm:"index"`
-	EventType    string    `json:"event_type" gorm:"index;not null"`
+	EventType    string    `json:"event_type" gorm:"index;not null;index:idx_pulse_event_user_type_created,priority:2"`
 	Value        int       `json:"value"`
 	MetadataJSON string    `json:"metadata_json,omitempty" gorm:"type:text"`
-	CreatedAt    time.Time `json:"created_at"`
+	CreatedAt    time.Time `json:"created_at" gorm:"index:idx_pulse_event_user_type_created,priority:3"`
 }
 
 // PulseScheduleState persists automatic refresh throttling per account. Keeping

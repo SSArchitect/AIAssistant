@@ -691,10 +691,11 @@ async def test_chat_stream_migrates_intermediate_tool_round_and_streams_next_rou
 
     assert resp.status_code == 200
     assert provider.calls == 2
+    assert "event: provisional_token" in resp.text
     assert "event: intermediate" in resp.text
     assert '"type": "model.intermediate"' in resp.text
     intermediate_position = resp.text.index("event: intermediate")
-    final_position = resp.text.index('"text": "final answer"', intermediate_position)
+    final_position = resp.text.index('event: token', intermediate_position)
     assert intermediate_position < final_position
     assert '"response": "final answer"' in resp.text
 

@@ -30,6 +30,7 @@ import (
 type PulseHandler struct {
 	agent               *bridge.AgentClient
 	syncer              *ConfigSyncer
+	consumptionTTL      time.Duration
 	generationLocksMu   sync.Mutex
 	generationLocks     map[string]*pulseGenerationLock
 	jobsMu              sync.Mutex
@@ -345,6 +346,7 @@ const (
 	pulseEventLike     = "like"
 	pulseEventUpvote   = "upvote"
 	pulseEventDownvote = "downvote"
+	pulseEventQuestion = "question_click"
 
 	pulseSchedulerTickInterval       = 30 * time.Minute
 	pulseScheduledRefreshInterval    = 6 * time.Hour
@@ -367,9 +369,9 @@ const (
 	pulseCandidateTargetCount        = 12
 	pulseCandidateMaxCount           = 18
 	pulseVisibleItemLimit            = 12
-	pulseOpenFilterThreshold         = 3
 	pulseExposureFilterThreshold     = 8
 	pulseFeatureEventLimit           = 1000
+	pulseDefaultConsumptionTTL       = 7 * 24 * time.Hour
 	pulseTopicFreshnessWindow        = 30 * 24 * time.Hour
 	pulseMemoryFreshnessWindow       = 30 * 24 * time.Hour
 	pulseWelcomeSuggestionMaxAge     = 7 * 24 * time.Hour
@@ -473,11 +475,31 @@ func NewPulseHandler(agents ...*bridge.AgentClient) *PulseHandler {
 	if len(agents) > 0 {
 		agent = agents[0]
 	}
-	return &PulseHandler{agent: agent, jobs: map[string]pulseGenerationJob{}}
+	return &PulseHandler{
+		agent:          agent,
+		consumptionTTL: pulseDefaultConsumptionTTL,
+		jobs:           map[string]pulseGenerationJob{},
+	}
 }
 
-func NewPulseHandlerWithSyncer(agent *bridge.AgentClient, syncer *ConfigSyncer) *PulseHandler {
-	return &PulseHandler{agent: agent, syncer: syncer, jobs: map[string]pulseGenerationJob{}}
+func NewPulseHandlerWithSyncer(agent *bridge.AgentClient, syncer *ConfigSyncer, consumptionTTL ...time.Duration) *PulseHandler {
+	ttl := pulseDefaultConsumptionTTL
+	if len(consumptionTTL) > 0 && consumptionTTL[0] > 0 {
+		ttl = consumptionTTL[0]
+	}
+	return &PulseHandler{
+		agent:          agent,
+		syncer:         syncer,
+		consumptionTTL: ttl,
+		jobs:           map[string]pulseGenerationJob{},
+	}
+}
+
+func (h *PulseHandler) pulseConsumptionTTL() time.Duration {
+	if h != nil && h.consumptionTTL > 0 {
+		return h.consumptionTTL
+	}
+	return pulseDefaultConsumptionTTL
 }
 
 func (h *PulseHandler) StartScheduler() {
@@ -789,15 +811,20 @@ func (h *PulseHandler) RecordEvent(c *gin.Context) {
 		return
 	}
 	itemID := strings.TrimSpace(req.ItemID)
-	if itemID == "" {
+	if itemID == "" && eventType != pulseEventQuestion {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "item_id is required"})
 		return
 	}
 
 	var item models.PulseItem
-	if err := database.DB.First(&item, "id = ? AND user_id = ?", itemID, userID).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "pulse item not found"})
-		return
+	if itemID != "" {
+		if err := database.DB.First(&item, "id = ? AND user_id = ?", itemID, userID).Error; err != nil {
+			if eventType != pulseEventQuestion {
+				c.JSON(http.StatusNotFound, gin.H{"error": "pulse item not found"})
+				return
+			}
+			itemID = ""
+		}
 	}
 
 	value := defaultPulseEventValue(eventType)
@@ -807,6 +834,17 @@ func (h *PulseHandler) RecordEvent(c *gin.Context) {
 	metadata := map[string]interface{}{}
 	for key, value := range req.Metadata {
 		metadata[key] = value
+	}
+	if eventType == pulseEventQuestion {
+		questionKey := pulseQuestionKey(firstNonEmptyPulse(
+			pulseMetadataString(metadata, "question_key"),
+			pulseMetadataString(metadata, "question"),
+		))
+		if questionKey == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "question metadata is required"})
+			return
+		}
+		metadata["question_key"] = questionKey
 	}
 	if key := pulseClusterKey(item); key != "" {
 		metadata["cluster_key"] = key
@@ -819,10 +857,10 @@ func (h *PulseHandler) RecordEvent(c *gin.Context) {
 		ID:           uuid.NewString(),
 		UserID:       userID,
 		Date:         firstNonEmptyPulse(req.Date, item.Date),
-		ItemID:       item.ID,
+		ItemID:       firstNonEmptyPulse(item.ID, itemID, "welcome"),
 		TopicID:      item.TopicID,
 		TopicName:    item.TopicName,
-		Source:       item.Source,
+		Source:       firstNonEmptyPulse(item.Source, pulseMetadataString(metadata, "source")),
 		EventType:    eventType,
 		Value:        value,
 		MetadataJSON: metadataJSON,
@@ -833,7 +871,7 @@ func (h *PulseHandler) RecordEvent(c *gin.Context) {
 		return
 	}
 
-	featureState, err := loadPulseFeatureState(userID, item.Date, []models.PulseItem{item})
+	featureState, err := loadPulseFeatureState(userID, item.Date, []models.PulseItem{item}, h.pulseConsumptionTTL())
 	if err != nil {
 		slog.Warn("Pulse event recorded but feature state load failed", "item_id", item.ID, "error", err)
 	}
@@ -876,7 +914,7 @@ func (h *PulseHandler) writePulseWithStatus(c *gin.Context, date string, userID 
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load pulse modules"})
 		return
 	}
-	featureState, err := loadPulseFeatureState(userID, date, items)
+	featureState, err := loadPulseFeatureState(userID, date, items, h.pulseConsumptionTTL())
 	if err != nil {
 		slog.Warn("Pulse feature state load failed", "user_id", userID, "date", date, "error", err)
 	}
@@ -896,6 +934,10 @@ func (h *PulseHandler) writePulseWithStatus(c *gin.Context, date string, userID 
 	memorySignals, err := h.loadMemorySignals(userID)
 	if err != nil {
 		slog.Warn("Pulse memory signal load failed for suggested topics", "user_id", userID, "error", err)
+	}
+	consumedQuestionKeys, err := loadPulseConsumedQuestionKeys(userID, h.pulseConsumptionTTL())
+	if err != nil {
+		slog.Warn("Pulse consumed welcome questions load failed", "user_id", userID, "error", err)
 	}
 
 	generatedAt := ""
@@ -927,6 +969,8 @@ func (h *PulseHandler) writePulseWithStatus(c *gin.Context, date string, userID 
 		"items":                   itemResponsesWithFeatures(items, items, featureState),
 		"suggestion_date":         suggestionDate,
 		"suggestion_items":        suggestionItems,
+		"consumed_question_keys":  consumedQuestionKeys,
+		"consumption_ttl_seconds": int(h.pulseConsumptionTTL().Seconds()),
 		"modules":                 moduleResponsesWithFeatures(modules, items, items, featureState),
 		"refreshing":              refreshing,
 		"refresh_stage":           refreshStage,
@@ -974,7 +1018,7 @@ func (h *PulseHandler) loadPulseWelcomeSuggestionItems(
 		if err := persistPulseCachedItemUpgrades(cacheUpgrades); err != nil {
 			slog.Warn("Pulse welcome cache upgrade failed", "user_id", userID, "date", fallbackDate, "error", err)
 		}
-		fallbackFeatureState, err := loadPulseFeatureState(userID, fallbackDate, fallbackItems)
+		fallbackFeatureState, err := loadPulseFeatureState(userID, fallbackDate, fallbackItems, h.pulseConsumptionTTL())
 		if err != nil {
 			return itemResponsesWithFeatures(currentCandidates, currentAllItems, currentFeatureState), date, err
 		}
@@ -7219,22 +7263,24 @@ func pulseSafeHTTPURL(rawURL string) bool {
 }
 
 type pulseFeatureState struct {
-	feedbackByItem map[string]pulseItemFeedbackResponse
-	feedbackByKey  map[string]pulseItemFeedbackResponse
-	directScores   map[string]int
-	clusterScores  map[string]int
-	topicScores    map[string]int
-	sourceScores   map[string]int
+	feedbackByItem  map[string]pulseItemFeedbackResponse
+	feedbackByKey   map[string]pulseItemFeedbackResponse
+	consumedItemIDs map[string]bool
+	directScores    map[string]int
+	clusterScores   map[string]int
+	topicScores     map[string]int
+	sourceScores    map[string]int
 }
 
-func loadPulseFeatureState(userID string, date string, items []models.PulseItem) (pulseFeatureState, error) {
+func loadPulseFeatureState(userID string, date string, items []models.PulseItem, consumptionTTL ...time.Duration) (pulseFeatureState, error) {
 	state := pulseFeatureState{
-		feedbackByItem: map[string]pulseItemFeedbackResponse{},
-		feedbackByKey:  map[string]pulseItemFeedbackResponse{},
-		directScores:   map[string]int{},
-		clusterScores:  map[string]int{},
-		topicScores:    map[string]int{},
-		sourceScores:   map[string]int{},
+		feedbackByItem:  map[string]pulseItemFeedbackResponse{},
+		feedbackByKey:   map[string]pulseItemFeedbackResponse{},
+		consumedItemIDs: map[string]bool{},
+		directScores:    map[string]int{},
+		clusterScores:   map[string]int{},
+		topicScores:     map[string]int{},
+		sourceScores:    map[string]int{},
 	}
 	if len(items) == 0 {
 		return state, nil
@@ -7251,6 +7297,31 @@ func loadPulseFeatureState(userID string, date string, items []models.PulseItem)
 	}
 	if len(itemIDs) == 0 {
 		return state, nil
+	}
+
+	ttl := pulseDefaultConsumptionTTL
+	if len(consumptionTTL) > 0 && consumptionTTL[0] > 0 {
+		ttl = consumptionTTL[0]
+	}
+	// Consumption is deliberately scoped to the concrete database item ID and
+	// the configured TTL. A newly generated item is eligible even when it belongs
+	// to the same semantic cluster as a previously opened card.
+	var consumedEvents []models.PulseEvent
+	if err := database.DB.
+		Select("item_id").
+		Where(
+			"user_id = ? AND event_type IN ? AND value <> 0 AND created_at >= ?",
+			normalizedUserID(userID),
+			[]string{pulseEventOpen, "click"},
+			time.Now().Add(-ttl),
+		).
+		Find(&consumedEvents).Error; err != nil {
+		return state, err
+	}
+	for _, event := range consumedEvents {
+		if event.ItemID != "" {
+			state.consumedItemIDs[event.ItemID] = true
+		}
 	}
 
 	var events []models.PulseEvent
@@ -7604,11 +7675,11 @@ func pulseItemLooksLowInformation(item models.PulseItem) bool {
 }
 
 func (state pulseFeatureState) shouldFilter(item models.PulseItem) bool {
-	feedback := state.feedbackFor(item.ID)
-	if feedback.Vote == "down" {
+	if state.consumedItemIDs[item.ID] {
 		return true
 	}
-	if feedback.OpenCount >= pulseOpenFilterThreshold {
+	feedback := state.feedbackFor(item.ID)
+	if feedback.Vote == "down" {
 		return true
 	}
 	if feedback.ExposureCount >= pulseExposureFilterThreshold {
@@ -7616,9 +7687,6 @@ func (state pulseFeatureState) shouldFilter(item models.PulseItem) bool {
 	}
 	clusterFeedback := state.feedbackByKey[pulseClusterKey(item)]
 	if clusterFeedback.Vote == "down" {
-		return true
-	}
-	if clusterFeedback.OpenCount >= pulseOpenFilterThreshold {
 		return true
 	}
 	return clusterFeedback.ExposureCount >= pulseExposureFilterThreshold
@@ -7700,9 +7768,61 @@ func normalizePulseEventType(value string) string {
 		return pulseEventUpvote
 	case pulseEventDownvote, "down", "dislike", "thumb_down", "thumbs_down":
 		return pulseEventDownvote
+	case pulseEventQuestion, "welcome_question_click", "suggestion_click":
+		return pulseEventQuestion
 	default:
 		return ""
 	}
+}
+
+func pulseQuestionKey(value string) string {
+	return strings.ToLower(strings.Join(strings.Fields(strings.TrimSpace(value)), " "))
+}
+
+func pulseMetadataString(metadata map[string]interface{}, key string) string {
+	if metadata == nil {
+		return ""
+	}
+	value, ok := metadata[key]
+	if !ok || value == nil {
+		return ""
+	}
+	return strings.TrimSpace(fmt.Sprint(value))
+}
+
+func loadPulseConsumedQuestionKeys(userID string, consumptionTTL ...time.Duration) ([]string, error) {
+	ttl := pulseDefaultConsumptionTTL
+	if len(consumptionTTL) > 0 && consumptionTTL[0] > 0 {
+		ttl = consumptionTTL[0]
+	}
+	var events []models.PulseEvent
+	if err := database.DB.
+		Where(
+			"user_id = ? AND event_type = ? AND created_at >= ?",
+			normalizedUserID(userID),
+			pulseEventQuestion,
+			time.Now().Add(-ttl),
+		).
+		Order("created_at desc").
+		Find(&events).Error; err != nil {
+		return nil, err
+	}
+	keys := make([]string, 0, len(events))
+	seen := map[string]bool{}
+	for _, event := range events {
+		metadata := map[string]interface{}{}
+		_ = json.Unmarshal([]byte(event.MetadataJSON), &metadata)
+		key := pulseQuestionKey(firstNonEmptyPulse(
+			pulseMetadataString(metadata, "question_key"),
+			pulseMetadataString(metadata, "question"),
+		))
+		if key == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		keys = append(keys, key)
+	}
+	return keys, nil
 }
 
 func defaultPulseEventValue(eventType string) int {

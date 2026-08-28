@@ -4,11 +4,44 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
+const vm = require('node:vm');
 
 const appSource = fs.readFileSync(
     path.resolve(__dirname, '../web/static/js/app.js'),
     'utf8',
 );
+
+function extractFunctionDeclaration(name) {
+    const asyncMarker = `async function ${name}(`;
+    const syncMarker = `function ${name}(`;
+    const asyncStart = appSource.indexOf(asyncMarker);
+    const start = asyncStart >= 0 ? asyncStart : appSource.indexOf(syncMarker);
+    assert.notEqual(start, -1, `missing ${name} in app.js`);
+    const parametersEnd = appSource.indexOf(')', start);
+    const bodyStart = appSource.indexOf('{', parametersEnd);
+    let depth = 0;
+    let quote = '';
+    let escaped = false;
+    for (let index = bodyStart; index < appSource.length; index += 1) {
+        const char = appSource[index];
+        if (escaped) {
+            escaped = false;
+            continue;
+        }
+        if (quote) {
+            if (char === '\\') escaped = true;
+            else if (char === quote) quote = '';
+            continue;
+        }
+        if (['"', "'", '`'].includes(char)) {
+            quote = char;
+            continue;
+        }
+        if (char === '{') depth += 1;
+        if (char === '}' && --depth === 0) return appSource.slice(start, index + 1);
+    }
+    assert.fail(`unterminated ${name}`);
+}
 
 test('chat model selector loads public safe model settings', () => {
     const loadStart = appSource.indexOf('async function loadSettings()');
@@ -97,4 +130,49 @@ test('welcome recommendations and New Topic both use the lazy new-topic draft', 
     assert.match(quickActionSource, /ensureWelcomeStartsNewTopic\(\);/);
     assert.match(newTopicSource, /currentConversationId = null;\s*saveCurrentConversationId\(null\);/);
     assert.doesNotMatch(newTopicSource, /createConversation\(/);
+});
+
+test('concurrent first sends share one idempotent conversation creation', async () => {
+    const source = [
+        extractFunctionDeclaration('createConversation'),
+        extractFunctionDeclaration('createClientRequestId'),
+    ].join('\n');
+    const result = await vm.runInNewContext(`
+        (async () => {
+            let conversationCreatePromise = null;
+            let conversationCreateRequestId = '';
+            let currentConversationId = null;
+            let currentUserId = 'mobile-user';
+            let currentAgentId = 'super_chat';
+            let conversations = [];
+            let calls = 0;
+            const requestIds = [];
+            const SUPER_CHAT_AGENT_ID = 'super_chat';
+            const apiCall = async (_method, _path, body) => {
+                calls += 1;
+                requestIds.push(body.request_id);
+                await new Promise((resolve) => setTimeout(resolve, 5));
+                return { id: 'conv-single-flight' };
+            };
+            const updateSendState = () => {};
+            const saveCurrentConversationId = () => {};
+            const saveSelectedModes = () => {};
+            const saveThinkingEnabled = () => {};
+            const renderConversationList = () => {};
+            const updateTopbar = () => {};
+            ${source}
+            const [first, second] = await Promise.all([
+                createConversation(),
+                createConversation(),
+            ]);
+            return JSON.stringify({ calls, requestIds, first, second, conversationCount: conversations.length });
+        })();
+    `, { setTimeout, Math, Date });
+    const state = JSON.parse(result);
+
+    assert.equal(state.calls, 1);
+    assert.equal(state.first.id, 'conv-single-flight');
+    assert.equal(state.second.id, 'conv-single-flight');
+    assert.equal(state.conversationCount, 1);
+    assert.match(state.requestIds[0], /^conversation_/);
 });

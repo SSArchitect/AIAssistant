@@ -256,13 +256,20 @@ test('a stale Pulse load cannot overwrite a newer refresh response', async () =>
 });
 
 test('Super Chat welcome shows six sourced actions with at most three from Pulse', () => {
-    const source = extractFunctionDeclaration('superChatWelcomeActions');
+    const source = [
+        extractFunctionDeclaration('pulseQuestionKey'),
+        extractFunctionDeclaration('pulseConsumptionTTLMillis'),
+        extractFunctionDeclaration('locallyConsumedWelcomeQuestionKeys'),
+        extractFunctionDeclaration('superChatWelcomeActions'),
+    ].join('\n');
     const actions = vm.runInNewContext(`
         const SUPER_CHAT_WELCOME_ACTION_LIMIT = 6;
         const SUPER_CHAT_PULSE_ACTION_LIMIT = 3;
         const SUPER_CHAT_AGENT_ID = 'super_chat';
+        const PULSE_DEFAULT_CONSUMPTION_TTL_SECONDS = 604800;
         const currentConversationId = '';
         const currentLanguage = 'zh';
+        const clickedWelcomeQuestionKeys = new Map();
         const pulse = {
             items: [],
             suggestion_items: [
@@ -311,13 +318,20 @@ test('Super Chat welcome shows six sourced actions with at most three from Pulse
 });
 
 test('Super Chat welcome always has six sourced fallback questions when Pulse and history are empty', () => {
-    const source = extractFunctionDeclaration('superChatWelcomeActions');
+    const source = [
+        extractFunctionDeclaration('pulseQuestionKey'),
+        extractFunctionDeclaration('pulseConsumptionTTLMillis'),
+        extractFunctionDeclaration('locallyConsumedWelcomeQuestionKeys'),
+        extractFunctionDeclaration('superChatWelcomeActions'),
+    ].join('\n');
     const actions = vm.runInNewContext(`
         const SUPER_CHAT_WELCOME_ACTION_LIMIT = 6;
         const SUPER_CHAT_PULSE_ACTION_LIMIT = 3;
         const SUPER_CHAT_AGENT_ID = 'super_chat';
+        const PULSE_DEFAULT_CONSUMPTION_TTL_SECONDS = 604800;
         const currentConversationId = '';
         const currentLanguage = 'en';
+        const clickedWelcomeQuestionKeys = new Map();
         const pulse = { items: [] };
         const conversations = [];
         ${source}
@@ -340,6 +354,92 @@ test('Super Chat welcome always has six sourced fallback questions when Pulse an
         'welcome.reviewGoals',
     ]);
     assert.ok(actions.every((action) => action.meta.startsWith('welcome.sourceLabel')));
+});
+
+test('clicked welcome questions are removed from later recommendation renders', () => {
+    const source = [
+        extractFunctionDeclaration('pulseQuestionKey'),
+        extractFunctionDeclaration('pulseConsumptionTTLMillis'),
+        extractFunctionDeclaration('locallyConsumedWelcomeQuestionKeys'),
+        extractFunctionDeclaration('superChatWelcomeActions'),
+    ].join('\n');
+    const actions = vm.runInNewContext(`
+        const SUPER_CHAT_WELCOME_ACTION_LIMIT = 6;
+        const SUPER_CHAT_PULSE_ACTION_LIMIT = 3;
+        const SUPER_CHAT_AGENT_ID = 'super_chat';
+        const PULSE_DEFAULT_CONSUMPTION_TTL_SECONDS = 604800;
+        const currentConversationId = '';
+        const currentLanguage = 'zh';
+        const clickedWelcomeQuestionKeys = new Map([
+            ['本地已点击的问题', Date.now()],
+            ['本地已过期的问题', Date.now() - 7200_000],
+        ]);
+        const pulse = {
+            consumption_ttl_seconds: 3600,
+            consumed_question_keys: ['服务端已点击的问题'],
+            suggestion_items: [{
+                id: 'pulse-consumed',
+                title: 'Pulse item',
+                detail: { suggested_questions: [
+                    '服务端已点击的问题',
+                    '本地已点击的问题',
+                    '仍然值得追问的问题',
+                    '本地已过期的问题',
+                ] },
+            }],
+        };
+        const conversations = [];
+        ${source}
+        superChatWelcomeActions();
+    `, {
+        buildPulseChatPrompt: (item, question) => `pulse:${item.id}:${question}`,
+        conversationAgentId: () => 'super_chat',
+        truncateText: (value) => value,
+        t: (key) => key,
+    });
+
+    const labels = Array.from(actions, (action) => action.label);
+    assert.ok(labels.includes('仍然值得追问的问题'));
+    assert.ok(labels.includes('本地已过期的问题'));
+    assert.ok(!labels.includes('服务端已点击的问题'));
+    assert.ok(!labels.includes('本地已点击的问题'));
+});
+
+test('Pulse card open is consumed immediately and server filtering starts at one open', () => {
+    const openSource = extractFunctionDeclaration('openPulsePost');
+    const renderSource = extractFunctionDeclaration('renderPulse');
+
+    assert.match(openSource, /consumedPulseItemIds\.set\(itemId, Date\.now\(\)\)/);
+    assert.match(openSource, /recordPulseEvent\(itemId, pulseEventOpen, 1/);
+    assert.match(renderSource, /!pulseItemConsumedLocally\(item\?\.id\)/);
+});
+
+test('local Pulse item consumption expires using the server TTL', () => {
+    const source = [
+        extractFunctionDeclaration('pulseConsumptionTTLMillis'),
+        extractFunctionDeclaration('pulseItemConsumedLocally'),
+    ].join('\n');
+    const result = vm.runInNewContext(`
+        const PULSE_DEFAULT_CONSUMPTION_TTL_SECONDS = 604800;
+        const pulse = { consumption_ttl_seconds: 3600 };
+        const now = Date.now();
+        const consumedPulseItemIds = new Map([
+            ['active', now - 60_000],
+            ['expired', now - 7200_000],
+        ]);
+        ${source}
+        ({
+            active: pulseItemConsumedLocally('active', now),
+            expired: pulseItemConsumedLocally('expired', now),
+            expiredRemoved: !consumedPulseItemIds.has('expired'),
+        });
+    `);
+
+    assert.deepEqual({ ...result }, {
+        active: true,
+        expired: false,
+        expiredRemoved: true,
+    });
 });
 
 test('invalidating Pulse requests clears polling and rejects the old account token', () => {
@@ -652,15 +752,22 @@ test('Pulse AI optimization opens Super Chat and submits the generated task', as
     const result = await vm.runInNewContext(`
         const currentLanguage = 'zh';
         const currentUserId = 'alice';
+        const pulse = { date: '2026-08-28' };
         let opened = '';
         let sent = '';
+        let requestId = '';
         function showAccountLogin() {}
-        function openPulseChat(query) { opened = query; }
+        function stableClientKey() { return 'prompt-key'; }
+        function openPulseChat(query, options = {}) {
+            opened = query;
+            requestId = options.requestId || '';
+        }
         async function handleSend(query) { sent = query; }
         ${source}
-        startPulseTopicOptimization().then(() => ({ opened, sent }));
+        startPulseTopicOptimization().then(() => ({ opened, sent, requestId }));
     `);
 
     assert.equal(result.opened, result.sent);
     assert.match(result.sent, /optimize_pulse_topics/);
+    assert.equal(result.requestId, 'pulse-optimize:2026-08-28:prompt-key');
 });

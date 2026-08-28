@@ -11028,6 +11028,7 @@ class AgentEngine:
         self,
         request: ChatRequest,
         on_token: Callable[[str], Awaitable[None] | None] | None = None,
+        on_provisional_token: Callable[[str], Awaitable[None] | None] | None = None,
         on_reasoning: Callable[[str], Awaitable[None] | None] | None = None,
         on_intermediate: Callable[[str, int], Awaitable[None] | None] | None = None,
     ) -> ChatResponse:
@@ -11704,13 +11705,22 @@ class AgentEngine:
             )
             try:
                 if stream_model_round:
+                    # A provider that streams tool-call deltas cannot know whether
+                    # preceding prose is an answer or an intermediate model draft
+                    # until the round completes. Keep those deltas out of the
+                    # final-answer channel until that decision is known.
+                    model_token_callback = (
+                        on_provisional_token
+                        if stream_tool_capable_round
+                        else on_token
+                    )
                     response = await self._chat_stream_response_with_retry(
                         provider,
                         request=request,
                         run_id=run.run_id,
                         messages=messages,
                         tools=tools if stream_tool_capable_round else None,
-                        on_token=on_token,
+                        on_token=model_token_callback,
                         on_reasoning=on_reasoning,
                         cache=prompt_cache,
                         retry_context=model_started_payload,
@@ -12044,6 +12054,12 @@ class AgentEngine:
                     )
                 else:
                     # No tool calls — we have the final answer
+                    if stream_tool_capable_round:
+                        # Promote the completed round exactly once. Until this
+                        # point its deltas were explicitly provisional because a
+                        # later tool-call (or forced retrieval) could still have
+                        # changed their meaning.
+                        await self._emit_token(on_token, response.content)
                     all_new_messages.append(
                         LLMMessage(role="assistant", content=response.content)
                     )

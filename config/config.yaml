@@ -9,6 +9,10 @@ agent:
 database:
   path: ./data/assistant.db
 
+pulse:
+  # Clicked cards and welcome questions are suppressed only within this TTL.
+  consumption_ttl_days: 7
+
 llm:
   default_provider: minimax
   providers:

@@ -941,6 +941,76 @@ func TestPulseEventsUpdateFeedbackAndRanking(t *testing.T) {
 	}
 }
 
+func TestPulseWelcomeQuestionClickPersistsConsumedKeyWithoutItem(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	if err := database.Init(filepath.Join(t.TempDir(), "assistant.db")); err != nil {
+		t.Fatalf("init database: %v", err)
+	}
+
+	handler := NewPulseHandler()
+	router := gin.New()
+	router.POST("/api/pulse/events", handler.RecordEvent)
+	router.GET("/api/pulse", handler.Get)
+
+	eventReq := httptest.NewRequest(
+		http.MethodPost,
+		"/api/pulse/events",
+		bytes.NewBufferString(`{"date":"2026-08-28","event_type":"question_click","metadata":{"surface":"welcome","source":"fallback","question":" 今天最应该先推进什么？ "}}`),
+	)
+	eventReq.Header.Set("Content-Type", "application/json")
+	eventReq.Header.Set("X-User-ID", "welcome-user")
+	eventRecorder := httptest.NewRecorder()
+	router.ServeHTTP(eventRecorder, eventReq)
+	if eventRecorder.Code != http.StatusOK {
+		t.Fatalf("unexpected event status %d: %s", eventRecorder.Code, eventRecorder.Body.String())
+	}
+
+	getReq := httptest.NewRequest(http.MethodGet, "/api/pulse?date=2026-08-28", nil)
+	getReq.Header.Set("X-User-ID", "welcome-user")
+	getRecorder := httptest.NewRecorder()
+	router.ServeHTTP(getRecorder, getReq)
+	if getRecorder.Code != http.StatusOK {
+		t.Fatalf("unexpected get status %d: %s", getRecorder.Code, getRecorder.Body.String())
+	}
+	var payload struct {
+		ConsumedQuestionKeys  []string `json:"consumed_question_keys"`
+		ConsumptionTTLSeconds int      `json:"consumption_ttl_seconds"`
+	}
+	if err := json.Unmarshal(getRecorder.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode pulse response: %v", err)
+	}
+	if len(payload.ConsumedQuestionKeys) != 1 || payload.ConsumedQuestionKeys[0] != "今天最应该先推进什么？" {
+		t.Fatalf("expected normalized consumed question, got %#v", payload.ConsumedQuestionKeys)
+	}
+	if payload.ConsumptionTTLSeconds != 7*24*60*60 {
+		t.Fatalf("expected configured default consumption TTL, got %d", payload.ConsumptionTTLSeconds)
+	}
+
+	var event models.PulseEvent
+	if err := database.DB.First(&event, "user_id = ?", "welcome-user").Error; err != nil {
+		t.Fatalf("load question event: %v", err)
+	}
+	if event.ItemID != "welcome" || event.EventType != pulseEventQuestion {
+		t.Fatalf("unexpected persisted question event: %#v", event)
+	}
+	if err := database.DB.Model(&event).Update("created_at", time.Now().Add(-8*24*time.Hour)).Error; err != nil {
+		t.Fatalf("expire question event: %v", err)
+	}
+	expiredReq := httptest.NewRequest(http.MethodGet, "/api/pulse?date=2026-08-28", nil)
+	expiredReq.Header.Set("X-User-ID", "welcome-user")
+	expiredRecorder := httptest.NewRecorder()
+	router.ServeHTTP(expiredRecorder, expiredReq)
+	if expiredRecorder.Code != http.StatusOK {
+		t.Fatalf("unexpected expired get status %d: %s", expiredRecorder.Code, expiredRecorder.Body.String())
+	}
+	if err := json.Unmarshal(expiredRecorder.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode expired Pulse response: %v", err)
+	}
+	if len(payload.ConsumedQuestionKeys) != 0 {
+		t.Fatalf("expected question consumption to expire after TTL, got %#v", payload.ConsumedQuestionKeys)
+	}
+}
+
 func TestPulseEventsBoostFutureItemsByTopic(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	if err := database.Init(filepath.Join(t.TempDir(), "assistant.db")); err != nil {
@@ -1032,46 +1102,95 @@ func TestPulseEventsBoostFutureItemsByTopic(t *testing.T) {
 	}
 }
 
-func TestPulseRecommendedItemsFiltersConsumedClusters(t *testing.T) {
-	sameCluster := models.PulseItem{
-		ID:         "same-cluster",
-		Date:       "2026-06-20",
-		Title:      "OpenAI 发布 AgentGuard-2 权限控制",
-		Summary:    "OpenAI 发布 AgentGuard-2，并新增企业权限控制。",
-		Source:     pulseSourceTopicHot,
-		TopicName:  "AI",
-		HeatScore:  96,
-		DetailJSON: pulseTestVerifiedDetail("2026-06-20"),
-	}
-	clusterKey := pulseClusterKey(sameCluster)
-	if clusterKey == "" {
-		t.Fatal("expected cluster key")
-	}
+func TestPulseRecommendedItemsFiltersConsumedItemIDs(t *testing.T) {
 	items := []models.PulseItem{
-		{ID: "fresh", Date: "2026-06-20", Source: pulseSourceTopicHot, Title: "OpenAI 发布 AgentGuard-2 审计日志", Summary: "OpenAI 发布 AgentGuard-2 审计日志，并开放企业接入。", HeatScore: 80, DetailJSON: pulseTestVerifiedDetail("2026-06-20")},
-		{ID: "opened", Date: "2026-06-20", Source: pulseSourceTopicHot, Title: "OpenAI 推出 AgentGuard-2 管理后台", Summary: "OpenAI 推出 AgentGuard-2 管理后台，并新增权限配置。", HeatScore: 99, DetailJSON: pulseTestVerifiedDetail("2026-06-20")},
-		{ID: "seen", Date: "2026-06-20", Source: pulseSourceTopicHot, Title: "OpenAI 更新 AgentGuard-2 企业策略", Summary: "OpenAI 更新 AgentGuard-2 企业策略，并扩展管理员控制。", HeatScore: 98, DetailJSON: pulseTestVerifiedDetail("2026-06-20")},
-		{ID: "down", Date: "2026-06-20", Source: pulseSourceTopicHot, Title: "OpenAI 开放 AgentGuard-2 团队权限", Summary: "OpenAI 开放 AgentGuard-2 团队权限，并支持成员分组。", HeatScore: 97, DetailJSON: pulseTestVerifiedDetail("2026-06-20")},
-		sameCluster,
+		{ID: "fresh", Date: "2026-06-20", Source: pulseSourceTopicHot, Title: "OpenAI 发布全新模型能力", Summary: "OpenAI 发布全新模型能力并开放企业接入。", HeatScore: 80, DetailJSON: pulseTestVerifiedDetail("2026-06-20")},
+		{ID: "opened", Date: "2026-06-20", Source: pulseSourceTopicHot, Title: "Anthropic 推出管理后台", Summary: "Anthropic 推出管理后台并新增权限配置。", HeatScore: 99, DetailJSON: pulseTestVerifiedDetail("2026-06-20")},
+		{ID: "seen", Date: "2026-06-20", Source: pulseSourceTopicHot, Title: "Google 更新企业策略", Summary: "Google 更新企业策略并扩展管理员控制。", HeatScore: 98, DetailJSON: pulseTestVerifiedDetail("2026-06-20")},
+		{ID: "down", Date: "2026-06-20", Source: pulseSourceTopicHot, Title: "Meta 开放团队权限", Summary: "Meta 开放团队权限并支持成员分组。", HeatScore: 97, DetailJSON: pulseTestVerifiedDetail("2026-06-20")},
 	}
 	state := pulseFeatureState{
 		feedbackByItem: map[string]pulseItemFeedbackResponse{
-			"opened": {OpenCount: pulseOpenFilterThreshold},
-			"seen":   {ExposureCount: pulseExposureFilterThreshold},
-			"down":   {Vote: "down", DownvoteCount: 1},
+			"seen": {ExposureCount: pulseExposureFilterThreshold},
+			"down": {Vote: "down", DownvoteCount: 1},
 		},
-		feedbackByKey: map[string]pulseItemFeedbackResponse{
-			clusterKey: {OpenCount: pulseOpenFilterThreshold},
-		},
-		directScores:  map[string]int{},
-		clusterScores: map[string]int{},
-		topicScores:   map[string]int{},
-		sourceScores:  map[string]int{},
+		feedbackByKey:   map[string]pulseItemFeedbackResponse{},
+		consumedItemIDs: map[string]bool{"opened": true},
+		directScores:    map[string]int{},
+		clusterScores:   map[string]int{},
+		topicScores:     map[string]int{},
+		sourceScores:    map[string]int{},
 	}
 
 	recommended := recommendedPulseItems(items, state)
 	if len(recommended) != 1 || recommended[0].ID != "fresh" {
 		t.Fatalf("expected only fresh item after feature filtering, got %#v", recommended)
+	}
+}
+
+func TestPulseFeatureStateFiltersExactItemIDWithinTTL(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	if err := database.Init(filepath.Join(t.TempDir(), "assistant.db")); err != nil {
+		t.Fatalf("init database: %v", err)
+	}
+
+	userID := "ttl-consumption-user"
+	activeItem := models.PulseItem{
+		ID:        "active-card",
+		UserID:    userID,
+		Date:      "2026-08-28",
+		Source:    pulseSourceTopicHot,
+		TopicName: "AI",
+		Title:     "OpenAI 发布 AgentGuard-2 权限控制",
+		Summary:   "新版增加企业权限与审计能力。",
+	}
+	replacementItem := activeItem
+	replacementItem.ID = "replacement-card"
+	expiredItem := activeItem
+	expiredItem.ID = "expired-card"
+	expiredItem.Title = "Anthropic 发布新的企业权限功能"
+
+	events := []models.PulseEvent{
+		{
+			ID:        "active-open",
+			UserID:    userID,
+			Date:      activeItem.Date,
+			ItemID:    activeItem.ID,
+			EventType: pulseEventOpen,
+			Value:     1,
+			CreatedAt: time.Now().Add(-10 * time.Minute),
+		},
+		{
+			ID:        "expired-open",
+			UserID:    userID,
+			Date:      expiredItem.Date,
+			ItemID:    expiredItem.ID,
+			EventType: pulseEventOpen,
+			Value:     1,
+			CreatedAt: time.Now().Add(-2 * time.Hour),
+		},
+	}
+	if err := database.DB.Create(&events).Error; err != nil {
+		t.Fatalf("seed Pulse open events: %v", err)
+	}
+
+	state, err := loadPulseFeatureState(
+		userID,
+		activeItem.Date,
+		[]models.PulseItem{activeItem, replacementItem, expiredItem},
+		time.Hour,
+	)
+	if err != nil {
+		t.Fatalf("load Pulse feature state: %v", err)
+	}
+	if !state.shouldFilter(activeItem) {
+		t.Fatal("expected recently opened item ID to be filtered")
+	}
+	if state.shouldFilter(replacementItem) {
+		t.Fatal("expected a different item ID from the same cluster to remain eligible")
+	}
+	if state.shouldFilter(expiredItem) {
+		t.Fatal("expected an item click older than the TTL to expire")
 	}
 }
 

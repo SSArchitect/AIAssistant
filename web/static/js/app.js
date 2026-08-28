@@ -1,8 +1,10 @@
 const API_BASE = String(globalThis.AGENT_ASSISTANT_CONFIG?.apiBase || '').replace(/\/+$/, '');
 const CHAT_RECOVERY = globalThis.ChatRecovery;
+const STREAM_TYPEWRITER = globalThis.StreamTypewriter;
 const LANGUAGE_KEY = 'agent_assistant_language';
 const MODE_STORAGE_KEY = 'super_chat_mode_ids';
 const THINKING_STORAGE_KEY = 'super_chat_thinking_enabled';
+const STREAM_TYPING_RATE_STORAGE_KEY = 'super_chat_stream_typing_rate_v1';
 const SUPER_CHAT_AGENT_ID = 'super_chat';
 const DEEP_RESEARCH_MODE_ID = 'deep_research';
 const DEEP_RESEARCH_AGENT_ID = 'deep_research_v1';
@@ -1982,6 +1984,7 @@ const SUPER_CHAT_WELCOME_ACTION_LIMIT = 6;
 const SUPER_CHAT_PULSE_ACTION_LIMIT = 3;
 const PULSE_REFRESH_POLL_MS = 5000;
 const PULSE_REFRESH_SLOW_POLL_MS = 30000;
+const PULSE_DEFAULT_CONSUMPTION_TTL_SECONDS = 7 * 24 * 60 * 60;
 const PULSE_REFRESH_FAST_MAX_POLLS = 24;
 const TEXT_ATTACHMENT_EXTENSIONS = new Set([
     'txt', 'md', 'markdown', 'csv', 'tsv', 'json', 'jsonl', 'yaml', 'yml',
@@ -2148,6 +2151,8 @@ let collapsedTraceNodeIds = new Set();
 let expandedTraceNodeIds = new Set();
 let defaultModelText = '';
 const activeConversationRequests = new Set();
+let conversationCreatePromise = null;
+let conversationCreateRequestId = '';
 const streamingTaskCancellers = new Map();
 const pendingConversationDeletes = new Set();
 const pendingPulseTopicDeletes = new Set();
@@ -2179,6 +2184,8 @@ let selectedPulsePostId = '';
 let pulsePostReturnFocus = null;
 let pulseExposureObserver = null;
 let exposedPulseItemKeys = new Set();
+let consumedPulseItemIds = new Map();
+let clickedWelcomeQuestionKeys = new Map();
 let userQuestionHistory = [];
 let questionHistoryIndex = -1;
 let questionHistoryDraft = '';
@@ -2980,6 +2987,7 @@ async function switchAccount(userId, options = {}) {
     stopActiveRunWatcher();
     invalidatePulseRequests();
     activeConversationRequests.clear();
+    resetConversationCreateState();
     currentUserId = nextUserId;
     currentAccountToken = options.token || loadAccountSessionToken(nextUserId);
     if (options.token) saveAccountSessionToken(nextUserId, options.token);
@@ -3074,6 +3082,8 @@ async function switchAccount(userId, options = {}) {
     selectedPulseTopicId = '';
     selectedPulsePostId = '';
     exposedPulseItemKeys = new Set();
+    consumedPulseItemIds = new Map();
+    clickedWelcomeQuestionKeys = new Map();
     clearQuestionHistory();
     clearAttachments();
     messageInput.value = '';
@@ -3308,6 +3318,7 @@ function isCurrentConversationLoading() {
 function updateSendState() {
     btnSend.disabled = appBootstrapping
         || startupSendPending
+        || Boolean(conversationCreatePromise && !currentConversationId)
         || isCurrentConversationLoading()
         || hasPendingAttachments()
         || (!messageInput.value.trim() && !hasReadyAttachments());
@@ -3824,18 +3835,56 @@ async function loadConversations() {
 }
 
 async function createConversation() {
-    const conv = await apiCall('POST', '/api/conversations', {
-        user_id: currentUserId,
-        agent_id: currentAgentId || SUPER_CHAT_AGENT_ID,
-    });
-    conversations.unshift(conv);
-    currentConversationId = conv.id;
-    saveCurrentConversationId(currentConversationId);
-    saveSelectedModes(currentConversationId);
-    saveThinkingEnabled(currentConversationId);
-    renderConversationList();
-    updateTopbar();
-    return conv;
+    if (conversationCreatePromise) return conversationCreatePromise;
+    if (!conversationCreateRequestId) {
+        conversationCreateRequestId = createClientRequestId('conversation');
+    }
+    conversationCreatePromise = (async () => {
+        const conv = await apiCall('POST', '/api/conversations', {
+            user_id: currentUserId,
+            agent_id: currentAgentId || SUPER_CHAT_AGENT_ID,
+            request_id: conversationCreateRequestId,
+        });
+        if (!conversations.some((item) => item.id === conv.id)) {
+            conversations.unshift(conv);
+        }
+        currentConversationId = conv.id;
+        saveCurrentConversationId(currentConversationId);
+        saveSelectedModes(currentConversationId);
+        saveThinkingEnabled(currentConversationId);
+        renderConversationList();
+        updateTopbar();
+        return conv;
+    })();
+    updateSendState();
+    try {
+        return await conversationCreatePromise;
+    } catch (error) {
+        conversationCreatePromise = null;
+        throw error;
+    } finally {
+        updateSendState();
+    }
+}
+
+function createClientRequestId(prefix = 'request') {
+    const uuid = globalThis.crypto?.randomUUID?.();
+    if (uuid) return `${prefix}_${uuid}`;
+    return `${prefix}_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+}
+
+function stableClientKey(value = '') {
+    let hash = 2166136261;
+    for (const char of String(value || '')) {
+        hash ^= char.codePointAt(0) || 0;
+        hash = Math.imul(hash, 16777619);
+    }
+    return (hash >>> 0).toString(36);
+}
+
+function resetConversationCreateState(requestId = '') {
+    conversationCreatePromise = null;
+    conversationCreateRequestId = String(requestId || '').trim();
 }
 
 async function loadConversation(id) {
@@ -3853,6 +3902,7 @@ async function deleteConversation(id) {
         forgetConversationRender(id);
         conversations = conversations.filter((c) => c.id !== id);
         if (currentConversationId === id) {
+            resetConversationCreateState();
             currentConversationId = null;
             saveCurrentConversationId(null);
             clearQuestionHistory();
@@ -11429,7 +11479,8 @@ function renderPulse() {
     if (!pulseItems || !pulseTopicList) return;
 
     updatePulseTopicSubmitState();
-    const items = Array.isArray(pulse.items) ? pulse.items : [];
+    const items = (Array.isArray(pulse.items) ? pulse.items : [])
+        .filter((item) => !pulseItemConsumedLocally(item?.id));
 
     if (pulseDateTitle) {
         pulseDateTitle.textContent = pulse.date ? `${t('pulse.todayTitle')} · ${pulse.date}` : t('pulse.todayTitle');
@@ -11787,6 +11838,7 @@ const pulseEventOpen = 'open';
 const pulseEventLike = 'like';
 const pulseEventUpvote = 'upvote';
 const pulseEventDownvote = 'downvote';
+const pulseEventQuestion = 'question_click';
 
 function renderPulseFeedbackButton(itemId, eventType, value, label, active = false, count = 0) {
     return `
@@ -11940,6 +11992,8 @@ function openPulsePost(itemId = '', trigger = null) {
     if (!item) return false;
     selectedPulsePostId = itemId;
     pulsePostReturnFocus = trigger || document.activeElement;
+    consumedPulseItemIds.set(itemId, Date.now());
+    renderPulse();
     renderPulsePostWindow();
     recordPulseEvent(itemId, pulseEventOpen, 1, { surface: 'post_window' });
     return true;
@@ -12017,7 +12071,7 @@ function renderPulsePostFooter(item = {}) {
 }
 
 async function recordPulseEvent(itemId, eventType, value = 1, metadata = {}) {
-    if (!itemId || !eventType) return null;
+    if ((!itemId && eventType !== pulseEventQuestion) || !eventType) return null;
     const item = findPulseItem(itemId);
     const eventMetadata = { ...(metadata || {}) };
     if (item) {
@@ -12043,6 +12097,58 @@ async function recordPulseEvent(itemId, eventType, value = 1, metadata = {}) {
         console.warn('Pulse event failed', err);
         return null;
     }
+}
+
+function pulseQuestionKey(value = '') {
+    return String(value || '').trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
+function pulseConsumptionTTLMillis() {
+    const seconds = Number(pulse?.consumption_ttl_seconds);
+    const ttlSeconds = Number.isFinite(seconds) && seconds > 0
+        ? seconds
+        : PULSE_DEFAULT_CONSUMPTION_TTL_SECONDS;
+    return ttlSeconds * 1000;
+}
+
+function pulseItemConsumedLocally(itemId = '', now = Date.now()) {
+    const consumedAt = consumedPulseItemIds.get(String(itemId || ''));
+    if (!Number.isFinite(consumedAt)) return false;
+    if (now - consumedAt >= pulseConsumptionTTLMillis()) {
+        consumedPulseItemIds.delete(String(itemId || ''));
+        return false;
+    }
+    return true;
+}
+
+function locallyConsumedWelcomeQuestionKeys(now = Date.now()) {
+    const activeKeys = [];
+    const ttl = pulseConsumptionTTLMillis();
+    clickedWelcomeQuestionKeys.forEach((consumedAt, key) => {
+        if (!Number.isFinite(consumedAt) || now - consumedAt >= ttl) {
+            clickedWelcomeQuestionKeys.delete(key);
+            return;
+        }
+        activeKeys.push(key);
+    });
+    return activeKeys;
+}
+
+function markWelcomeQuestionClicked(button) {
+    if (!button || button.dataset.suggestionTrack !== 'true') return;
+    const questionKey = pulseQuestionKey(button.dataset.suggestionKey || '');
+    if (!questionKey) return;
+    const itemId = String(button.dataset.suggestionItemId || '').trim();
+    const source = String(button.dataset.suggestionSource || 'welcome').trim() || 'welcome';
+    clickedWelcomeQuestionKeys.set(questionKey, Date.now());
+    resetConversationCreateState(`welcome:${itemId || 'global'}:${stableClientKey(questionKey)}`);
+    showWelcome();
+    void recordPulseEvent(itemId, pulseEventQuestion, 1, {
+        surface: 'welcome',
+        source,
+        question_key: questionKey,
+        question: button.querySelector('.quick-action-label')?.textContent || questionKey,
+    });
 }
 
 function updatePulseItemFeedback(itemId, feedback) {
@@ -14241,13 +14347,27 @@ function readModels(providerKey) {
 function superChatWelcomeActions() {
     const actions = [];
     const seen = new Set();
-    const addAction = (label, query, source, meta = '') => {
+    const consumed = new Set([
+        ...(Array.isArray(pulse?.consumed_question_keys) ? pulse.consumed_question_keys : []),
+        ...locallyConsumedWelcomeQuestionKeys(),
+    ].map(pulseQuestionKey).filter(Boolean));
+    const addAction = (label, query, source, meta = '', tracking = {}) => {
         label = String(label || '').trim();
         query = String(query || '').trim();
         const key = label.toLocaleLowerCase();
-        if (!label || !query || seen.has(key) || actions.length >= SUPER_CHAT_WELCOME_ACTION_LIMIT) return false;
+        const questionKey = pulseQuestionKey(tracking.questionKey || label);
+        if (!label || !query || seen.has(key) || consumed.has(questionKey) || actions.length >= SUPER_CHAT_WELCOME_ACTION_LIMIT) return false;
         seen.add(key);
-        actions.push({ label, query, source, meta: String(meta || '').trim(), autoSend: false });
+        actions.push({
+            label,
+            query,
+            source,
+            meta: String(meta || '').trim(),
+            autoSend: false,
+            trackSuggestion: true,
+            questionKey,
+            pulseItemId: String(tracking.pulseItemId || '').trim(),
+        });
         return true;
     };
     const cleanPulseSuggestion = (value) => {
@@ -14280,7 +14400,10 @@ function superChatWelcomeActions() {
             const itemTitle = truncateText(String(item?.title || '').trim(), 24);
             const source = itemTitle ? `${t('welcome.pulseSource')} · ${itemTitle}` : t('welcome.pulseSource');
             const meta = sourceMeta(source);
-            if (addAction(question, buildPulseChatPrompt(item, question), 'pulse', meta)) {
+            if (addAction(question, buildPulseChatPrompt(item, question), 'pulse', meta, {
+                questionKey: question,
+                pulseItemId: item?.id,
+            })) {
                 pulseActionCount += 1;
             }
         });
@@ -14355,6 +14478,7 @@ function showWelcome() {
                         <button class="quick-action" type="button"
                                 data-query="${escapeAttr(item.query)}"
                                 data-suggestion-source="${escapeAttr(item.source || '')}"
+                                ${item.trackSuggestion ? `data-suggestion-track="true" data-suggestion-key="${escapeAttr(item.questionKey || '')}" data-suggestion-item-id="${escapeAttr(item.pulseItemId || '')}"` : ''}
                                 ${item.modeId ? `data-quick-mode="${escapeAttr(item.modeId)}"` : ''}
                                 ${item.autoSend ? 'data-quick-send="true"' : ''}>
                             <span class="quick-action-label">${escapeHtml(item.label)}</span>
@@ -15483,6 +15607,7 @@ function chatResponseFromRun(run = {}) {
 
 async function selectConversation(id) {
     stopActiveRunWatcher();
+    resetConversationCreateState();
     currentConversationId = id;
     saveCurrentConversationId(id);
     applyConversationAgent(currentConversationRecord(id));
@@ -15501,6 +15626,7 @@ async function restoreInitialConversation() {
         renderConversationList();
         await renderConversationMessages(currentConversationId);
     } else {
+        resetConversationCreateState();
         currentConversationId = null;
         saveCurrentConversationId(null);
         stopActiveRunWatcher();
@@ -15517,6 +15643,7 @@ async function startAgentTask(agentId) {
 	if (agent && !agent.enabled) return;
 
     stopActiveRunWatcher();
+    resetConversationCreateState();
     currentConversationId = null;
     saveCurrentConversationId(null);
     clearQuestionHistory();
@@ -15533,8 +15660,11 @@ async function startAgentTask(agentId) {
 	focusMessageInput();
 }
 
-function openPulseChat(query = '') {
+function openPulseChat(query = '', options = {}) {
 	stopActiveRunWatcher();
+	const requestId = String(options.requestId || '').trim()
+		|| createClientRequestId('pulse');
+	resetConversationCreateState(requestId);
 	currentConversationId = null;
 	saveCurrentConversationId(null);
 	clearQuestionHistory();
@@ -15557,12 +15687,15 @@ async function startPulseTopicOptimization() {
         return;
     }
     const query = pulseTopicOptimizationPrompt();
-    openPulseChat(query);
+    openPulseChat(query, {
+        requestId: `pulse-optimize:${pulse.date || 'current'}:${stableClientKey(query)}`,
+    });
     await handleSend(query);
 }
 
 async function startNewTopic() {
 	stopActiveRunWatcher();
+	resetConversationCreateState();
 	setView('chat', { restore: false });
 	clearQuestionHistory();
     currentConversationId = null;
@@ -15806,6 +15939,59 @@ async function sendMessage(conversationId, query, attachmentContext = '', attach
     });
 }
 
+function loadStreamTypingRate() {
+    try {
+        const stored = Number.parseFloat(localStorage.getItem(STREAM_TYPING_RATE_STORAGE_KEY) || '');
+        return Number.isFinite(stored) && stored > 0 ? Math.min(180, Math.max(18, stored)) : 48;
+    } catch {
+        return 48;
+    }
+}
+
+function rememberStreamTypingRate(rate) {
+    if (!Number.isFinite(rate) || rate <= 0) return;
+    const previous = loadStreamTypingRate();
+    const next = Math.min(180, Math.max(18, (previous * 0.72) + (rate * 0.28)));
+    try {
+        localStorage.setItem(STREAM_TYPING_RATE_STORAGE_KEY, next.toFixed(2));
+    } catch {
+        // Storage can be unavailable in private or restricted WebViews.
+    }
+}
+
+function createAdaptiveTypingBuffer(onRender, options = {}) {
+    const BufferClass = STREAM_TYPEWRITER?.AdaptiveStreamBuffer;
+    if (BufferClass) {
+        return new BufferClass({
+            onRender,
+            initialRate: loadStreamTypingRate(),
+            onRate: options.recordRate === false ? undefined : rememberStreamTypingRate,
+        });
+    }
+
+    let value = '';
+    return {
+        enqueue(chunk) {
+            value += String(chunk || '');
+            onRender(value);
+            return value;
+        },
+        finish(expected) {
+            value = String(expected || value);
+            onRender(value);
+            return Promise.resolve(value);
+        },
+        setImmediate(expected) {
+            value = String(expected || '');
+            onRender(value);
+            return value;
+        },
+        reset() {
+            value = '';
+        },
+    };
+}
+
 async function sendMessageStream(conversationId, query, streamView, attachmentContext = '', attachments = [], extraPayload = {}) {
     const model = modelSelect.value || undefined;
     const modePayload = selectedModePayload();
@@ -15862,6 +16048,13 @@ async function sendMessageStream(conversationId, query, streamView, attachmentCo
     let runtime = '';
     let modelUsed = '';
 
+    async function drainStreamBuffers(response = {}) {
+        await Promise.all([
+            streamView.finishContent(response.response || streamedText),
+            streamView.finishReasoning(response.reasoning || streamedReasoning),
+        ]);
+    }
+
     try {
         while (true) {
             const { value, done } = await reader.read();
@@ -15885,14 +16078,18 @@ async function sendMessageStream(conversationId, query, streamView, attachmentCo
                     runId = data.run_id || runId;
                     streamView.setTrace(traceEvents, { runId, runtime, modelUsed });
                 } else if (event === 'token') {
-                    streamedText += data.text || '';
-                    streamView.setContent(streamedText);
+                    const chunk = data.text || '';
+                    streamedText += chunk;
+                    streamView.enqueueContent(chunk);
+                } else if (event === 'provisional_token') {
+                    streamView.noteProvisional(data.text || '');
                 } else if (event === 'intermediate') {
                     streamedText = '';
                     streamView.moveContentToProcess(data);
                 } else if (event === 'reasoning') {
-                    streamedReasoning += data.text || '';
-                    streamView.setReasoning(streamedReasoning);
+                    const chunk = data.text || '';
+                    streamedReasoning += chunk;
+                    streamView.enqueueReasoning(chunk);
                 } else if (event === 'response') {
                     finalResponse = data;
                     runId = data.run_id || runId;
@@ -15900,11 +16097,11 @@ async function sendMessageStream(conversationId, query, streamView, attachmentCo
                     modelUsed = data.model_used || modelUsed;
                     if (!streamedText) {
                         streamedText = data.response || '';
-                        streamView.setContent(streamedText);
+                        streamView.enqueueContent(streamedText);
                     }
                     if (!streamedReasoning && data.reasoning) {
                         streamedReasoning = data.reasoning;
-                        streamView.setReasoning(streamedReasoning);
+                        streamView.enqueueReasoning(streamedReasoning);
                     }
                     streamView.setTrace(traceEvents.length ? traceEvents : (data.events || []), { runId, runtime, modelUsed });
                 } else if (event === 'error') {
@@ -15917,7 +16114,10 @@ async function sendMessageStream(conversationId, query, streamView, attachmentCo
             }
         }
     } catch (error) {
-        if (finalResponse) return finalResponse;
+        if (finalResponse) {
+            await drainStreamBuffers(finalResponse);
+            return finalResponse;
+        }
         if (error?.streamEventError || signal?.aborted === true || error?.errorType === 'cancelled' || error?.cancelled === true) {
             throw error;
         }
@@ -15927,6 +16127,7 @@ async function sendMessageStream(conversationId, query, streamView, attachmentCo
     if (!finalResponse) {
         throw markChatStreamTransportError(new Error(t('errors.streamFailed')), runId, true);
     }
+    await drainStreamBuffers(finalResponse);
     return finalResponse;
 }
 
@@ -15938,6 +16139,7 @@ function appendStreamingAssistantMessage(regenerateQuery = '', conversationId = 
     const cancellable = Boolean(cancelTaskId && typeof options.onCancel === 'function');
     const div = document.createElement('div');
     div.className = 'message assistant streaming';
+    div.dataset.streamBuffer = STREAM_TYPEWRITER?.AdaptiveStreamBuffer ? 'adaptive' : 'immediate';
     div.dataset.copyText = '';
     if (cancelTaskId) div.dataset.streamingTaskId = cancelTaskId;
     if (regenerateQuery) div.dataset.regenerateQuery = regenerateQuery;
@@ -15969,6 +16171,7 @@ function appendStreamingAssistantMessage(regenerateQuery = '', conversationId = 
     const approvalsEl = div.querySelector('.streaming-approvals');
     const cancelActionsEl = div.querySelector('.streaming-task-actions');
     let lastContent = '';
+    let provisionalContent = '';
     let lastReasoning = '';
     let lastEvents = [];
     let lastMeta = {};
@@ -15998,36 +16201,66 @@ function appendStreamingAssistantMessage(regenerateQuery = '', conversationId = 
         if (summary) rememberProcessPanelIntent(summary);
     });
 
-    return {
-        setContent(text) {
-            const wasEmpty = !lastContent;
-            lastContent = text || '';
-            div.classList.toggle('has-final-content', Boolean(lastContent));
-            div.dataset.copyText = lastContent;
-            updateCopyButtonState(div, Boolean(lastContent));
-            statusEl.hidden = true;
-            if (wasEmpty && lastContent && (lastEvents.length || lastReasoning)) {
-                if (!processTouched) processExpanded = false;
-                renderProcessPanelInto(traceEl, renderProcessPanel(lastEvents, {
-                    expanded: processExpanded,
-                    live: false,
-                    reasoning: lastReasoning,
-                }));
-            }
-            contentEl.innerHTML = formatContent(lastContent);
-            scrollToBottom();
-        },
-        setReasoning(text) {
-            lastReasoning = String(text || '');
-            if (!processTouched && !lastContent) processExpanded = true;
+    function renderContentValue(text) {
+        const wasEmpty = !lastContent;
+        lastContent = text || '';
+        div.classList.toggle('has-final-content', Boolean(lastContent));
+        div.dataset.copyText = lastContent;
+        updateCopyButtonState(div, Boolean(lastContent));
+        statusEl.hidden = true;
+        if (wasEmpty && lastContent && (lastEvents.length || lastReasoning)) {
+            if (!processTouched) processExpanded = false;
             renderProcessPanelInto(traceEl, renderProcessPanel(lastEvents, {
                 expanded: processExpanded,
-                live: !lastContent,
+                live: false,
                 reasoning: lastReasoning,
             }));
-            scrollToBottom();
+        }
+        contentEl.innerHTML = formatContent(lastContent);
+        scrollToBottom();
+    }
+
+    function renderReasoningValue(text) {
+        lastReasoning = String(text || '');
+        if (!processTouched && !lastContent) processExpanded = true;
+        renderProcessPanelInto(traceEl, renderProcessPanel(lastEvents, {
+            expanded: processExpanded,
+            live: !lastContent,
+            reasoning: lastReasoning,
+        }));
+        scrollToBottom();
+    }
+
+    const contentBuffer = createAdaptiveTypingBuffer(renderContentValue);
+    const reasoningBuffer = createAdaptiveTypingBuffer(renderReasoningValue);
+
+    return {
+        setContent(text) {
+            contentBuffer.setImmediate(text);
+        },
+        enqueueContent(chunk) {
+            contentBuffer.enqueue(chunk);
+        },
+        finishContent(text) {
+            return contentBuffer.finish(text);
+        },
+        noteProvisional(chunk) {
+            provisionalContent += String(chunk || '');
+            div.dataset.provisionalChars = String(Array.from(provisionalContent).length);
+        },
+        setReasoning(text) {
+            reasoningBuffer.setImmediate(text);
+        },
+        enqueueReasoning(chunk) {
+            reasoningBuffer.enqueue(chunk);
+        },
+        finishReasoning(text) {
+            return reasoningBuffer.finish(text);
         },
         moveContentToProcess() {
+            contentBuffer.reset();
+            provisionalContent = '';
+            delete div.dataset.provisionalChars;
             lastContent = '';
             div.classList.remove('has-final-content');
             div.dataset.copyText = '';
@@ -16088,6 +16321,8 @@ function appendStreamingAssistantMessage(regenerateQuery = '', conversationId = 
         },
         finalize(resp) {
             finishStreamingTask();
+            provisionalContent = '';
+            delete div.dataset.provisionalChars;
             const displayError = resp.error_type
                 ? (resp.error_type === 'rate_limit' ? 'rate_limit' : 'error')
                 : '';
@@ -16124,6 +16359,10 @@ function appendStreamingAssistantMessage(regenerateQuery = '', conversationId = 
         },
         showError(message, type = 'error') {
             finishStreamingTask();
+            provisionalContent = '';
+            delete div.dataset.provisionalChars;
+            contentBuffer.reset();
+            reasoningBuffer.reset();
             statusEl.hidden = true;
             div.dataset.copyText = message || '';
             div.classList.toggle('has-final-content', Boolean(message));
@@ -16155,6 +16394,10 @@ function appendStreamingAssistantMessage(regenerateQuery = '', conversationId = 
         },
         showCancelled(message) {
             finishStreamingTask();
+            provisionalContent = '';
+            delete div.dataset.provisionalChars;
+            contentBuffer.reset();
+            reasoningBuffer.reset();
             statusEl.hidden = true;
             div.dataset.copyText = message || '';
             div.classList.toggle('has-final-content', Boolean(message));
@@ -19034,8 +19277,13 @@ document.addEventListener('click', async (event) => {
 	const pulseChatButton = event.target.closest('[data-pulse-chat]');
 	if (pulseChatButton) {
 		const query = pulseChatButton.dataset.pulseChat || '';
+		const itemId = selectedPulsePostId;
 		if (pulsePostIsOpen()) closePulsePost();
-		openPulseChat(query);
+		openPulseChat(query, {
+			requestId: itemId && query
+				? `pulse:${itemId}:${stableClientKey(pulseQuestionKey(query))}`
+				: '',
+		});
 		return;
 	}
 
@@ -19070,11 +19318,12 @@ document.addEventListener('click', async (event) => {
     const quickAction = event.target.closest('[data-query]');
     if (quickAction) {
         ensureWelcomeStartsNewTopic();
+        const query = quickAction.dataset.query || '';
+        const shouldQuickSend = quickAction.dataset.quickSend === 'true';
         if (quickAction.dataset.quickMode) {
             setModeSelected(quickAction.dataset.quickMode, true);
         }
-        const query = quickAction.dataset.query || '';
-        const shouldQuickSend = quickAction.dataset.quickSend === 'true';
+        markWelcomeQuestionClicked(quickAction);
         resetQuestionHistoryBrowse();
         messageInput.value = query;
         autoResizeInput();

@@ -4274,6 +4274,7 @@ async def test_streams_final_answer_after_tool_call(engine):
 async def test_provider_can_stream_tool_choice_and_direct_summary(engine):
     """Providers that retain streamed tool calls can stream the first model round."""
     tokens = []
+    provisional_tokens = []
     reasoning = []
     forwarded_kwargs = []
 
@@ -4308,10 +4309,12 @@ async def test_provider_can_stream_tool_choice_and_direct_summary(engine):
                 thinking_enabled=True,
             ),
             on_token=tokens.append,
+            on_provisional_token=provisional_tokens.append,
             on_reasoning=reasoning.append,
         )
 
-    assert tokens == ["streamed ", "summary"]
+    assert provisional_tokens == ["streamed ", "summary"]
+    assert tokens == ["streamed summary"]
     assert reasoning == ["inspect the request"]
     assert result.response == "streamed summary"
     assert result.reasoning == "inspect the request"
@@ -4329,6 +4332,7 @@ async def test_provider_can_stream_tool_choice_and_direct_summary(engine):
 async def test_provider_preserves_streamed_tool_call_before_final_tokens(engine):
     """A streamed tool call should execute before the next streamed answer round."""
     tokens = []
+    provisional_tokens = []
     intermediate = []
 
     class StreamingToolProvider:
@@ -4378,11 +4382,13 @@ async def test_provider_preserves_streamed_tool_call_before_final_tokens(engine)
                 stream=True,
             ),
             on_token=tokens.append,
+            on_provisional_token=provisional_tokens.append,
             on_intermediate=lambda text, round_index: intermediate.append((text, round_index)),
         )
 
     assert provider.calls == 2
-    assert tokens == ["Checking first. ", "final ", "summary"]
+    assert provisional_tokens == ["Checking first. ", "final ", "summary"]
+    assert tokens == ["final summary"]
     assert intermediate == [("Checking first. ", 1)]
     assert result.response == "final summary"
     assert result.skills_used == ["echo"]

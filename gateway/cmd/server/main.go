@@ -74,7 +74,11 @@ func main() {
 	appVersionHandler := handlers.NewAppVersionHandler(projectRoot)
 	adminHandler := handlers.NewAdminHandler(agentClient, configSyncer)
 	mediaHandler := handlers.NewMediaHandler()
-	pulseHandler := handlers.NewPulseHandlerWithSyncer(agentClient, configSyncer)
+	pulseHandler := handlers.NewPulseHandlerWithSyncer(
+		agentClient,
+		configSyncer,
+		cfg.Pulse.ConsumptionTTLDuration(),
+	)
 	todoHandler := handlers.NewTodoHandler()
 	driveHandler := handlers.NewDriveHandler(agentClient)
 	evalHandler := handlers.NewEvalHandler(projectRoot, dbPath, cfg.Agent.URL)

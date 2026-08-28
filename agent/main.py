@@ -581,9 +581,11 @@ def _chunk_text(text: str, size: int = 24) -> list[str]:
 async def chat_stream(request: ChatRequest):
     """Stream run events and the final response over Server-Sent Events.
 
-    Provider tokens are forwarded as they arrive. Providers without native
-    token streaming retain the bounded final-response chunk fallback so the
-    gateway/frontend SSE contract stays consistent.
+    Final provider tokens are forwarded as they arrive. In tool-capable model
+    rounds, text remains provisional until the round proves it has no tool
+    calls, preventing an intermediate draft from masquerading as the answer.
+    Providers without native token streaming retain the bounded final-response
+    chunk fallback so the gateway/frontend SSE contract stays consistent.
     """
     if engine is None:
         raise HTTPException(status_code=503, detail="Agent engine not ready")
@@ -598,6 +600,9 @@ async def chat_stream(request: ChatRequest):
 
         async def on_token(token: str) -> None:
             await output_queue.put(("token", token))
+
+        async def on_provisional_token(token: str) -> None:
+            await output_queue.put(("provisional_token", token))
 
         async def on_reasoning(reasoning: str) -> None:
             if stream_request.thinking_enabled is True:
@@ -615,6 +620,7 @@ async def chat_stream(request: ChatRequest):
             engine.process(
                 stream_request,
                 on_token=on_token,
+                on_provisional_token=on_provisional_token,
                 on_reasoning=on_reasoning,
                 on_intermediate=on_intermediate,
             )
@@ -636,6 +642,8 @@ async def chat_stream(request: ChatRequest):
                     event_type, payload = output_queue.get_nowait()
                     if event_type == "token":
                         streamed_text += str(payload)
+                        yield _sse(event_type, {"text": payload})
+                    elif event_type == "provisional_token":
                         yield _sse(event_type, {"text": payload})
                     elif event_type == "intermediate":
                         streamed_text = ""
@@ -663,6 +671,8 @@ async def chat_stream(request: ChatRequest):
                 event_type, payload = output_queue.get_nowait()
                 if event_type == "token":
                     streamed_text += str(payload)
+                    yield _sse(event_type, {"text": payload})
+                elif event_type == "provisional_token":
                     yield _sse(event_type, {"text": payload})
                 elif event_type == "intermediate":
                     streamed_text = ""

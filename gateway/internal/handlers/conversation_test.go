@@ -243,6 +243,52 @@ func TestConversationCreateSessionUserOverridesBodyUserID(t *testing.T) {
 	}
 }
 
+func TestConversationCreateIsIdempotentByClientRequestID(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	if err := database.Init(filepath.Join(t.TempDir(), "assistant.db")); err != nil {
+		t.Fatalf("init database: %v", err)
+	}
+
+	router := gin.New()
+	handler := NewConversationHandler()
+	router.POST("/api/conversations", handler.Create)
+
+	create := func() (int, models.Conversation) {
+		req := httptest.NewRequest(
+			http.MethodPost,
+			"/api/conversations",
+			strings.NewReader(`{"agent_id":"super_chat","request_id":"mobile-pulse-click-1"}`),
+		)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-User-ID", "mobile-user")
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, req)
+		var conversation models.Conversation
+		if err := json.Unmarshal(recorder.Body.Bytes(), &conversation); err != nil {
+			t.Fatalf("decode conversation: %v body=%s", err, recorder.Body.String())
+		}
+		return recorder.Code, conversation
+	}
+
+	firstStatus, first := create()
+	secondStatus, second := create()
+	if firstStatus != http.StatusCreated || secondStatus != http.StatusOK {
+		t.Fatalf("expected create then idempotent replay, got %d and %d", firstStatus, secondStatus)
+	}
+	if first.ID == "" || first.ID != second.ID {
+		t.Fatalf("expected the same conversation, got %#v and %#v", first, second)
+	}
+	var count int64
+	if err := database.DB.Model(&models.Conversation{}).
+		Where("user_id = ?", "mobile-user").
+		Count(&count).Error; err != nil {
+		t.Fatalf("count conversations: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("expected one conversation, got %d", count)
+	}
+}
+
 func TestConversationCreatePersistsAgentID(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	if err := database.Init(filepath.Join(t.TempDir(), "assistant.db")); err != nil {

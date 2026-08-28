@@ -27,8 +27,9 @@ func NewConversationHandler(agent ...*bridge.AgentClient) *ConversationHandler {
 }
 
 type conversationCreateRequest struct {
-	UserID  string `json:"user_id,omitempty"`
-	AgentID string `json:"agent_id,omitempty"`
+	UserID    string `json:"user_id,omitempty"`
+	AgentID   string `json:"agent_id,omitempty"`
+	RequestID string `json:"request_id,omitempty"`
 }
 
 type conversationMessageResponse struct {
@@ -66,22 +67,61 @@ func (h *ConversationHandler) Create(c *gin.Context) {
 	if agentID == "" {
 		agentID = "super_chat"
 	}
+	requestID := strings.TrimSpace(req.RequestID)
+	if len(requestID) > 160 {
+		requestID = requestID[:160]
+	}
+	if requestID != "" {
+		var existing models.Conversation
+		if err := database.DB.First(
+			&existing,
+			"user_id = ? AND client_request_id = ?",
+			userID,
+			requestID,
+		).Error; err == nil {
+			c.JSON(http.StatusOK, existing)
+			return
+		}
+	}
 
 	conv := models.Conversation{
-		ID:        uuid.New().String(),
-		UserID:    userID,
-		AgentID:   agentID,
-		Title:     "New Conversation",
-		CreatedAt: time.Now(),
-		UpdatedAt: time.Now(),
+		ID:              uuid.New().String(),
+		UserID:          userID,
+		AgentID:         agentID,
+		ClientRequestID: optionalConversationRequestID(requestID),
+		Title:           "New Conversation",
+		CreatedAt:       time.Now(),
+		UpdatedAt:       time.Now(),
 	}
 
 	if err := database.DB.Create(&conv).Error; err != nil {
+		// A retried or concurrent mobile request can win the unique constraint
+		// between the lookup and insert. Return that conversation instead of
+		// creating another session or surfacing a false failure.
+		if requestID != "" {
+			var existing models.Conversation
+			if lookupErr := database.DB.First(
+				&existing,
+				"user_id = ? AND client_request_id = ?",
+				userID,
+				requestID,
+			).Error; lookupErr == nil {
+				c.JSON(http.StatusOK, existing)
+				return
+			}
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create conversation"})
 		return
 	}
 
 	c.JSON(http.StatusCreated, conv)
+}
+
+func optionalConversationRequestID(value string) *string {
+	if value == "" {
+		return nil
+	}
+	return &value
 }
 
 func (h *ConversationHandler) Get(c *gin.Context) {

@@ -24,7 +24,8 @@ test('DGX model exposes a persisted thinking parameter switch', () => {
 
 test('reasoning SSE is merged into the execution process and restored from saved messages', () => {
     assert.match(appSource, /event === 'reasoning'/);
-    assert.match(appSource, /streamView\.setReasoning\(streamedReasoning\)/);
+    assert.match(appSource, /streamView\.enqueueReasoning\(chunk\)/);
+    assert.match(appSource, /streamView\.finishReasoning/);
     assert.match(appSource, /renderProcessPanel\(traceEvents, \{ expanded: false, reasoning \}\)/);
     assert.match(appSource, /kind: 'reasoning'/);
     assert.match(appSource, /msg\.reasoning \|\| ''/);
@@ -33,7 +34,14 @@ test('reasoning SSE is merged into the execution process and restored from saved
 });
 
 test('intermediate model output is moved from answer text into the execution process', () => {
+    assert.match(appSource, /event === 'provisional_token'/);
+    assert.match(appSource, /streamView\.noteProvisional\(data\.text \|\| ''\)/);
     assert.match(appSource, /event === 'intermediate'/);
     assert.match(appSource, /streamView\.moveContentToProcess\(data\)/);
     assert.match(appSource, /type === 'model\.intermediate'/);
+    const provisionalBranch = appSource.slice(
+        appSource.indexOf("event === 'provisional_token'"),
+        appSource.indexOf("event === 'intermediate'"),
+    );
+    assert.doesNotMatch(provisionalBranch, /enqueueContent/);
 });
