@@ -373,7 +373,13 @@ const I18N = {
             currentConversation: '当前会话',
             loadConversationFailed: '加载会话失败：{message}',
             createConversationFailed: '创建会话失败：{message}',
+            createConversationTimeout: '创建会话超时，请重试；重复点击不会创建重复会话。',
             deleteConversationFailed: '删除会话失败：{message}',
+            preparingToSend: '正在准备对话…',
+            creatingConversation: '正在创建会话…',
+            conversationRunning: '当前会话仍在生成…',
+            readingAttachment: '正在读取附件…',
+            requestTimeout: '请求超过 {seconds} 秒未响应',
             resumePending: 'AI 仍在生成，完成后会自动恢复到当前会话',
             resumeFailed: '连接已恢复，但暂时无法取得这次回答。请刷新会话后重试。',
             citations: '引用来源',
@@ -1278,7 +1284,13 @@ const I18N = {
             currentConversation: 'Current conversation',
             loadConversationFailed: 'Failed to load conversation: {message}',
             createConversationFailed: 'Failed to create conversation: {message}',
+            createConversationTimeout: 'Conversation creation timed out. Retry safely; duplicate clicks will not create duplicate conversations.',
             deleteConversationFailed: 'Failed to delete conversation: {message}',
+            preparingToSend: 'Preparing chat…',
+            creatingConversation: 'Creating conversation…',
+            conversationRunning: 'This conversation is still running…',
+            readingAttachment: 'Reading attachment…',
+            requestTimeout: 'Request did not respond within {seconds} seconds',
             resumePending: 'AI is still generating. The answer will reappear here when it finishes.',
             resumeFailed: 'The connection is back, but this answer could not be recovered yet. Refresh the conversation and try again.',
             citations: 'Sources',
@@ -1973,6 +1985,8 @@ const ROLE_CONFIG_EXAMPLES = [
 
 const MAX_ATTACHMENT_CHARS = 12000;
 const MAX_TOTAL_ATTACHMENT_CHARS = 24000;
+const STARTUP_ACCOUNT_TIMEOUT_MS = 8000;
+const CONVERSATION_CREATE_TIMEOUT_MS = 8000;
 const ACTIVE_RUN_POLL_MS = 1500;
 // Keep recovery alive beyond the 15-minute approval-ticket window.
 const ACTIVE_RUN_MAX_POLLS = 720;
@@ -2452,6 +2466,7 @@ function setLanguage(language) {
     updateChatHistoryControls();
     refreshWelcomeIfEmpty();
     refreshMediaPreviewLabels();
+    updateSendState();
 }
 
 function apiUsesCrossOriginTransport() {
@@ -2483,14 +2498,43 @@ function apiHeaders(body = null) {
     return headers;
 }
 
-async function apiCall(method, path, body = null) {
+function requestTimeoutError(timeoutMs) {
+    const seconds = Math.max(1, Math.ceil(Number(timeoutMs || 0) / 1000));
+    const error = new Error(t('chat.requestTimeout', { seconds }));
+    error.name = 'TimeoutError';
+    error.code = 'request_timeout';
+    error.timeoutMs = timeoutMs;
+    return error;
+}
+
+async function fetchWithTimeout(url, options = {}, timeoutMs = 0) {
+    const duration = Number(timeoutMs) || 0;
+    if (duration <= 0) return fetch(url, options);
+
+    const controller = new AbortController();
+    let didTimeout = false;
+    const timer = setTimeout(() => {
+        didTimeout = true;
+        controller.abort();
+    }, duration);
+    try {
+        return await fetch(url, { ...options, signal: controller.signal });
+    } catch (error) {
+        if (didTimeout) throw requestTimeoutError(duration);
+        throw error;
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
+async function apiCall(method, path, body = null, options = {}) {
     const opts = {
         method,
         headers: apiHeaders(body),
     };
     if (body) opts.body = JSON.stringify(body);
 
-    const resp = await fetch(authenticatedApiUrl(path), opts);
+    const resp = await fetchWithTimeout(authenticatedApiUrl(path), opts, options.timeoutMs);
     if (!resp.ok) {
         const err = await resp.json().catch(() => ({ error: resp.statusText }));
         throw new Error(err.error || err.detail || 'Request failed');
@@ -2837,8 +2881,8 @@ function saveCurrentRoleId() {
     localStorage.setItem(accountStorageKey(CURRENT_ROLE_ID_STORAGE_KEY), currentRoleId || 'default');
 }
 
-async function loadAccounts() {
-    const data = await publicApiCall('GET', '/api/accounts');
+async function loadAccounts(options = {}) {
+    const data = await publicApiCall('GET', '/api/accounts', null, options);
     accounts = Array.isArray(data.accounts) ? data.accounts : [];
     renderAccountControls();
     return accounts;
@@ -2894,14 +2938,14 @@ async function enterGuestAccount(options = {}) {
     });
 }
 
-async function publicApiCall(method, path, body = null) {
+async function publicApiCall(method, path, body = null, options = {}) {
     const opts = {
         method,
         headers: body ? { 'Content-Type': 'application/json' } : {},
     };
     if (body) opts.body = JSON.stringify(body);
 
-    const resp = await fetch(API_BASE + path, opts);
+    const resp = await fetchWithTimeout(API_BASE + path, opts, options.timeoutMs);
     if (!resp.ok) {
         const err = await resp.json().catch(() => ({ error: resp.statusText }));
         throw new Error(err.error || err.detail || 'Request failed');
@@ -3315,13 +3359,21 @@ function isCurrentConversationLoading() {
     ));
 }
 
+function sendBusyReason() {
+    if (appBootstrapping || startupSendPending) return t('chat.preparingToSend');
+    if (conversationCreatePromise && !currentConversationId) return t('chat.creatingConversation');
+    if (isCurrentConversationLoading()) return t('chat.conversationRunning');
+    if (hasPendingAttachments()) return t('chat.readingAttachment');
+    return '';
+}
+
 function updateSendState() {
-    btnSend.disabled = appBootstrapping
-        || startupSendPending
-        || Boolean(conversationCreatePromise && !currentConversationId)
-        || isCurrentConversationLoading()
-        || hasPendingAttachments()
+    const busyReason = sendBusyReason();
+    btnSend.disabled = Boolean(busyReason)
         || (!messageInput.value.trim() && !hasReadyAttachments());
+    btnSend.setAttribute('aria-busy', busyReason ? 'true' : 'false');
+    btnSend.setAttribute('aria-label', busyReason || t('actions.send'));
+    btnSend.title = busyReason || t('actions.send');
     if (btnAttach) {
         btnAttach.classList.toggle('active', attachedContexts.length > 0);
     }
@@ -3824,9 +3876,13 @@ function togglePinnedAgent(agentId) {
     renderAgents();
 }
 
-async function loadConversations() {
-    const data = await apiCall('GET', '/api/conversations');
+async function loadConversations(options = {}) {
+    const data = await apiCall('GET', '/api/conversations', null, options);
+    const currentLocalConversation = currentConversationRecord();
     conversations = data.conversations || [];
+    if (currentLocalConversation && !conversations.some((item) => item.id === currentLocalConversation.id)) {
+        conversations.unshift(currentLocalConversation);
+    }
     const current = currentConversationRecord();
     if (current) applyConversationAgent(current);
     renderConversationList();
@@ -3844,7 +3900,7 @@ async function createConversation() {
             user_id: currentUserId,
             agent_id: currentAgentId || SUPER_CHAT_AGENT_ID,
             request_id: conversationCreateRequestId,
-        });
+        }, { timeoutMs: CONVERSATION_CREATE_TIMEOUT_MS });
         if (!conversations.some((item) => item.id === conv.id)) {
             conversations.unshift(conv);
         }
@@ -9509,7 +9565,7 @@ async function refreshAll() {
 
 async function bootApp() {
     try {
-        await loadAccounts();
+        await loadAccounts({ timeoutMs: STARTUP_ACCOUNT_TIMEOUT_MS });
     } catch (err) {
         showAccountLogin(t('account.loadFailed', { message: err.message }));
         return;
@@ -9550,9 +9606,11 @@ async function bootApp() {
     saveCurrentConversationId(null);
     currentRoleId = loadCurrentRoleId();
     renderAccountControls();
-    await refreshAll();
     await restoreInitialConversation();
     focusMessageInput({ allowMobile: false });
+    // Conversation history, Pulse, Drive, settings, and other secondary data
+    // progressively enrich the page but must never hold the composer hostage.
+    void refreshAll();
 }
 
 function setView(view, options = {}) {
@@ -11945,7 +12003,10 @@ function renderPulseDetail(item = {}, detail = {}) {
                 <h4>${escapeHtml(t('pulse.suggestedQuestions'))}</h4>
                 <div class="pulse-question-list">
                     ${questions.map((question) => `
-                        <button class="pulse-question" type="button" data-pulse-chat="${escapeAttr(buildPulseChatPrompt(item, question))}">
+                        <button class="pulse-question" type="button"
+                                data-pulse-chat="${escapeAttr(buildPulseChatPrompt(item, question))}"
+                                data-pulse-item-id="${escapeAttr(item.id || '')}"
+                                data-pulse-question-key="${escapeAttr(question)}">
                             ${escapeHtml(question)}
                         </button>
                     `).join('')}
@@ -12134,21 +12195,32 @@ function locallyConsumedWelcomeQuestionKeys(now = Date.now()) {
     return activeKeys;
 }
 
+function consumePulseQuestion(itemId = '', questionKey = '', metadata = {}) {
+    const key = pulseQuestionKey(questionKey);
+    if (!key) return '';
+    const normalizedItemId = String(itemId || '').trim();
+    clickedWelcomeQuestionKeys.set(key, Date.now());
+    void recordPulseEvent(normalizedItemId, pulseEventQuestion, 1, {
+        ...(metadata || {}),
+        question_key: key,
+        question: String(metadata?.question || questionKey).trim() || key,
+    });
+    return key;
+}
+
 function markWelcomeQuestionClicked(button) {
     if (!button || button.dataset.suggestionTrack !== 'true') return;
     const questionKey = pulseQuestionKey(button.dataset.suggestionKey || '');
     if (!questionKey) return;
     const itemId = String(button.dataset.suggestionItemId || '').trim();
     const source = String(button.dataset.suggestionSource || 'welcome').trim() || 'welcome';
-    clickedWelcomeQuestionKeys.set(questionKey, Date.now());
-    resetConversationCreateState(`welcome:${itemId || 'global'}:${stableClientKey(questionKey)}`);
-    showWelcome();
-    void recordPulseEvent(itemId, pulseEventQuestion, 1, {
+    consumePulseQuestion(itemId, questionKey, {
         surface: 'welcome',
         source,
-        question_key: questionKey,
         question: button.querySelector('.quick-action-label')?.textContent || questionKey,
     });
+    resetConversationCreateState(`welcome:${itemId || 'global'}:${stableClientKey(questionKey)}`);
+    showWelcome();
 }
 
 function updatePulseItemFeedback(itemId, feedback) {
@@ -14363,7 +14435,7 @@ function superChatWelcomeActions() {
             query,
             source,
             meta: String(meta || '').trim(),
-            autoSend: false,
+            autoSend: true,
             trackSuggestion: true,
             questionKey,
             pulseItemId: String(tracking.pulseItemId || '').trim(),
@@ -14379,9 +14451,10 @@ function superChatWelcomeActions() {
     };
     const sourceMeta = (source) => source ? `${t('welcome.sourceLabel')}${source}` : '';
 
-    const pulseItems = Array.isArray(pulse?.suggestion_items) && pulse.suggestion_items.length
+    const pulseItems = (Array.isArray(pulse?.suggestion_items) && pulse.suggestion_items.length
         ? pulse.suggestion_items
-        : (Array.isArray(pulse?.items) ? pulse.items : []);
+        : (Array.isArray(pulse?.items) ? pulse.items : []))
+        .filter((item) => !pulseItemConsumedLocally(item?.id));
     const pulsePrompts = pulseItems.map((item) => {
         const questions = Array.isArray(item?.detail?.suggested_questions)
             ? item.detail.suggested_questions
@@ -15789,7 +15862,10 @@ async function handleSend(queryOverride = '') {
         try {
             await createConversation();
         } catch (err) {
-            appendMessage('assistant', t('chat.createConversationFailed', { message: err.message }), [], '', 'error');
+            const message = err?.code === 'request_timeout'
+                ? t('chat.createConversationTimeout')
+                : t('chat.createConversationFailed', { message: err.message });
+            appendMessage('assistant', message, [], '', 'error');
             return;
         }
     }
@@ -19277,7 +19353,15 @@ document.addEventListener('click', async (event) => {
 	const pulseChatButton = event.target.closest('[data-pulse-chat]');
 	if (pulseChatButton) {
 		const query = pulseChatButton.dataset.pulseChat || '';
-		const itemId = selectedPulsePostId;
+		const itemId = String(pulseChatButton.dataset.pulseItemId || selectedPulsePostId || '').trim();
+		const question = String(pulseChatButton.dataset.pulseQuestionKey || '').trim();
+		if (question) {
+			consumePulseQuestion(itemId, question, {
+				surface: 'pulse_post',
+				source: 'pulse',
+				question,
+			});
+		}
 		if (pulsePostIsOpen()) closePulsePost();
 		openPulseChat(query, {
 			requestId: itemId && query
@@ -19325,14 +19409,17 @@ document.addEventListener('click', async (event) => {
         }
         markWelcomeQuestionClicked(quickAction);
         resetQuestionHistoryBrowse();
-        messageInput.value = query;
-        autoResizeInput();
-        updateSendState();
         if (shouldQuickSend) {
+            messageInput.value = '';
+            autoResizeInput();
+            updateSendState();
             await handleSend(query);
             return;
         }
 
+        messageInput.value = query;
+        autoResizeInput();
+        updateSendState();
         focusMessageInput();
         if (messageInput.setSelectionRange) {
             messageInput.setSelectionRange(messageInput.value.length, messageInput.value.length);

@@ -270,6 +270,7 @@ test('Super Chat welcome shows six sourced actions with at most three from Pulse
         const currentConversationId = '';
         const currentLanguage = 'zh';
         const clickedWelcomeQuestionKeys = new Map();
+        const pulseItemConsumedLocally = () => false;
         const pulse = {
             items: [],
             suggestion_items: [
@@ -314,7 +315,7 @@ test('Super Chat welcome shows six sourced actions with at most three from Pulse
     assert.equal(actions[3].meta, 'welcome.sourceLabelwelcome.recentSource');
     assert.doesNotMatch(actions[3].query, /截断乱码|继续解决/);
     assert.ok(actions.every((action) => action.meta.startsWith('welcome.sourceLabel')));
-    assert.ok(actions.every((action) => action.autoSend === false));
+    assert.ok(actions.every((action) => action.autoSend === true));
 });
 
 test('Super Chat welcome always has six sourced fallback questions when Pulse and history are empty', () => {
@@ -332,6 +333,7 @@ test('Super Chat welcome always has six sourced fallback questions when Pulse an
         const currentConversationId = '';
         const currentLanguage = 'en';
         const clickedWelcomeQuestionKeys = new Map();
+        const pulseItemConsumedLocally = () => false;
         const pulse = { items: [] };
         const conversations = [];
         ${source}
@@ -374,6 +376,7 @@ test('clicked welcome questions are removed from later recommendation renders', 
             ['本地已点击的问题', Date.now()],
             ['本地已过期的问题', Date.now() - 7200_000],
         ]);
+        const pulseItemConsumedLocally = () => false;
         const pulse = {
             consumption_ttl_seconds: 3600,
             consumed_question_keys: ['服务端已点击的问题'],
@@ -403,6 +406,85 @@ test('clicked welcome questions are removed from later recommendation renders', 
     assert.ok(labels.includes('本地已过期的问题'));
     assert.ok(!labels.includes('服务端已点击的问题'));
     assert.ok(!labels.includes('本地已点击的问题'));
+});
+
+test('opening a Pulse item removes its stale in-memory questions from the welcome screen', () => {
+    const source = [
+        extractFunctionDeclaration('pulseQuestionKey'),
+        extractFunctionDeclaration('pulseConsumptionTTLMillis'),
+        extractFunctionDeclaration('pulseItemConsumedLocally'),
+        extractFunctionDeclaration('locallyConsumedWelcomeQuestionKeys'),
+        extractFunctionDeclaration('superChatWelcomeActions'),
+    ].join('\n');
+    const actions = vm.runInNewContext(`
+        const SUPER_CHAT_WELCOME_ACTION_LIMIT = 6;
+        const SUPER_CHAT_PULSE_ACTION_LIMIT = 3;
+        const SUPER_CHAT_AGENT_ID = 'super_chat';
+        const PULSE_DEFAULT_CONSUMPTION_TTL_SECONDS = 604800;
+        const currentConversationId = '';
+        const currentLanguage = 'zh';
+        const clickedWelcomeQuestionKeys = new Map();
+        const consumedPulseItemIds = new Map([['pulse-opened', Date.now()]]);
+        const pulse = {
+            consumption_ttl_seconds: 3600,
+            suggestion_items: [
+                {
+                    id: 'pulse-opened',
+                    title: 'DeepSeek V4',
+                    detail: { suggested_questions: ['已经看过的 DeepSeek V4 问题'] },
+                },
+                {
+                    id: 'pulse-fresh',
+                    title: 'Fresh item',
+                    detail: { suggested_questions: ['仍未看过的新问题'] },
+                },
+            ],
+        };
+        const conversations = [];
+        ${source}
+        superChatWelcomeActions();
+    `, {
+        buildPulseChatPrompt: (item, question) => `pulse:${item.id}:${question}`,
+        conversationAgentId: () => 'super_chat',
+        truncateText: (value) => value,
+        t: (key) => key,
+    });
+
+    const labels = Array.from(actions, (action) => action.label);
+    assert.ok(!labels.includes('已经看过的 DeepSeek V4 问题'));
+    assert.ok(labels.includes('仍未看过的新问题'));
+});
+
+test('Pulse detail question clicks persist the exact question key', () => {
+    const source = [
+        extractFunctionDeclaration('pulseQuestionKey'),
+        extractFunctionDeclaration('consumePulseQuestion'),
+    ].join('\n');
+    const result = vm.runInNewContext(`
+        const clickedWelcomeQuestionKeys = new Map();
+        const pulseEventQuestion = 'question_click';
+        const calls = [];
+        const recordPulseEvent = (...args) => { calls.push(args); };
+        ${source}
+        const key = consumePulseQuestion('pulse-deepseek', '  「DeepSeek V4」发生了什么？  ', {
+            surface: 'pulse_post',
+            source: 'pulse',
+        });
+        ({ key, calls, locallyConsumed: clickedWelcomeQuestionKeys.has(key) });
+    `);
+
+    assert.equal(result.key, '「deepseek v4」发生了什么？');
+    assert.equal(result.locallyConsumed, true);
+    assert.equal(result.calls.length, 1);
+    assert.equal(result.calls[0][0], 'pulse-deepseek');
+    assert.equal(result.calls[0][1], 'question_click');
+    assert.equal(result.calls[0][3].question_key, result.key);
+    assert.equal(result.calls[0][3].surface, 'pulse_post');
+
+    const detailSource = extractFunctionDeclaration('renderPulseDetail');
+    assert.match(detailSource, /data-pulse-item-id=/);
+    assert.match(detailSource, /data-pulse-question-key=/);
+    assert.match(appSource, /consumePulseQuestion\(itemId, question, \{\s*surface: 'pulse_post'/);
 });
 
 test('Pulse card open is consumed immediately and server filtering starts at one open', () => {

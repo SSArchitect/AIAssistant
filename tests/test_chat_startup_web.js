@@ -10,6 +10,10 @@ const appSource = fs.readFileSync(
     path.resolve(__dirname, '../web/static/js/app.js'),
     'utf8',
 );
+const styleSource = fs.readFileSync(
+    path.resolve(__dirname, '../web/static/css/style.css'),
+    'utf8',
+);
 
 function extractFunctionDeclaration(name) {
     const asyncMarker = `async function ${name}(`;
@@ -79,27 +83,48 @@ test('startup welcome is a real draft and never falls back to historical context
 
     assert.match(
         bootSource,
-        /currentConversationId = null;\s*saveCurrentConversationId\(null\);[\s\S]*?await refreshAll\(\);/,
+        /currentConversationId = null;\s*saveCurrentConversationId\(null\);/,
     );
+    assert.match(bootSource, /void refreshAll\(\);/);
+    assert.doesNotMatch(bootSource, /await refreshAll\(\);/);
     assert.doesNotMatch(restoreSource, /conversations\[0\]/);
 });
 
-test('an immediate startup send waits for boot before creating its conversation', () => {
+test('startup only blocks sending through the short authentication phase', () => {
     const sendStart = appSource.indexOf('async function handleSend(');
     const sendEnd = appSource.indexOf('\nasync function sendFollowUpQuestion(', sendStart);
     const sendSource = appSource.slice(sendStart, sendEnd);
 
     assert.match(appSource, /let appBootstrapping = true;/);
-    assert.match(appSource, /btnSend\.disabled = appBootstrapping/);
+    assert.match(appSource, /if \(appBootstrapping \|\| startupSendPending\) return t\('chat\.preparingToSend'\);/);
     assert.ok(
         sendSource.indexOf('await appBootPromise;')
             < sendSource.indexOf('if (!currentConversationId)'),
         'startup must finish before the first conversation is selected or created',
     );
+    const bootStart = appSource.indexOf('async function bootApp()');
+    const bootEnd = appSource.indexOf('\nfunction setView(', bootStart);
+    const bootSource = appSource.slice(bootStart, bootEnd);
+    assert.match(bootSource, /loadAccounts\(\{ timeoutMs: STARTUP_ACCOUNT_TIMEOUT_MS \}\)/);
+    assert.match(bootSource, /void refreshAll\(\);/);
+    assert.doesNotMatch(bootSource, /await loadConversations|await loadPulse|await loadProjects/);
     assert.match(
         appSource,
         /appBootPromise = bootApp\(\)\.finally\(\(\) => \{\s*appBootstrapping = false;\s*updateSendState\(\);\s*\}\);/,
     );
+});
+
+test('busy send states expose a visible progress indicator and reason', () => {
+    const reasonSource = extractFunctionDeclaration('sendBusyReason');
+    const stateSource = extractFunctionDeclaration('updateSendState');
+
+    assert.match(reasonSource, /chat\.preparingToSend/);
+    assert.match(reasonSource, /chat\.creatingConversation/);
+    assert.match(reasonSource, /chat\.conversationRunning/);
+    assert.match(reasonSource, /chat\.readingAttachment/);
+    assert.match(stateSource, /setAttribute\('aria-busy', busyReason \? 'true' : 'false'\)/);
+    assert.match(stateSource, /btnSend\.title = busyReason \|\| t\('actions\.send'\)/);
+    assert.match(styleSource, /\.btn-send\[aria-busy="true"\]::after/);
 });
 
 test('sending from the welcome page always detaches from historical context', () => {
@@ -119,7 +144,7 @@ test('sending from the welcome page always detaches from historical context', ()
     );
 });
 
-test('welcome recommendations and New Topic both use the lazy new-topic draft', () => {
+test('welcome recommendations auto-send into a lazy new topic without filling the composer', () => {
     const quickActionStart = appSource.indexOf("const quickAction = event.target.closest('[data-query]');");
     const quickActionEnd = appSource.indexOf("const startAgentButton = event.target.closest('[data-start-agent-id]');", quickActionStart);
     const quickActionSource = appSource.slice(quickActionStart, quickActionEnd);
@@ -128,6 +153,12 @@ test('welcome recommendations and New Topic both use the lazy new-topic draft', 
     const newTopicSource = appSource.slice(newTopicStart, newTopicEnd);
 
     assert.match(quickActionSource, /ensureWelcomeStartsNewTopic\(\);/);
+    assert.match(quickActionSource, /if \(shouldQuickSend\) \{\s*messageInput\.value = '';[\s\S]*?await handleSend\(query\);/);
+    assert.ok(
+        quickActionSource.indexOf('await handleSend(query);')
+            < quickActionSource.indexOf('messageInput.value = query;'),
+        'auto-send must return before the fallback path can copy text into the composer',
+    );
     assert.match(newTopicSource, /currentConversationId = null;\s*saveCurrentConversationId\(null\);/);
     assert.doesNotMatch(newTopicSource, /createConversation\(/);
 });
@@ -147,10 +178,13 @@ test('concurrent first sends share one idempotent conversation creation', async 
             let conversations = [];
             let calls = 0;
             const requestIds = [];
+            const timeouts = [];
             const SUPER_CHAT_AGENT_ID = 'super_chat';
-            const apiCall = async (_method, _path, body) => {
+            const CONVERSATION_CREATE_TIMEOUT_MS = 8000;
+            const apiCall = async (_method, _path, body, options) => {
                 calls += 1;
                 requestIds.push(body.request_id);
+                timeouts.push(options.timeoutMs);
                 await new Promise((resolve) => setTimeout(resolve, 5));
                 return { id: 'conv-single-flight' };
             };
@@ -165,7 +199,7 @@ test('concurrent first sends share one idempotent conversation creation', async 
                 createConversation(),
                 createConversation(),
             ]);
-            return JSON.stringify({ calls, requestIds, first, second, conversationCount: conversations.length });
+            return JSON.stringify({ calls, requestIds, timeouts, first, second, conversationCount: conversations.length });
         })();
     `, { setTimeout, Math, Date });
     const state = JSON.parse(result);
@@ -175,4 +209,114 @@ test('concurrent first sends share one idempotent conversation creation', async 
     assert.equal(state.second.id, 'conv-single-flight');
     assert.equal(state.conversationCount, 1);
     assert.match(state.requestIds[0], /^conversation_/);
+    assert.deepEqual(state.timeouts, [8000]);
+});
+
+test('a timed-out first conversation attempt releases the button and safely reuses its idempotency key', async () => {
+    const source = [
+        extractFunctionDeclaration('createConversation'),
+        extractFunctionDeclaration('createClientRequestId'),
+    ].join('\n');
+    const state = JSON.parse(await vm.runInNewContext(`
+        (async () => {
+            let conversationCreatePromise = null;
+            let conversationCreateRequestId = '';
+            let currentConversationId = null;
+            let currentUserId = 'mobile-user';
+            let currentAgentId = 'super_chat';
+            let conversations = [];
+            let calls = 0;
+            let sendStateUpdates = 0;
+            const requestIds = [];
+            const SUPER_CHAT_AGENT_ID = 'super_chat';
+            const CONVERSATION_CREATE_TIMEOUT_MS = 8000;
+            const apiCall = async (_method, _path, body) => {
+                calls += 1;
+                requestIds.push(body.request_id);
+                if (calls === 1) {
+                    const error = new Error('timeout');
+                    error.code = 'request_timeout';
+                    throw error;
+                }
+                return { id: 'conv-after-retry' };
+            };
+            const updateSendState = () => { sendStateUpdates += 1; };
+            const saveCurrentConversationId = () => {};
+            const saveSelectedModes = () => {};
+            const saveThinkingEnabled = () => {};
+            const renderConversationList = () => {};
+            const updateTopbar = () => {};
+            ${source}
+            let firstFailed = false;
+            try {
+                await createConversation();
+            } catch (error) {
+                firstFailed = error.code === 'request_timeout';
+            }
+            const released = conversationCreatePromise === null;
+            const second = await createConversation();
+            return JSON.stringify({ firstFailed, released, second, requestIds, sendStateUpdates });
+        })();
+    `, { Math, Date }));
+
+    assert.equal(state.firstFailed, true);
+    assert.equal(state.released, true);
+    assert.equal(state.second.id, 'conv-after-retry');
+    assert.equal(state.requestIds.length, 2);
+    assert.equal(state.requestIds[0], state.requestIds[1]);
+    assert.ok(state.sendStateUpdates >= 4);
+});
+
+test('timed API requests abort and return a typed timeout error', async () => {
+    const source = [
+        extractFunctionDeclaration('requestTimeoutError'),
+        extractFunctionDeclaration('fetchWithTimeout'),
+    ].join('\n');
+    const result = await vm.runInNewContext(`
+        (async () => {
+            const t = (_key, values) => 'timeout-' + values.seconds;
+            const fetch = (_url, options) => new Promise((_resolve, reject) => {
+                options.signal.addEventListener('abort', () => reject(new Error('aborted')));
+            });
+            ${source}
+            try {
+                await fetchWithTimeout('/slow', {}, 5);
+                return { timedOut: false };
+            } catch (error) {
+                return { timedOut: true, code: error.code, message: error.message };
+            }
+        })();
+    `, { AbortController, setTimeout, clearTimeout });
+
+    assert.deepEqual({ ...result }, {
+        timedOut: true,
+        code: 'request_timeout',
+        message: 'timeout-1',
+    });
+});
+
+test('background conversation refresh preserves a conversation created while it was loading', async () => {
+    const source = extractFunctionDeclaration('loadConversations');
+    const state = JSON.parse(await vm.runInNewContext(`
+        (async () => {
+            let currentConversationId = null;
+            let conversations = [];
+            let resolveLoad;
+            const apiCall = () => new Promise((resolve) => { resolveLoad = resolve; });
+            const currentConversationRecord = () => conversations.find((item) => item.id === currentConversationId) || null;
+            const applyConversationAgent = () => {};
+            const renderConversationList = () => {};
+            const updateTopbar = () => {};
+            const refreshWelcomeIfEmpty = () => {};
+            ${source}
+            const pending = loadConversations();
+            currentConversationId = 'new-local';
+            conversations.unshift({ id: 'new-local', title: 'New local conversation' });
+            resolveLoad({ conversations: [{ id: 'older-server' }] });
+            await pending;
+            return JSON.stringify(conversations);
+        })();
+    `));
+
+    assert.deepEqual(state.map((item) => item.id), ['new-local', 'older-server']);
 });
