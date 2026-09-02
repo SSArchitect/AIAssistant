@@ -39,6 +39,28 @@ type PulseModule struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
+// FocusTodaySnapshot is a precomputed Super Chat answer backed by the current
+// Pulse. It deliberately lives outside Conversation/Message: opening the app
+// may refresh this cache, but a user-visible conversation is only materialized
+// after the user clicks Focus Today.
+type FocusTodaySnapshot struct {
+	ID             string    `json:"id" gorm:"primaryKey"`
+	UserID         string    `json:"user_id" gorm:"index;not null;default:0;uniqueIndex:idx_focus_today_user_date,priority:1"`
+	Date           string    `json:"date" gorm:"index;not null;uniqueIndex:idx_focus_today_user_date,priority:2"`
+	Title          string    `json:"title"`
+	Prompt         string    `json:"prompt" gorm:"type:text"`
+	Content        string    `json:"content" gorm:"type:text"`
+	Reasoning      string    `json:"reasoning,omitempty" gorm:"type:text"`
+	SkillsUsedJSON string    `json:"skills_used_json,omitempty" gorm:"type:text"`
+	CitationsJSON  string    `json:"citations_json,omitempty" gorm:"type:text"`
+	ArtifactsJSON  string    `json:"artifacts_json,omitempty" gorm:"type:text"`
+	FollowUpsJSON  string    `json:"follow_ups_json,omitempty" gorm:"type:text"`
+	ModelUsed      string    `json:"model_used,omitempty"`
+	Runtime        string    `json:"runtime,omitempty"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
+}
+
 type PulseEvent struct {
 	ID           string    `json:"id" gorm:"primaryKey"`
 	UserID       string    `json:"user_id" gorm:"index;not null;default:0;index:idx_pulse_event_user_type_created,priority:1"`

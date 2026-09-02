@@ -136,6 +136,7 @@ class SkillParameterSchema(BaseModel):
     max_length: int | None = None
     pattern: str | None = None
     format: str | None = None
+    input_format: Literal["plain_text", "markdown"] | None = None
 
 
 class SkillInfo(BaseModel):

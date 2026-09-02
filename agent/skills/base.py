@@ -19,6 +19,7 @@ class SkillParameter(BaseModel):
     max_length: int | None = Field(default=None, ge=0)
     pattern: str | None = None
     format: str | None = None
+    input_format: Literal["plain_text", "markdown"] | None = None
 
 
 class SkillMetadata(BaseModel):
@@ -86,9 +87,12 @@ class Skill(ABC):
                 "integer": "integer",
                 "array": "array",
             }
+            description = p.description
+            if p.input_format == "markdown" and "markdown" not in description.lower():
+                description = f"{description.rstrip()} Supports Markdown input and preserves line breaks."
             properties[p.name] = {
                 "type": type_map.get(p.type, "string"),
-                "description": p.description,
+                "description": description,
             }
             if p.default is not None:
                 properties[p.name]["default"] = p.default

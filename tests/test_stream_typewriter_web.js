@@ -7,6 +7,61 @@ const test = require('node:test');
 
 const { AdaptiveStreamBuffer, splitGraphemes } = require('../web/static/js/stream-typewriter.js');
 
+const appSource = fs.readFileSync(
+    path.resolve(__dirname, '../web/static/js/app.js'),
+    'utf8',
+);
+
+function extractFunctionDeclaration(name) {
+    const marker = `function ${name}(`;
+    const start = appSource.indexOf(marker);
+    assert.notEqual(start, -1, `missing ${name} in app.js`);
+    const parametersEnd = appSource.indexOf(')', start);
+    const bodyStart = appSource.indexOf('{', parametersEnd);
+    let depth = 0;
+    let quote = '';
+    let escaped = false;
+    for (let index = bodyStart; index < appSource.length; index += 1) {
+        const char = appSource[index];
+        if (escaped) {
+            escaped = false;
+            continue;
+        }
+        if (quote) {
+            if (char === '\\') escaped = true;
+            else if (char === quote) quote = '';
+            continue;
+        }
+        if (['"', "'", '`'].includes(char)) {
+            quote = char;
+            continue;
+        }
+        if (char === '{') depth += 1;
+        if (char === '}' && --depth === 0) return appSource.slice(start, index + 1);
+    }
+    assert.fail(`unterminated ${name}`);
+}
+
+function createConversationScrollHelpers({ currentConversationId, activeView = 'chat', messagesContainer }) {
+    return Function(
+        'currentConversationId',
+        'activeView',
+        'messagesContainer',
+        'requestAnimationFrame',
+        'CHAT_STREAM_AUTOSCROLL_THRESHOLD_PX',
+        `${extractFunctionDeclaration('isConversationScrollTarget')}
+        ${extractFunctionDeclaration('shouldFollowConversationStream')}
+        ${extractFunctionDeclaration('scrollToBottom')}
+        return { isConversationScrollTarget, shouldFollowConversationStream, scrollToBottom };`,
+    )(
+        currentConversationId,
+        activeView,
+        messagesContainer,
+        (callback) => callback(),
+        72,
+    );
+}
+
 function createClock() {
     let now = 0;
     let nextId = 1;
@@ -141,7 +196,6 @@ test('grapheme splitting never tears emoji or combining marks', () => {
 
 test('chat stream wires tokens and reasoning through the secondary buffers', () => {
     const root = path.resolve(__dirname, '..');
-    const appSource = fs.readFileSync(path.join(root, 'web/static/js/app.js'), 'utf8');
     const htmlSource = fs.readFileSync(path.join(root, 'web/index.html'), 'utf8');
     assert.match(htmlSource, /stream-typewriter\.js/);
     assert.match(appSource, /streamView\.enqueueContent\(chunk\)/);
@@ -149,4 +203,52 @@ test('chat stream wires tokens and reasoning through the secondary buffers', () 
     assert.match(appSource, /await Promise\.all\(\[/);
     assert.match(appSource, /streamView\.finishContent/);
     assert.match(appSource, /streamView\.finishReasoning/);
+});
+
+test('background conversation streaming cannot scroll the visible conversation', () => {
+    const streamMessage = { isConnected: true };
+    const messagesContainer = {
+        scrollTop: 180,
+        scrollHeight: 1200,
+        clientHeight: 500,
+        contains: (element) => element === streamMessage,
+    };
+    const helpers = createConversationScrollHelpers({
+        currentConversationId: 'visible-conversation',
+        messagesContainer,
+    });
+
+    assert.equal(
+        helpers.shouldFollowConversationStream('background-conversation', streamMessage),
+        false,
+    );
+    helpers.scrollToBottom('background-conversation', streamMessage);
+    assert.equal(messagesContainer.scrollTop, 180);
+});
+
+test('streaming only follows the current conversation while the user remains near the bottom', () => {
+    const streamMessage = { isConnected: true };
+    const messagesContainer = {
+        scrollTop: 650,
+        scrollHeight: 1200,
+        clientHeight: 500,
+        contains: (element) => element === streamMessage,
+    };
+    const helpers = createConversationScrollHelpers({
+        currentConversationId: 'visible-conversation',
+        messagesContainer,
+    });
+
+    assert.equal(
+        helpers.shouldFollowConversationStream('visible-conversation', streamMessage),
+        true,
+    );
+    helpers.scrollToBottom('visible-conversation', streamMessage);
+    assert.equal(messagesContainer.scrollTop, 1200);
+
+    messagesContainer.scrollTop = 200;
+    assert.equal(
+        helpers.shouldFollowConversationStream('visible-conversation', streamMessage),
+        false,
+    );
 });

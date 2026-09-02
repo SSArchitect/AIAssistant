@@ -444,6 +444,7 @@ func (h *AdminHandler) DeleteAccount(c *gin.Context) {
 			&models.PulseEvent{},
 			&models.PulseItem{},
 			&models.PulseModule{},
+			&models.FocusTodaySnapshot{},
 			&models.PulseTopic{},
 			&models.PulseScheduleState{},
 			&models.PulseRetrievalRun{},

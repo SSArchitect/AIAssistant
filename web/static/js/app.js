@@ -5,6 +5,7 @@ const LANGUAGE_KEY = 'agent_assistant_language';
 const MODE_STORAGE_KEY = 'super_chat_mode_ids';
 const THINKING_STORAGE_KEY = 'super_chat_thinking_enabled';
 const STREAM_TYPING_RATE_STORAGE_KEY = 'super_chat_stream_typing_rate_v1';
+const CHAT_STREAM_AUTOSCROLL_THRESHOLD_PX = 72;
 const SUPER_CHAT_AGENT_ID = 'super_chat';
 const DEEP_RESEARCH_MODE_ID = 'deep_research';
 const DEEP_RESEARCH_AGENT_ID = 'deep_research_v1';
@@ -207,7 +208,7 @@ const I18N = {
             month: '月视图',
             addTitle: '新建待办',
             titlePlaceholder: '输入一个待办',
-            notesPlaceholder: '备注',
+            notesPlaceholder: '备注（支持 Markdown，Ctrl/⌘ + Enter 保存）',
             inboxHint: '待排期是已经记录、但还没有安排具体日期的待办。',
             todayHint: '今日只包含今天到期或今天仍在进行的待办。',
             overdueHint: '逾期只显示结束日期早于今天且仍未完成的一次性待办。',
@@ -839,6 +840,7 @@ const I18N = {
             parameters: '{count} 个参数',
             required: '必填',
             optional: '可选',
+            markdown: 'Markdown',
             noMatches: '没有符合筛选的工具',
             mcpTitle: 'MCP 配置',
             mcpDetail: '保存当前帐号自己的 MCP server JSON；通用 MCP discovery 接入后会从这里读取。',
@@ -924,7 +926,8 @@ const I18N = {
             todoRecentSource: 'Todo · 最近对话',
             pulseRecentSource: 'Pulse · 最近对话',
             recentPreferenceSource: '最近对话 · 长期偏好',
-            todayPulse: '今天有什么值得关注？',
+			focusToday: '今日聚焦',
+			focusTodayOpenFailed: '今日聚焦打开失败，问题已放回输入框，请重试。',
             unfinished: '最近还有什么问题没解决？',
             priorities: '我今天最该先做什么？',
             explore: '推荐一个值得深入的方向',
@@ -1118,7 +1121,7 @@ const I18N = {
             month: 'Month',
             addTitle: 'Add todo',
             titlePlaceholder: 'Enter a todo',
-            notesPlaceholder: 'Notes',
+            notesPlaceholder: 'Notes (Markdown supported; Ctrl/⌘ + Enter to save)',
             inboxHint: 'Unscheduled items are saved tasks that do not have a date yet.',
             todayHint: 'Today only includes todos due today or still active today.',
             overdueHint: 'Overdue shows unfinished one-time todos whose end date is before today.',
@@ -1750,6 +1753,7 @@ const I18N = {
             parameters: '{count} parameters',
             required: 'Required',
             optional: 'Optional',
+            markdown: 'Markdown',
             noMatches: 'No tools match this filter',
             mcpTitle: 'MCP Config',
             mcpDetail: 'Save MCP server JSON for this account; generic MCP discovery can read it later.',
@@ -1835,7 +1839,8 @@ const I18N = {
             todoRecentSource: 'Todo · recent chats',
             pulseRecentSource: 'Pulse · recent chats',
             recentPreferenceSource: 'Recent chats · preferences',
-            todayPulse: 'What is worth following today?',
+            focusToday: 'Focus Today',
+            focusTodayOpenFailed: 'Focus Today could not be opened. The prompt is back in the composer; please retry.',
             unfinished: 'What recent questions remain unresolved?',
             priorities: 'What should I prioritize today?',
             explore: 'Suggest a topic worth exploring',
@@ -2537,7 +2542,9 @@ async function apiCall(method, path, body = null, options = {}) {
     const resp = await fetchWithTimeout(authenticatedApiUrl(path), opts, options.timeoutMs);
     if (!resp.ok) {
         const err = await resp.json().catch(() => ({ error: resp.statusText }));
-        throw new Error(err.error || err.detail || 'Request failed');
+        const error = new Error(err.error || err.detail || 'Request failed');
+        error.httpStatus = resp.status;
+        throw error;
     }
     return resp.json();
 }
@@ -8729,7 +8736,7 @@ function renderTodoSidebar() {
             <button class="todo-check" type="button" data-todo-toggle-complete="${escapeAttr(item.id)}" data-todo-completed="true" data-todo-occurrence-date="${escapeAttr(item.occurrence_date || todoTodayKey())}" title="${escapeAttr(t('todos.complete'))}" aria-label="${escapeAttr(t('todos.complete'))}">
                 <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.8"><path d="m5 12 4 4L19 6"/></svg>
             </button>
-            <span>${escapeHtml(item.title || '')}</span>
+            <span>${escapeHtml(todoTitlePreview(item.title || ''))}</span>
         </div>
     `).join('');
 }
@@ -8763,7 +8770,7 @@ function renderTodos() {
                 <div class="todo-scope-hint">${escapeHtml(todoScopeHint(scope))}</div>
                 ${todoState.addOpen ? `
                     <div class="todo-create-panel">
-                        <input type="text" data-todo-title autocomplete="off" placeholder="${escapeAttr(t('todos.titlePlaceholder'))}" ${todoState.saving ? 'disabled' : ''}>
+                        <input type="text" data-todo-title maxlength="180" autocomplete="off" placeholder="${escapeAttr(t('todos.titlePlaceholder'))}" ${todoState.saving ? 'disabled' : ''}>
                         <select data-todo-date-mode aria-label="${escapeAttr(t('todos.dateMode'))}" ${todoState.saving ? 'disabled' : ''}>
                             ${renderTodoDateModeOption('today')}
                             ${renderTodoDateModeOption('tomorrow')}
@@ -8778,7 +8785,7 @@ function renderTodos() {
                             <option value="high">${escapeHtml(t('todos.high'))}</option>
                             <option value="low">${escapeHtml(t('todos.low'))}</option>
                         </select>
-                        <input class="todo-notes-input" type="text" data-todo-notes autocomplete="off" placeholder="${escapeAttr(t('todos.notesPlaceholder'))}" ${todoState.saving ? 'disabled' : ''}>
+                        <textarea class="todo-notes-input" data-todo-notes rows="4" maxlength="4000" placeholder="${escapeAttr(t('todos.notesPlaceholder'))}" aria-label="${escapeAttr(t('todos.notesPlaceholder'))}" ${todoState.saving ? 'disabled' : ''}></textarea>
                         <button class="btn-primary todo-add-button" type="button" data-todo-create ${todoState.saving ? 'disabled aria-busy="true"' : ''}>
                         <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 5v14M5 12h14"/></svg>
                         <span>${escapeHtml(t('todos.add'))}</span>
@@ -8791,21 +8798,7 @@ function renderTodos() {
                     ${renderTodoContent(scope, items)}
                 </div>
             </section>
-            <aside class="todo-suggestion-panel">
-                <div class="todo-suggestion-head">
-                    <div>
-                        <h2>${escapeHtml(t('todos.suggestions'))}</h2>
-                        <p>${escapeHtml(t('todos.suggestionsHint'))}</p>
-                    </div>
-                    <button class="btn-secondary" type="button" data-todo-refresh-suggestions ${todoState.suggestionRefreshing ? 'disabled aria-busy="true"' : ''}>
-                        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.3"><path d="M21 12a9 9 0 0 1-9 9 9.8 9.8 0 0 1-6.7-2.7"/><path d="M3 12a9 9 0 0 1 9-9 9.8 9.8 0 0 1 6.7 2.7"/><path d="M3 20v-5h5M21 4v5h-5"/></svg>
-                        <span>${escapeHtml(t('todos.refreshSuggestions'))}</span>
-                    </button>
-                </div>
-                <div class="todo-suggestion-list">
-                    ${suggestions.length ? suggestions.map(renderTodoSuggestion).join('') : `<div class="empty-inline">${escapeHtml(t('todos.noSuggestions'))}</div>`}
-                </div>
-            </aside>
+            ${renderTodoSidePanel(scope, items, suggestions)}
         </div>
     `;
     const nextList = todoWorkbench.querySelector('.todo-list');
@@ -8833,6 +8826,32 @@ function todoScopeHint(scope) {
     if (scope === 'overdue') return t('todos.overdueHint');
     if (scope === 'month') return t('todos.monthHint');
     return t('todos.todayHint');
+}
+
+function renderTodoSidePanel(scope, items, suggestions) {
+    if (scope === 'month') {
+        const range = todoMonthRange(todoState.month);
+        const byDate = mapTodoItemsByDate(items, range.start, range.end);
+        const selectedDate = todoSelectedMonthDate(range, byDate);
+        return renderTodoMonthDetailPanel(selectedDate, byDate[selectedDate] || [], todoState.loading);
+    }
+    return `
+        <aside class="todo-suggestion-panel">
+            <div class="todo-suggestion-head">
+                <div>
+                    <h2>${escapeHtml(t('todos.suggestions'))}</h2>
+                    <p>${escapeHtml(t('todos.suggestionsHint'))}</p>
+                </div>
+                <button class="btn-secondary" type="button" data-todo-refresh-suggestions ${todoState.suggestionRefreshing ? 'disabled aria-busy="true"' : ''}>
+                    <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.3"><path d="M21 12a9 9 0 0 1-9 9 9.8 9.8 0 0 1-6.7-2.7"/><path d="M3 12a9 9 0 0 1 9-9 9.8 9.8 0 0 1 6.7 2.7"/><path d="M3 20v-5h5M21 4v5h-5"/></svg>
+                    <span>${escapeHtml(t('todos.refreshSuggestions'))}</span>
+                </button>
+            </div>
+            <div class="todo-suggestion-list">
+                ${suggestions.length ? suggestions.map(renderTodoSuggestion).join('') : `<div class="empty-inline">${escapeHtml(t('todos.noSuggestions'))}</div>`}
+            </div>
+        </aside>
+    `;
 }
 
 function renderTodoDateModeOption(mode, selectedMode = todoState.dateMode) {
@@ -8878,7 +8897,6 @@ function renderTodoMonthView(items) {
     const days = todoMonthDays(monthDate);
     const byDate = mapTodoItemsByDate(items, range.start, range.end);
     const selectedDate = todoSelectedMonthDate(range, byDate);
-    const selectedItems = byDate[selectedDate] || [];
     const expandedDate = todoState.monthExpandedDate || '';
     const weekdayLabels = currentLanguage === 'zh'
         ? ['一', '二', '三', '四', '五', '六', '日']
@@ -8900,7 +8918,6 @@ function renderTodoMonthView(items) {
                 ${days.map((day) => renderTodoMonthDay(day, byDate[day.key] || [], selectedDate, expandedDate)).join('')}
             </div>
             ${visibleCount ? '' : `<div class="empty-inline">${escapeHtml(t('todos.monthlyEmpty'))}</div>`}
-            ${renderTodoMonthDetailPanel(selectedDate, selectedItems)}
         </div>
     `;
 }
@@ -8922,7 +8939,7 @@ function renderTodoMonthDay(day, items, selectedDate = '', expandedDate = '') {
                     const tone = todoItemTone(item);
                     return `
                     <button class="todo-month-item ${tone} ${done ? 'done' : ''}" type="button" data-todo-toggle-complete="${escapeAttr(item.id)}" data-todo-completed="${done ? 'false' : 'true'}" data-todo-occurrence-date="${escapeAttr(day.key)}">
-                        ${escapeHtml(item.title || '')}
+                        ${escapeHtml(todoTitlePreview(item.title || ''))}
                     </button>
                 `;
                 }).join('')}
@@ -8932,9 +8949,9 @@ function renderTodoMonthDay(day, items, selectedDate = '', expandedDate = '') {
     `;
 }
 
-function renderTodoMonthDetailPanel(dateKey, items) {
+function renderTodoMonthDetailPanel(dateKey, items, loading = false) {
     return `
-        <section class="todo-month-detail" aria-live="polite">
+        <aside class="todo-suggestion-panel todo-month-detail-panel" aria-live="polite">
             <div class="todo-month-detail-head">
                 <div>
                     <span>${escapeHtml(t('todos.monthDayDetails', { date: formatTodoDateLabel(dateKey) }))}</span>
@@ -8942,9 +8959,13 @@ function renderTodoMonthDetailPanel(dateKey, items) {
                 </div>
             </div>
             <div class="todo-month-detail-list">
-                ${items.length ? items.map((item) => renderTodoItem(item, dateKey)).join('') : `<div class="empty-inline">${escapeHtml(t('todos.monthDayEmpty'))}</div>`}
+                ${loading
+                    ? `<div class="empty-inline">${escapeHtml(t('pulse.loading'))}</div>`
+                    : items.length
+                        ? items.map((item) => renderTodoItem(item, dateKey)).join('')
+                        : `<div class="empty-inline">${escapeHtml(t('todos.monthDayEmpty'))}</div>`}
             </div>
-        </section>
+        </aside>
     `;
 }
 
@@ -8956,6 +8977,45 @@ function renderTodoScopeButton(scope, count) {
             ${Number(count || 0) ? `<strong>${escapeHtml(String(count))}</strong>` : ''}
         </button>
     `;
+}
+
+function todoTitlePreview(value = '') {
+    const normalized = String(value || '').replace(/\r\n?/g, '\n').trim();
+    const boldHeading = normalized.match(/^\s*\*\*(.+?)\*\*/);
+    let preview = boldHeading?.[1] || normalized.split('\n').find((line) => line.trim()) || '';
+    if (preview.includes('【')) preview = preview.split('【', 1)[0];
+    return preview
+        .replace(/^#{1,6}\s+/, '')
+        .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')
+        .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+        .replace(/[*_`~>]/g, '')
+        .replace(/\s+/g, ' ')
+        .trim() || String(value || '').trim();
+}
+
+function normalizeTodoMarkdown(value = '', options = {}) {
+    const normalized = String(value || '').replace(/\r\n?/g, '\n').trim();
+    if (!normalized || options.legacySections !== true) return normalized;
+
+    const matches = Array.from(normalized.matchAll(/【([^】\n]{1,48})】/g));
+    if (matches.length < 2) return normalized;
+
+    const blocks = [];
+    const intro = normalized.slice(0, matches[0].index).trim();
+    if (intro) blocks.push(intro);
+    matches.forEach((match, index) => {
+        const start = Number(match.index || 0) + match[0].length;
+        const end = index + 1 < matches.length
+            ? Number(matches[index + 1].index || normalized.length)
+            : normalized.length;
+        const body = normalized.slice(start, end).trim();
+        blocks.push(`**${match[1].trim()}**${body ? ` ${body}` : ''}`);
+    });
+    return blocks.join('\n\n');
+}
+
+function renderTodoMarkdown(value = '', options = {}) {
+    return formatContent(normalizeTodoMarkdown(value, options), { allowMedia: false });
 }
 
 function renderTodoItem(item, occurrenceDateOverride = '') {
@@ -8977,8 +9037,8 @@ function renderTodoItem(item, occurrenceDateOverride = '') {
                 <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.8"><path d="m5 12 4 4L19 6"/></svg>
             </button>
             <div class="todo-item-body">
-                <div class="todo-item-title">${escapeHtml(item.title || '')}</div>
-                ${item.notes ? `<div class="todo-item-notes">${escapeHtml(item.notes)}</div>` : ''}
+                <div class="todo-item-title todo-markdown">${renderTodoMarkdown(item.title || '', { legacySections: true })}</div>
+                ${item.notes ? `<div class="todo-item-notes todo-markdown">${renderTodoMarkdown(item.notes, { legacySections: true })}</div>` : ''}
                 <div class="todo-item-meta">
                     <span class="todo-priority ${escapeAttr(item.priority || 'normal')}">${escapeHtml(t(`todos.${item.priority || 'normal'}`))}</span>
                     <span>${escapeHtml(dateLabel)}</span>
@@ -9013,7 +9073,7 @@ function renderTodoEditItem(item) {
         <article class="todo-item todo-edit-card ${tone}" data-todo-edit-id="${escapeAttr(item.id)}">
             <label class="todo-field todo-edit-title-field">
                 <span>${escapeHtml(t('todos.addTitle'))}</span>
-                <input class="todo-edit-title" type="text" data-todo-edit-title value="${escapeAttr(draft.title || '')}" ${todoState.saving ? 'disabled' : ''}>
+                <input class="todo-edit-title" type="text" data-todo-edit-title maxlength="180" value="${escapeAttr(draft.title || '')}" ${todoState.saving ? 'disabled' : ''}>
             </label>
             <label class="todo-field">
                 <span>${escapeHtml(t('todos.dateMode'))}</span>
@@ -9037,7 +9097,7 @@ function renderTodoEditItem(item) {
             </label>
             <label class="todo-field todo-edit-notes-field">
                 <span>${escapeHtml(t('todos.notesPlaceholder'))}</span>
-                <input class="todo-edit-notes" type="text" data-todo-edit-notes value="${escapeAttr(draft.notes || '')}" placeholder="${escapeAttr(t('todos.notesPlaceholder'))}" ${todoState.saving ? 'disabled' : ''}>
+                <textarea class="todo-edit-notes" data-todo-edit-notes rows="7" maxlength="4000" placeholder="${escapeAttr(t('todos.notesPlaceholder'))}" ${todoState.saving ? 'disabled' : ''}>${escapeHtml(draft.notes || '')}</textarea>
             </label>
             <div class="todo-edit-actions">
                 <button class="btn-secondary" type="button" data-todo-edit-cancel="${escapeAttr(item.id)}">${escapeHtml(t('todos.cancelEdit'))}</button>
@@ -9138,14 +9198,14 @@ function renderTodoSuggestion(suggestion) {
     });
     return `
         <article class="todo-suggestion-card">
-            <div class="todo-suggestion-title">${escapeHtml(suggestion.title || '')}</div>
-            ${suggestion.notes ? `<div class="todo-suggestion-notes">${escapeHtml(suggestion.notes)}</div>` : ''}
+            <div class="todo-suggestion-title todo-markdown">${renderTodoMarkdown(suggestion.title || '', { legacySections: true })}</div>
+            ${suggestion.notes ? `<div class="todo-suggestion-notes todo-markdown">${renderTodoMarkdown(suggestion.notes, { legacySections: true })}</div>` : ''}
             <div class="todo-item-meta">
                 <span>${escapeHtml(scheduleLabel)}</span>
                 <span>${escapeHtml(t(`todos.${suggestion.priority || 'normal'}`))}</span>
                 ${suggestion.confidence ? `<span>${escapeHtml(String(suggestion.confidence))}</span>` : ''}
             </div>
-            ${suggestion.reason ? `<p>${escapeHtml(suggestion.reason)}</p>` : ''}
+            ${suggestion.reason ? `<div class="todo-suggestion-reason todo-markdown">${renderTodoMarkdown(suggestion.reason)}</div>` : ''}
             <div class="todo-suggestion-actions">
                 <button class="btn-secondary" type="button" data-todo-dismiss-suggestion="${escapeAttr(suggestion.id)}">${escapeHtml(t('todos.dismiss'))}</button>
                 <button class="btn-secondary" type="button" data-todo-accept-suggestion="${escapeAttr(suggestion.id)}">${escapeHtml(t('todos.accept'))}</button>
@@ -12565,6 +12625,7 @@ function renderParameters(params) {
                 <div class="param-item">
                     <span class="param-name">${escapeHtml(param.name || '')}</span>
                     <span class="param-type">${escapeHtml(param.type || 'string')}</span>
+                    ${param.input_format === 'markdown' ? `<span class="param-format">${escapeHtml(t('tools.markdown'))}</span>` : ''}
                     <span class="param-required">${escapeHtml(param.required ? t('tools.required') : t('tools.optional'))}</span>
                     <p>${escapeHtml(param.description || '')}</p>
                 </div>
@@ -14439,6 +14500,8 @@ function superChatWelcomeActions() {
             trackSuggestion: true,
             questionKey,
             pulseItemId: String(tracking.pulseItemId || '').trim(),
+            focusToday: Boolean(tracking.focusToday),
+            focusTodaySnapshotId: String(tracking.focusTodaySnapshotId || '').trim(),
         });
         return true;
     };
@@ -14450,6 +14513,28 @@ function superChatWelcomeActions() {
         return text;
     };
     const sourceMeta = (source) => source ? `${t('welcome.sourceLabel')}${source}` : '';
+
+    const focusToday = pulse?.focus_today && typeof pulse.focus_today === 'object'
+        ? pulse.focus_today
+        : {};
+    const focusTodaySnapshotId = focusToday.available === false
+        ? ''
+        : String(focusToday.id || '').trim();
+    const focusTodayDate = String(focusToday.date || pulse?.date || '').trim();
+    const focusTodayQuery = String(focusToday.prompt || '').trim() || (currentLanguage === 'zh'
+        ? '请读取我的今日 Pulse，推荐 3 个最值得关注、可以继续追问的问题。'
+        : 'Read my Pulse and suggest three timely questions worth following up on today.');
+    const focusTodayAdded = addAction(
+        t('welcome.focusToday'),
+        focusTodayQuery,
+        'focus_today',
+        sourceMeta(t('welcome.pulseSource')),
+        {
+            questionKey: `focus-today:${focusTodaySnapshotId || focusTodayDate || 'current'}`,
+            focusToday: true,
+            focusTodaySnapshotId,
+        },
+    );
 
     const pulseItems = (Array.isArray(pulse?.suggestion_items) && pulse.suggestion_items.length
         ? pulse.suggestion_items
@@ -14463,7 +14548,7 @@ function superChatWelcomeActions() {
             .map(cleanPulseSuggestion)
             .filter(Boolean);
     });
-    let pulseActionCount = 0;
+    let pulseActionCount = focusTodayAdded ? 1 : 0;
     const maxPulseRounds = Math.max(0, ...pulsePrompts.map((prompts) => prompts.length));
     for (let round = 0; round < maxPulseRounds && pulseActionCount < SUPER_CHAT_PULSE_ACTION_LIMIT; round += 1) {
         pulseItems.forEach((item, itemIndex) => {
@@ -14498,19 +14583,17 @@ function superChatWelcomeActions() {
 
     const fallbackActions = currentLanguage === 'zh'
         ? [
-            [t('welcome.priorities'), '请结合我的 Todo、最近对话和长期偏好，告诉我今天最应该先推进什么。', t('welcome.todoRecentSource')],
+            [t('welcome.priorities'), '请先调用 list_todos 读取我今天（today）和已逾期（overdue）的未完成 Todo；如果两者都为空，再读取待排期（inbox）Todo。必须基于工具返回的真实待办，再结合最近对话和长期偏好，告诉我今天最应该先推进什么。如果 Todo 读取失败，请明确说明，不要把对话内容当作 Todo。', t('welcome.todoRecentSource')],
             [t('welcome.explore'), '请结合我的 Pulse 和最近对话，推荐一个今天值得深入研究的方向。', t('welcome.pulseRecentSource')],
-            [t('welcome.todayPulse'), '请读取我的今日 Pulse，推荐 3 个最值得关注、可以继续追问的问题。', t('welcome.pulseSource')],
             [t('welcome.unfinished'), '请结合最近对话，找出尚未解决且最值得继续推进的 3 个问题。', t('welcome.recentSource')],
-            [t('welcome.planDay'), '请结合我的 Todo 和最近对话，把今天值得推进的事项整理成一份简洁、可执行的行动清单。', t('welcome.todoRecentSource')],
+            [t('welcome.planDay'), '请先调用 list_todos 读取我今天（today）和已逾期（overdue）的未完成 Todo；如果两者都为空，再读取待排期（inbox）Todo。请基于工具返回的真实待办和最近对话，把今天值得推进的事项整理成一份简洁、可执行的行动清单。如果 Todo 读取失败，请明确说明，不要把对话内容当作 Todo。', t('welcome.todoRecentSource')],
             [t('welcome.reviewGoals'), '请结合最近对话和长期偏好，回顾我近期目标的进展、阻塞点和下一步。', t('welcome.recentPreferenceSource')],
         ]
         : [
-            [t('welcome.priorities'), 'Use my todos, recent conversations, and preferences to identify today\'s top priority.', t('welcome.todoRecentSource')],
+            [t('welcome.priorities'), 'First call list_todos to read my unfinished today and overdue todos. If both are empty, read my inbox todos. Base the answer on the actual tool results, then use my recent conversations and preferences to identify today\'s top priority. If reading todos fails, say so explicitly instead of treating conversation content as todos.', t('welcome.todoRecentSource')],
             [t('welcome.explore'), 'Use my Pulse and recent conversations to suggest one topic worth exploring today.', t('welcome.pulseRecentSource')],
-            [t('welcome.todayPulse'), 'Read my Pulse and suggest three timely questions worth following up on today.', t('welcome.pulseSource')],
             [t('welcome.unfinished'), 'Use my recent conversations to identify three valuable unresolved questions.', t('welcome.recentSource')],
-            [t('welcome.planDay'), 'Use my todos and recent chats to turn today into a concise, actionable plan.', t('welcome.todoRecentSource')],
+            [t('welcome.planDay'), 'First call list_todos to read my unfinished today and overdue todos. If both are empty, read my inbox todos. Use the actual tool results and my recent chats to turn today into a concise, actionable plan. If reading todos fails, say so explicitly instead of treating conversation content as todos.', t('welcome.todoRecentSource')],
             [t('welcome.reviewGoals'), 'Use my recent chats and preferences to review progress, blockers, and next steps for my goals.', t('welcome.recentPreferenceSource')],
         ];
     fallbackActions.forEach(([label, query, source]) => addAction(label, query, 'fallback', sourceMeta(source)));
@@ -14552,6 +14635,7 @@ function showWelcome() {
                                 data-query="${escapeAttr(item.query)}"
                                 data-suggestion-source="${escapeAttr(item.source || '')}"
                                 ${item.trackSuggestion ? `data-suggestion-track="true" data-suggestion-key="${escapeAttr(item.questionKey || '')}" data-suggestion-item-id="${escapeAttr(item.pulseItemId || '')}"` : ''}
+                                ${item.focusToday ? `data-focus-today="true" data-focus-today-snapshot-id="${escapeAttr(item.focusTodaySnapshotId || '')}"` : ''}
                                 ${item.modeId ? `data-quick-mode="${escapeAttr(item.modeId)}"` : ''}
                                 ${item.autoSend ? 'data-quick-send="true"' : ''}>
                             <span class="quick-action-label">${escapeHtml(item.label)}</span>
@@ -14644,7 +14728,7 @@ async function renderConversationMessages(id, options = {}) {
             const html = renderConversationMessageListHtml(messages);
             messagesContainer.innerHTML = html;
             rememberConversationRender(id, data, html, signature);
-            scrollToBottom();
+            scrollToBottom(id);
         }
         if (options.watchActiveRuns !== false) {
             await watchActiveRunForConversation(id, messages);
@@ -14676,7 +14760,7 @@ function restoreConversationRenderCache(id) {
         applyConversationAgent(cached.conversation);
     }
     syncQuestionHistoryFromMessages(cached.messages || []);
-    scrollToBottom();
+    scrollToBottom(id);
     updateChatHistoryControls();
     return true;
 }
@@ -15733,6 +15817,47 @@ async function startAgentTask(agentId) {
 	focusMessageInput();
 }
 
+async function openFocusToday(query = '', options = {}) {
+    const snapshotId = String(options.snapshotId || pulse?.focus_today?.id || '').trim();
+    if (!snapshotId) {
+        await handleSend(query);
+        return null;
+    }
+
+    const requestId = String(conversationCreateRequestId || '').trim()
+        || `focus-today:${snapshotId}`;
+    try {
+        const result = await apiCall('POST', '/api/pulse/focus-today/open', {
+            snapshot_id: snapshotId,
+			language: currentLanguage,
+        }, { timeoutMs: CONVERSATION_CREATE_TIMEOUT_MS });
+        const conversation = result?.conversation;
+        if (!conversation?.id) throw new Error('Focus Today conversation is missing');
+
+        clearAttachments();
+        if (!conversations.some((item) => item.id === conversation.id)) {
+            conversations.unshift(conversation);
+        }
+        await selectConversation(conversation.id);
+        void Promise.allSettled([loadConversations(), loadRuns()]);
+        return conversation;
+    } catch (error) {
+        // A stale card can safely fall back to the live prompt because a 404
+        // guarantees the materialization transaction never created a chat.
+        if (error?.httpStatus === 404) {
+            resetConversationCreateState(requestId);
+            await handleSend(query);
+            return null;
+        }
+        messageInput.value = query;
+        autoResizeInput();
+        updateSendState();
+        appendMessage('assistant', t('welcome.focusTodayOpenFailed'), [], '', 'error');
+        focusMessageInput();
+        return null;
+    }
+}
+
 function openPulseChat(query = '', options = {}) {
 	stopActiveRunWatcher();
 	const requestId = String(options.requestId || '').trim()
@@ -15888,7 +16013,7 @@ async function handleSend(queryOverride = '') {
     });
     const streamView = appendStreamingAssistantMessage(query, conversationId);
     clearAttachments();
-    scrollToBottom();
+    scrollToBottom(conversationId);
     let streamRunId = '';
 
     try {
@@ -15920,7 +16045,7 @@ async function handleSend(queryOverride = '') {
         activeConversationRequests.delete(conversationId);
         updateSendState();
         if (currentConversationId === conversationId) {
-            scrollToBottom();
+            scrollToBottom(conversationId);
             focusMessageInput();
         }
     }
@@ -15956,7 +16081,7 @@ async function regenerateAssistantAnswer(button) {
     updateSendState();
 
     const streamView = appendStreamingAssistantMessage(query, conversationId);
-    scrollToBottom();
+    scrollToBottom(conversationId);
     let streamRunId = '';
 
     try {
@@ -15988,7 +16113,7 @@ async function regenerateAssistantAnswer(button) {
         activeConversationRequests.delete(conversationId);
         updateSendState();
         if (currentConversationId === conversationId) {
-            scrollToBottom();
+            scrollToBottom(conversationId);
             focusMessageInput();
         }
     }
@@ -16278,6 +16403,7 @@ function appendStreamingAssistantMessage(regenerateQuery = '', conversationId = 
     });
 
     function renderContentValue(text) {
+        const shouldFollow = shouldFollowConversationStream(conversationId, div);
         const wasEmpty = !lastContent;
         lastContent = text || '';
         div.classList.toggle('has-final-content', Boolean(lastContent));
@@ -16293,10 +16419,11 @@ function appendStreamingAssistantMessage(regenerateQuery = '', conversationId = 
             }));
         }
         contentEl.innerHTML = formatContent(lastContent);
-        scrollToBottom();
+        if (shouldFollow) scrollToBottom(conversationId, div);
     }
 
     function renderReasoningValue(text) {
+        const shouldFollow = shouldFollowConversationStream(conversationId, div);
         lastReasoning = String(text || '');
         if (!processTouched && !lastContent) processExpanded = true;
         renderProcessPanelInto(traceEl, renderProcessPanel(lastEvents, {
@@ -16304,7 +16431,7 @@ function appendStreamingAssistantMessage(regenerateQuery = '', conversationId = 
             live: !lastContent,
             reasoning: lastReasoning,
         }));
-        scrollToBottom();
+        if (shouldFollow) scrollToBottom(conversationId, div);
     }
 
     const contentBuffer = createAdaptiveTypingBuffer(renderContentValue);
@@ -16334,6 +16461,7 @@ function appendStreamingAssistantMessage(regenerateQuery = '', conversationId = 
             return reasoningBuffer.finish(text);
         },
         moveContentToProcess() {
+            const shouldFollow = shouldFollowConversationStream(conversationId, div);
             contentBuffer.reset();
             provisionalContent = '';
             delete div.dataset.provisionalChars;
@@ -16349,7 +16477,7 @@ function appendStreamingAssistantMessage(regenerateQuery = '', conversationId = 
             }));
             statusEl.hidden = true;
             contentEl.innerHTML = '<div class="loading-dots"><span></span><span></span><span></span></div>';
-            scrollToBottom();
+            if (shouldFollow) scrollToBottom(conversationId, div);
         },
         setMeta(meta) {
             lastMeta = { ...lastMeta, ...meta };
@@ -17600,7 +17728,7 @@ function removeLoading() {
     if (el) el.remove();
 }
 
-function formatContent(text) {
+function formatContent(text, options = {}) {
     if (!text) return '<p></p>';
     const codeBlocks = [];
     let processed = String(text).replace(/\r\n/g, '\n').replace(/\r/g, '\n');
@@ -17663,7 +17791,7 @@ function formatContent(text) {
             continue;
         }
 
-        const media = renderMediaMarkdown(trimmed);
+        const media = options.allowMedia === false ? '' : renderMediaMarkdown(trimmed);
         if (media) {
             flushAll();
             html.push(media);
@@ -18321,7 +18449,19 @@ function insertMessageInputNewline() {
 
 function focusMessageInput(options = {}) {
     const { allowMobile = true } = options;
-    if (!messageInput || (!allowMobile && isMobileLayout())) return;
+    if (!messageInput) return;
+
+    const mobile = isMobileLayout();
+    if (!allowMobile && mobile) return;
+
+    // On mobile, preventScroll also suppresses native WebView keyboard
+    // avoidance. Use a normal focus so programmatic navigation into Super Chat
+    // keeps the composer visible just like a direct tap on the textarea.
+    if (mobile) {
+        messageInput.focus();
+        return;
+    }
+
     try {
         messageInput.focus({ preventScroll: true });
     } catch {
@@ -18329,8 +18469,27 @@ function focusMessageInput(options = {}) {
     }
 }
 
-function scrollToBottom() {
+function isConversationScrollTarget(conversationId, anchorEl = null) {
+    const targetConversationId = String(conversationId || '').trim();
+    if (!targetConversationId || currentConversationId !== targetConversationId || activeView !== 'chat') {
+        return false;
+    }
+    if (!anchorEl) return true;
+    return Boolean(anchorEl.isConnected && messagesContainer.contains(anchorEl));
+}
+
+function shouldFollowConversationStream(conversationId, anchorEl) {
+    if (!isConversationScrollTarget(conversationId, anchorEl)) return false;
+    const distanceFromBottom = messagesContainer.scrollHeight
+        - messagesContainer.scrollTop
+        - messagesContainer.clientHeight;
+    return distanceFromBottom <= CHAT_STREAM_AUTOSCROLL_THRESHOLD_PX;
+}
+
+function scrollToBottom(conversationId = currentConversationId, anchorEl = null) {
+    const targetConversationId = String(conversationId || '').trim();
     requestAnimationFrame(() => {
+        if (!isConversationScrollTarget(targetConversationId, anchorEl)) return;
         messagesContainer.scrollTop = messagesContainer.scrollHeight;
     });
 }
@@ -19409,6 +19568,15 @@ document.addEventListener('click', async (event) => {
         }
         markWelcomeQuestionClicked(quickAction);
         resetQuestionHistoryBrowse();
+        if (quickAction.dataset.focusToday === 'true') {
+            messageInput.value = '';
+            autoResizeInput();
+            updateSendState();
+            await openFocusToday(query, {
+                snapshotId: quickAction.dataset.focusTodaySnapshotId || '',
+            });
+            return;
+        }
         if (shouldQuickSend) {
             messageInput.value = '';
             autoResizeInput();
@@ -19900,12 +20068,14 @@ document.addEventListener('keydown', (event) => {
     }
 
     if (event.key === 'Enter' && event.target.closest?.('[data-todo-title], [data-todo-notes]')) {
+        if (event.target.matches?.('textarea') && !event.ctrlKey && !event.metaKey) return;
         event.preventDefault();
         void createTodoFromForm();
         return;
     }
 
     if (event.key === 'Enter' && event.target.closest?.('[data-todo-edit-title], [data-todo-edit-notes]')) {
+        if (event.target.matches?.('textarea') && !event.ctrlKey && !event.metaKey) return;
         const editor = event.target.closest('[data-todo-edit-id]');
         if (editor?.dataset.todoEditId) {
             event.preventDefault();

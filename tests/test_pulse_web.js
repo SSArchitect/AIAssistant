@@ -301,16 +301,18 @@ test('Super Chat welcome shows six sourced actions with at most three from Pulse
     });
 
     assert.equal(actions.length, 6);
-    assert.deepEqual(Array.from(actions, (action) => action.source), ['pulse', 'pulse', 'pulse', 'conversation', 'fallback', 'fallback']);
+    assert.deepEqual(Array.from(actions, (action) => action.source), ['focus_today', 'pulse', 'pulse', 'conversation', 'fallback', 'fallback']);
     assert.deepEqual(Array.from(actions, (action) => action.label), [
+        'welcome.focusToday',
         'V4 Pro agent 能力强在哪？',
         '峰谷定价后哪个时段调用最划算？',
-        '对比 DeepSeek V4 Pro 与 Flash 的能力和成本',
         'welcome.unfinished',
         'welcome.priorities',
         'welcome.explore',
     ]);
-    assert.equal(actions[0].query, 'pulse:pulse-1:V4 Pro agent 能力强在哪？');
+    assert.match(actions[0].query, /今日 Pulse/);
+    assert.equal(actions[0].focusToday, true);
+    assert.equal(actions[1].query, 'pulse:pulse-1:V4 Pro agent 能力强在哪？');
     assert.match(actions[0].meta, /^welcome\.sourceLabelwelcome\.pulseSource/);
     assert.equal(actions[3].meta, 'welcome.sourceLabelwelcome.recentSource');
     assert.doesNotMatch(actions[3].query, /截断乱码|继续解决/);
@@ -346,16 +348,166 @@ test('Super Chat welcome always has six sourced fallback questions when Pulse an
     });
 
     assert.equal(actions.length, 6);
-    assert.ok(actions.every((action) => action.source === 'fallback'));
+    assert.equal(actions[0].source, 'focus_today');
+    assert.ok(actions.slice(1).every((action) => action.source === 'fallback'));
     assert.deepEqual(Array.from(actions, (action) => action.label), [
+        'welcome.focusToday',
         'welcome.priorities',
         'welcome.explore',
-        'welcome.todayPulse',
         'welcome.unfinished',
         'welcome.planDay',
         'welcome.reviewGoals',
     ]);
     assert.ok(actions.every((action) => action.meta.startsWith('welcome.sourceLabel')));
+});
+
+test('Focus Today welcome action carries the current precomputed snapshot', () => {
+    const source = [
+        extractFunctionDeclaration('pulseQuestionKey'),
+        extractFunctionDeclaration('pulseConsumptionTTLMillis'),
+        extractFunctionDeclaration('locallyConsumedWelcomeQuestionKeys'),
+        extractFunctionDeclaration('superChatWelcomeActions'),
+    ].join('\n');
+    const actions = vm.runInNewContext(`
+        const SUPER_CHAT_WELCOME_ACTION_LIMIT = 6;
+        const SUPER_CHAT_PULSE_ACTION_LIMIT = 3;
+        const SUPER_CHAT_AGENT_ID = 'super_chat';
+        const PULSE_DEFAULT_CONSUMPTION_TTL_SECONDS = 604800;
+        const currentConversationId = '';
+        const currentLanguage = 'zh';
+        const clickedWelcomeQuestionKeys = new Map();
+        const pulseItemConsumedLocally = () => false;
+        const pulse = {
+            date: '2026-09-02',
+            items: [],
+            focus_today: {
+                id: 'focus-snapshot-1',
+                date: '2026-09-02',
+                available: true,
+                prompt: '缓存的 Focus Today 问题',
+            },
+        };
+        const conversations = [];
+        ${source}
+        superChatWelcomeActions();
+    `, {
+        buildPulseChatPrompt: () => '',
+        conversationAgentId: () => 'super_chat',
+        truncateText: (value) => value,
+        t: (key) => key,
+    });
+
+    assert.equal(actions[0].label, 'welcome.focusToday');
+    assert.equal(actions[0].query, '缓存的 Focus Today 问题');
+    assert.equal(actions[0].focusToday, true);
+    assert.equal(actions[0].focusTodaySnapshotId, 'focus-snapshot-1');
+    assert.equal(actions[0].questionKey, 'focus-today:focus-snapshot-1');
+    assert.match(appSource, /data-focus-today="true"/);
+    assert.match(appSource, /openFocusToday\(query/);
+	assert.match(appSource, /focusToday:\s*'今日聚焦'/);
+	assert.match(appSource, /focusToday:\s*'Focus Today'/);
+});
+
+test('Focus Today opens cached chat on click and only uses live chat before a snapshot exists', async () => {
+    const source = extractFunctionDeclaration('openFocusToday');
+    const success = await vm.runInNewContext(`
+        (async () => {
+            const pulse = { focus_today: { id: 'focus-snapshot-1' } };
+            const CONVERSATION_CREATE_TIMEOUT_MS = 8000;
+			const currentLanguage = 'zh';
+            let conversationCreateRequestId = 'welcome:focus-snapshot-1';
+            const conversations = [];
+            const calls = [];
+            const liveQueries = [];
+            const apiCall = async (...args) => {
+                calls.push(args);
+                return { conversation: { id: 'conversation-1', title: 'Focus Today' } };
+            };
+            const clearAttachments = () => {};
+            const selectConversation = async (id) => calls.push(['select', id]);
+            const loadConversations = async () => {};
+            const loadRuns = async () => {};
+            const handleSend = async (query) => liveQueries.push(query);
+            const resetConversationCreateState = () => {};
+            const messageInput = { value: '' };
+            const autoResizeInput = () => {};
+            const updateSendState = () => {};
+            const appendMessage = () => {};
+            const focusMessageInput = () => {};
+            const t = (key) => key;
+            ${source}
+            const opened = await openFocusToday('today prompt', { snapshotId: 'focus-snapshot-1' });
+            return { opened, calls, liveQueries, conversations };
+        })()
+    `);
+
+    assert.equal(success.opened.id, 'conversation-1');
+    assert.equal(success.calls[0][0], 'POST');
+    assert.equal(success.calls[0][1], '/api/pulse/focus-today/open');
+    assert.equal(success.calls[0][2].snapshot_id, 'focus-snapshot-1');
+	assert.equal(success.calls[0][2].language, 'zh');
+    assert.deepEqual(Array.from(success.liveQueries), []);
+    assert.equal(success.conversations.length, 1);
+
+    const fallback = await vm.runInNewContext(`
+        (async () => {
+            const pulse = { focus_today: {} };
+            const CONVERSATION_CREATE_TIMEOUT_MS = 8000;
+            let conversationCreateRequestId = '';
+            const conversations = [];
+            const liveQueries = [];
+            const handleSend = async (query) => liveQueries.push(query);
+            ${source}
+            await openFocusToday('live fallback');
+            return liveQueries;
+        })()
+    `);
+    assert.deepEqual(Array.from(fallback), ['live fallback']);
+});
+
+test('Todo-sourced Super Chat welcome actions require live Todo reads before using chat context', () => {
+    const source = [
+        extractFunctionDeclaration('pulseQuestionKey'),
+        extractFunctionDeclaration('pulseConsumptionTTLMillis'),
+        extractFunctionDeclaration('locallyConsumedWelcomeQuestionKeys'),
+        extractFunctionDeclaration('superChatWelcomeActions'),
+    ].join('\n');
+    const readActions = (language) => vm.runInNewContext(`
+        const SUPER_CHAT_WELCOME_ACTION_LIMIT = 6;
+        const SUPER_CHAT_PULSE_ACTION_LIMIT = 3;
+        const SUPER_CHAT_AGENT_ID = 'super_chat';
+        const PULSE_DEFAULT_CONSUMPTION_TTL_SECONDS = 604800;
+        const currentConversationId = '';
+        const currentLanguage = ${JSON.stringify(language)};
+        const clickedWelcomeQuestionKeys = new Map();
+        const pulseItemConsumedLocally = () => false;
+        const pulse = { items: [] };
+        const conversations = [];
+        ${source}
+        superChatWelcomeActions();
+    `, {
+        buildPulseChatPrompt: () => '',
+        conversationAgentId: () => 'super_chat',
+        truncateText: (value) => value,
+        t: (key) => key,
+    });
+
+    for (const language of ['zh', 'en']) {
+        const actions = readActions(language);
+        const todoActions = Array.from(actions).filter((action) => (
+            action.label === 'welcome.priorities' || action.label === 'welcome.planDay'
+        ));
+        assert.equal(todoActions.length, 2);
+        for (const action of todoActions) {
+            assert.match(action.query, /list_todos/);
+            assert.match(action.query, /today/i);
+            assert.match(action.query, /overdue/i);
+            assert.match(action.query, /inbox/i);
+            assert.match(action.query, language === 'zh' ? /真实待办/ : /actual tool results/i);
+            assert.match(action.query, language === 'zh' ? /读取失败/ : /reading todos fails/i);
+            assert.match(action.query, language === 'zh' ? /不要把对话内容当作 Todo/ : /instead of treating conversation content as todos/i);
+        }
+    }
 });
 
 test('clicked welcome questions are removed from later recommendation renders', () => {

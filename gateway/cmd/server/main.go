@@ -127,6 +127,7 @@ func main() {
 		api.GET("/media/download", mediaHandler.Download)
 		api.GET("/pulse", pulseHandler.Get)
 		api.POST("/pulse/refresh", pulseHandler.Refresh)
+		api.POST("/pulse/focus-today/open", pulseHandler.OpenFocusToday)
 		api.POST("/pulse/events", pulseHandler.RecordEvent)
 		api.GET("/pulse/topics", pulseHandler.ListTopics)
 		api.GET("/pulse/topic-optimization", pulseHandler.TopicOptimizationContext)

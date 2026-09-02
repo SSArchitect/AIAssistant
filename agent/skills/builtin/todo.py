@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from typing import Any, Callable
 from urllib.parse import quote
 
@@ -155,11 +156,25 @@ class TodoCreateSkill(_TodoTool):
             name="create_todo",
             description=(
                 "为当前用户创建待办事项。用户说“记一下/提醒我/加入待办/安排/明天做”等明确记录任务时使用；"
-                "相对日期要先根据系统时间上下文换成 YYYY-MM-DD。"
+                "相对日期要先根据系统时间上下文换成 YYYY-MM-DD。title 只放简短单行标题；"
+                "多段说明、清单和其他富文本必须放到 notes，并使用 Markdown 保留结构。"
             ),
             parameters=[
-                SkillParameter(name="title", type="string", description="待办标题，简短明确。", required=True),
-                SkillParameter(name="notes", type="string", description="可选备注、上下文或执行细节。", required=False),
+                SkillParameter(
+                    name="title",
+                    type="string",
+                    description="简短明确的单行标题，不要把完整正文或多段清单放在这里。",
+                    required=True,
+                    max_length=180,
+                ),
+                SkillParameter(
+                    name="notes",
+                    type="string",
+                    description="可选的完整备注、上下文、分节内容或执行清单。",
+                    required=False,
+                    max_length=4000,
+                    input_format="markdown",
+                ),
                 SkillParameter(
                     name="start_date",
                     type="string",
@@ -213,11 +228,13 @@ class TodoCreateSkill(_TodoTool):
         title = str(kwargs.get("title") or "").strip()
         if not title:
             return SkillResult(success=False, error="title is required")
+        notes = str(kwargs.get("notes") or "").strip()
+        title, notes = _split_rich_todo_title(title, notes, allow_inferred_notes=True)
         try:
             user_id = self._user_id(kwargs)
             body = {
                 "title": title,
-                "notes": str(kwargs.get("notes") or "").strip(),
+                "notes": notes,
                 "start_date": str(kwargs.get("start_date") or "").strip(),
                 "due_date": str(kwargs.get("due_date") or kwargs.get("end_date") or "").strip(),
                 "due_time": str(kwargs.get("due_time") or "").strip(),
@@ -377,12 +394,26 @@ class TodoUpdateSkill(_TodoTool):
             name="update_todo",
             description=(
                 "更新当前用户已有待办，可修改标题、日期、备注、优先级，或把待办标为完成/未完成。"
-                "如果用户没有提供 todo_id，应先调用 list_todos 找到候选项。"
+                "如果用户没有提供 todo_id，应先调用 list_todos 找到候选项。title 只放简短单行标题；"
+                "多段说明、清单和其他富文本必须放到 notes，并使用 Markdown 保留结构。"
             ),
             parameters=[
                 SkillParameter(name="todo_id", type="string", description="待办 ID，通常来自 list_todos。", required=True),
-                SkillParameter(name="title", type="string", description="新标题；不修改则省略。", required=False),
-                SkillParameter(name="notes", type="string", description="新备注；不修改则省略。", required=False),
+                SkillParameter(
+                    name="title",
+                    type="string",
+                    description="新的简短单行标题；不修改则省略，不要放完整正文。",
+                    required=False,
+                    max_length=180,
+                ),
+                SkillParameter(
+                    name="notes",
+                    type="string",
+                    description="新的完整备注、分节内容或执行清单；不修改则省略，清空可传空字符串。",
+                    required=False,
+                    max_length=4000,
+                    input_format="markdown",
+                ),
                 SkillParameter(name="start_date", type="string", description="新开始日期 YYYY-MM-DD；清空可传空字符串。", required=False),
                 SkillParameter(name="due_date", type="string", description="新结束/截止日期 YYYY-MM-DD；清空可传空字符串。", required=False),
                 SkillParameter(name="due_time", type="string", description="新时间 HH:MM；清空可传空字符串。", required=False),
@@ -426,8 +457,19 @@ class TodoUpdateSkill(_TodoTool):
         try:
             user_id = self._user_id(kwargs)
             body: dict[str, Any] = {}
-            _copy_present_string(kwargs, body, "title")
-            _copy_present_string(kwargs, body, "notes")
+            if "title" in kwargs:
+                title = str(kwargs.get("title") or "").strip()
+                notes = str(kwargs.get("notes") or "").strip()
+                title, normalized_notes = _split_rich_todo_title(
+                    title,
+                    notes,
+                    allow_inferred_notes=True,
+                )
+                body["title"] = title
+                if normalized_notes or "notes" in kwargs:
+                    body["notes"] = normalized_notes
+            elif "notes" in kwargs:
+                _copy_present_string(kwargs, body, "notes")
             _copy_present_string(kwargs, body, "start_date")
             if "due_date" in kwargs:
                 body["due_date"] = str(kwargs.get("due_date") or "").strip()
@@ -594,6 +636,53 @@ def _normalize_status(value: Any) -> str:
 def _copy_present_string(source: dict[str, Any], target: dict[str, Any], key: str) -> None:
     if key in source:
         target[key] = str(source.get(key) or "").strip()
+
+
+def _split_rich_todo_title(
+    title: str,
+    notes: str,
+    *,
+    allow_inferred_notes: bool,
+) -> tuple[str, str]:
+    """Keep accidental long-form tool input readable instead of silently truncating it."""
+    clean_title = str(title or "").strip()
+    clean_notes = str(notes or "").strip()
+    if not allow_inferred_notes or not _looks_like_rich_todo_title(clean_title):
+        return clean_title, clean_notes
+
+    short_title, remainder = _todo_title_and_remainder(clean_title)
+    return short_title, clean_notes or remainder or clean_title
+
+
+def _looks_like_rich_todo_title(value: str) -> bool:
+    return (
+        len(value) > 180
+        or "\n" in value
+        or len(re.findall(r"【[^】]+】", value)) >= 2
+        or bool(re.search(r"(?m)^\s*(?:#{1,6}|[-*+]\s|\d+[.)]\s)", value))
+    )
+
+
+def _todo_title_and_remainder(value: str) -> tuple[str, str]:
+    bold_heading = re.match(r"^\s*\*\*(.+?)\*\*", value, re.DOTALL)
+    if bold_heading and "\n" not in bold_heading.group(1):
+        candidate = bold_heading.group(1)
+        remainder = value[bold_heading.end():].strip()
+    else:
+        lines = value.splitlines()
+        candidate = next((line.strip() for line in lines if line.strip()), value)
+        remainder = "\n".join(lines[1:]).strip() if len(lines) > 1 else ""
+
+    if "【" in candidate:
+        candidate = candidate.split("【", 1)[0].strip()
+    candidate = re.sub(r"^#{1,6}\s+", "", candidate)
+    candidate = re.sub(r"!\[([^\]]*)\]\([^)]*\)", r"\1", candidate)
+    candidate = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", candidate)
+    candidate = re.sub(r"[*_`~>]", "", candidate)
+    candidate = re.sub(r"\s+", " ", candidate).strip(" -:：")
+    if not candidate:
+        candidate = "待办详情"
+    return candidate[:120].rstrip(), remainder
 
 
 def _todo_summary(todo: dict[str, Any]) -> dict[str, Any]:

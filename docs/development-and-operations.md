@@ -1,6 +1,6 @@
 # Agent Assistant 开发与运行规范
 
-最后更新：2026-07-16
+最后更新：2026-09-02
 
 这份文档记录当前代码落地后的服务启动方式、开发流程、测试要求和已知限制。架构方向见 [agent-workbench-architecture.md](./agent-workbench-architecture.md)。
 
@@ -171,6 +171,7 @@ GET  /api/runs/:id
 GET  /api/conversations
 POST /api/conversations
 GET  /api/conversations/:id
+POST /api/pulse/focus-today/open
 GET  /api/admin/settings
 PUT  /api/admin/settings
 ```
@@ -328,7 +329,9 @@ Pulse 内置工具：
 
 Pulse 工具只暴露给 `super_chat`。Pulse 后台先通过专用搜索阶段收集证据，再使用嵌套的 `super_chat` 请求仅基于已收集证据做总结；该请求会禁用 `search` 和全部 Pulse 工具，既避免重复搜索，也防止刷新流程递归调用自身。
 
-Pulse 自动预计算只覆盖最近 24 小时使用过有效帐号会话的活跃用户，正常成功间隔为 6 小时。自动任务全局串行，尝试时间和结果持久化在 `pulse_schedule_states`：首次失败退避 12 小时，连续失败最多退避 24 小时，因此 gateway 重启不会清空冷却并触发密集重试。用户显式点击刷新不受自动调度冷却限制。
+Pulse 自动预计算只覆盖近期使用过有效帐号会话的活跃用户，正常成功间隔为 6 小时。自动任务全局串行，尝试时间和结果持久化在 `pulse_schedule_states`：首次失败退避 12 小时，连续失败最多退避 24 小时，因此 gateway 重启不会清空冷却并触发密集重试。用户显式点击刷新不受自动调度冷却限制。
+
+每次 Pulse 成功发布后，后台会使用 `super_chat` 和“请读取我的今日 Pulse，推荐 3 个最值得关注、可以继续追问的问题”发起一次非流式生成，并把完整回答、推理、引用、产物和模型信息保存到 `focus_today_snapshots`。这一步允许 `get_pulse` 读取刚发布的 Pulse，但禁用搜索、Pulse 变更工具和记忆写入，也不会创建 `Conversation` 或 `Message`。Super Chat 固定展示随界面语言变化的推荐卡（中文“今日聚焦”，英文“Focus Today”）；用户点击缓存已就绪的卡片时，`POST /api/pulse/focus-today/open` 才会原子化创建对应语言标题的 Super Chat 会话、用户问题和缓存回答。同一快照的重复点击通过快照 ID 幂等复用同一会话；快照尚未就绪时，前端才退回普通实时聊天生成。
 
 Search 已作为一个内置 skill 接入：
 
@@ -487,7 +490,8 @@ go vet ./...
 go test ./...
 go build -o /dev/null ./cmd/server/
 python3 -m pytest tests/ -v --tb=short
-node --check web/static/js/app.js  # 如果本机安装了 node
+node --check web/static/js/{chat-recovery,share-card,app,admin}.js  # 如果本机安装了 node
+node --test tests/test_*_web.js
 config/config.yaml YAML 校验
 Python 核心 import 校验
 builtin skill discovery 校验
@@ -503,12 +507,21 @@ cd gateway
 go test ./...
 ```
 
-新增能力时的测试规范：
+Feature 改动的强制测试规则：
+
+- 每次新增或修改 feature，必须在同一次改动中新增或更新自动化单元测试，覆盖本次改动可观察到的行为；没有对应单元测试的 feature 改动不算完成。
+- 测试至少覆盖主要成功路径，以及本次改动涉及的关键边界或失败路径。修复 bug 时，必须补充能够复现问题的回归测试。
+- 不得只用编译、语法检查、手工验证或端到端测试代替单元测试。如果代码难以单测，应先拆分依赖或提取可测试边界。
+- 不得为了让测试通过而无理由删除、跳过或弱化已有断言；行为契约确实变化时，应同步更新测试并说明原因。
+- 纯文档、注释或不改变运行行为的格式调整不要求新增单元测试，但仍需执行与改动相称的校验。
+
+各模块的具体要求：
 
 - 改 `/agent/chat` 响应字段时，必须更新 `tests/test_api.py` 的 chat contract 测试。
 - 改 trace 存储或事件结构时，必须更新 `tests/test_trace.py`。
 - 改 Go bridge 的 Python API 代理时，必须更新 `gateway/internal/bridge/agent_client_test.go`。
-- 改 Web JS 时，至少跑 `node --check web/static/js/app.js`。
+- 改 Web JS feature 时，必须在 `tests/test_*_web.js` 中新增或更新对应测试，并执行 `node --test tests/test_*_web.js`；同时至少跑相关文件的 `node --check`。
+- 完成前先跑受影响模块的局部测试，再跑 `./scripts/test.sh`；交付说明中必须列出新增或更新的测试及测试结果。
 - 最终提交前跑 `./scripts/test.sh`。
 
 当前基线结果：
@@ -539,11 +552,12 @@ Web: app.js syntax passed when node is available
 日常开发：
 
 ```text
-1. 修改代码
-2. 跑局部测试
-3. 跑 ./scripts/test.sh
-4. 用 ./scripts/dev.sh 前台验证关键流程
-5. 确认 trace panel 能看到 run/model/tool 事件
+1. 明确 feature 的可观察行为和关键边界
+2. 新增或更新对应单元测试
+3. 修改代码并跑受影响模块的局部测试
+4. 跑 ./scripts/test.sh
+5. 用 ./scripts/dev.sh 前台验证关键流程
+6. 确认 trace panel 能看到 run/model/tool 事件
 ```
 
 新增 LangGraph agent 建议流程：

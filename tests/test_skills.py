@@ -3917,6 +3917,27 @@ class TestTodoSkills:
             transport=httpx.MockTransport(handler),
         )
 
+    def test_todo_and_drive_tools_declare_markdown_inputs(self):
+        create_todo = TodoCreateSkill().metadata()
+        update_todo = TodoUpdateSkill().metadata()
+        create_notes = next(param for param in create_todo.parameters if param.name == "notes")
+        update_notes = next(param for param in update_todo.parameters if param.name == "notes")
+
+        assert create_notes.input_format == "markdown"
+        assert update_notes.input_format == "markdown"
+        assert create_notes.max_length == 4000
+        assert update_notes.max_length == 4000
+
+        create_definition = TodoCreateSkill().to_tool_definition()
+        notes_schema = create_definition["parameters"]["properties"]["notes"]
+        assert notes_schema["maxLength"] == 4000
+        assert "Markdown" in notes_schema["description"]
+
+        save_content = next(param for param in DriveSaveSkill().metadata().parameters if param.name == "content")
+        update_content = next(param for param in DriveUpdateSkill().metadata().parameters if param.name == "content")
+        assert save_content.input_format == "markdown"
+        assert update_content.input_format == "markdown"
+
     @pytest.mark.asyncio
     async def test_create_todo_injects_user_and_conversation_context(self):
         captured = {}
@@ -3960,6 +3981,42 @@ class TestTodoSkills:
         assert captured["due_date"] == "2026-07-12"
         assert captured["tags"] == ["work"]
         assert "提交周报" in result.display_text
+
+    @pytest.mark.asyncio
+    async def test_create_todo_moves_accidental_markdown_title_into_notes(self):
+        captured = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured.update(json.loads(request.content.decode("utf-8")))
+            return httpx.Response(
+                201,
+                json={
+                    "todo": {
+                        "id": "todo-rich",
+                        "title": captured["title"],
+                        "notes": captured["notes"],
+                        "status": "open",
+                        "priority": "normal",
+                        "repeat_rule": "once",
+                    }
+                },
+            )
+
+        markdown = (
+            "**周一（9/2）减脂餐复盘**\n"
+            "📅 今日完整菜单\n\n"
+            "## 早餐\n- 鸡蛋三明治\n\n"
+            "## 午餐\n- 鸡胸和杂粮饭"
+        )
+        result = await TodoCreateSkill(client_factory=lambda: self.client(handler)).execute(
+            title=markdown,
+            _user_id="alice",
+        )
+
+        assert result.success is True
+        assert captured["title"] == "周一（9/2）减脂餐复盘"
+        assert captured["notes"].startswith("📅 今日完整菜单")
+        assert "## 早餐\n- 鸡蛋三明治" in captured["notes"]
 
     @pytest.mark.asyncio
     async def test_list_todos_returns_candidate_ids(self):
@@ -4027,6 +4084,37 @@ class TestTodoSkills:
         assert captured["user_id"] == "alice"
         assert captured["status"] == "done"
         assert result.data["todo"]["status"] == "done"
+
+    @pytest.mark.asyncio
+    async def test_update_todo_preserves_markdown_newlines_and_shortens_rich_title(self):
+        captured = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured.update(json.loads(request.content.decode("utf-8")))
+            return httpx.Response(
+                200,
+                json={
+                    "todo": {
+                        "id": "todo-1",
+                        "title": captured["title"],
+                        "notes": captured["notes"],
+                        "status": "open",
+                        "priority": "normal",
+                        "repeat_rule": "once",
+                    }
+                },
+            )
+
+        markdown = "# 周一减脂餐复盘\n\n- **早餐**：鸡蛋三明治\n- 午餐：鸡胸和杂粮饭"
+        result = await TodoUpdateSkill(client_factory=lambda: self.client(handler)).execute(
+            todo_id="todo-1",
+            title=markdown,
+            _user_id="alice",
+        )
+
+        assert result.success is True
+        assert captured["title"] == "周一减脂餐复盘"
+        assert captured["notes"] == "- **早餐**：鸡蛋三明治\n- 午餐：鸡胸和杂粮饭"
 
     @pytest.mark.asyncio
     async def test_get_todo_returns_detail(self):

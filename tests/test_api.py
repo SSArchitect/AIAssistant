@@ -207,6 +207,13 @@ async def test_list_skills_exposes_tool_spec_v2_fields(client):
         if parameter["name"] == "repeat_rule"
     )
     assert "daily" in repeat_rule["enum"]
+    todo_notes = next(
+        parameter
+        for parameter in create_todo["parameters"]
+        if parameter["name"] == "notes"
+    )
+    assert todo_notes["input_format"] == "markdown"
+    assert todo_notes["max_length"] == 4000
 
 
 @pytest.mark.asyncio

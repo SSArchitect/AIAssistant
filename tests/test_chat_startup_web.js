@@ -73,6 +73,33 @@ test('Super Chat renders its welcome text before asynchronous startup', () => {
     );
 });
 
+test('programmatic mobile chat focus preserves native keyboard avoidance', () => {
+    const focusMessageInput = Function(
+        'messageInput',
+        'isMobileLayout',
+        `${extractFunctionDeclaration('focusMessageInput')}; return focusMessageInput;`,
+    );
+    const mobileCalls = [];
+    const focusOnMobile = focusMessageInput(
+        { focus: (...args) => mobileCalls.push(args) },
+        () => true,
+    );
+
+    focusOnMobile();
+
+    assert.deepEqual(mobileCalls, [[]]);
+
+    const desktopCalls = [];
+    const focusOnDesktop = focusMessageInput(
+        { focus: (...args) => desktopCalls.push(args) },
+        () => false,
+    );
+
+    focusOnDesktop();
+
+    assert.deepEqual(desktopCalls, [[{ preventScroll: true }]]);
+});
+
 test('startup welcome is a real draft and never falls back to historical context', () => {
     const bootStart = appSource.indexOf('async function bootApp()');
     const bootEnd = appSource.indexOf('\nfunction setView(', bootStart);

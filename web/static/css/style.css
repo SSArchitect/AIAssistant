@@ -5823,7 +5823,8 @@ button.mode-chip:focus-visible {
 }
 
 .todo-create-panel input,
-.todo-create-panel select {
+.todo-create-panel select,
+.todo-create-panel textarea {
     min-width: 0;
     height: 36px;
     min-height: 36px;
@@ -5834,6 +5835,18 @@ button.mode-chip:focus-visible {
     color: var(--text);
     outline: none;
     font-size: 13px;
+}
+
+.todo-create-panel textarea,
+.todo-edit-card textarea {
+    width: 100%;
+    height: auto;
+    min-height: 92px;
+    padding: 9px 10px;
+    resize: vertical;
+    font: inherit;
+    font-size: 13px;
+    line-height: 1.5;
 }
 
 .todo-date-summary {
@@ -5856,7 +5869,8 @@ button.mode-chip:focus-visible {
 }
 
 .todo-create-panel input:focus,
-.todo-create-panel select:focus {
+.todo-create-panel select:focus,
+.todo-create-panel textarea:focus {
     border-color: var(--primary);
     background: var(--surface);
     box-shadow: 0 0 0 2px rgba(49, 87, 213, 0.12);
@@ -6114,13 +6128,7 @@ button.mode-chip:focus-visible {
     background: var(--primary-soft);
 }
 
-.todo-month-detail {
-    min-width: 0;
-    display: grid;
-    gap: 8px;
-    padding: 10px;
-    border: 1px solid var(--line);
-    border-radius: var(--radius-sm);
+.todo-month-detail-panel {
     background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
 }
 
@@ -6160,7 +6168,11 @@ button.mode-chip:focus-visible {
 .todo-month-detail-list {
     min-width: 0;
     display: grid;
+    align-content: start;
     gap: 8px;
+    min-height: 0;
+    overflow-y: auto;
+    padding-right: 2px;
 }
 
 .todo-item {
@@ -6230,11 +6242,122 @@ button.mode-chip:focus-visible {
 
 .todo-item-notes,
 .todo-suggestion-notes,
-.todo-suggestion-card p {
+.todo-suggestion-card p,
+.todo-suggestion-reason {
     color: var(--text-muted);
     font-size: 12px;
     line-height: 1.45;
     overflow-wrap: anywhere;
+}
+
+.todo-markdown {
+    min-width: 0;
+    font-weight: 500;
+}
+
+.todo-markdown > * {
+    max-width: 100%;
+}
+
+.todo-markdown > *:first-child {
+    margin-top: 0;
+}
+
+.todo-markdown > *:last-child {
+    margin-bottom: 0;
+}
+
+.todo-item-title.todo-markdown > p:first-child,
+.todo-suggestion-title.todo-markdown > p:first-child {
+    font-weight: 750;
+}
+
+.todo-markdown p {
+    margin: 0 0 7px;
+}
+
+.todo-markdown h1,
+.todo-markdown h2,
+.todo-markdown h3,
+.todo-markdown h4,
+.todo-markdown h5,
+.todo-markdown h6 {
+    margin: 10px 0 6px;
+    color: inherit;
+    font-size: 1em;
+    font-weight: 820;
+    line-height: 1.35;
+}
+
+.todo-markdown ul,
+.todo-markdown ol {
+    margin: 2px 0 8px 20px;
+    padding: 0;
+}
+
+.todo-markdown li {
+    margin: 3px 0;
+}
+
+.todo-markdown blockquote {
+    margin: 6px 0;
+    padding: 6px 9px;
+    border-left: 3px solid var(--todo-accent, var(--primary));
+    border-radius: 0 5px 5px 0;
+    background: rgba(255, 255, 255, 0.62);
+}
+
+.todo-markdown hr {
+    height: 1px;
+    margin: 9px 0;
+    border: 0;
+    background: var(--line);
+}
+
+.todo-markdown a {
+    color: var(--primary);
+    text-decoration: none;
+}
+
+.todo-markdown a:hover {
+    text-decoration: underline;
+}
+
+.todo-markdown code {
+    padding: 1px 4px;
+    border-radius: 4px;
+    background: var(--code);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.9em;
+}
+
+.todo-markdown pre {
+    margin: 6px 0;
+    padding: 9px;
+    overflow-x: auto;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: var(--code);
+    font-size: 11px;
+    line-height: 1.5;
+}
+
+.todo-markdown pre code {
+    padding: 0;
+    background: transparent;
+}
+
+.todo-item-notes.todo-markdown,
+.todo-suggestion-notes.todo-markdown {
+    padding: 8px 10px;
+    border-left: 2px solid var(--todo-accent, var(--line-strong));
+    border-radius: 0 6px 6px 0;
+    background: rgba(255, 255, 255, 0.58);
+}
+
+.todo-markdown .markdown-table-wrap {
+    margin: 7px 0;
+    font-size: inherit;
 }
 
 .todo-item-meta {
@@ -6340,7 +6463,8 @@ button.mode-chip:focus-visible {
 }
 
 .todo-edit-card input,
-.todo-edit-card select {
+.todo-edit-card select,
+.todo-edit-card textarea {
     min-width: 0;
     height: 36px;
     min-height: 36px;
@@ -6354,9 +6478,18 @@ button.mode-chip:focus-visible {
 }
 
 .todo-edit-card input:focus,
-.todo-edit-card select:focus {
+.todo-edit-card select:focus,
+.todo-edit-card textarea:focus {
     border-color: var(--primary);
     box-shadow: 0 0 0 2px rgba(49, 87, 213, 0.12);
+}
+
+.todo-edit-card textarea {
+    height: auto;
+    min-height: 132px;
+    padding: 9px 10px;
+    resize: vertical;
+    line-height: 1.5;
 }
 
 .todo-edit-title-field,
@@ -8533,7 +8666,7 @@ body.share-card-open {
 
 .param-item {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto auto;
+    grid-template-columns: minmax(0, 1fr) auto auto auto;
     gap: 6px;
     padding: 8px;
     border: 1px solid var(--line);
@@ -8554,10 +8687,15 @@ body.share-card-open {
 }
 
 .param-type,
+.param-format,
 .param-required {
     color: var(--text-muted);
     font-size: 10px;
     font-weight: 800;
+}
+
+.param-format {
+    color: var(--primary);
 }
 
 .param-required {

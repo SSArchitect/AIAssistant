@@ -6,6 +6,9 @@ Personal AI Assistant。
 
 工具层支持风险等级、读写类型、`auto / confirm / deny` 用户策略、单次运行调用上限、超时和 Trace 审计。永久删除 Drive/Todo 和公开分享 Drive 文件默认要求本轮明确指令；网页归档属于可撤销的普通写入，默认自动执行。
 
+开发流程、Feature 单元测试要求和本地运行方式见
+[docs/development-and-operations.md](docs/development-and-operations.md)。
+
 Android 内测版的实现和本地构建见 [docs/android-app.md](docs/android-app.md)；生产 APK、
 HTTPS、版本感知和增量 OTA 的发布运维见
 [docs/android-release-runbook.md](docs/android-release-runbook.md)。

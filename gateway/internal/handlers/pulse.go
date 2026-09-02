@@ -60,6 +60,13 @@ type pulseRefreshRequest struct {
 	Wait   bool   `json:"wait,omitempty"`
 }
 
+type focusTodayOpenRequest struct {
+	SnapshotID string `json:"snapshot_id,omitempty"`
+	Date       string `json:"date,omitempty"`
+	UserID     string `json:"user_id,omitempty"`
+	Language   string `json:"language,omitempty"`
+}
+
 type pulseEventRequest struct {
 	Date      string                 `json:"date,omitempty"`
 	ItemID    string                 `json:"item_id"`
@@ -151,6 +158,15 @@ type pulseModuleResponse struct {
 	Title   string              `json:"title"`
 	Summary string              `json:"summary"`
 	Items   []pulseItemResponse `json:"items"`
+}
+
+type focusTodayResponse struct {
+	ID          string `json:"id,omitempty"`
+	Date        string `json:"date"`
+	Title       string `json:"title"`
+	Prompt      string `json:"prompt"`
+	GeneratedAt string `json:"generated_at,omitempty"`
+	Available   bool   `json:"available"`
 }
 
 type memoryPulseSignal struct {
@@ -389,6 +405,12 @@ const (
 	pulseGenerationStageSearching    = "searching"
 	pulseGenerationStageSummarizing  = "summarizing"
 	pulseGenerationStageSaving       = "saving"
+	pulseGenerationStageFocusToday   = "focus_today"
+	focusTodayTitle                  = "Focus Today"
+	focusTodayTitleChinese           = "今日聚焦"
+	focusTodayPrompt                 = "请读取我的今日 Pulse，推荐 3 个最值得关注、可以继续追问的问题。"
+	focusTodayGenerationBudget       = 120 * time.Second
+	focusTodayBackgroundAgentID      = "focus_today_background"
 )
 
 var pulseModuleOrder = []string{
@@ -400,6 +422,18 @@ var pulseModuleOrder = []string{
 var pulseBackgroundDisabledTools = []string{
 	"search",
 	"get_pulse",
+	"refresh_pulse",
+	"list_pulse_topics",
+	"optimize_pulse_topics",
+	"upsert_pulse_topic",
+	"delete_pulse_topic",
+}
+
+// Focus Today is a real Super Chat run, so get_pulse stays available. Mutating
+// Pulse tools and generic search remain disabled because the scheduled job must
+// summarize the already-published feed rather than refresh or recurse.
+var focusTodayBackgroundDisabledTools = []string{
+	"search",
 	"refresh_pulse",
 	"list_pulse_topics",
 	"optimize_pulse_topics",
@@ -614,6 +648,168 @@ func (h *PulseHandler) Refresh(c *gin.Context) {
 	}
 	h.startPulseGeneration(date, userID, true, "manual_refresh")
 	h.writePulseWithStatus(c, date, userID, h.pulseGenerationActive(date, userID))
+}
+
+// OpenFocusToday materializes one precomputed snapshot as a normal Super Chat
+// conversation. No Conversation or Message rows are created by precomputation
+// or by GET /api/pulse; this click endpoint is the only materialization path.
+func (h *PulseHandler) OpenFocusToday(c *gin.Context) {
+	var req focusTodayOpenRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request: " + err.Error()})
+		return
+	}
+	userID := requestUserIDWithBody(c, req.UserID)
+	snapshot, err := h.findFocusTodaySnapshot(req.SnapshotID, req.Date, userID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load Focus Today"})
+		return
+	}
+	if snapshot == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Focus Today is still preparing"})
+		return
+	}
+
+	// The immutable snapshot ID is also the idempotency key. Do not accept an
+	// arbitrary conversation request ID here: it could alias an unrelated chat.
+	requestID := "focus-today:" + snapshot.ID
+	conversationTitle := localizedFocusTodayTitle(req.Language, snapshot.Date)
+	if existing, ok := focusTodayConversationByRequestID(userID, requestID); ok {
+		existing, err = updateFocusTodayConversationTitle(existing, conversationTitle)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to localize Focus Today conversation"})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{
+			"conversation": existing,
+			"focus_today":  focusTodaySnapshotResponse(snapshot),
+		})
+		return
+	}
+
+	now := time.Now()
+	conv := models.Conversation{
+		ID:              uuid.NewString(),
+		UserID:          userID,
+		AgentID:         superChatAgentID,
+		ClientRequestID: optionalConversationRequestID(requestID),
+		Title:           conversationTitle,
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}
+	messages := []models.Message{
+		{
+			ConversationID: conv.ID,
+			UserID:         userID,
+			Role:           "user",
+			Content:        snapshot.Prompt,
+			CreatedAt:      now,
+		},
+		{
+			ConversationID: conv.ID,
+			UserID:         userID,
+			Role:           "assistant",
+			Content:        snapshot.Content,
+			Reasoning:      snapshot.Reasoning,
+			SkillsUsed:     snapshot.SkillsUsedJSON,
+			Citations:      snapshot.CitationsJSON,
+			Artifacts:      snapshot.ArtifactsJSON,
+			FollowUps:      snapshot.FollowUpsJSON,
+			ModelUsed:      snapshot.ModelUsed,
+			Runtime:        snapshot.Runtime,
+			CreatedAt:      now.Add(time.Nanosecond),
+		},
+	}
+	err = database.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(&conv).Error; err != nil {
+			return err
+		}
+		return tx.Create(&messages).Error
+	})
+	if err != nil {
+		// A retried click may race another request on the unique request ID.
+		if existing, ok := focusTodayConversationByRequestID(userID, requestID); ok {
+			existing, titleErr := updateFocusTodayConversationTitle(existing, conversationTitle)
+			if titleErr != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to localize Focus Today conversation"})
+				return
+			}
+			c.JSON(http.StatusOK, gin.H{
+				"conversation": existing,
+				"focus_today":  focusTodaySnapshotResponse(snapshot),
+			})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to open Focus Today"})
+		return
+	}
+
+	c.JSON(http.StatusCreated, gin.H{
+		"conversation": conv,
+		"focus_today":  focusTodaySnapshotResponse(snapshot),
+	})
+}
+
+func focusTodayConversationByRequestID(userID string, requestID string) (models.Conversation, bool) {
+	var conversation models.Conversation
+	err := database.DB.First(
+		&conversation,
+		"user_id = ? AND client_request_id = ?",
+		normalizedUserID(userID),
+		requestID,
+	).Error
+	return conversation, err == nil
+}
+
+func localizedFocusTodayTitle(language string, date string) string {
+	title := focusTodayTitle
+	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(language)), "zh") {
+		title = focusTodayTitleChinese
+	}
+	if date = strings.TrimSpace(date); date != "" {
+		return title + " · " + date
+	}
+	return title
+}
+
+func updateFocusTodayConversationTitle(conversation models.Conversation, title string) (models.Conversation, error) {
+	if conversation.Title == title {
+		return conversation, nil
+	}
+	if err := database.DB.Model(&models.Conversation{}).
+		Where("id = ? AND user_id = ?", conversation.ID, conversation.UserID).
+		Update("title", title).Error; err != nil {
+		return conversation, err
+	}
+	conversation.Title = title
+	return conversation, nil
+}
+
+func (h *PulseHandler) findFocusTodaySnapshot(snapshotID string, date string, userID string) (*models.FocusTodaySnapshot, error) {
+	userID = normalizedUserID(userID)
+	var snapshot models.FocusTodaySnapshot
+	if snapshotID = strings.TrimSpace(snapshotID); snapshotID != "" {
+		err := database.DB.First(&snapshot, "id = ? AND user_id = ?", snapshotID, userID).Error
+		if err == gorm.ErrRecordNotFound {
+			return nil, nil
+		}
+		if err == nil && strings.TrimSpace(snapshot.Content) == "" {
+			return nil, nil
+		}
+		return &snapshot, err
+	}
+	requestedDate, ok := requestedPulseDate(date)
+	if !ok {
+		return nil, nil
+	}
+	err := database.DB.First(&snapshot, "date = ? AND user_id = ?", requestedDate, userID).Error
+	if err == gorm.ErrRecordNotFound {
+		return nil, nil
+	}
+	if err == nil && strings.TrimSpace(snapshot.Content) == "" {
+		return nil, nil
+	}
+	return &snapshot, err
 }
 
 func (h *PulseHandler) ListTopics(c *gin.Context) {
@@ -939,6 +1135,13 @@ func (h *PulseHandler) writePulseWithStatus(c *gin.Context, date string, userID 
 	if err != nil {
 		slog.Warn("Pulse consumed welcome questions load failed", "user_id", userID, "error", err)
 	}
+	focusToday := unavailableFocusTodayResponse(date)
+	focusSnapshot, err := h.loadFocusTodaySnapshot(date, userID)
+	if err != nil {
+		slog.Warn("Focus Today snapshot load failed", "user_id", userID, "date", date, "error", err)
+	} else if focusSnapshot != nil {
+		focusToday = focusTodaySnapshotResponse(focusSnapshot)
+	}
 
 	generatedAt := ""
 	if len(modules) > 0 {
@@ -969,6 +1172,7 @@ func (h *PulseHandler) writePulseWithStatus(c *gin.Context, date string, userID 
 		"items":                   itemResponsesWithFeatures(items, items, featureState),
 		"suggestion_date":         suggestionDate,
 		"suggestion_items":        suggestionItems,
+		"focus_today":             focusToday,
 		"consumed_question_keys":  consumedQuestionKeys,
 		"consumption_ttl_seconds": int(h.pulseConsumptionTTL().Seconds()),
 		"modules":                 moduleResponsesWithFeatures(modules, items, items, featureState),
@@ -976,6 +1180,111 @@ func (h *PulseHandler) writePulseWithStatus(c *gin.Context, date string, userID 
 		"refresh_stage":           refreshStage,
 		"refresh_started_at":      refreshStartedAt,
 		"refresh_elapsed_seconds": refreshElapsedSeconds,
+	})
+}
+
+func unavailableFocusTodayResponse(date string) focusTodayResponse {
+	return focusTodayResponse{
+		Date:      date,
+		Title:     focusTodayTitle,
+		Prompt:    focusTodayPrompt,
+		Available: false,
+	}
+}
+
+func focusTodaySnapshotResponse(snapshot *models.FocusTodaySnapshot) focusTodayResponse {
+	if snapshot == nil {
+		return unavailableFocusTodayResponse("")
+	}
+	return focusTodayResponse{
+		ID:          snapshot.ID,
+		Date:        snapshot.Date,
+		Title:       snapshot.Title,
+		Prompt:      snapshot.Prompt,
+		GeneratedAt: snapshot.UpdatedAt.Format(time.RFC3339),
+		Available:   strings.TrimSpace(snapshot.Content) != "",
+	}
+}
+
+func (h *PulseHandler) loadFocusTodaySnapshot(date string, userID string) (*models.FocusTodaySnapshot, error) {
+	userID = normalizedUserID(userID)
+	var snapshot models.FocusTodaySnapshot
+	err := database.DB.First(&snapshot, "date = ? AND user_id = ?", date, userID).Error
+	if err == nil {
+		return &snapshot, nil
+	}
+	if err == gorm.ErrRecordNotFound {
+		return nil, nil
+	}
+	return nil, err
+}
+
+func (h *PulseHandler) generateFocusTodaySnapshot(
+	ctx context.Context,
+	date string,
+	userID string,
+) (models.FocusTodaySnapshot, error) {
+	if h.agent == nil {
+		return models.FocusTodaySnapshot{}, fmt.Errorf("agent client is not configured")
+	}
+	userID = normalizedUserID(userID)
+	memoryEnabled := false
+	conversationID := fmt.Sprintf("focus-today-%s-%s-%s", userID, date, uuid.NewString())
+	response, err := h.agent.ChatContext(ctx, bridge.ChatRequest{
+		ConversationID: conversationID,
+		UserID:         userID,
+		Message:        focusTodayPrompt,
+		Stream:         false,
+		AgentID:        superChatAgentID,
+		MemoryEnabled:  &memoryEnabled,
+		DisabledTools:  focusTodayBackgroundDisabledTools,
+	})
+	if err != nil {
+		return models.FocusTodaySnapshot{}, err
+	}
+	if response == nil || strings.TrimSpace(response.Response) == "" {
+		return models.FocusTodaySnapshot{}, fmt.Errorf("Super Chat returned an empty Focus Today response")
+	}
+	if strings.TrimSpace(response.ErrorType) != "" {
+		return models.FocusTodaySnapshot{}, fmt.Errorf("Super Chat Focus Today failed: %s", response.ErrorType)
+	}
+	persistTokenUsageRecord(conversationID, userID, 0, focusTodayBackgroundAgentID, time.Now(), response)
+
+	skillsJSON, _ := json.Marshal(response.SkillsUsed)
+	citationsJSON, _ := json.Marshal(response.Citations)
+	artifactsJSON, _ := json.Marshal(response.Artifacts)
+	followUpsJSON, _ := json.Marshal([]string{})
+	now := time.Now()
+	return models.FocusTodaySnapshot{
+		ID:             uuid.NewString(),
+		UserID:         userID,
+		Date:           date,
+		Title:          focusTodayTitle + " · " + date,
+		Prompt:         focusTodayPrompt,
+		Content:        response.Response,
+		Reasoning:      response.Reasoning,
+		SkillsUsedJSON: string(skillsJSON),
+		CitationsJSON:  string(citationsJSON),
+		ArtifactsJSON:  string(artifactsJSON),
+		FollowUpsJSON:  string(followUpsJSON),
+		ModelUsed:      response.ModelUsed,
+		Runtime:        response.Runtime,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}, nil
+}
+
+func saveFocusTodaySnapshot(snapshot models.FocusTodaySnapshot) error {
+	return database.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Delete(
+			&models.FocusTodaySnapshot{},
+			"date = ? AND user_id = ?",
+			snapshot.Date,
+			snapshot.UserID,
+		).Error; err != nil {
+			return err
+		}
+		return tx.Create(&snapshot).Error
 	})
 }
 
@@ -1110,6 +1419,16 @@ func (h *PulseHandler) startPulseGeneration(date string, userID string, force bo
 				generationErr = err
 			} else if !healthy {
 				generationErr = fmt.Errorf("pulse generation completed without publishable items")
+			} else {
+				h.updatePulseGenerationStage(date, userID, pulseGenerationStageFocusToday)
+				focusContext, cancel := context.WithTimeout(context.Background(), focusTodayGenerationBudget)
+				focusSnapshot, focusErr := h.generateFocusTodaySnapshot(focusContext, date, userID)
+				cancel()
+				if focusErr != nil {
+					generationErr = fmt.Errorf("generate Focus Today with Super Chat: %w", focusErr)
+				} else if err := saveFocusTodaySnapshot(focusSnapshot); err != nil {
+					generationErr = fmt.Errorf("save Focus Today snapshot: %w", err)
+				}
 			}
 		}
 		if pulseGenerationReasonIsAutomatic(reason) {
@@ -1360,7 +1679,6 @@ func (h *PulseHandler) ensureDailyPulse(date string, userID string, force bool) 
 		slog.Warn("Pulse generation returned no content; keeping existing pulse", "date", date, "user_id", userID)
 		return nil
 	}
-
 	h.updatePulseGenerationStage(date, userID, pulseGenerationStageSaving)
 	return database.DB.Transaction(func(tx *gorm.DB) error {
 		if replaceExisting {

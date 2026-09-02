@@ -17,6 +17,7 @@ import (
 	"github.com/aan/agent-assistant-gateway/internal/database"
 	"github.com/aan/agent-assistant-gateway/internal/models"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 )
 
 func TestPulseCreatesTopicAndPrecomputesDailyItems(t *testing.T) {
@@ -151,6 +152,338 @@ func TestPulseGetUsesRecentHealthyItemsForWelcomeSuggestions(t *testing.T) {
 	}
 	if got := payload.SuggestionItems[0]; got.ID != item.ID || got.ExplorePrompt != item.ExplorePrompt {
 		t.Fatalf("unexpected suggestion item: %#v", got)
+	}
+}
+
+func TestFocusTodayRunsSuperChatWithoutConversationAndMaterializesOnClick(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	if err := database.Init(filepath.Join(t.TempDir(), "assistant.db")); err != nil {
+		t.Fatalf("init database: %v", err)
+	}
+
+	date := "2026-09-02"
+	generatedAnswer := "这是由 Super Chat 完整生成的 Focus Today 回答。"
+	var capturedRequest bridge.ChatRequest
+	agentServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/agent/chat" {
+			http.NotFound(w, r)
+			return
+		}
+		if err := json.NewDecoder(r.Body).Decode(&capturedRequest); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(bridge.ChatResponse{
+			ConversationID: capturedRequest.ConversationID,
+			Response:       generatedAnswer,
+			Reasoning:      "background reasoning",
+			SkillsUsed:     []string{"get_pulse"},
+			Citations: []bridge.Citation{{
+				Index:  1,
+				Title:  "Official source",
+				URL:    "https://example.com/source",
+				Source: "official",
+			}},
+			Artifacts: []bridge.ChatArtifact{{
+				Type:   "drive_file",
+				ItemID: "artifact-1",
+				Name:   "focus.md",
+			}},
+			ModelUsed: "test-model",
+			Runtime:   "self",
+			AgentID:   superChatAgentID,
+		})
+	}))
+	defer agentServer.Close()
+
+	generationHandler := NewPulseHandler(bridge.NewAgentClient(agentServer.URL, time.Second))
+	snapshot, err := generationHandler.generateFocusTodaySnapshot(context.Background(), date, models.DefaultAccountID)
+	if err != nil {
+		t.Fatalf("generate Focus Today snapshot: %v", err)
+	}
+	if capturedRequest.AgentID != superChatAgentID || capturedRequest.Message != focusTodayPrompt {
+		t.Fatalf("expected one real Super Chat invocation, got %#v", capturedRequest)
+	}
+	if capturedRequest.MemoryEnabled == nil || *capturedRequest.MemoryEnabled {
+		t.Fatalf("background generation must disable memory writes, got %#v", capturedRequest.MemoryEnabled)
+	}
+	if capturedRequest.ModelPreference != nil {
+		t.Fatalf("Focus Today should use the normal Super Chat model selection, got %#v", capturedRequest.ModelPreference)
+	}
+	if containsString(capturedRequest.DisabledTools, "get_pulse") || !containsString(capturedRequest.DisabledTools, "refresh_pulse") || !containsString(capturedRequest.DisabledTools, "search") {
+		t.Fatalf("Focus Today should allow reading Pulse but disable refresh/search, got %#v", capturedRequest.DisabledTools)
+	}
+	if snapshot.Content != generatedAnswer || snapshot.Prompt != focusTodayPrompt || snapshot.Title != "Focus Today · "+date {
+		t.Fatalf("unexpected Focus Today prompt/title: %#v", snapshot)
+	}
+	if snapshot.Reasoning != "background reasoning" || snapshot.ModelUsed != "test-model" || snapshot.Runtime != "self" {
+		t.Fatalf("generated response metadata was not cached: %#v", snapshot)
+	}
+	if !strings.Contains(snapshot.SkillsUsedJSON, "get_pulse") || !strings.Contains(snapshot.CitationsJSON, "Official source") || !strings.Contains(snapshot.ArtifactsJSON, "artifact-1") {
+		t.Fatalf("generated response payload was not cached: %#v", snapshot)
+	}
+	var beforeSave int64
+	database.DB.Model(&models.Conversation{}).Count(&beforeSave)
+	if beforeSave != 0 {
+		t.Fatalf("background Super Chat must not create conversations, got %d", beforeSave)
+	}
+	if err := saveFocusTodaySnapshot(snapshot); err != nil {
+		t.Fatalf("save Focus Today snapshot: %v", err)
+	}
+
+	handler := NewPulseHandler()
+	router := gin.New()
+	router.GET("/api/pulse", handler.Get)
+	router.POST("/api/pulse/focus-today/open", handler.OpenFocusToday)
+	getRecorder := httptest.NewRecorder()
+	router.ServeHTTP(getRecorder, httptest.NewRequest(http.MethodGet, "/api/pulse?date="+date, nil))
+	if getRecorder.Code != http.StatusOK {
+		t.Fatalf("unexpected Focus Today metadata status %d: %s", getRecorder.Code, getRecorder.Body.String())
+	}
+	var metadataPayload struct {
+		FocusToday focusTodayResponse `json:"focus_today"`
+	}
+	if err := json.Unmarshal(getRecorder.Body.Bytes(), &metadataPayload); err != nil {
+		t.Fatalf("decode Focus Today metadata: %v", err)
+	}
+	if metadataPayload.FocusToday.ID != snapshot.ID || !metadataPayload.FocusToday.Available {
+		t.Fatalf("expected cached Focus Today metadata, got %#v", metadataPayload.FocusToday)
+	}
+	var beforeClick int64
+	database.DB.Model(&models.Conversation{}).Count(&beforeClick)
+	if beforeClick != 0 {
+		t.Fatalf("precomputation must not create conversations, got %d", beforeClick)
+	}
+
+	body := fmt.Sprintf(`{"snapshot_id":%q,"language":"zh"}`, snapshot.ID)
+	request := httptest.NewRequest(http.MethodPost, "/api/pulse/focus-today/open", strings.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("unexpected open status %d: %s", recorder.Code, recorder.Body.String())
+	}
+	var opened struct {
+		Conversation models.Conversation `json:"conversation"`
+		FocusToday   focusTodayResponse  `json:"focus_today"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &opened); err != nil {
+		t.Fatalf("decode Focus Today response: %v", err)
+	}
+	if opened.Conversation.AgentID != superChatAgentID || opened.Conversation.Title != "今日聚焦 · "+date || !opened.FocusToday.Available {
+		t.Fatalf("unexpected materialized conversation: %#v", opened)
+	}
+	var messages []models.Message
+	if err := database.DB.Where("conversation_id = ?", opened.Conversation.ID).Order(messageChronologicalOrder).Find(&messages).Error; err != nil {
+		t.Fatalf("load materialized messages: %v", err)
+	}
+	if len(messages) != 2 || messages[0].Role != "user" || messages[0].Content != focusTodayPrompt || messages[1].Content != snapshot.Content {
+		t.Fatalf("unexpected materialized messages: %#v", messages)
+	}
+	if messages[1].Runtime != snapshot.Runtime || messages[1].ModelUsed != snapshot.ModelUsed || messages[1].Reasoning != snapshot.Reasoning || messages[1].SkillsUsed != snapshot.SkillsUsedJSON || messages[1].Citations != snapshot.CitationsJSON || messages[1].Artifacts != snapshot.ArtifactsJSON || messages[1].FollowUps != snapshot.FollowUpsJSON {
+		t.Fatalf("cached answer metadata was not preserved: %#v", messages[1])
+	}
+
+	retryBody := fmt.Sprintf(`{"snapshot_id":%q,"language":"en"}`, snapshot.ID)
+	retry := httptest.NewRequest(http.MethodPost, "/api/pulse/focus-today/open", strings.NewReader(retryBody))
+	retry.Header.Set("Content-Type", "application/json")
+	retryRecorder := httptest.NewRecorder()
+	router.ServeHTTP(retryRecorder, retry)
+	if retryRecorder.Code != http.StatusOK {
+		t.Fatalf("unexpected idempotent retry status %d: %s", retryRecorder.Code, retryRecorder.Body.String())
+	}
+	var retried struct {
+		Conversation models.Conversation `json:"conversation"`
+	}
+	if err := json.Unmarshal(retryRecorder.Body.Bytes(), &retried); err != nil {
+		t.Fatalf("decode localized retry: %v", err)
+	}
+	if retried.Conversation.ID != opened.Conversation.ID || retried.Conversation.Title != "Focus Today · "+date {
+		t.Fatalf("expected the reused conversation title to follow English, got %#v", retried.Conversation)
+	}
+	var conversationCount int64
+	var messageCount int64
+	database.DB.Model(&models.Conversation{}).Count(&conversationCount)
+	database.DB.Model(&models.Message{}).Count(&messageCount)
+	if conversationCount != 1 || messageCount != 2 {
+		t.Fatalf("repeated clicks must reuse one materialized chat, conversations=%d messages=%d", conversationCount, messageCount)
+	}
+}
+
+func TestLocalizedFocusTodayTitle(t *testing.T) {
+	if got := localizedFocusTodayTitle("zh-CN", "2026-09-02"); got != "今日聚焦 · 2026-09-02" {
+		t.Fatalf("unexpected Chinese Focus Today title: %q", got)
+	}
+	if got := localizedFocusTodayTitle("en", "2026-09-02"); got != "Focus Today · 2026-09-02" {
+		t.Fatalf("unexpected English Focus Today title: %q", got)
+	}
+}
+
+func TestScheduledPulseGenerationInvokesFocusTodaySuperChat(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	if err := database.Init(filepath.Join(t.TempDir(), "assistant.db")); err != nil {
+		t.Fatalf("init database: %v", err)
+	}
+
+	date := "2026-09-02"
+	userID := models.DefaultAccountID
+	now := time.Now()
+	detail := pulseItemDetail{
+		ContentVersion:       pulseContentVersion,
+		RecommendationReason: "你近期持续关注 DeepSeek 模型与 API 成本。",
+		KeyPoints:            []string{"V4 Pro agent 能力升级", "API 引入峰谷分时定价"},
+		NewsSources: []pulseNewsSource{
+			{Title: "DeepSeek releases V4 Pro", URL: "https://deepseek.com/news/v4-pro", Source: "official", Snippet: "DeepSeek released V4 Pro with upgraded agent capabilities.", PublishedAt: date},
+			{Title: "DeepSeek adjusts V4 API pricing", URL: "https://reuters.com/technology/deepseek-v4-pricing", Source: "Reuters", Snippet: "DeepSeek launched V4 Pro and introduced peak and off-peak API pricing.", PublishedAt: date},
+		},
+		SuggestedQuestions: []string{
+			"V4 Pro agent 能力比 Flash 强在哪？",
+			"峰谷定价后哪个时段调用最划算？",
+			"DeepSeek V4 Pro 迁移要改什么？",
+		},
+	}
+	item := models.PulseItem{
+		ID:            "scheduled-focus",
+		UserID:        userID,
+		Date:          date,
+		Source:        pulseSourceTopicHot,
+		Title:         "DeepSeek 发布 V4 Pro 并调整 API 定价",
+		Summary:       "DeepSeek 发布 V4 Pro，并为 Pro 与 Flash 引入新的 API 分时定价。官方信息显示，V4 Pro 此次更新集中在 Agent 任务的调用、规划与工具协作能力，同时保留 Flash 作为更低延迟的选项。独立报道确认了这次发布与价格调整属于同一轮产品更新，峰谷时段的调用成本会出现明显差异。对已经使用 DeepSeek API 的团队，影响不只是模型选型，还包括批处理、离线任务和高峰期流量的调度方式。值得后续核实实际计费区间、速率差异和兼容性，再决定是否迁移生产负载。",
+		DetailJSON:    mustJSON(detail),
+		ExplorePrompt: "对比 DeepSeek V4 Pro 与 Flash 的能力和成本",
+		HeatScore:     90,
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	}
+	if err := database.DB.Create(&item).Error; err != nil {
+		t.Fatalf("seed Pulse item: %v", err)
+	}
+	modules := make([]models.PulseModule, 0, len(pulseModuleOrder))
+	for _, key := range pulseModuleOrder {
+		modules = append(modules, models.PulseModule{
+			ID:        uuid.NewString(),
+			UserID:    userID,
+			Date:      date,
+			Key:       key,
+			Title:     key,
+			Summary:   "ready",
+			CreatedAt: now,
+			UpdatedAt: now,
+		})
+	}
+	if err := database.DB.Create(&modules).Error; err != nil {
+		t.Fatalf("seed Pulse modules: %v", err)
+	}
+
+	requests := make(chan bridge.ChatRequest, 2)
+	agentServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req bridge.ChatRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		requests <- req
+		_ = json.NewEncoder(w).Encode(bridge.ChatResponse{
+			ConversationID: req.ConversationID,
+			Response:       "scheduled Focus Today answer",
+			SkillsUsed:     []string{"get_pulse"},
+			ModelUsed:      "test-model",
+			AgentID:        superChatAgentID,
+			Runtime:        "self",
+		})
+	}))
+	defer agentServer.Close()
+
+	handler := NewPulseHandler(bridge.NewAgentClient(agentServer.URL, time.Second))
+	if !handler.startPulseGeneration(date, userID, false, "scheduled:test") {
+		t.Fatal("expected scheduled generation to start")
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for handler.pulseGenerationActive(date, userID) && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if handler.pulseGenerationActive(date, userID) {
+		t.Fatal("scheduled Focus Today generation did not finish")
+	}
+
+	select {
+	case req := <-requests:
+		if req.AgentID != superChatAgentID || req.Message != focusTodayPrompt {
+			t.Fatalf("unexpected scheduled Super Chat request: %#v", req)
+		}
+	default:
+		t.Fatal("scheduled Pulse generation did not invoke Focus Today Super Chat")
+	}
+	select {
+	case extra := <-requests:
+		t.Fatalf("healthy cached Pulse should require only the Focus Today Super Chat call, got extra request %#v", extra)
+	default:
+	}
+
+	var snapshotCount int64
+	var conversationCount int64
+	database.DB.Model(&models.FocusTodaySnapshot{}).Count(&snapshotCount)
+	database.DB.Model(&models.Conversation{}).Count(&conversationCount)
+	if snapshotCount != 1 || conversationCount != 0 {
+		t.Fatalf("scheduled generation should cache one snapshot without a conversation, snapshots=%d conversations=%d", snapshotCount, conversationCount)
+	}
+}
+
+func TestFocusTodaySuperChatFailureDoesNotCacheOrCreateConversation(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	if err := database.Init(filepath.Join(t.TempDir(), "assistant.db")); err != nil {
+		t.Fatalf("init database: %v", err)
+	}
+
+	agentServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(bridge.ChatResponse{
+			Response:  "provider unavailable",
+			ErrorType: "provider_error",
+		})
+	}))
+	defer agentServer.Close()
+
+	handler := NewPulseHandler(bridge.NewAgentClient(agentServer.URL, time.Second))
+	if _, err := handler.generateFocusTodaySnapshot(context.Background(), "2026-09-02", models.DefaultAccountID); err == nil {
+		t.Fatal("expected failed Super Chat response to reject Focus Today generation")
+	}
+	var snapshotCount int64
+	var conversationCount int64
+	database.DB.Model(&models.FocusTodaySnapshot{}).Count(&snapshotCount)
+	database.DB.Model(&models.Conversation{}).Count(&conversationCount)
+	if snapshotCount != 0 || conversationCount != 0 {
+		t.Fatalf("failed generation must not create cached or user-visible state, snapshots=%d conversations=%d", snapshotCount, conversationCount)
+	}
+}
+
+func TestFocusTodayMissingSnapshotDoesNotCreateConversation(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	if err := database.Init(filepath.Join(t.TempDir(), "assistant.db")); err != nil {
+		t.Fatalf("init database: %v", err)
+	}
+	handler := NewPulseHandler()
+	router := gin.New()
+	router.POST("/api/pulse/focus-today/open", handler.OpenFocusToday)
+	request := httptest.NewRequest(http.MethodPost, "/api/pulse/focus-today/open", strings.NewReader(`{"snapshot_id":"missing"}`))
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("unexpected missing snapshot status %d: %s", recorder.Code, recorder.Body.String())
+	}
+	var count int64
+	database.DB.Model(&models.Conversation{}).Count(&count)
+	if count != 0 {
+		t.Fatalf("missing precomputation must not create a conversation, got %d", count)
+	}
+}
+
+func TestFocusTodaySharesPulseSixHourSchedule(t *testing.T) {
+	if pulseScheduledRefreshInterval != 6*time.Hour {
+		t.Fatalf("Focus Today should refresh with Pulse every 6 hours, got %s", pulseScheduledRefreshInterval)
+	}
+	if pulseScheduledRefreshInterval < 4*time.Hour || pulseScheduledRefreshInterval > 8*time.Hour {
+		t.Fatalf("Focus Today refresh must stay inside the requested 4-8 hour window, got %s", pulseScheduledRefreshInterval)
 	}
 }
 

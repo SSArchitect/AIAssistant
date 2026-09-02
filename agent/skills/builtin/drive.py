@@ -494,7 +494,13 @@ class DriveSaveSkill(_DriveTool):
                 "用户身份由系统注入。当前不覆盖已有同名文件。"
             ),
             parameters=[
-                SkillParameter(name="content", type="string", description="要保存的文本内容。", required=True),
+                SkillParameter(
+                    name="content",
+                    type="string",
+                    description="要保存的完整文本内容。",
+                    required=True,
+                    input_format="markdown",
+                ),
                 SkillParameter(name="name", type="string", description="文件名，例如 notes.md。path 已包含文件名时可省略。", required=False),
                 SkillParameter(name="path", type="string", description="完整网盘文件路径，例如 /研究/notes.md。", required=False),
                 SkillParameter(name="folder_path", type="string", description="保存目录路径，默认 /知识库。", required=False),
@@ -593,7 +599,13 @@ class DriveUpdateSkill(_DriveTool):
             parameters=[
                 SkillParameter(name="item_id", type="string", description="目标文件或文件夹 ID；优先于 path。", required=False),
                 SkillParameter(name="path", type="string", description="目标文件或文件夹的现有网盘路径。", required=False),
-                SkillParameter(name="content", type="string", description="新的文件内容；仅文件可用。", required=False),
+                SkillParameter(
+                    name="content",
+                    type="string",
+                    description="新的完整文件内容；仅文件可用。",
+                    required=False,
+                    input_format="markdown",
+                ),
                 SkillParameter(name="name", type="string", description="新的文件或文件夹名称。", required=False),
                 SkillParameter(name="folder_id", type="string", description="移动到的目标目录 ID。", required=False),
                 SkillParameter(name="folder_path", type="string", description="移动到的目标目录路径。", required=False),

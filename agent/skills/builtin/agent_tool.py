@@ -40,6 +40,7 @@ class AgentToolSkill(Skill):
                     type="string",
                     description="The full user-facing task for this agent, preserving concrete details.",
                     required=True,
+                    input_format="markdown",
                 ),
                 SkillParameter(
                     name="reason",
@@ -52,6 +53,7 @@ class AgentToolSkill(Skill):
                     type="string",
                     description="Relevant context this agent needs, including the original request when useful.",
                     required=False,
+                    input_format="markdown",
                 ),
             ],
             tags=["agent", "workflow", self.agent.id],
