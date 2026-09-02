@@ -150,6 +150,34 @@ def test_activated_domain_suppresses_cross_domain_description_noise():
     assert [tool.name for tool in route.tools] == ["get_pulse"]
 
 
+def test_focus_today_routes_both_todo_and_pulse_reads():
+    catalog = [
+        ToolDefinition(
+            name="list_todos",
+            description="List today's tasks and pending work.",
+            parameters={"type": "object", "properties": {}},
+            metadata={"domains": ["todo"], "routing_keywords": ["今日待办"]},
+        ),
+        ToolDefinition(
+            name="get_pulse",
+            description="Get today's noteworthy topics.",
+            parameters={"type": "object", "properties": {}},
+            metadata={"domains": ["pulse"], "routing_keywords": ["值得关注"]},
+        ),
+    ]
+
+    route = ToolRouter().route(
+        catalog,
+        query=(
+            "请先调用 list_todos 读取今天和已逾期的未完成 Todo，"
+            "然后调用 get_pulse 读取今日 Pulse，并生成今日聚焦。"
+        ),
+    )
+
+    assert route.activated_domains == ["todo", "pulse"]
+    assert [tool.name for tool in route.tools] == ["list_todos", "get_pulse"]
+
+
 def test_pulse_information_cluster_optimization_routes_to_analysis_tool():
     catalog = [
         _tool(

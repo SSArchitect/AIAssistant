@@ -161,7 +161,7 @@ func TestFocusTodayRunsSuperChatWithoutConversationAndMaterializesOnClick(t *tes
 		t.Fatalf("init database: %v", err)
 	}
 
-	date := "2026-09-02"
+	date := time.Now().Format("2006-01-02")
 	generatedAnswer := "这是由 Super Chat 完整生成的 Focus Today 回答。"
 	var capturedRequest bridge.ChatRequest
 	agentServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -210,8 +210,13 @@ func TestFocusTodayRunsSuperChatWithoutConversationAndMaterializesOnClick(t *tes
 	if capturedRequest.ModelPreference != nil {
 		t.Fatalf("Focus Today should use the normal Super Chat model selection, got %#v", capturedRequest.ModelPreference)
 	}
-	if containsString(capturedRequest.DisabledTools, "get_pulse") || !containsString(capturedRequest.DisabledTools, "refresh_pulse") || !containsString(capturedRequest.DisabledTools, "search") {
-		t.Fatalf("Focus Today should allow reading Pulse but disable refresh/search, got %#v", capturedRequest.DisabledTools)
+	if containsString(capturedRequest.DisabledTools, "get_pulse") || containsString(capturedRequest.DisabledTools, "list_todos") {
+		t.Fatalf("Focus Today should allow reading Todo and Pulse, got %#v", capturedRequest.DisabledTools)
+	}
+	for _, toolName := range []string{"search", "create_todo", "update_todo", "delete_todo", "refresh_pulse"} {
+		if !containsString(capturedRequest.DisabledTools, toolName) {
+			t.Fatalf("Focus Today background generation should disable %s: %#v", toolName, capturedRequest.DisabledTools)
+		}
 	}
 	if snapshot.Content != generatedAnswer || snapshot.Prompt != focusTodayPrompt || snapshot.Title != "Focus Today · "+date {
 		t.Fatalf("unexpected Focus Today prompt/title: %#v", snapshot)
@@ -319,13 +324,13 @@ func TestLocalizedFocusTodayTitle(t *testing.T) {
 	}
 }
 
-func TestScheduledPulseGenerationInvokesFocusTodaySuperChat(t *testing.T) {
+func TestHealthyPulseGetAndSchedulerBackfillMissingFocusTodayWithSuperChat(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	if err := database.Init(filepath.Join(t.TempDir(), "assistant.db")); err != nil {
 		t.Fatalf("init database: %v", err)
 	}
 
-	date := "2026-09-02"
+	date := time.Now().Format("2006-01-02")
 	userID := models.DefaultAccountID
 	now := time.Now()
 	detail := pulseItemDetail{
@@ -395,15 +400,19 @@ func TestScheduledPulseGenerationInvokesFocusTodaySuperChat(t *testing.T) {
 	defer agentServer.Close()
 
 	handler := NewPulseHandler(bridge.NewAgentClient(agentServer.URL, time.Second))
-	if !handler.startPulseGeneration(date, userID, false, "scheduled:test") {
-		t.Fatal("expected scheduled generation to start")
+	router := gin.New()
+	router.GET("/api/pulse", handler.Get)
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/pulse?date="+date, nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("unexpected Pulse get status %d: %s", recorder.Code, recorder.Body.String())
 	}
 	deadline := time.Now().Add(2 * time.Second)
 	for handler.pulseGenerationActive(date, userID) && time.Now().Before(deadline) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	if handler.pulseGenerationActive(date, userID) {
-		t.Fatal("scheduled Focus Today generation did not finish")
+		t.Fatal("Focus Today cache backfill did not finish")
 	}
 
 	select {
@@ -412,11 +421,11 @@ func TestScheduledPulseGenerationInvokesFocusTodaySuperChat(t *testing.T) {
 			t.Fatalf("unexpected scheduled Super Chat request: %#v", req)
 		}
 	default:
-		t.Fatal("scheduled Pulse generation did not invoke Focus Today Super Chat")
+		t.Fatal("healthy Pulse cache miss did not invoke Focus Today Super Chat")
 	}
 	select {
 	case extra := <-requests:
-		t.Fatalf("healthy cached Pulse should require only the Focus Today Super Chat call, got extra request %#v", extra)
+		t.Fatalf("healthy Pulse backfill should require only the Focus Today Super Chat call, got extra request %#v", extra)
 	default:
 	}
 
@@ -425,7 +434,41 @@ func TestScheduledPulseGenerationInvokesFocusTodaySuperChat(t *testing.T) {
 	database.DB.Model(&models.FocusTodaySnapshot{}).Count(&snapshotCount)
 	database.DB.Model(&models.Conversation{}).Count(&conversationCount)
 	if snapshotCount != 1 || conversationCount != 0 {
-		t.Fatalf("scheduled generation should cache one snapshot without a conversation, snapshots=%d conversations=%d", snapshotCount, conversationCount)
+		t.Fatalf("cache backfill should save one snapshot without a conversation, snapshots=%d conversations=%d", snapshotCount, conversationCount)
+	}
+
+	if err := database.DB.Delete(&models.FocusTodaySnapshot{}, "date = ? AND user_id = ?", date, userID).Error; err != nil {
+		t.Fatalf("remove snapshot before scheduler backfill: %v", err)
+	}
+	if err := database.DB.Create(&models.AccountSession{
+		TokenHash:  "focus-scheduler-active",
+		UserID:     userID,
+		CreatedAt:  now,
+		LastUsedAt: now,
+	}).Error; err != nil {
+		t.Fatalf("seed active account session: %v", err)
+	}
+	scheduledHandler := NewPulseHandler(bridge.NewAgentClient(agentServer.URL, time.Second))
+	scheduledHandler.runScheduledPulse("test")
+	deadline = time.Now().Add(2 * time.Second)
+	for scheduledHandler.pulseGenerationActive(date, userID) && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if scheduledHandler.pulseGenerationActive(date, userID) {
+		t.Fatal("scheduled Focus Today cache backfill did not finish")
+	}
+	select {
+	case req := <-requests:
+		if req.AgentID != superChatAgentID || req.Message != focusTodayPrompt {
+			t.Fatalf("unexpected scheduled Focus Today request: %#v", req)
+		}
+	default:
+		t.Fatal("scheduler did not backfill the missing Focus Today snapshot")
+	}
+	database.DB.Model(&models.FocusTodaySnapshot{}).Count(&snapshotCount)
+	database.DB.Model(&models.Conversation{}).Count(&conversationCount)
+	if snapshotCount != 1 || conversationCount != 0 {
+		t.Fatalf("scheduled backfill should save one snapshot without a conversation, snapshots=%d conversations=%d", snapshotCount, conversationCount)
 	}
 }
 
@@ -456,7 +499,7 @@ func TestFocusTodaySuperChatFailureDoesNotCacheOrCreateConversation(t *testing.T
 	}
 }
 
-func TestFocusTodayMissingSnapshotDoesNotCreateConversation(t *testing.T) {
+func TestFocusTodayMissingOrStaleSnapshotDoesNotCreateConversation(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	if err := database.Init(filepath.Join(t.TempDir(), "assistant.db")); err != nil {
 		t.Fatalf("init database: %v", err)
@@ -470,6 +513,26 @@ func TestFocusTodayMissingSnapshotDoesNotCreateConversation(t *testing.T) {
 	router.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusNotFound {
 		t.Fatalf("unexpected missing snapshot status %d: %s", recorder.Code, recorder.Body.String())
+	}
+	staleSnapshot := models.FocusTodaySnapshot{
+		ID:        "stale-focus",
+		UserID:    models.DefaultAccountID,
+		Date:      "2026-09-02",
+		Title:     "Focus Today",
+		Prompt:    "请只读取我的今日 Pulse。",
+		Content:   "stale Pulse-only answer",
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+	if err := database.DB.Create(&staleSnapshot).Error; err != nil {
+		t.Fatalf("seed stale Focus Today snapshot: %v", err)
+	}
+	staleRequest := httptest.NewRequest(http.MethodPost, "/api/pulse/focus-today/open", strings.NewReader(`{"snapshot_id":"stale-focus","language":"zh"}`))
+	staleRequest.Header.Set("Content-Type", "application/json")
+	staleRecorder := httptest.NewRecorder()
+	router.ServeHTTP(staleRecorder, staleRequest)
+	if staleRecorder.Code != http.StatusNotFound {
+		t.Fatalf("unexpected stale snapshot status %d: %s", staleRecorder.Code, staleRecorder.Body.String())
 	}
 	var count int64
 	database.DB.Model(&models.Conversation{}).Count(&count)

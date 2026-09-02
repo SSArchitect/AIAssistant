@@ -311,6 +311,8 @@ test('Super Chat welcome shows six sourced actions with at most three from Pulse
         'welcome.explore',
     ]);
     assert.match(actions[0].query, /今日 Pulse/);
+	assert.match(actions[0].query, /list_todos/);
+	assert.match(actions[0].query, /get_pulse/);
     assert.equal(actions[0].focusToday, true);
     assert.equal(actions[1].query, 'pulse:pulse-1:V4 Pro agent 能力强在哪？');
     assert.match(actions[0].meta, /^welcome\.sourceLabelwelcome\.pulseSource/);
@@ -359,6 +361,8 @@ test('Super Chat welcome always has six sourced fallback questions when Pulse an
         'welcome.reviewGoals',
     ]);
     assert.ok(actions.every((action) => action.meta.startsWith('welcome.sourceLabel')));
+	assert.match(actions[0].query, /list_todos/);
+	assert.match(actions[0].query, /get_pulse/);
 });
 
 test('Focus Today welcome action carries the current precomputed snapshot', () => {

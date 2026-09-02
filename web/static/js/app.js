@@ -14522,8 +14522,8 @@ function superChatWelcomeActions() {
         : String(focusToday.id || '').trim();
     const focusTodayDate = String(focusToday.date || pulse?.date || '').trim();
     const focusTodayQuery = String(focusToday.prompt || '').trim() || (currentLanguage === 'zh'
-        ? '请读取我的今日 Pulse，推荐 3 个最值得关注、可以继续追问的问题。'
-        : 'Read my Pulse and suggest three timely questions worth following up on today.');
+		? '请先调用 list_todos 读取今天和已逾期的未完成 Todo；如果两者都为空，再读取 inbox Todo。然后调用 get_pulse 读取今日 Pulse。请基于真实工具结果生成“今日聚焦”：给出今天最值得推进的 3 件事、优先级、原因和可继续追问的问题。读取失败时请明确说明，不要编造，也不要把历史对话当作 Todo。'
+		: 'First call list_todos to read my unfinished today and overdue todos. If both are empty, read my inbox todos. Then call get_pulse to read today\'s Pulse. Use the actual tool results to create Focus Today with three priorities, reasons, and useful follow-up questions. If either read fails, say so explicitly and do not invent data or treat chat history as todos.');
     const focusTodayAdded = addAction(
         t('welcome.focusToday'),
         focusTodayQuery,

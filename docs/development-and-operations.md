@@ -331,7 +331,7 @@ Pulse 工具只暴露给 `super_chat`。Pulse 后台先通过专用搜索阶段�
 
 Pulse 自动预计算只覆盖近期使用过有效帐号会话的活跃用户，正常成功间隔为 6 小时。自动任务全局串行，尝试时间和结果持久化在 `pulse_schedule_states`：首次失败退避 12 小时，连续失败最多退避 24 小时，因此 gateway 重启不会清空冷却并触发密集重试。用户显式点击刷新不受自动调度冷却限制。
 
-每次 Pulse 成功发布后，后台会使用 `super_chat` 和“请读取我的今日 Pulse，推荐 3 个最值得关注、可以继续追问的问题”发起一次非流式生成，并把完整回答、推理、引用、产物和模型信息保存到 `focus_today_snapshots`。这一步允许 `get_pulse` 读取刚发布的 Pulse，但禁用搜索、Pulse 变更工具和记忆写入，也不会创建 `Conversation` 或 `Message`。Super Chat 固定展示随界面语言变化的推荐卡（中文“今日聚焦”，英文“Focus Today”）；用户点击缓存已就绪的卡片时，`POST /api/pulse/focus-today/open` 才会原子化创建对应语言标题的 Super Chat 会话、用户问题和缓存回答。同一快照的重复点击通过快照 ID 幂等复用同一会话；快照尚未就绪时，前端才退回普通实时聊天生成。
+每次 Pulse 成功发布后，后台会使用 `super_chat` 发起一次非流式“今日聚焦”生成：先用 `list_todos` 读取 today、overdue，并在两者为空时读取 inbox Todo，再用 `get_pulse` 读取刚发布的今日 Pulse，最后基于两类真实工具结果生成 3 项优先事项、原因和追问。后台禁用 Todo/Pulse 变更工具、搜索和记忆写入，并把完整回答、推理、引用、产物和模型信息保存到 `focus_today_snapshots`，不会创建 `Conversation` 或 `Message`。快照中的 Prompt 与当前版本不一致时视为未就绪，避免继续展示旧的 Pulse-only 回答。Super Chat 固定展示随界面语言变化的推荐卡（中文“今日聚焦”，英文“Focus Today”）；用户点击缓存已就绪的卡片时，`POST /api/pulse/focus-today/open` 才会原子化创建对应语言标题的 Super Chat 会话、用户问题和缓存回答。同一快照的重复点击通过快照 ID 幂等复用同一会话；快照尚未就绪时，前端使用同一份 Todo + Pulse Prompt 退回普通实时聊天生成。
 
 Search 已作为一个内置 skill 接入：
 

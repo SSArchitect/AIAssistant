@@ -35,6 +35,7 @@ type PulseHandler struct {
 	generationLocks     map[string]*pulseGenerationLock
 	jobsMu              sync.Mutex
 	jobs                map[string]pulseGenerationJob
+	focusAttemptedAt    map[string]time.Time
 	automaticScheduleMu sync.Mutex
 }
 
@@ -408,8 +409,9 @@ const (
 	pulseGenerationStageFocusToday   = "focus_today"
 	focusTodayTitle                  = "Focus Today"
 	focusTodayTitleChinese           = "今日聚焦"
-	focusTodayPrompt                 = "请读取我的今日 Pulse，推荐 3 个最值得关注、可以继续追问的问题。"
+	focusTodayPrompt                 = "请先调用 list_todos 读取今天（today）和已逾期（overdue）的未完成 Todo；如果两者都为空，再读取待排期（inbox）Todo。然后调用 get_pulse 读取今日 Pulse。请基于这两类工具返回的真实内容生成“今日聚焦”：给出今天最值得推进的 3 件事，说明优先级和原因，并提供可以继续追问的问题。Todo 或 Pulse 读取失败时请明确说明，不要编造，也不要把历史对话当作 Todo。"
 	focusTodayGenerationBudget       = 120 * time.Second
+	focusTodayBackfillRetryInterval  = 30 * time.Minute
 	focusTodayBackgroundAgentID      = "focus_today_background"
 )
 
@@ -434,6 +436,9 @@ var pulseBackgroundDisabledTools = []string{
 // summarize the already-published feed rather than refresh or recurse.
 var focusTodayBackgroundDisabledTools = []string{
 	"search",
+	"create_todo",
+	"update_todo",
+	"delete_todo",
 	"refresh_pulse",
 	"list_pulse_topics",
 	"optimize_pulse_topics",
@@ -510,9 +515,10 @@ func NewPulseHandler(agents ...*bridge.AgentClient) *PulseHandler {
 		agent = agents[0]
 	}
 	return &PulseHandler{
-		agent:          agent,
-		consumptionTTL: pulseDefaultConsumptionTTL,
-		jobs:           map[string]pulseGenerationJob{},
+		agent:            agent,
+		consumptionTTL:   pulseDefaultConsumptionTTL,
+		jobs:             map[string]pulseGenerationJob{},
+		focusAttemptedAt: map[string]time.Time{},
 	}
 }
 
@@ -522,10 +528,11 @@ func NewPulseHandlerWithSyncer(agent *bridge.AgentClient, syncer *ConfigSyncer, 
 		ttl = consumptionTTL[0]
 	}
 	return &PulseHandler{
-		agent:          agent,
-		syncer:         syncer,
-		consumptionTTL: ttl,
-		jobs:           map[string]pulseGenerationJob{},
+		agent:            agent,
+		syncer:           syncer,
+		consumptionTTL:   ttl,
+		jobs:             map[string]pulseGenerationJob{},
+		focusAttemptedAt: map[string]time.Time{},
 	}
 }
 
@@ -561,6 +568,15 @@ func (h *PulseHandler) runScheduledPulse(reason string) {
 			continue
 		}
 		if !needsRefresh {
+			focusSnapshot, focusErr := h.loadFocusTodaySnapshot(date, userID)
+			if focusErr != nil {
+				slog.Warn("Focus Today scheduled check failed", "reason", reason, "user_id", userID, "error", focusErr)
+				continue
+			}
+			if focusSnapshot == nil && h.startFocusTodayBackfill(date, userID, "scheduled:"+reason) {
+				// A healthy Pulse only needs the missing/stale Focus Today snapshot.
+				return
+			}
 			continue
 		}
 		if ok := h.startPulseGeneration(date, userID, true, "scheduled:"+reason); ok {
@@ -620,6 +636,13 @@ func (h *PulseHandler) Get(c *gin.Context) {
 	}
 	if !hasHealthyContent && h.agent != nil {
 		h.startPulseGeneration(date, userID, false, "get_quality_refresh")
+	} else if hasHealthyContent && h.agent != nil {
+		focusSnapshot, focusErr := h.loadFocusTodaySnapshot(date, userID)
+		if focusErr != nil {
+			slog.Warn("Focus Today cache check failed", "date", date, "user_id", userID, "error", focusErr)
+		} else if focusSnapshot == nil {
+			h.startFocusTodayBackfill(date, userID, "get_cache_miss")
+		}
 	}
 	h.writePulseWithStatus(c, date, userID, h.pulseGenerationActive(date, userID))
 }
@@ -793,7 +816,7 @@ func (h *PulseHandler) findFocusTodaySnapshot(snapshotID string, date string, us
 		if err == gorm.ErrRecordNotFound {
 			return nil, nil
 		}
-		if err == nil && strings.TrimSpace(snapshot.Content) == "" {
+		if err == nil && !focusTodaySnapshotIsCurrent(snapshot) {
 			return nil, nil
 		}
 		return &snapshot, err
@@ -806,7 +829,7 @@ func (h *PulseHandler) findFocusTodaySnapshot(snapshotID string, date string, us
 	if err == gorm.ErrRecordNotFound {
 		return nil, nil
 	}
-	if err == nil && strings.TrimSpace(snapshot.Content) == "" {
+	if err == nil && !focusTodaySnapshotIsCurrent(snapshot) {
 		return nil, nil
 	}
 	return &snapshot, err
@@ -1202,8 +1225,12 @@ func focusTodaySnapshotResponse(snapshot *models.FocusTodaySnapshot) focusTodayR
 		Title:       snapshot.Title,
 		Prompt:      snapshot.Prompt,
 		GeneratedAt: snapshot.UpdatedAt.Format(time.RFC3339),
-		Available:   strings.TrimSpace(snapshot.Content) != "",
+		Available:   focusTodaySnapshotIsCurrent(*snapshot),
 	}
+}
+
+func focusTodaySnapshotIsCurrent(snapshot models.FocusTodaySnapshot) bool {
+	return strings.TrimSpace(snapshot.Content) != "" && snapshot.Prompt == focusTodayPrompt
 }
 
 func (h *PulseHandler) loadFocusTodaySnapshot(date string, userID string) (*models.FocusTodaySnapshot, error) {
@@ -1211,6 +1238,9 @@ func (h *PulseHandler) loadFocusTodaySnapshot(date string, userID string) (*mode
 	var snapshot models.FocusTodaySnapshot
 	err := database.DB.First(&snapshot, "date = ? AND user_id = ?", date, userID).Error
 	if err == nil {
+		if !focusTodaySnapshotIsCurrent(snapshot) {
+			return nil, nil
+		}
 		return &snapshot, nil
 	}
 	if err == gorm.ErrRecordNotFound {
@@ -1441,6 +1471,58 @@ func (h *PulseHandler) startPulseGeneration(date string, userID string, force bo
 			return
 		}
 		slog.Info("Pulse background generation completed", "reason", reason, "date", date, "user_id", userID)
+	}()
+	return true
+}
+
+func (h *PulseHandler) startFocusTodayBackfill(date string, userID string, reason string) bool {
+	if h.agent == nil {
+		return false
+	}
+	userID = normalizedUserID(userID)
+	key := pulseGenerationJobKey(date, userID)
+	now := time.Now()
+
+	h.jobsMu.Lock()
+	if h.jobs == nil {
+		h.jobs = map[string]pulseGenerationJob{}
+	}
+	if h.focusAttemptedAt == nil {
+		h.focusAttemptedAt = map[string]time.Time{}
+	}
+	if _, exists := h.jobs[key]; exists {
+		h.jobsMu.Unlock()
+		return false
+	}
+	if lastAttempt := h.focusAttemptedAt[key]; !lastAttempt.IsZero() && now.Sub(lastAttempt) < focusTodayBackfillRetryInterval {
+		h.jobsMu.Unlock()
+		return false
+	}
+	h.focusAttemptedAt[key] = now
+	h.jobs[key] = pulseGenerationJob{StartedAt: now, Stage: pulseGenerationStageFocusToday}
+	h.jobsMu.Unlock()
+
+	go func() {
+		defer h.finishPulseGeneration(key)
+		healthy, err := h.hasCurrentPulseShape(date, userID)
+		if err == nil && !healthy {
+			err = fmt.Errorf("cannot generate Focus Today without a healthy Pulse")
+		}
+		if err == nil {
+			ctx, cancel := context.WithTimeout(context.Background(), focusTodayGenerationBudget)
+			snapshot, generationErr := h.generateFocusTodaySnapshot(ctx, date, userID)
+			cancel()
+			if generationErr != nil {
+				err = generationErr
+			} else {
+				err = saveFocusTodaySnapshot(snapshot)
+			}
+		}
+		if err != nil {
+			slog.Warn("Focus Today background backfill failed", "reason", reason, "date", date, "user_id", userID, "error", err)
+			return
+		}
+		slog.Info("Focus Today background backfill completed", "reason", reason, "date", date, "user_id", userID)
 	}()
 	return true
 }
