@@ -9,8 +9,8 @@ class DGXSparkProvider(OpenAIProvider):
     def __init__(
         self,
         api_key: str,
-        model: str = "qwen38-27b",
-        base_url: str = "https://steven-design-job-newfoundland.trycloudflare.com/v1",
+        model: str = "huihui-qwen38-27b-q6xl",
+        base_url: str = "https://sleeve-sizes-col-salmon.trycloudflare.com/v1",
         max_tokens: int = 10000,
         streaming_enabled: bool = True,
         timeout_seconds: float | None = 1800,

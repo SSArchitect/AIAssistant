@@ -39,8 +39,8 @@ llm:
       timeout: 60
     dgx:
       # API key is read from DGX_API_KEY env var or admin settings
-      base_url: https://steven-design-job-newfoundland.trycloudflare.com/v1
-      model: qwen38-27b
+      base_url: https://sleeve-sizes-col-salmon.trycloudflare.com/v1
+      model: huihui-qwen38-27b-q6xl
       max_tokens: 10000
       streaming: true
       timeout: 1800

@@ -157,6 +157,15 @@ def test_dgx_provider_explicitly_disables_thinking():
     }
 
 
+def test_dgx_provider_uses_current_endpoint_defaults():
+    provider = DGXSparkProvider(api_key="test-key")
+
+    assert provider.model == "huihui-qwen38-27b-q6xl"
+    assert str(provider.client.base_url) == (
+        "https://sleeve-sizes-col-salmon.trycloudflare.com/v1/"
+    )
+
+
 def test_dgx_provider_uses_runtime_configuration():
     keys = [
         "llm.dgx.api_key",

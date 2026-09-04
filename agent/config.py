@@ -77,9 +77,9 @@ class Settings(BaseSettings):
     dgx_api_key: str = ""
     dgx_base_url: str = _providers.get("dgx", {}).get(
         "base_url",
-        "https://steven-design-job-newfoundland.trycloudflare.com/v1",
+        "https://sleeve-sizes-col-salmon.trycloudflare.com/v1",
     )
-    dgx_model: str = _providers.get("dgx", {}).get("model", "qwen38-27b")
+    dgx_model: str = _providers.get("dgx", {}).get("model", "huihui-qwen38-27b-q6xl")
     dgx_max_tokens: str = str(_providers.get("dgx", {}).get("max_tokens", 10000))
     dgx_streaming: str = str(_providers.get("dgx", {}).get("streaming", True)).lower()
     dgx_timeout: str = str(_providers.get("dgx", {}).get("timeout", 1800))
@@ -257,12 +257,12 @@ class RuntimeConfig:
     def dgx_base_url(self) -> str:
         return self.get(
             "llm.dgx.base_url",
-            "https://steven-design-job-newfoundland.trycloudflare.com/v1",
+            "https://sleeve-sizes-col-salmon.trycloudflare.com/v1",
         )
 
     @property
     def dgx_model(self) -> str:
-        return self.get("llm.dgx.model", "qwen38-27b")
+        return self.get("llm.dgx.model", "huihui-qwen38-27b-q6xl")
 
     @property
     def dgx_max_tokens(self) -> int:
