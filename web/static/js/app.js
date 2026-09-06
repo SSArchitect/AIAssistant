@@ -2503,10 +2503,10 @@ function authenticatedApiUrl(path) {
     return url.toString();
 }
 
-function apiHeaders(body = null) {
+function apiHeaders(body = null, requireSessionHeader = false) {
     const headers = {};
     if (body) headers['Content-Type'] = 'application/json';
-    if (!apiUsesCrossOriginTransport()) {
+    if (requireSessionHeader || !apiUsesCrossOriginTransport()) {
         if (currentAccountToken) headers['X-Account-Session'] = currentAccountToken;
         if (currentUserId) headers['X-User-ID'] = currentUserId;
     }
@@ -2543,13 +2543,17 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = 0) {
 }
 
 async function apiCall(method, path, body = null, options = {}) {
+    // Connect requires header authentication, including Android's cross-origin transport.
+    // Keep session tokens out of its URLs; resource URLs retain their existing transport.
+    const requireSessionHeader = /^\/api\/connect\/v1(?:\/|\?|$)/.test(path);
     const opts = {
         method,
-        headers: apiHeaders(body),
+        headers: apiHeaders(body, requireSessionHeader),
     };
     if (body) opts.body = JSON.stringify(body);
 
-    const resp = await fetchWithTimeout(authenticatedApiUrl(path), opts, options.timeoutMs);
+    const url = requireSessionHeader ? `${API_BASE}${path}` : authenticatedApiUrl(path);
+    const resp = await fetchWithTimeout(url, opts, options.timeoutMs);
     if (!resp.ok) {
         const err = await resp.json().catch(() => ({ error: resp.statusText }));
         const error = new Error(err.error || err.detail || 'Request failed');
