@@ -46,6 +46,17 @@ Android 资源里注入服务地址，不会改变网页端的同源 API 行为�
 - 已支持系统返回键、外链浏览器、系统分享桥接和 App 内 APK 下载更新，暂未接入推送
   通知与深链。
 
+## 软键盘避让
+
+`MainActivity` 显式使用 `android:windowSoftInputMode="adjustResize"`，同时保留 Capacitor 8
+的 `SystemBars.insetsHandling="css"`。后者在 Android 全屏布局中按输入法（IME）占用的
+底部空间调整 WebView；设为 `disable` 会一并关闭这个监听，导致 Super Chat 的全高页面
+在键盘弹出后仍占满屏幕，输入框被遮挡。仅改变 textarea 的 focus 方式无法补齐这个处理。
+
+这两项是原生包配置，修复需要重新同步并构建、安装 APK，单独更新 Web OTA 不会生效。
+配置回归测试为 `node --test tests/test_android_keyboard_web.js`。真机回归需检查点击输入框、
+切换输入法高度、收起键盘后布局恢复，以及 Android 15/16 和较旧 Android 的表现。
+
 ## 原生版本检测
 
 Android 容器启动及回到前台时会请求 `GET /api/app/version`，一小时内最多

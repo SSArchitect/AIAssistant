@@ -23,7 +23,7 @@
       "resetWhenUpdate": true
     },
     "SystemBars": {
-      "insetsHandling": "disable",
+      "insetsHandling": "css",
       "style": "LIGHT"
     }
   }

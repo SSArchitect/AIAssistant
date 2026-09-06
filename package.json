@@ -1,6 +1,6 @@
 {
   "name": "agent-assistant-mobile",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "private": true,
   "description": "Android shell for Agent Assistant",
   "scripts": {
