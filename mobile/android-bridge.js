@@ -19,6 +19,21 @@ if (Capacitor.getPlatform() === 'android') {
   let otaUpdatePromise = null;
   let nativeUpdateInProgress = false;
   let pendingNativeRelease = null;
+  let availableNativeRelease = null;
+  let installedVersionCode = 0;
+
+  async function getInstalledVersionCode() {
+    if (installedVersionCode) return installedVersionCode;
+    try {
+      const info = await App.getInfo();
+      const build = Number(info.build);
+      if (Number.isSafeInteger(build) && build > 0) installedVersionCode = build;
+    } catch {
+      // An OTA's embedded appVersionCode describes its build, not the APK
+      // installed on this device. Unknown APKs use the browser recovery path.
+    }
+    return installedVersionCode;
+  }
 
   // This must happen before any network work. A downloaded bundle that cannot
   // execute this line is automatically rolled back by the native updater.
@@ -137,6 +152,24 @@ if (Capacitor.getPlatform() === 'android') {
     return `${prefix}：${notes}`;
   }
 
+  async function openNativeUpdateInBrowser(release) {
+    if (!release.apkUrl) return;
+    try {
+      await Browser.open({ url: release.apkUrl });
+      showUpdateNotice({
+        message: '请在浏览器下载后打开安装包，直接覆盖安装，无需卸载。',
+        actionText: '再次打开浏览器',
+        onAction: () => openNativeUpdateInBrowser(release),
+      });
+    } catch {
+      showUpdateNotice({
+        message: '无法打开浏览器，请重试。',
+        actionText: '浏览器下载更新',
+        onAction: () => openNativeUpdateInBrowser(release),
+      });
+    }
+  }
+
   async function requestInstallPermission(release) {
     pendingNativeRelease = release;
     try {
@@ -153,6 +186,12 @@ if (Capacitor.getPlatform() === 'android') {
 
   async function installNativeAppUpdate(release) {
     if (nativeUpdateInProgress) return;
+    // versionCode 6 (0.4.1) is the first APK with numeric metadata parsing
+    // fixed. Older native updaters reject valid input before downloading.
+    if (await getInstalledVersionCode() < 6) {
+      await openNativeUpdateInBrowser(release);
+      return;
+    }
     if (!nativeReleaseCanBeVerified(release)) {
       showUpdateNotice({
         message: '此版本缺少安全校验信息，请用浏览器下载',
@@ -193,9 +232,9 @@ if (Capacitor.getPlatform() === 'android') {
         });
       } else {
         showUpdateNotice({
-          message: '更新下载或校验失败，请稍后重试',
-          actionText: '重试',
-          onAction: () => installNativeAppUpdate(release),
+          message: '更新下载或校验失败，可通过浏览器下载后覆盖安装。',
+          actionText: '浏览器下载更新',
+          onAction: () => openNativeUpdateInBrowser(release),
         });
       }
     } finally {
@@ -205,10 +244,15 @@ if (Capacitor.getPlatform() === 'android') {
 
   function showNativeAppUpdate(androidRelease = {}) {
     const release = normalizedNativeRelease(androidRelease);
+    const browserUpdate = installedVersionCode < 6;
     showUpdateNotice({
-      message: nativeUpdateMessage(release),
-      actionText: release.apkUrl ? '更新' : '',
-      onAction: release.apkUrl ? () => installNativeAppUpdate(release) : null,
+      message: browserUpdate
+        ? `${nativeUpdateMessage(release)}。请通过浏览器下载并覆盖安装，无需卸载。`
+        : nativeUpdateMessage(release),
+      actionText: release.apkUrl ? (browserUpdate ? '浏览器下载更新' : '更新') : '',
+      onAction: release.apkUrl
+        ? () => browserUpdate ? openNativeUpdateInBrowser(release) : installNativeAppUpdate(release)
+        : null,
     });
   }
 
@@ -235,6 +279,8 @@ if (Capacitor.getPlatform() === 'android') {
   }
 
   function showOTAReady(version) {
+    // Keep the APK recovery action visible if a content update also finishes.
+    if (availableNativeRelease) return;
     showUpdateNotice({
       message: `内容更新 ${version} 已准备好`,
       actionText: '立即应用',
@@ -303,8 +349,8 @@ if (Capacitor.getPlatform() === 'android') {
   async function checkForAppUpdate({ force = false } = {}) {
     await failedOTAReadyPromise;
     const apiBase = String(runtimeConfig.apiBase || '').replace(/\/+$/, '');
-    const currentVersionCode = Number(runtimeConfig.appVersionCode || 0);
-    if (!apiBase || !currentVersionCode) return;
+    const currentVersionCode = await getInstalledVersionCode();
+    if (!apiBase) return;
     let versionEndpoint;
     try {
       versionEndpoint = secureOrLocalURL(`${apiBase}/api/app/version`, apiBase);
@@ -325,7 +371,9 @@ if (Capacitor.getPlatform() === 'android') {
       if (!response.ok) return;
       const manifest = await response.json();
       const androidRelease = manifest?.android || {};
+      availableNativeRelease = null;
       if (Number(androidRelease.latest_version_code || 0) > currentVersionCode) {
+        availableNativeRelease = androidRelease;
         showNativeAppUpdate(androidRelease);
       }
       if (androidRelease.ota && !otaUpdatePromise) {
@@ -407,14 +455,16 @@ if (Capacitor.getPlatform() === 'android') {
     async share({ title = '', text = '', url = '' } = {}) {
       await Share.share({ title, text, url, dialogTitle: title || '分享' });
     },
-    async copyImage({ blob, filename = 'super-chat-answer.png' } = {}) {
-      const payload = await blobToNativeFilePayload(blob, filename);
-      return NativeFiles.copyImage(payload);
-    },
-    async downloadBlob({ blob, filename = 'download' } = {}) {
-      const payload = await blobToNativeFilePayload(blob, filename);
-      return NativeFiles.saveFile(payload);
-    },
+    ...(Capacitor.isPluginAvailable('NativeFiles') ? {
+      async copyImage({ blob, filename = 'super-chat-answer.png' } = {}) {
+        const payload = await blobToNativeFilePayload(blob, filename);
+        return NativeFiles.copyImage(payload);
+      },
+      async downloadBlob({ blob, filename = 'download' } = {}) {
+        const payload = await blobToNativeFilePayload(blob, filename);
+        return NativeFiles.saveFile(payload);
+      },
+    } : {}),
     checkForUpdate() {
       return checkForAppUpdate({ force: true });
     },

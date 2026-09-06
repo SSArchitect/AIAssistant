@@ -66,12 +66,15 @@ Android 资源里注入服务地址，不会改变网页端的同源 API 行为�
 Android 10 及以上使用 `MediaStore.Downloads`，不申请存储权限；Android 7–9 第一次下载时
 会请求旧版写入存储权限。网页浏览器继续使用标准 Clipboard API 和 `<a download>` 回退。
 
-这部分包含 Java 原生能力，必须安装 `versionCode >= 5` 的 APK，不能单独发布给旧 APK 的
-OTA。任何依赖这些入口的 OTA manifest 都必须设置：
+这部分包含 Java 原生能力，必须安装 `versionCode >= 5` 的 APK。强依赖这些入口的
+OTA manifest 必须设置：
 
 ```bash
 AGENT_ASSISTANT_OTA_MIN_NATIVE_VERSION_CODE=5
 ```
+
+兼容旧 APK 的 OTA 使用 `Capacitor.isPluginAvailable('NativeFiles')` 检测能力，只在插件
+存在时暴露原生复制/下载方法；旧 APK 保留浏览器回退，不调用不存在的插件。
 
 ## 原生版本检测
 
@@ -91,10 +94,11 @@ AGENT_ASSISTANT_ANDROID_PACKAGE_NAME=com.aan.agentassistant
 AGENT_ASSISTANT_ANDROID_RELEASE_NOTES='修复 App 内更新参数解析，包含键盘、图片复制与下载修复'
 ```
 
-当 `LATEST_VERSION_CODE` 高于 App 内置版本时，App 底部会显示更新提示。0.3.0 及以上版本
-在 App 内下载 APK、显示进度，并校验 HTTPS、精确大小、SHA-256、包名、版本号和当前 App
-签名；全部通过后才拉起 Android 系统安装器。首次使用需要用户允许“安装未知应用”，每次
-安装仍需要用户在系统界面确认。0.2.0 及更早版本仍通过浏览器下载 0.3.0。
+当 `LATEST_VERSION_CODE` 高于实际安装的 APK 版本时，App 底部会显示更新提示。
+恢复 OTA 通过 `App.getInfo().build` 读取设备原生版本，不用 OTA 构建时写入的版本号作判断。
+`versionCode < 6` 的旧更新器显示“浏览器下载更新”，点击后打开发布接口中的 HTTPS APK
+地址并提示覆盖安装；0.4.1（`versionCode 6`）起继续在 App 内下载和校验，失败时也提供
+浏览器下载按钮。首次安装需要允许对应来源，每次安装仍需用户在 Android 系统界面确认。
 
 原生 Java/Kotlin、Capacitor 插件、权限和图标等改动仍需发布新 APK；只有 `web/` 页面资源
 适合走下面的 OTA。0.3.0 的内置更新器只是让后续 APK 升级不再跳转浏览器，并没有把原生
@@ -110,6 +114,19 @@ AGENT_ASSISTANT_ANDROID_RELEASE_NOTES='修复 App 内更新参数解析，包含
 已经安装旧更新器的设备需通过浏览器下载新版 APK 并覆盖安装一次；Web OTA 不能修复
 原生参数读取代码。原生单元测试 `AppUpdaterPluginTest` 覆盖真实发布大小/版本、数字类型
 以及缺失、负数、小数、非有限数和安全整数范围边界。
+
+### 旧客户端恢复 OTA
+
+恢复 OTA `0.4.1-ota.1`（sequence 14）支持 `versionCode >= 3`，让已安装 0.3.0/0.4.0 的
+用户在 App 内收到入口更新。旧桥接代码下载完成后显示“立即应用”；用户应用或重启加载
+后，更新提示自动改为“浏览器下载更新”，无需单独发送下载链接。新版桥接保持 APK 更新
+按钮优先，避免后完成的内容更新提示把它覆盖。安装 0.4.1 后，后续更新按实际 APK 版本
+自动恢复 App 内下载。
+
+本次仅修改 JavaScript 和兼容判断，无需重新发布 APK。发布时设置
+`AGENT_ASSISTANT_OTA_MIN_NATIVE_VERSION_CODE=3`；如果仍为 5，0.3.0 客户端收不到恢复入口。
+`tests/test_android_updates_web.js` 验证旧版本浏览器更新、新版本原生更新、OTA 与 APK 版本
+不一致、原生插件缺失、错误 URL、下载失败以及更新提示优先级。
 
 ## Web 资源增量 OTA
 
