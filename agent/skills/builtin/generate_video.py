@@ -20,6 +20,8 @@ class GenerateVideoSkill(Skill):
                          "124–362 native frames are suggested starting points, longer clips are experimental. "
                          "Output FPS 1–120 (up to 3 decimals) duplicates/drops frames without changing motion speed "
                          "or audio timing; it does not interpolate motion. "
+                         "Preserve explicit user width×height exactly: portrait 480×864 means width=480, height=864. "
+                         "Never swap dimensions or claim rotation makes a landscape result equivalent to portrait. "
                          "Describe motion, camera and sound in prompt. Text-to-video only: no reference images, "
                          "negative prompt or model choice. Return the actual video link; use response video metadata "
                          "for resolved duration/frame counts and seed_text for exact 64-bit seed. "

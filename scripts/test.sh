@@ -68,6 +68,7 @@ if command -v node >/dev/null 2>&1; then
        node --check web/static/js/connect.js 2>&1 && \
        node --check web/static/js/share-card.js 2>&1 && \
        node --check web/static/js/file-actions.js 2>&1 && \
+       node --check web/static/js/video-media.js 2>&1 && \
        node --check web/static/js/app.js 2>&1 && \
        node --check web/static/js/fitness.js 2>&1 && \
        node --check mobile/android-bridge.js 2>&1 && \

@@ -164,6 +164,12 @@ const I18N = {
             confirmDeleteDocument: '确定删除「{name}」吗？',
         },
         media: {
+            video: '视频',
+            downloadVideo: '下载视频',
+            openVideo: '打开视频',
+            videoDownloadFailed: '视频下载失败，请重试或打开视频保存。',
+            videoUnavailable: '视频暂时无法播放，可以重试或打开视频。',
+            seconds: '秒',
             preview: '图片预览',
             zoomIn: '放大',
             zoomOut: '缩小',
@@ -1091,6 +1097,12 @@ const I18N = {
             confirmDeleteDocument: 'Delete "{name}"?',
         },
         media: {
+            video: 'Video',
+            downloadVideo: 'Download video',
+            openVideo: 'Open video',
+            videoDownloadFailed: 'Video download failed. Try again or open the video to save it.',
+            videoUnavailable: 'This video cannot play right now. Retry or open the video.',
+            seconds: 's',
             preview: 'Image Preview',
             zoomIn: 'Zoom In',
             zoomOut: 'Zoom Out',
@@ -18160,6 +18172,9 @@ function renderInlineMarkdown(text) {
 }
 
 function renderMediaMarkdown(line) {
+    const videoLink = globalThis.VideoMedia.parseMarkdown(line);
+    if (videoLink) return renderVideoBlock(videoLink.url, videoLink.title);
+
     const image = line.match(/^!\[([^\]]*)\]\((https?:\/\/[^\s)]+|\/[^\s)]+|data:image\/[a-z0-9.+-]+;base64,[^\s)]+)\)$/i);
     if (image) {
         return renderImageBlock(image[2], image[1]);
@@ -18202,13 +18217,16 @@ function renderImageBlock(url, alt = '') {
     `;
 }
 
-function renderVideoBlock(url) {
-    if (!isSafeContentUrl(url)) return '';
-    return `
-        <figure class="message-media">
-            <video src="${escapeAttr(url)}" controls preload="metadata"></video>
-        </figure>
-    `;
+function videoMediaLabels() {
+    return {
+        video: t('media.video'), download: t('media.downloadVideo'), open: t('media.openVideo'),
+        downloading: t('media.downloading'), downloaded: t('media.downloaded'),
+        failed: t('media.videoDownloadFailed'),
+    };
+}
+
+function renderVideoBlock(url, title = '') {
+    return globalThis.VideoMedia.render(url, title, { apiBase: API_BASE, labels: videoMediaLabels() });
 }
 
 function openMediaPreviewFromTrigger(trigger) {
@@ -19033,6 +19051,13 @@ document.addEventListener('click', async (event) => {
     if (mediaRotateButton) {
         event.preventDefault();
         setMediaPreviewRotation(mediaPreviewRotation + 90);
+        return;
+    }
+
+    const videoDownloadButton = event.target.closest('[data-video-download-src]');
+    if (videoDownloadButton) {
+        event.preventDefault();
+        await globalThis.VideoMedia.downloadFromButton(videoDownloadButton, { apiBase: API_BASE, labels: videoMediaLabels() });
         return;
     }
 
@@ -20485,6 +20510,12 @@ btnRefresh.addEventListener('click', async () => {
 messagesContainer?.addEventListener('scroll', scheduleChatHistoryControlsUpdate, { passive: true });
 document.addEventListener('error', handleCitationImageError, true);
 document.addEventListener('error', handleMessageImageError, true);
+document.addEventListener('loadedmetadata', (event) => {
+    globalThis.VideoMedia.updateMetadata(event.target, { seconds: t('media.seconds') });
+}, true);
+document.addEventListener('error', (event) => {
+    globalThis.VideoMedia.showPlaybackError(event.target, t('media.videoUnavailable'));
+}, true);
 window.addEventListener('resize', scheduleChatHistoryControlsUpdate);
 document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') reconcileChatAfterPageResume();

@@ -2328,6 +2328,55 @@ video {
     width: min(640px, 100%);
 }
 
+.message-video video {
+    width: auto;
+    height: auto;
+    max-width: 100%;
+    max-height: min(65vh, 560px);
+    background: #111;
+}
+
+.message-video-actions {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 10px 16px;
+    margin-top: 10px;
+    font-size: 13px;
+}
+
+.message-video-download {
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 8px 14px;
+    background: var(--surface);
+    color: var(--text);
+    font: inherit;
+    cursor: pointer;
+}
+
+.message-video-download:hover {
+    border-color: var(--primary);
+}
+
+.message-video-download:focus-visible {
+    outline: 2px solid var(--primary);
+    outline-offset: 2px;
+}
+
+.message-video-download:disabled {
+    opacity: .65;
+    cursor: wait;
+}
+
+.message-video-metadata,
+[data-video-download-status],
+[data-video-playback-status] {
+    margin-top: 6px;
+    color: var(--text-muted);
+    font-size: 12px;
+}
+
 .message-media figcaption {
     margin-top: 6px;
     color: var(--text-muted);

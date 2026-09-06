@@ -281,6 +281,8 @@ async def test_super_chat_video_tool_preserves_result_link_and_trace(engine, opt
     assert 'generate_video' in provider.chat.await_args_list[0].args[0][0].content
     assert 'seed_text' in provider.chat.await_args_list[0].args[0][0].content
     assert '固定 864×480' not in provider.chat.await_args_list[0].args[0][0].content
+    assert '不能交换' in provider.chat.await_args_list[0].args[0][0].content
+    assert '不能声称横屏等同竖屏' in provider.chat.await_args_list[0].args[0][0].content
 
 
 @pytest.mark.parametrize('tool_name,success', [('search', True), ('generate_video', False)])
