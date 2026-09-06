@@ -104,7 +104,8 @@ def _memory_storage_path() -> Path:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global engine, connect_runs
+    global engine, connect_runs, trace_store
+    trace_store = TraceStore(Path(os.environ.get("AGENT_TRACE_STORAGE_PATH", str(Path(__file__).resolve().parent.parent / "data" / "agent_traces.db"))))
     connect_runs = ConnectRuns(Path(os.environ.get("AGENT_CONNECT_RUNS_PATH", str(Path(__file__).resolve().parent.parent / "data" / "connect_runs.db"))))
     # Startup: discover and register skills
     skill_registry.auto_discover(
@@ -592,22 +593,24 @@ async def chat_stream(request: ChatRequest):
         yielded_events = 0
         streamed_text = ""
         output_queue: asyncio.Queue[tuple[str, Any]] = asyncio.Queue()
+        attached = True
+
+        async def enqueue(kind, value):
+            if attached:
+                await output_queue.put((kind, value))
 
         async def on_token(token: str) -> None:
-            await output_queue.put(("token", token))
+            await enqueue("token", token)
 
         async def on_provisional_token(token: str) -> None:
-            await output_queue.put(("provisional_token", token))
+            await enqueue("provisional_token", token)
 
         async def on_reasoning(reasoning: str) -> None:
             if stream_request.thinking_enabled is True:
-                await output_queue.put(("reasoning", reasoning))
+                await enqueue("reasoning", reasoning)
 
         async def on_intermediate(text: str, round_index: int) -> None:
-            await output_queue.put((
-                "intermediate",
-                {"text": text, "round": round_index},
-            ))
+            await enqueue("intermediate", {"text": text, "round": round_index})
 
         yield _sse("meta", {"run_id": run_id})
 
@@ -621,6 +624,12 @@ async def chat_stream(request: ChatRequest):
             )
         )
         active_stream_tasks[run_id] = task
+        def release_task(done):
+            if active_stream_tasks.get(run_id) is done:
+                active_stream_tasks.pop(run_id, None)
+            if not done.cancelled():
+                done.exception()  # Retrieve failures even when the transport has gone away.
+        task.add_done_callback(release_task)
         loop = asyncio.get_running_loop()
         last_stream_output_at = loop.time()
         try:
@@ -683,6 +692,10 @@ async def chat_stream(request: ChatRequest):
             yield _sse("response", _jsonable_model(response))
             yield _sse("done", {"run_id": run_id})
         except asyncio.CancelledError:
+            if not task.cancelled():
+                # A transport cancellation can race with successful completion.
+                # Only cancellation of the execution task means the run was cancelled.
+                raise
             logger.info("Streaming chat cancelled", extra={"run_id": run_id})
             engine.tool_governance.cancel_run_approvals(run_id, reason="user_cancelled")
             trace_store.cancel_run(run_id, reason="user_cancelled")
@@ -717,8 +730,9 @@ async def chat_stream(request: ChatRequest):
                 },
             )
         finally:
-            if active_stream_tasks.get(run_id) is task:
-                active_stream_tasks.pop(run_id, None)
+            attached = False
+            while not output_queue.empty():
+                output_queue.get_nowait()
 
     return StreamingResponse(
         generate(),
@@ -744,6 +758,11 @@ async def list_runs(
             limit=bounded_limit,
         )
     )
+
+
+@app.get("/agent/tasks")
+async def list_tasks(user_id: str = "0"):
+    return RunListResponse(runs=trace_store.task_runs(user_id))
 
 
 @app.post("/agent/tool-approvals/{approval_id}")

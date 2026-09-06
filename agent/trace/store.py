@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from threading import Lock
+from pathlib import Path
+import sqlite3
+from contextlib import contextmanager
 from time import perf_counter
 from typing import Any, Optional
 from uuid import uuid4
@@ -14,12 +17,46 @@ def _now() -> datetime:
 
 
 class TraceStore:
-    """In-memory run/event store for local debugging and MVP tracing."""
+    """Run/event store with optional SQLite persistence; one runtime owns the database."""
 
-    def __init__(self):
+    def __init__(self, path: Path | None = None):
         self._runs: dict[str, RunRecord] = {}
         self._created_at: dict[str, float] = {}
         self._lock = Lock()
+        self._path = Path(path) if path else None
+        if self._path:
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            with self._db() as db:
+                db.execute("CREATE TABLE IF NOT EXISTS trace_runs (id TEXT PRIMARY KEY, record TEXT NOT NULL)")
+                db.execute("CREATE TABLE IF NOT EXISTS trace_events (id TEXT PRIMARY KEY, run_id TEXT NOT NULL, event TEXT NOT NULL)")
+                db.execute("CREATE INDEX IF NOT EXISTS trace_events_run ON trace_events(run_id)")
+                for row in db.execute("SELECT record FROM trace_runs"):
+                    run = RunRecord.model_validate_json(row[0])
+                    self._runs[run.run_id] = run
+                for run_id, value in db.execute("SELECT run_id,event FROM trace_events ORDER BY rowid"):
+                    if run_id in self._runs:
+                        self._runs[run_id].events.append(RunEvent.model_validate_json(value))
+            for run in list(self._runs.values()):
+                if run.status == "running":
+                    run.status = "interrupted"
+                    run.error_type = "runtime_restarted"
+                    run.error_message = "服务已重启，执行已中断。媒体任务可能仍在生成，请保留原任务信息。"
+                    run.completed_at = _now()
+                    self.append_event(run.run_id, type="run.interrupted", status="interrupted",
+                        title="Execution interrupted by restart", payload={"error_type": run.error_type})
+
+    @contextmanager
+    def _db(self):
+        db = sqlite3.connect(self._path, timeout=10)
+        try:
+            with db:
+                yield db
+        finally:
+            db.close()
+
+    def _persist_run(self, db, run):
+        db.execute("INSERT OR REPLACE INTO trace_runs VALUES (?,?)",
+            (run.run_id, run.model_dump_json(exclude={"events"})))
 
     def start_run(
         self,
@@ -84,6 +121,11 @@ class TraceStore:
             run = self._runs.get(run_id)
             if run is not None:
                 run.events.append(event)
+                if self._path:
+                    with self._db() as db:
+                        self._persist_run(db, run)
+                        db.execute("INSERT INTO trace_events VALUES (?,?,?)",
+                            (event.id, run_id, event.model_dump_json()))
         return event
 
     def complete_run(
@@ -236,6 +278,9 @@ class TraceStore:
             run = self._runs.get(run_id)
             if run is not None and normalized not in run.skills_used:
                 run.skills_used.append(normalized)
+                if self._path:
+                    with self._db() as db:
+                        self._persist_run(db, run)
 
     def list_runs(
         self,
@@ -254,6 +299,37 @@ class TraceStore:
         runs.sort(key=lambda r: r.started_at, reverse=True)
         return runs[:limit]
 
+    def task_runs(self, user_id: str, limit: int = 50) -> list[RunRecord]:
+        """Compact root tasks, including every active task regardless of recent history."""
+        with self._lock:
+            owned = {key: run for key, run in self._runs.items()
+                     if run.user_id == self._normalize_user_id(user_id)}
+            children = {e.payload.get("child_run_id") for run in owned.values() for e in run.events}
+            roots = sorted((r for r in owned.values() if r.run_id not in children),
+                           key=lambda r: r.started_at, reverse=True)
+            selected = [r for r in roots if r.status == "running"]
+            selected += [r for r in roots if r.status != "running"][:limit]
+            result = []
+            for run in selected:
+                related = [run]
+                seen = {run.run_id}
+                for node in related:
+                    for event in node.events:
+                        child = owned.get(event.payload.get("child_run_id"))
+                        if child and child.run_id not in seen:
+                            related.append(child)
+                            seen.add(child.run_id)
+                events = sorted((e for node in related for e in node.events
+                    if e.type.startswith(("media.", "research.", "aigc.", "run.", "approval."))
+                    or e.type in {"tool.started", "tool.completed", "tool.failed", "agent.tool.delegated"}),
+                    key=lambda e: e.created_at)
+                safe_keys = {"kind", "stage", "task_id", "code", "name", "target_agent_id", "child_run_id",
+                             "citation_count", "total", "query_index", "query_count", "chunk_index", "chunk_count", "chunk", "queue_position", "progress_percent"}
+                compact_events = [e.model_copy(update={"payload": {k: v for k, v in e.payload.items() if k in safe_keys}})
+                                  for e in events[-80:]]
+                result.append(run.model_copy(update={"input": run.input[:160], "output": "", "events": compact_events}))
+            return result
+
     def purge_user(self, user_id: str | None) -> int:
         normalized_user_id = self._normalize_user_id(user_id)
         with self._lock:
@@ -262,6 +338,10 @@ class TraceStore:
                 for run_id, run in self._runs.items()
                 if run.user_id == normalized_user_id
             ]
+            if self._path:
+                with self._db() as db:
+                    db.executemany("DELETE FROM trace_events WHERE run_id=?", [(rid,) for rid in run_ids])
+                    db.executemany("DELETE FROM trace_runs WHERE id=?", [(rid,) for rid in run_ids])
             for run_id in run_ids:
                 self._runs.pop(run_id, None)
                 self._created_at.pop(run_id, None)

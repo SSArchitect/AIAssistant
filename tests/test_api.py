@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, patch
 
 import agent.main as main_module
 from agent.llm.base import LLMResponse, LLMStreamChunk, ToolCall
-from agent.main import app, skill_registry, lifespan, trace_store
+from agent.main import app, skill_registry, lifespan
 from agent.search import SearchResult, SearchService, WebPageContent
 
 
@@ -465,13 +465,13 @@ async def test_delete_role_memory(client):
 
 @pytest.mark.asyncio
 async def test_get_run_trace(client):
-    run = trace_store.start_run(
+    run = main_module.trace_store.start_run(
         conversation_id="trace-api-conv",
         input_text="hello",
         agent_id="general_assistant",
         runtime="self",
     )
-    trace_store.complete_run(run.run_id, output="hi")
+    main_module.trace_store.complete_run(run.run_id, output="hi")
 
     resp = await client.get(f"/agent/runs/{run.run_id}")
     assert resp.status_code == 200
@@ -551,7 +551,7 @@ async def test_chat_stream_flushes_failed_trace_before_error(client):
     assert '"type": "run.failed"' in text
     assert text.index('"type": "model.failed"') < text.index("event: error")
 
-    run = trace_store.get_run(run_id)
+    run = main_module.trace_store.get_run(run_id)
     assert run is not None
     assert run.status == "failed"
 
@@ -709,20 +709,20 @@ async def test_chat_stream_migrates_intermediate_tool_round_and_streams_next_rou
 
 @pytest.mark.asyncio
 async def test_list_runs_filters_by_conversation(client):
-    run_a = trace_store.start_run(
+    run_a = main_module.trace_store.start_run(
         conversation_id="filter-conv-a",
         input_text="a",
         agent_id="general_assistant",
         runtime="self",
     )
-    trace_store.complete_run(run_a.run_id, output="A")
-    run_b = trace_store.start_run(
+    main_module.trace_store.complete_run(run_a.run_id, output="A")
+    run_b = main_module.trace_store.start_run(
         conversation_id="filter-conv-b",
         input_text="b",
         agent_id="general_assistant",
         runtime="self",
     )
-    trace_store.complete_run(run_b.run_id, output="B")
+    main_module.trace_store.complete_run(run_b.run_id, output="B")
 
     resp = await client.get("/agent/runs", params={"conversation_id": "filter-conv-a"})
     assert resp.status_code == 200
@@ -863,3 +863,67 @@ async def test_image_tool_catalog_exposes_one_entry_with_provider_options(client
     options = {item['name']:item for item in skills['image_generation_v1']['parameters']}
     assert options['provider']['enum'] == ['spark','minimax']
     assert {'width','height','seed'} <= options.keys()
+
+
+@pytest.mark.asyncio
+async def test_task_list_is_compact_and_user_scoped(client):
+    owned = main_module.trace_store.start_run(conversation_id='task-conv', user_id='task-a',
+        input_text='video', agent_id='super_chat', runtime='self')
+    main_module.trace_store.start_run(conversation_id='other', user_id='task-b',
+        input_text='private', agent_id='super_chat', runtime='self')
+    main_module.trace_store.append_event(owned.run_id, type='media.task.progress', status='running',
+        payload={'kind': 'video', 'stage': 'queued', 'task_id': 'provider-1', 'secret': 'hidden'})
+    response = await client.get('/agent/tasks?user_id=task-a')
+    assert response.status_code == 200
+    runs = response.json()['runs']
+    assert [r['run_id'] for r in runs] == [owned.run_id]
+    assert runs[0]['events'][-1]['payload'] == {'kind': 'video', 'stage': 'queued', 'task_id': 'provider-1'}
+
+
+@pytest.mark.asyncio
+async def test_stream_subscriber_disconnect_keeps_run_alive(client, monkeypatch):
+    from agent.schemas.chat import ChatRequest, ChatResponse
+    release = asyncio.Event()
+    async def process(request, **callbacks):
+        main_module.trace_store.start_run(run_id=request.run_id, user_id='a', conversation_id='c',
+            input_text='slow', agent_id='super_chat', runtime='self')
+        await release.wait()
+        await callbacks['on_token']('ready')
+        main_module.trace_store.complete_run(request.run_id, output='ready')
+        return ChatResponse(conversation_id='c', response='ready', run_id=request.run_id)
+    monkeypatch.setattr(main_module.engine, 'process', process)
+    response = await main_module.chat_stream(ChatRequest(conversation_id='c', message='slow', run_id='detached'))
+    stream = response.body_iterator
+    await stream.__anext__()  # metadata
+    await stream.__anext__()  # run.started
+    work = main_module.active_stream_tasks['detached']
+    await stream.aclose()
+    assert not work.done()
+    release.set()
+    await work
+    await asyncio.sleep(0)
+    assert main_module.trace_store.get_run('detached').status == 'completed'
+    assert 'detached' not in main_module.active_stream_tasks
+
+
+@pytest.mark.asyncio
+async def test_disconnect_racing_with_completion_does_not_cancel_result(client, monkeypatch):
+    from agent.schemas.chat import ChatRequest, ChatResponse
+    release = asyncio.Event()
+    async def process(request, **callbacks):
+        main_module.trace_store.start_run(run_id=request.run_id, user_id='a', conversation_id='c',
+            input_text='slow', agent_id='super_chat', runtime='self')
+        await release.wait()
+        main_module.trace_store.complete_run(request.run_id, output='ready')
+        return ChatResponse(conversation_id='c', response='ready', run_id=request.run_id)
+    monkeypatch.setattr(main_module.engine, 'process', process)
+    response = await main_module.chat_stream(ChatRequest(conversation_id='c', message='slow', run_id='completion-race'))
+    stream = response.body_iterator
+    await stream.__anext__()
+    await stream.__anext__()
+    work = main_module.active_stream_tasks['completion-race']
+    release.set()
+    await work
+    with pytest.raises(asyncio.CancelledError):
+        await stream.athrow(asyncio.CancelledError())
+    assert main_module.trace_store.get_run('completion-race').status == 'completed'

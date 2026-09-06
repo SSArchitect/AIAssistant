@@ -8,6 +8,7 @@ from agent.orchestrator.engine import AgentEngine
 @pytest.fixture(autouse=True)
 def isolated_connect_runtime(tmp_path, monkeypatch):
     monkeypatch.setenv("AGENT_CONNECT_RUNS_PATH", str(tmp_path / "connect_runs.db"))
+    monkeypatch.setenv("AGENT_TRACE_STORAGE_PATH", str(tmp_path / "agent_traces.db"))
 
 
 @pytest.fixture(scope="session", autouse=True)

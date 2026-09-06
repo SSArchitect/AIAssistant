@@ -1728,3 +1728,22 @@ func (w *failingStreamWriter) CloseNotify() <-chan bool {
 func (w *failingStreamWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	return nil, nil, errors.New("hijack unsupported")
 }
+
+func TestListTasksFiltersForeignRuns(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("user_id") != "user-a" {
+			t.Errorf("unexpected account: %s", r.URL)
+		}
+		_, _ = w.Write([]byte(`{"runs":[{"run_id":"owned","user_id":"user-a"},{"run_id":"foreign","user_id":"user-b"}]}`))
+	}))
+	defer server.Close()
+	handler := NewChatHandler(bridge.NewAgentClient(server.URL, time.Second))
+	router := gin.New()
+	router.GET("/api/tasks", handler.ListTasks)
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/tasks?user_id=user-a", nil))
+	if response.Code != http.StatusOK || strings.Contains(response.Body.String(), "foreign") || !strings.Contains(response.Body.String(), "owned") {
+		t.Fatalf("unexpected tasks: %d %s", response.Code, response.Body.String())
+	}
+}

@@ -429,6 +429,8 @@ Web 工作台里可以在 设置与管理 -> 开发与调试 -> Eval 中一键�
 
 `mcp.servers` 目前只是通用配置入口，尚未实现通用 MCP server 启动、tool discovery、权限审批和动态注册。MiniMax Token Plan MCP 已作为 search provider 的专项集成接入。
 
+长任务卡片、后台等待、站内通知与持久化约定见 [长任务体验](long-running-tasks.md)。
+
 ### 6.4 Trace 事件
 
 每次 chat 必须创建 run，并返回 `run_id` 与 `events`。基础事件约定：
@@ -550,8 +552,8 @@ Web: app.js syntax passed when node is available
 
 当前已知限制：
 
-- TraceStore 还是内存实现，服务重启后 run history 会丢失。后续需要落 SQLite/Postgres。
-- `/agent/chat` 当前是非 streaming；`stream` 字段保留但还没有端到端 SSE。
+- TraceStore 在服务运行时持久化到 SQLite；服务重启保留历史并将未完成 run 标记为 interrupted，尚不支持跨进程自动断点续跑。
+- `/agent/chat` 为非流式接口，聊天前端通过 `/agent/chat/stream` 使用端到端 SSE；浏览器离开不取消执行。
 - `langgraph_research` 只是实验槽位；未安装 `langgraph` 时会显示 `enabled=false`。
 - Tool 已有统一的本地治理层和聊天内 approval ticket，但 ticket 仍保存在 Agent 进程内，服务重启后会失效；目前也没有多用户审批人、持久化审批队列或企业策略中心。
 - Drive 已作为知识内容存储并支持关键词检索，但尚未建立 chunk/embedding/vector 索引；语义检索和引用质量仍需后续增强。

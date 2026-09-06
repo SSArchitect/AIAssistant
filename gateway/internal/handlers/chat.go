@@ -1214,6 +1214,23 @@ func (h *ChatHandler) ListTools(c *gin.Context) {
 	c.JSON(http.StatusOK, tools)
 }
 
+func (h *ChatHandler) ListTasks(c *gin.Context) {
+	userID := requestUserID(c)
+	result, err := h.agent.ListTasks(userID)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "task status temporarily unavailable"})
+		return
+	}
+	// Defense in depth: the gateway account remains authoritative.
+	owned := make([]bridge.RunRecord, 0, len(result.Runs))
+	for _, run := range result.Runs {
+		if normalizedUserID(run.UserID) == userID {
+			owned = append(owned, run)
+		}
+	}
+	c.JSON(http.StatusOK, bridge.RunListResponse{Runs: owned})
+}
+
 func (h *ChatHandler) ListRuns(c *gin.Context) {
 	limit := 50
 	if rawLimit := c.Query("limit"); rawLimit != "" {

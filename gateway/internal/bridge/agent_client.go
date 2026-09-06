@@ -522,6 +522,23 @@ func (c *AgentClient) ParseDocument(req DocumentParseRequest) (*DocumentParseRes
 	return &parseResp, nil
 }
 
+// ListTasks returns compact root tasks, including active work outside the history page.
+func (c *AgentClient) ListTasks(userID string) (*RunListResponse, error) {
+	resp, err := c.httpClient.Get(c.baseURL + "/agent/tasks?user_id=" + url.QueryEscape(userID))
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("agent tasks returned status %d", resp.StatusCode)
+	}
+	var result RunListResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
 func (c *AgentClient) ChatStream(req ChatRequest) (*http.Response, error) {
 	body, err := json.Marshal(req)
 	if err != nil {

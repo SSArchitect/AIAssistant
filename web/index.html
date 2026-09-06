@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="referrer" content="no-referrer">
     <title>阿安的工作台</title>
-    <link rel="stylesheet" href="/static/css/style.css?v=99">
+    <link rel="stylesheet" href="/static/css/style.css?v=task-drag-102">
     <link rel="stylesheet" href="/static/css/connect.css?v=3">
 </head>
 <body>
@@ -172,6 +172,14 @@
                     </button>
                 </div>
             </header>
+            <section id="task-shelf" class="task-shelf" hidden>
+                <button id="btn-tasks" class="task-launcher" type="button" aria-expanded="false" aria-controls="task-shelf-body" title="后台任务"><span class="visually-hidden">后台任务</span></button>
+                <div id="task-shelf-body" class="task-shelf-body" role="region" aria-labelledby="btn-tasks" hidden>
+                    <div class="task-shelf-header"><strong id="task-shelf-title">最近进展</strong><button type="button" id="task-mark-all-read">全部已读</button></div>
+                    <p id="task-connection" role="status" hidden></p>
+                    <div id="task-shelf-list"></div>
+                </div>
+            </section>
 
             <section class="view active" id="view-chat" data-view-panel="chat">
                 <div class="messages" id="messages"></div>
@@ -760,6 +768,8 @@
         </div>
     </div>
 
+    <div id="task-notices" class="task-notices" role="status" aria-live="polite"></div>
+    <script src="/static/js/long-tasks.js?v=5"></script>
     <script src="/static/js/runtime-config.js?v=2"></script>
     <script src="/static/js/chat-recovery.js?v=1"></script>
     <script src="/static/js/stream-typewriter.js?v=2"></script>
@@ -768,7 +778,7 @@
     <script src="/static/js/video-media.js?v=1"></script>
     <script src="/static/js/connect.js?v=4"></script>
     <script src="/static/js/conversation-pager.js?v=1"></script>
-    <script src="/static/js/app.js?v=151"></script>
+    <script src="/static/js/app.js?v=158-task-drag"></script>
     <script src="/static/js/android-bridge.js?v=4"></script>
 </body>
 </html>

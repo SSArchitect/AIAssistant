@@ -400,7 +400,7 @@ const I18N = {
             deleteConversationFailed: '删除会话失败：{message}',
             preparingToSend: '正在准备对话…',
             creatingConversation: '正在创建会话…',
-            conversationRunning: '当前会话仍在生成…',
+            conversationRunning: '当前任务仍在执行，可切换会话或开启新话题',
             readingAttachment: '正在读取附件…',
             requestTimeout: '请求超过 {seconds} 秒未响应',
             resumePending: 'AI 仍在生成，完成后会自动恢复到当前会话',
@@ -3094,6 +3094,7 @@ async function switchAccount(userId, options = {}) {
     resetConversationCreateState();
     currentUserId = nextUserId;
     currentAccountToken = options.token || loadAccountSessionToken(nextUserId);
+    resetLongTasks();
     if (options.token) saveAccountSessionToken(nextUserId, options.token);
     saveCurrentUserId(currentUserId);
     if (options.reload === true) {
@@ -3417,6 +3418,7 @@ function isCurrentConversationLoading() {
     return Boolean(currentConversationId && (
         activeConversationRequests.has(currentConversationId)
         || activeRunWatcher?.conversationId === currentConversationId
+        || longTaskTracker?.tasks().some(task => task.active && task.conversationId === currentConversationId)
     ));
 }
 
@@ -14910,6 +14912,7 @@ async function renderConversationMessages(id, options = {}) {
     updateChatHistoryControls();
     updateTopbar();
     focusMessageInput();
+    scheduleTaskResultRead();
 }
 
 function restoreConversationRenderCache(id) {
@@ -15678,6 +15681,154 @@ function setCurrentAgent(agentId, { refreshWelcome = false } = {}) {
     return true;
 }
 
+// The task shelf follows server-owned runs; changing pages never submits another job.
+const longTaskTracker = globalThis.LongTasks?.createTracker((() => {
+    try { return localStorage; } catch { return undefined; }
+})());
+let longTaskAccount = '';
+let longTaskPoll = null;
+let longTaskFetch = null;
+let longTaskConnectionLost = false;
+let longTaskLauncher = null;
+
+function resetLongTasks() {
+    longTaskAccount = `${currentUserId}:${currentAccountToken}`;
+    longTaskTracker?.setAccount(String(currentUserId || ''));
+    document.getElementById('task-notices')?.replaceChildren();
+    closeTaskShelf();
+    renderLongTasks();
+}
+
+// Only acknowledge finished messages actually visible in the current conversation.
+// The run can finish before its response arrives, so a streaming card is not a read result.
+function markVisibleTaskResultsRead() {
+    if (!longTaskTracker || !currentUserId || !currentAccountToken || document.hidden
+        || activeView !== 'chat' || !currentConversationId
+        || longTaskAccount !== `${currentUserId}:${currentAccountToken}`) return;
+    const viewport = messagesContainer.getBoundingClientRect();
+    if (!viewport.width) return;
+    for (const card of messagesContainer.querySelectorAll('.message:not(.streaming) .long-task-card[data-task-id]')) {
+        if (!['completed', 'failed', 'partial', 'cancelled', 'interrupted', 'attention'].includes(card.dataset.state)) continue;
+        const rect = card.getBoundingClientRect();
+        const message = card.closest('.message').getBoundingClientRect();
+        if (rect.width > 0 && rect.top < Math.min(viewport.bottom, window.innerHeight)
+            && message.bottom > Math.max(viewport.top, 0)) {
+            longTaskTracker.markResultRead(card.dataset.taskId);
+        }
+    }
+}
+
+function scheduleTaskResultRead() {
+    requestAnimationFrame(() => renderLongTasks());
+}
+
+function renderLongTasks() {
+    if (!longTaskTracker) return;
+    markVisibleTaskResultsRead();
+    const tasks = longTaskTracker.tasks();
+    const unreadIds = new Set(tasks.filter(task => task.unread).map(task => task.id));
+    for (const notice of document.querySelectorAll('#task-notices [data-task-read]')) {
+        if (!unreadIds.has(notice.dataset.taskRead)) notice.closest('.task-notice')?.remove();
+    }
+    const panel = document.getElementById('task-shelf');
+    if (panel) {
+        panel.hidden = !currentUserId || !currentAccountToken || !globalThis.LongTasks.shouldShowLauncher(tasks);
+        if (panel.hidden) closeTaskShelf();
+        longTaskLauncher?.layout();
+    }
+    const button = document.getElementById('btn-tasks');
+    if (button) {
+        button.innerHTML = globalThis.LongTasks.renderLauncher(tasks, currentLanguage);
+        button.title = currentLanguage === 'zh' ? '后台任务 · 可拖动' : 'Background tasks · Drag to move';
+        button.classList.toggle('has-updates', tasks.some(task => task.unread));
+    }
+    const markAll = document.getElementById('task-mark-all-read');
+    if (markAll) {
+        markAll.textContent = currentLanguage === 'zh' ? '全部已读' : 'Mark all read';
+        markAll.disabled = !tasks.some(task => task.unread);
+    }
+    const list = document.getElementById('task-shelf-list');
+    if (list && button?.getAttribute('aria-expanded') === 'true') {
+        const focused = document.activeElement;
+        const attribute = ['data-task-open', 'data-task-read-only', 'data-task-mute'].find(key => focused?.hasAttribute?.(key));
+        const value = attribute ? focused.getAttribute(attribute) : '';
+        list.innerHTML = tasks.length ? tasks.map(task => globalThis.LongTasks.renderCard(task, currentLanguage, { muted: longTaskTracker.muted(task.id) })).join('')
+            : `<p class="task-empty">${currentLanguage === 'zh' ? '暂无后台任务。生成图片、视频或研究报告后，可在这里查看。' : 'No background tasks yet. Image, video and research tasks appear here.'}</p>`;
+        if (attribute) [...list.querySelectorAll(`[${attribute}]`)].find(el => el.getAttribute(attribute) === value)?.focus({ preventScroll: true });
+    }
+    const connection = document.getElementById('task-connection');
+    if (connection) {
+        connection.hidden = !longTaskConnectionLost;
+        connection.textContent = currentLanguage === 'zh' ? '暂时无法更新状态，正在重连。' : 'Status updates unavailable. Reconnecting.';
+    }
+    const title = document.getElementById('task-shelf-title');
+    if (title) title.textContent = currentLanguage === 'zh' ? '最近进展' : 'Recent updates';
+}
+
+function updateLongTasks(records) {
+    if (!longTaskTracker) return;
+    if (longTaskAccount !== `${currentUserId}:${currentAccountToken}`) resetLongTasks();
+    markVisibleTaskResultsRead();
+    const notices = longTaskTracker.update(records);
+    for (const run of records) {
+        if (String(run.user_id) !== String(currentUserId)) continue;
+        for (const element of document.querySelectorAll('.streaming-task-card[data-task-run-id]')) {
+            if (element.dataset.taskRunId === run.run_id) element.innerHTML = renderInlineLongTask(run);
+        }
+    }
+    const container = document.getElementById('task-notices');
+    for (const task of notices) {
+        if (activeView === 'chat' && currentConversationId === task.conversationId && !document.hidden) continue;
+        if (!container) continue;
+        const notice = document.createElement('div');
+        notice.className = 'task-notice';
+        const label = task.state === 'completed' ? (currentLanguage === 'zh' ? '任务已完成' : 'Task completed')
+            : (currentLanguage === 'zh' ? '任务有新的状态' : 'Task status changed');
+        notice.innerHTML = `<button type="button" data-task-open="${escapeHtml(task.conversationId)}" data-task-read="${escapeHtml(task.id)}"><strong>${label}</strong><span>${escapeHtml(task.title)}</span></button><button type="button" data-task-dismiss aria-label="${currentLanguage === 'zh' ? '关闭提醒' : 'Dismiss'}">×</button>`;
+        container.prepend(notice);
+        while (container.children.length > 3) container.lastElementChild.remove();
+    }
+    renderLongTasks();
+    updateSendState();
+}
+
+async function pollLongTasks() {
+    if (!longTaskTracker || longTaskFetch) return;
+    if (longTaskAccount !== `${currentUserId}:${currentAccountToken}`) resetLongTasks();
+    if (!currentUserId || !currentAccountToken || document.hidden || navigator.onLine === false) return;
+    const account = longTaskAccount;
+    const pending = apiCall('GET', '/api/tasks', undefined, { timeoutMs: 15000 });
+    longTaskFetch = pending;
+    try {
+        const result = await pending;
+        if (account !== `${currentUserId}:${currentAccountToken}`) return;
+        longTaskConnectionLost = false;
+        updateLongTasks(result.runs || []);
+    } catch {
+        if (account === `${currentUserId}:${currentAccountToken}`) {
+            longTaskConnectionLost = true;
+            renderLongTasks();
+        }
+    } finally {
+        if (longTaskFetch === pending) longTaskFetch = null;
+    }
+}
+
+function startLongTaskPolling() {
+    if (longTaskPoll) clearInterval(longTaskPoll);
+    void pollLongTasks();
+    longTaskPoll = setInterval(() => { void pollLongTasks(); }, 5000);
+}
+
+function renderInlineLongTask(run) {
+    if (!globalThis.LongTasks) return '';
+    const task = globalThis.LongTasks.summarize(run);
+    return task.visible ? globalThis.LongTasks.renderCard(task, currentLanguage, {
+        inline: true, muted: longTaskTracker?.muted(task.id),
+    }) : '';
+}
+
+
 function stopActiveRunWatcher(expectedWatcher = null) {
     if (expectedWatcher && activeRunWatcher !== expectedWatcher) return;
     if (activeRunWatcher?.timer) clearTimeout(activeRunWatcher.timer);
@@ -15686,7 +15837,7 @@ function stopActiveRunWatcher(expectedWatcher = null) {
 }
 
 function runIsActive(run) {
-    return run && run.status && run.status !== 'completed' && run.status !== 'failed' && run.status !== 'partial' && run.status !== 'cancelled';
+    return run && run.status && !['completed', 'failed', 'partial', 'cancelled', 'interrupted'].includes(run.status);
 }
 
 function hasAssistantAfterLastUser(messages = []) {
@@ -15784,6 +15935,7 @@ async function watchActiveRunForConversation(id, messages = []) {
                 || item.status === 'failed'
                 || item.status === 'partial'
                 || item.status === 'cancelled'
+                || item.status === 'interrupted'
             )
         ));
         if (!run) return;
@@ -15853,7 +16005,7 @@ async function pollActiveRunWatcher() {
 
         if (run.status && !runIsActive(run)) {
             watcher.completedChecks += 1;
-            if ((run.status === 'completed' && run.output) || run.status === 'failed' || run.status === 'partial' || run.status === 'cancelled') {
+            if ((run.status === 'completed' && run.output) || run.status === 'failed' || run.status === 'partial' || run.status === 'cancelled' || run.status === 'interrupted') {
                 if (!watcher.viewFinalized) {
                     finalizeRecoveredRunView(watcher.streamView, run);
                     watcher.viewFinalized = true;
@@ -15866,7 +16018,7 @@ async function pollActiveRunWatcher() {
             stopActiveRunWatcher(watcher);
             return;
         }
-        if (watcher.attempts >= watcher.maxAttempts) {
+        if (watcher.attempts >= watcher.maxAttempts && !runIsActive(run)) {
             shouldSchedule = false;
             watcher.streamView.showError(t('chat.resumeFailed'));
             stopActiveRunWatcher(watcher);
@@ -15915,7 +16067,7 @@ function chatResponseFromRun(run = {}) {
     return {
         response: run.output || run.error_message || '',
         reasoning: run.reasoning || '',
-        error_type: run.error_type || (run.status === 'failed' ? 'run_failed' : ''),
+        error_type: run.error_type || (run.status === 'failed' ? 'run_failed' : run.status === 'interrupted' ? 'runtime_restarted' : ''),
         events: run.events || [],
         run_id: run.run_id || '',
         runtime: run.runtime || '',
@@ -16366,9 +16518,14 @@ async function sendMessageStream(conversationId, query, streamView, attachmentCo
     const effectiveAgentId = extraPayload.agent_id || targetAgentId;
     const driveContext = drivePromptContext(effectiveAgentId);
     const { signal, onRunId, ...requestPayload } = extraPayload || {};
+    const taskUserId = String(currentUserId);
+    const taskAccountToken = currentAccountToken;
+    const taskStartedAt = new Date().toISOString();
     let runId = String(requestPayload.run_id || createChatRunId());
     if (typeof onRunId === 'function') onRunId(runId);
     streamView.setMeta({ runId });
+    updateLongTasks([{ run_id: runId, conversation_id: conversationId, user_id: taskUserId,
+        agent_id: effectiveAgentId, input: query, started_at: taskStartedAt, status: 'running', events: [] }]);
 
     let resp;
     try {
@@ -16442,6 +16599,13 @@ async function sendMessageStream(conversationId, query, streamView, attachmentCo
                     streamView.setMeta({ runId, runtime, modelUsed });
                 } else if (event === 'trace') {
                     traceEvents.push(data);
+                    if (taskUserId === String(currentUserId) && taskAccountToken === currentAccountToken) {
+                        const terminalEvent = [...traceEvents].reverse().find(item => item.run_id === runId && ['run.completed', 'run.failed', 'run.partial', 'run.cancelled', 'run.interrupted'].includes(item.type));
+                        updateLongTasks([{ run_id: runId, conversation_id: conversationId, user_id: taskUserId,
+                            agent_id: effectiveAgentId, input: query, started_at: taskStartedAt,
+                            status: terminalEvent ? terminalEvent.type.slice(4) : 'running',
+                            completed_at: terminalEvent?.created_at, events: traceEvents }]);
+                    }
                     runId = data.run_id || runId;
                     streamView.setTrace(traceEvents, { runId, runtime, modelUsed });
                 } else if (event === 'token') {
@@ -16515,6 +16679,7 @@ function appendStreamingAssistantMessage(regenerateQuery = '', conversationId = 
         <div class="bubble">
             <div class="streaming-status"></div>
             <div class="streaming-trace"></div>
+            <div class="streaming-task-card"></div>
             <div class="streaming-approvals tool-approval-list" data-approval-list></div>
             <div class="streaming-content">
                 <div class="loading-dots"><span></span><span></span><span></span></div>
@@ -16529,6 +16694,9 @@ function appendStreamingAssistantMessage(regenerateQuery = '', conversationId = 
     messagesContainer.appendChild(div);
     if (cancellable) streamingTaskCancellers.set(cancelTaskId, options.onCancel);
 
+    const taskEl = div.querySelector('.streaming-task-card');
+    const taskStartedAt = new Date().toISOString();
+    const taskAgentId = currentAgentId;
     const statusEl = div.querySelector('.streaming-status');
     const contentEl = div.querySelector('.streaming-content');
     const artifactsEl = div.querySelector('.streaming-artifacts');
@@ -16647,6 +16815,7 @@ function appendStreamingAssistantMessage(regenerateQuery = '', conversationId = 
         },
         setMeta(meta) {
             lastMeta = { ...lastMeta, ...meta };
+            if (lastMeta.runId) taskEl.dataset.taskRunId = lastMeta.runId;
         },
         setPending(label) {
             statusEl.hidden = false;
@@ -16665,14 +16834,20 @@ function appendStreamingAssistantMessage(regenerateQuery = '', conversationId = 
             approvalsEl.innerHTML = renderApprovalCards(lastEvents, {
                 interactive: true,
             });
-            const shouldExpand = processTouched ? processExpanded : !lastContent;
+            const terminalEvent = [...lastEvents].reverse().find(event => event.run_id === lastMeta.runId && ['run.completed', 'run.failed', 'run.partial', 'run.cancelled', 'run.interrupted'].includes(event.type));
+            if (lastMeta.runId) taskEl.dataset.taskRunId = lastMeta.runId;
+            taskEl.innerHTML = renderInlineLongTask({ run_id: lastMeta.runId, conversation_id: conversationId,
+                input: regenerateQuery, agent_id: taskAgentId, events: lastEvents,
+                started_at: lastEvents.find(event => event.type === 'run.started')?.created_at || taskStartedAt,
+                status: terminalEvent ? terminalEvent.type.slice(4) : 'running', completed_at: terminalEvent?.created_at });
+            const shouldExpand = processTouched ? processExpanded : (!lastContent && !taskEl.innerHTML);
             const processPanel = renderProcessPanel(lastEvents, {
                 expanded: shouldExpand,
                 live: !lastContent,
                 reasoning: lastReasoning,
             });
             renderProcessPanelInto(traceEl, processPanel);
-            if (!lastContent && !processPanel) {
+            if (!lastContent && !processPanel && !taskEl.innerHTML) {
                 statusEl.hidden = false;
                 statusEl.innerHTML = renderStreamingStatus(lastEvents);
             } else {
@@ -16714,6 +16889,7 @@ function appendStreamingAssistantMessage(regenerateQuery = '', conversationId = 
                 modelUsed: resp.model_used || lastMeta.modelUsed || '',
             });
             div.classList.remove('streaming');
+            scheduleTaskResultRead();
             updateAssistantActions(div, {
                 copyEnabled: Boolean(div.dataset.copyText),
                 traceEvents: lastEvents,
@@ -16751,6 +16927,7 @@ function appendStreamingAssistantMessage(regenerateQuery = '', conversationId = 
                 type === 'rate_limit' ? 'rate-limit' : 'generic-error'
             );
             div.classList.remove('streaming');
+            scheduleTaskResultRead();
             updateAssistantActions(div, {
                 copyEnabled: Boolean(message),
                 traceEvents: lastEvents,
@@ -16782,6 +16959,7 @@ function appendStreamingAssistantMessage(regenerateQuery = '', conversationId = 
             }
             contentEl.innerHTML = `<div class="streaming-cancelled">${escapeHtml(message)}</div>`;
             div.classList.remove('streaming');
+            scheduleTaskResultRead();
             updateAssistantActions(div, {
                 copyEnabled: Boolean(message),
                 traceEvents: lastEvents,
@@ -16990,13 +17168,22 @@ function renderMessageHtml(
         ? (errorType === 'rate_limit' ? 'rate_limit' : 'error')
         : '';
 
+    let taskCard = '';
+    if (role === 'assistant' && globalThis.LongTasks && runId) {
+        const finalEvent = [...traceEvents].reverse().find(event => event.run_id === runId && ['run.completed', 'run.failed', 'run.partial', 'run.cancelled', 'run.interrupted'].includes(event.type));
+        taskCard = renderInlineLongTask({ run_id: runId, conversation_id: currentConversationId,
+            input: regenerateQuery, events: traceEvents, status: finalEvent?.type.slice(4) || (errorType ? 'failed' : 'completed'),
+            started_at: traceEvents.find(event => event.type === 'run.started')?.created_at,
+            completed_at: finalEvent?.created_at });
+    }
+
     let bubbleContent = '';
     if (displayError === 'rate_limit') {
         const processPanel = renderProcessPanel(traceEvents, { expanded: false, reasoning });
-        bubbleContent = `${processPanel}${processPanel ? renderMessageDivider() : ''}${errorBanner(t('errors.rateLimit'), content, 'rate-limit')}${assistantActions}`;
+        bubbleContent = `${processPanel}${processPanel ? renderMessageDivider() : ''}${taskCard}${errorBanner(t('errors.rateLimit'), content, 'rate-limit')}${assistantActions}`;
     } else if (displayError === 'error') {
         const processPanel = renderProcessPanel(traceEvents, { expanded: false, reasoning });
-        bubbleContent = `${processPanel}${processPanel ? renderMessageDivider() : ''}${errorBanner(t('errors.error'), content, 'generic-error')}${assistantActions}`;
+        bubbleContent = `${processPanel}${processPanel ? renderMessageDivider() : ''}${taskCard}${errorBanner(t('errors.error'), content, 'generic-error')}${assistantActions}`;
     } else {
         const skillBadges = skillsUsed && skillsUsed.length
             ? `<div class="skill-badges">${skillsUsed.map((s) => `<span class="skill-badge">${escapeHtml(s)}</span>`).join('')}</div>`
@@ -17013,6 +17200,7 @@ function renderMessageHtml(
             renderInputMeta(inputMeta),
             processPanel,
             processPanel ? renderMessageDivider() : '',
+            taskCard,
             approvalPanel,
             formatContent(content),
             artifactPanel,
@@ -20508,6 +20696,7 @@ btnRefresh.addEventListener('click', async () => {
 });
 
 messagesContainer?.addEventListener('scroll', scheduleChatHistoryControlsUpdate, { passive: true });
+messagesContainer?.addEventListener('scroll', scheduleTaskResultRead, { passive: true });
 document.addEventListener('error', handleCitationImageError, true);
 document.addEventListener('error', handleMessageImageError, true);
 document.addEventListener('loadedmetadata', (event) => {
@@ -20524,9 +20713,17 @@ window.addEventListener('pageshow', (event) => {
     if (event.persisted) reconcileChatAfterPageResume();
 });
 window.addEventListener('online', reconcileChatAfterPageResume);
+window.addEventListener('online', pollLongTasks);
+document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) { scheduleTaskResultRead(); void pollLongTasks(); }
+});
+window.addEventListener('pageshow', pollLongTasks);
 
 if (window.ResizeObserver && inputArea) {
-    const chatNavigationResizeObserver = new ResizeObserver(scheduleChatHistoryControlsUpdate);
+    const chatNavigationResizeObserver = new ResizeObserver(() => {
+        scheduleChatHistoryControlsUpdate();
+        scheduleTaskResultRead();
+    });
     chatNavigationResizeObserver.observe(inputArea);
 }
 
@@ -20685,4 +20882,96 @@ showWelcome();
 appBootPromise = bootApp().finally(() => {
     appBootstrapping = false;
     updateSendState();
+});
+void appBootPromise.then(startLongTaskPolling);
+
+
+function initializeTaskLauncher() {
+    const shelf = document.getElementById('task-shelf');
+    const button = document.getElementById('btn-tasks');
+    const body = document.getElementById('task-shelf-body');
+    if (!shelf || !button || !body || !globalThis.LongTasks) return;
+    let storage;
+    try { storage = localStorage; } catch { /* Browser may disable local storage. */ }
+    longTaskLauncher = globalThis.LongTasks.createLauncherController({ button, shelf, body, storage,
+        onDragStart: closeTaskShelf,
+        getArea: () => ({ width: shelf.parentElement.clientWidth, height: shelf.parentElement.clientHeight,
+            top: (document.querySelector('.topbar')?.offsetHeight || 62) + 8,
+            bottom: activeView === 'chat' ? (inputArea?.offsetHeight || 92) + 20 : 20 }) });
+    if (window.ResizeObserver) new ResizeObserver(() => longTaskLauncher.layout()).observe(shelf.parentElement);
+    window.addEventListener('resize', () => longTaskLauncher.layout());
+}
+initializeTaskLauncher();
+
+function setTaskShelfOpen(open, restoreFocus = false) {
+    const button = document.getElementById('btn-tasks');
+    const body = document.getElementById('task-shelf-body');
+    if (!button || !body) return;
+    button.setAttribute('aria-expanded', String(open));
+    body.hidden = !open;
+    if (open) {
+        renderLongTasks();
+        void pollLongTasks();
+    }
+    if (restoreFocus) button.focus();
+}
+function closeTaskShelf() {
+    setTaskShelfOpen(false);
+}
+document.getElementById('btn-tasks')?.addEventListener('click', event => {
+    if (longTaskLauncher?.consumeClick(event)) return;
+    setTaskShelfOpen(document.getElementById('btn-tasks')?.getAttribute('aria-expanded') !== 'true');
+});
+document.addEventListener('pointerdown', event => {
+    if (!document.getElementById('task-shelf')?.contains(event.target)) closeTaskShelf();
+});
+document.addEventListener('focusin', event => {
+    if (!document.getElementById('task-shelf')?.contains(event.target)) closeTaskShelf();
+});
+document.addEventListener('keydown', event => {
+    if (event.key === 'Escape' && document.getElementById('btn-tasks')?.getAttribute('aria-expanded') === 'true') {
+        event.preventDefault();
+        setTaskShelfOpen(false, true);
+    }
+});
+document.getElementById('task-mark-all-read')?.addEventListener('click', () => {
+    longTaskTracker?.markAllRead();
+    renderLongTasks();
+});
+document.addEventListener('click', event => {
+    const open = event.target.closest?.('[data-task-open]');
+    const read = event.target.closest?.('[data-task-read-only]');
+    const mute = event.target.closest?.('[data-task-mute]');
+    const dismiss = event.target.closest?.('[data-task-dismiss]');
+    if (open) {
+        longTaskTracker?.markRead(open.dataset.taskRead);
+        closeTaskShelf();
+        open.closest('.task-notice')?.remove();
+        renderLongTasks();
+        void selectConversation(open.dataset.taskOpen);
+    }
+    if (read) {
+        const id = read.dataset.taskReadOnly;
+        longTaskTracker?.markRead(id);
+        renderLongTasks();
+        [...document.querySelectorAll('[data-task-read]')].find(element => element.dataset.taskRead === id)?.focus({ preventScroll: true });
+    }
+    if (mute) {
+        const id = mute.dataset.taskMute;
+        longTaskTracker?.mute(id);
+        // Keep all copies (inline card and feed card) in sync.
+        for (const element of document.querySelectorAll('[data-task-mute]')) {
+            if (element.dataset.taskMute !== id) continue;
+            const muted = longTaskTracker.muted(id);
+            element.setAttribute('aria-checked', String(!muted));
+            const indicator = document.createElement('span');
+            indicator.className = 'task-reminder-switch';
+            indicator.setAttribute('aria-hidden', 'true');
+            element.replaceChildren(indicator, document.createTextNode(muted
+                ? (currentLanguage === 'zh' ? '提醒已关闭' : 'Reminders off')
+                : (currentLanguage === 'zh' ? '提醒已开启' : 'Reminders on')));
+        }
+        renderLongTasks();
+    }
+    if (dismiss) dismiss.closest('.task-notice')?.remove();
 });

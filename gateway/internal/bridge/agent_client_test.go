@@ -806,3 +806,28 @@ func TestAgentClientGenerateSparkImage(t *testing.T) {
 		t.Fatalf("Unexpected Spark response: %#v", result)
 	}
 }
+
+func TestListTasksScopesAccountAndHandlesErrors(t *testing.T) {
+	for _, status := range []int{http.StatusOK, http.StatusServiceUnavailable} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/agent/tasks" || r.URL.Query().Get("user_id") != "account & one" {
+					t.Errorf("unexpected request: %s", r.URL)
+				}
+				w.WriteHeader(status)
+				_, _ = w.Write([]byte(`{"runs":[{"run_id":"task-1","user_id":"account & one","status":"running"}]}`))
+			}))
+			defer server.Close()
+			result, err := NewAgentClient(server.URL, time.Second).ListTasks("account & one")
+			if status != http.StatusOK {
+				if err == nil {
+					t.Fatal("expected failure")
+				}
+				return
+			}
+			if err != nil || len(result.Runs) != 1 || result.Runs[0].RunID != "task-1" {
+				t.Fatalf("unexpected result: %+v %v", result, err)
+			}
+		})
+	}
+}

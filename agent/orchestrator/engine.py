@@ -56,6 +56,7 @@ from agent.skills.builtin.todo import TODO_TOOL_NAMES
 from agent.skills.builtin.tool_search import ToolSearchSkill
 from agent.skills.router import CORE_ALWAYS_ON_TOOL_NAMES, ToolRoute, ToolRouter, explicit_image_generation_request
 from agent.trace import TraceStore
+from agent.aigc.progress import track_media_progress, tool_timeout
 from agent.weight_loss import WeightLossStore
 
 logger = logging.getLogger(__name__)
@@ -3494,7 +3495,7 @@ class AgentEngine:
         )
         if not decision.allowed:
             return self.tool_governance.blocked_result(decision)
-        timeout_seconds = skill.metadata().timeout_seconds
+        timeout_seconds = tool_timeout(tool_name, skill.metadata().timeout_seconds)
         try:
             return await asyncio.wait_for(
                 self._execute_agent_tool_as_result(
@@ -11158,6 +11159,7 @@ class AgentEngine:
             memory_updates=[],
         )
 
+    @track_media_progress
     async def process(
         self,
         request: ChatRequest,

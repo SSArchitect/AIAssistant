@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
-from math import gcd
+from math import gcd, isfinite
 import struct
 import uuid
 from pathlib import Path
@@ -11,6 +11,7 @@ from urllib.parse import quote, urlsplit
 
 import httpx
 
+from agent.aigc.progress import BACKGROUND_TIMEOUT, background_enabled, emit_progress
 from agent.schemas.aigc import GeneratedImage, ImageGenerationRequest, ImageGenerationResponse
 
 OUTPUT_DIR = Path(__file__).resolve().parents[2] / "web/static/generated/aigc"
@@ -101,39 +102,88 @@ class SparkTaskClient:
     async def generate(self, request):
         payload = self.payload(request)
         key = request.idempotency_key or str(uuid.uuid4())
+        background = background_enabled()
+        deadline = asyncio.get_running_loop().time() + (BACKGROUND_TIMEOUT if background else self.timeout)
+        self._report(payload, key, "submitting")
         try:
-            # A total deadline covers retries, polling and downloads as well as individual HTTP timeouts.
-            return await asyncio.wait_for(self._generate(request, payload, key), self.timeout)
-        except asyncio.TimeoutError:
-            raise SparkProviderError(
-                "Spark wait timed out; the task may still be running. Retry the original input and idempotency key.",
-                code="wait_timeout", task_id=self._task_ids.get(key), idempotency_key=key,
-            ) from None
+            while True:
+                remaining = deadline - asyncio.get_running_loop().time()
+                try:
+                    result = await asyncio.wait_for(self._generate(request, payload, key), min(self.timeout, max(0, remaining)))
+                    self._report(payload, key, "completed")
+                    return result
+                except asyncio.TimeoutError:
+                    if background and asyncio.get_running_loop().time() < deadline:
+                        self._report(payload, key, "reconnecting")
+                        continue
+                    raise SparkProviderError(
+                        "Spark wait timed out; the task may still be running. Retry the original input and idempotency key.",
+                        code="wait_timeout", task_id=self._task_ids.get(key), idempotency_key=key,
+                    ) from None
+                except SparkProviderError as exc:
+                    if (background and exc.code in {"connection_failed", "download_failed"}
+                            and asyncio.get_running_loop().time() + 5 < deadline):
+                        self._report(payload, key, "reconnecting")
+                        await asyncio.sleep(5)
+                        continue
+                    raise
         except SparkProviderError as exc:
             exc.idempotency_key = key
             exc.task_id = exc.task_id or self._task_ids.get(key)
+            uncertain = exc.code in {"wait_timeout", "connection_failed", "download_failed"}
+            self._report(payload, key, "unknown" if uncertain else "failed", code=exc.code)
             raise
         finally:
             self._task_ids.pop(key, None)
 
+    def _report(self, payload, key, stage, **extra):
+        emit_progress(kind=payload["type"], stage=stage, task_id=self._task_ids.get(key),
+            idempotency_key=key, **extra)
+
+
+    @staticmethod
+    def task_metrics(task: dict) -> dict:
+        # Only explicitly scaled fields are supported. Never guess whether an
+        # opaque "progress" value is a fraction, percentage or completed steps.
+        metrics = {}
+        position = task.get("queue_position")
+        if type(position) is int and 1 <= position <= 9007199254740991:
+            metrics["queue_position"] = position
+        percent = task.get("progress_percent")
+        if type(percent) in {int, float} and 0 <= percent <= 100 and isfinite(percent):
+            metrics["progress_percent"] = percent
+        return metrics
 
     async def _wait_for_task(self, client: httpx.AsyncClient, payload: dict, key: str) -> dict:
-        task = self._task(await self._request(client, "POST", "/v1/tasks", json=payload,
-                                             headers={"Idempotency-Key": key}))
+        known_id = self._task_ids.get(key)
+        if known_id:
+            task = self._task(await self._request(client, "GET", "/v1/tasks/" + quote(known_id, safe=""), timeout=30))
+            if task["id"] != known_id:
+                raise SparkProviderError("Spark returned a different task id", code="invalid_response")
+        else:
+            task = self._task(await self._request(client, "POST", "/v1/tasks", json=payload,
+                                                 headers={"Idempotency-Key": key}))
         task_id = task["id"]
         self._task_ids[key] = task_id
         task_path = "/v1/tasks/" + quote(task_id, safe="")
+        previous_status = (task["status"], self.task_metrics(task))
+        self._report(payload, key, task["status"], **previous_status[1])
         while task["status"] in PENDING:
             await asyncio.sleep(self.poll_interval)
             task = self._task(await self._request(client, "GET", task_path, timeout=30))
             if task["id"] != task_id:
                 raise SparkProviderError("Spark returned a different task id", code="invalid_response")
+            next_status = (task["status"], self.task_metrics(task))
+            if next_status != previous_status:
+                previous_status = next_status
+                self._report(payload, key, task["status"], **next_status[1])
         if task["status"] == "failed":
             error = task.get("error") or {}
             code = str(error.get("code", "generation_failed")) if isinstance(error, dict) else "generation_failed"
             raise SparkProviderError(f"Spark generation failed ({code})", code=code)
         if task["status"] == "expired":
             raise SparkProviderError("Spark artifact expired", code="artifact_expired")
+        self._report(payload, key, "saving")
         return task
 
 

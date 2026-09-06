@@ -10,6 +10,7 @@ from uuid import uuid4
 from agent.schemas.chat import ChatRequest
 from agent.skills.base import Skill, SkillResult
 from agent.trace import TraceStore
+from agent.aigc.progress import tool_timeout, progress_scope, background_enabled
 
 
 TOOL_POLICIES = {"auto", "confirm", "deny"}
@@ -88,6 +89,7 @@ class PendingToolApproval:
     status: str
     items: list[PendingToolApprovalItem]
     sealed: bool = False
+    background: bool = False
 
 
 class ToolGovernance:
@@ -212,7 +214,7 @@ class ToolGovernance:
         if not decision.allowed:
             return self.blocked_result(decision)
 
-        timeout_seconds = skill.metadata().timeout_seconds
+        timeout_seconds = tool_timeout(skill.metadata().name, skill.metadata().timeout_seconds)
         try:
             return await asyncio.wait_for(
                 skill.execute(**arguments),
@@ -362,6 +364,7 @@ class ToolGovernance:
                     expires_at=now + timedelta(minutes=15),
                     status="pending",
                     items=[],
+                    background=request.stream or background_enabled(),
                 )
                 self._pending_approvals[pending.approval_id] = pending
                 self._approval_groups[group_key] = pending.approval_id
@@ -609,10 +612,14 @@ class ToolGovernance:
                 },
             )
             try:
-                result = await asyncio.wait_for(
-                    item.skill.execute(**item.arguments),
-                    timeout=meta.timeout_seconds,
-                )
+                def report_progress(payload):
+                    self.trace_store.append_event(pending.run_id, type="media.task.progress", status="running",
+                        title="Media task progress", payload=payload)
+                with progress_scope(report_progress, background=pending.background):
+                    result = await asyncio.wait_for(
+                        item.skill.execute(**item.arguments),
+                        timeout=tool_timeout(meta.name, meta.timeout_seconds),
+                    )
             except (TimeoutError, asyncio.TimeoutError):
                 result = SkillResult(
                     success=False,

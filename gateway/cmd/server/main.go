@@ -127,6 +127,7 @@ func main() {
 		api.PUT("/tools/settings", chatHandler.UpdateToolSettings)
 		api.POST("/tool-approvals/:id", chatHandler.ResolveToolApproval)
 		api.GET("/runs", chatHandler.ListRuns)
+		api.GET("/tasks", chatHandler.ListTasks)
 		api.GET("/runs/:id", chatHandler.GetRun)
 		api.POST("/runs/:id/cancel", chatHandler.CancelRun)
 		api.GET("/evals/conversation", evalHandler.ConversationOverview)

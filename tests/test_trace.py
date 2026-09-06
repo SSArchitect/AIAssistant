@@ -209,3 +209,15 @@ def test_trace_store_records_approval_resolution_after_completed_run():
         "run.completed",
         "approval.resolved",
     ]
+
+
+def test_task_summary_keeps_optional_metrics_and_research_counts():
+    store = TraceStore()
+    run = store.start_run(conversation_id='c', user_id='a', input_text='video', agent_id='super_chat', runtime='self')
+    store.append_event(run.run_id, type='media.task.progress', status='running',
+        payload={'kind': 'video', 'stage': 'queued', 'queue_position': 2, 'progress_percent': 0, 'private': 'omit'})
+    store.append_event(run.run_id, type='research.step_summary.started', status='running',
+        payload={'chunk': 2, 'chunk_count': 3, 'prompt': 'omit'})
+    events = store.task_runs('a')[0].events
+    assert events[-2].payload == {'kind': 'video', 'stage': 'queued', 'queue_position': 2, 'progress_percent': 0}
+    assert events[-1].payload == {'chunk': 2, 'chunk_count': 3}
