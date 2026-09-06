@@ -36,7 +36,9 @@ class SparkProviderError(RuntimeError):
         return {"code": self.code, "task_id": self.task_id, "idempotency_key": self.idempotency_key}
 
 
-class SparkImageClient:
+class SparkTaskClient:
+    """Shared transport, idempotency and task lifecycle for Spark media clients."""
+
     def __init__(self, base_url: str, api_key: str, *, output_dir: Path = OUTPUT_DIR,
                  timeout: float = 240, poll_interval: float = 2,
                  transport: httpx.AsyncBaseTransport | None = None):
@@ -56,28 +58,6 @@ class SparkImageClient:
         self.poll_interval = poll_interval
         self.transport = transport
         self._task_ids: dict[str, str] = {}
-
-    @staticmethod
-    def dimensions(request: ImageGenerationRequest) -> tuple[int, int]:
-        # Explicit dimensions win over aspect_ratio; never resize a caller's requested dimensions.
-        width, height = ((request.width, request.height) if request.width is not None
-                         else ASPECT_SIZES[request.aspect_ratio])
-        if (not 256 <= width <= 4096 or not 256 <= height <= 4096 or
-                width % 16 or height % 16 or not 262144 <= width * height <= 4194304):
-            raise ValueError("Spark dimensions must be 256–4096, multiples of 16, with 262144–4194304 total pixels")
-        return width, height
-
-    @staticmethod
-    def payload(request: ImageGenerationRequest) -> dict:
-        width, height = SparkImageClient.dimensions(request)
-        if request.n != 1:
-            raise ValueError("Spark currently supports one image per task (n=1)")
-        if request.model or request.style or request.subject_reference or request.aigc_watermark:
-            raise ValueError("Spark does not support model selection, style, reference images or watermark options")
-        return {"type": "image", "input": {
-            "prompt": request.prompt, "negative_prompt": request.negative_prompt,
-            "width": width, "height": height, "seed": request.seed,
-        }}
 
     async def _request(self, client: httpx.AsyncClient, method: str, path: str, **kwargs) -> httpx.Response:
         for attempt in range(3):
@@ -112,13 +92,13 @@ class SparkImageClient:
             task = response.json()
             if not isinstance(task, dict) or not isinstance(task.get("id"), str) or not task["id"]:
                 raise ValueError()
-            if task.get("status") not in PENDING | {"failed", "succeeded"}:
+            if task.get("status") not in PENDING | {"failed", "succeeded", "expired"}:
                 raise ValueError()
             return task
         except (ValueError, TypeError):
             raise SparkProviderError("Spark returned an invalid task response", code="invalid_response") from None
 
-    async def generate(self, request: ImageGenerationRequest) -> ImageGenerationResponse:
+    async def generate(self, request):
         payload = self.payload(request)
         key = request.idempotency_key or str(uuid.uuid4())
         try:
@@ -136,24 +116,57 @@ class SparkImageClient:
         finally:
             self._task_ids.pop(key, None)
 
+
+    async def _wait_for_task(self, client: httpx.AsyncClient, payload: dict, key: str) -> dict:
+        task = self._task(await self._request(client, "POST", "/v1/tasks", json=payload,
+                                             headers={"Idempotency-Key": key}))
+        task_id = task["id"]
+        self._task_ids[key] = task_id
+        task_path = "/v1/tasks/" + quote(task_id, safe="")
+        while task["status"] in PENDING:
+            await asyncio.sleep(self.poll_interval)
+            task = self._task(await self._request(client, "GET", task_path, timeout=30))
+            if task["id"] != task_id:
+                raise SparkProviderError("Spark returned a different task id", code="invalid_response")
+        if task["status"] == "failed":
+            error = task.get("error") or {}
+            code = str(error.get("code", "generation_failed")) if isinstance(error, dict) else "generation_failed"
+            raise SparkProviderError(f"Spark generation failed ({code})", code=code)
+        if task["status"] == "expired":
+            raise SparkProviderError("Spark artifact expired", code="artifact_expired")
+        return task
+
+
+class SparkImageClient(SparkTaskClient):
+    @staticmethod
+    def dimensions(request: ImageGenerationRequest) -> tuple[int, int]:
+        # Explicit dimensions win over aspect_ratio; never resize a caller's requested dimensions.
+        width, height = ((request.width, request.height) if request.width is not None
+                         else ASPECT_SIZES[request.aspect_ratio])
+        if (not 256 <= width <= 4096 or not 256 <= height <= 4096 or
+                width % 16 or height % 16 or not 262144 <= width * height <= 4194304):
+            raise ValueError("Spark dimensions must be 256–4096, multiples of 16, with 262144–4194304 total pixels")
+        return width, height
+
+    @staticmethod
+    def payload(request: ImageGenerationRequest) -> dict:
+        width, height = SparkImageClient.dimensions(request)
+        if request.n != 1:
+            raise ValueError("Spark currently supports one image per task (n=1)")
+        if request.model or request.style or request.subject_reference or request.aigc_watermark:
+            raise ValueError("Spark does not support model selection, style, reference images or watermark options")
+        return {"type": "image", "input": {
+            "prompt": request.prompt, "negative_prompt": request.negative_prompt,
+            "width": width, "height": height, "seed": request.seed,
+        }}
+
     async def _generate(self, request: ImageGenerationRequest, payload: dict, key: str) -> ImageGenerationResponse:
         async with httpx.AsyncClient(base_url=self.base_url, headers={"Authorization": f"Bearer {self.api_key}"},
                                      timeout=httpx.Timeout(60, connect=10), follow_redirects=False,
                                      transport=self.transport) as client:
-            task = self._task(await self._request(client, "POST", "/v1/tasks", json=payload,
-                                                  headers={"Idempotency-Key": key}))
+            task = await self._wait_for_task(client, payload, key)
             task_id = task["id"]
-            self._task_ids[key] = task_id
             task_path = "/v1/tasks/" + quote(task_id, safe="")
-            while task["status"] in PENDING:
-                await asyncio.sleep(self.poll_interval)
-                task = self._task(await self._request(client, "GET", task_path, timeout=30))
-                if task["id"] != task_id:
-                    raise SparkProviderError("Spark returned a different task id", code="invalid_response")
-            if task["status"] == "failed":
-                error = task.get("error") or {}
-                code = str(error.get("code", "generation_failed")) if isinstance(error, dict) else "generation_failed"
-                raise SparkProviderError(f"Spark generation failed ({code})", code=code)
             artifacts = task.get("artifacts")
             if not isinstance(artifacts, list) or len(artifacts) != 1:
                 raise SparkProviderError("Spark returned no single image artifact", code="invalid_output")

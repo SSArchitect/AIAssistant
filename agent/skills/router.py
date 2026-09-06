@@ -37,6 +37,7 @@ _DOMAIN_TRIGGERS: dict[str, tuple[str, ...]] = {
         "减肥", "减脂", "热量", "卡路里", "体重", "饮食记录", "运动记录",
         "热量缺口", "营养", "bmi", "calorie", "weight loss",
     ),
+    "video": ("生视频", "生成视频", "制作视频", "文生视频", "视频", "video generation", "video"),
 }
 
 
@@ -47,6 +48,8 @@ def _text_art_requested(query: str) -> bool:
 def explicit_image_generation_request(query: str) -> bool:
     """Conservative imperative guard; tool visibility does not depend on this matcher."""
     text = query.strip()
+    if re.search(r"视频|video", text, re.IGNORECASE):
+        return False
     if _text_art_requested(text) or re.search(r"提示词|prompt|不要.*(?:生成|生图|画)|不需要.*(?:生成|生图|画)", text, re.IGNORECASE):
         return False
     return bool(re.match(

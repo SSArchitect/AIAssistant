@@ -1,5 +1,7 @@
 # Spark 生图 Provider 与统一 AI 生图工具
 
+共用 Spark 地址与密钥的文生视频工具见 [Spark 生视频工具](spark-video-provider.md)。
+
 实现基于 Media Provider 接口协议 v1（2026-09-06，0.2.0）：固定 Z-Image Base、单张 PNG 文生图，默认 1024×1024。宽高单边 256–4096、16 的倍数，总像素 262144–4194304；支持 2048×2048、4096×1024、832×1216 等尺寸。后续协议参数扩展集中在 `agent/aigc/spark_client.py`，HTTP API、Agent workflow 和 tool 共用 `agent/aigc/image_service.py`。
 
 ## 配置

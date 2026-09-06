@@ -88,6 +88,20 @@ class ContextBuilder:
                 "工具失败时如实说明，不能声称图片已经生成。"
                 "禁止编造图片 URL 或使用占位图网站冒充本次生成结果；只有成功的生图工具结果才是交付依据。"
             )
+        if "generate_video" in normalized_tool_names:
+            tool_policy_lines.append(
+                "- 用户要求生成视频时调用 generate_video，将场景、动作、运镜和声音写入 prompt。"
+                "当前仅支持文生视频并包含原生音频；默认 864×480、124 原生帧（约 5.17 秒）、输出 24 FPS。"
+                "宽高各 32–4096 且为 32 的倍数，面积不超过 1032192；num_frames（5–3592）与"
+                " duration_seconds（二选一，大于 0）向上对齐到原生 24 FPS 的 17k+5 帧网格，"
+                "面积乘对齐后原生帧数不超过 373653504，超限需降低分辨率或时长。"
+                "输出 fps 可为 1–120、最多三位小数，只重复/丢弃帧，保持运动速度与声音时间轴，不增加运动细节。"
+                "用返回的 video 参数说明实际输出帧数和时长；64 位 seed 优先以十进制字符串传入，"
+                "以 seed_text 读取精确值。不能承诺图生视频；长片段属于实验范围。"
+                "成功后用 Markdown 链接返回工具提供的实际 MP4 URL，不得用图片语法或编造地址。"
+                "wait_timeout 只表示停止等待，原任务可能仍在运行；重试必须复用原始参数和返回的"
+                " idempotency_key，不能重复创建新任务。失败时如实说明。"
+            )
         if "tool_search" in normalized_tool_names:
             tool_policy_lines.extend(
                 [

@@ -442,6 +442,11 @@ class AgentEngine:
                 "model_used",
                 "tokens_used",
                 "error_type",
+                "code",
+                "task_id",
+                "idempotency_key",
+                "seed_text",
+                "video",
                 "query",
                 "url",
                 "title",
@@ -2906,6 +2911,47 @@ class AgentEngine:
         displayed = {match.group(2) for match in image_pattern.finditer(content)}
         missing = [markdown for url, markdown in images.items() if url not in displayed]
         return "\n\n".join([content.rstrip(), *missing]).strip()
+
+    @staticmethod
+    def _restore_generated_video_links(content: str, new_messages: list[LLMMessage]) -> str:
+        video_calls = {
+            call.get("id") for message in new_messages for call in (message.tool_calls or [])
+            if call.get("name") == "generate_video"
+        }
+        videos: dict[str, str] = {}
+        for message in new_messages:
+            if message.role != "tool" or message.tool_call_id not in video_calls:
+                continue
+            try:
+                payload = json.loads(message.content)
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(payload, dict) or payload.get("success") is not True:
+                continue
+            data = payload.get("data")
+            items = data.get("videos") if isinstance(data, dict) else None
+            if not isinstance(items, list):
+                continue
+            for video in items:
+                url = video.get("url") if isinstance(video, dict) else None
+                if isinstance(url, str) and re.fullmatch(r"/static/generated/aigc/[\w-]+\.mp4", url):
+                    videos.setdefault(url, f"[AI 生视频 {len(videos) + 1}]({url})")
+        if not videos:
+            return content
+        link_pattern = re.compile(r"!?\[([^\]]*)\]\(([^\s)]+)\)")
+
+        def restore(match: re.Match) -> str:
+            url = match.group(2)
+            if url in videos:
+                return f"[{match.group(1)}]({url})"
+            if url.startswith("attachment://") and url.endswith(".mp4"):
+                matches = [source for source in videos if source.rsplit("/", 1)[-1] == url.rsplit("/", 1)[-1]]
+                return f"[{match.group(1)}]({matches[0]})" if len(matches) == 1 else ""
+            return match.group(0)
+
+        content = link_pattern.sub(restore, content)
+        displayed = {match.group(2) for match in link_pattern.finditer(content)}
+        return "\n\n".join([content.rstrip(), *(link for url, link in videos.items() if url not in displayed)]).strip()
 
     def _merge_agent_tool_payload(
         self,
@@ -12158,6 +12204,7 @@ class AgentEngine:
                 else:
                     # No tool calls — we have the final answer
                     response.content = self._restore_generated_image_links(response.content, all_new_messages)
+                    response.content = self._restore_generated_video_links(response.content, all_new_messages)
                     if stream_tool_capable_round:
                         # Promote the completed round exactly once. Until this
                         # point its deltas were explicitly provisional because a
@@ -12461,6 +12508,7 @@ class AgentEngine:
             if request.thinking_enabled is True and response.reasoning:
                 reasoning_parts.append(response.reasoning)
             response.content = self._restore_generated_image_links(response.content, all_new_messages)
+            response.content = self._restore_generated_video_links(response.content, all_new_messages)
             all_new_messages.append(LLMMessage(role="assistant", content=response.content))
 
         if agent_loop_enabled:

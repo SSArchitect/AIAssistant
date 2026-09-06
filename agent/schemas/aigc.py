@@ -1,11 +1,96 @@
 from __future__ import annotations
 
-from typing import Any, Literal
+from fractions import Fraction
+import math
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr, field_validator, model_validator
 
 
 IMAGE_ASPECT_RATIOS = {"1:1", "16:9", "4:3", "3:2", "2:3", "3:4", "9:16", "21:9"}
+VIDEO_MAX_PIXELS = 1032192
+VIDEO_MAX_PIXEL_FRAMES = 373653504
+VIDEO_MAX_FRAMES = 3592
+VIDEO_NATIVE_FPS = 24
+VIDEO_MAX_SEED = 18446744073709551615
+
+
+class VideoGenerationRequest(BaseModel):
+    """Provider v0.5 contract; retain the requested time input for idempotent replay."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    prompt: str = Field(..., min_length=1, max_length=4000)
+    width: int = Field(default=864, strict=True, ge=32, le=4096, multiple_of=32)
+    height: int = Field(default=480, strict=True, ge=32, le=4096, multiple_of=32)
+    num_frames: int | None = Field(default=None, strict=True, ge=5, le=VIDEO_MAX_FRAMES)
+    duration_seconds: float | None = Field(default=None, strict=True, gt=0,
+        le=VIDEO_MAX_FRAMES / VIDEO_NATIVE_FPS, allow_inf_nan=False)
+    fps: float = Field(default=24, strict=True, ge=1, le=120, allow_inf_nan=False)
+    seed: Annotated[StrictInt, Field(ge=-1, le=VIDEO_MAX_SEED)] | Annotated[
+        StrictStr, Field(pattern=r"^[0-9]{1,20}$")
+    ] | None = None
+    idempotency_key: str | None = Field(default=None, min_length=1, max_length=128)
+
+    @model_validator(mode="before")
+    @classmethod
+    def default_frames(cls, value):
+        if isinstance(value, dict) and "num_frames" not in value and "duration_seconds" not in value:
+            return {**value, "num_frames": 124}
+        return value
+
+    @field_validator("seed")
+    @classmethod
+    def normalize_seed(cls, value):
+        if value is None or value == -1:
+            return None
+        number = int(value)
+        if number > VIDEO_MAX_SEED:
+            raise ValueError("seed exceeds unsigned 64-bit range")
+        # Preserve all 64 bits through tool arguments, Trace and browser JSON round trips.
+        return str(number)
+
+    @field_validator("fps")
+    @classmethod
+    def validate_fps_precision(cls, value):
+        if (Fraction(str(value)) * 1000).denominator != 1:
+            raise ValueError("fps accepts at most 3 decimal places")
+        return value
+
+    @model_validator(mode="after")
+    def validate_video_options(self) -> "VideoGenerationRequest":
+        if not self.prompt.strip():
+            raise ValueError("prompt cannot be blank")
+        if (self.num_frames is None) == (self.duration_seconds is None):
+            raise ValueError("provide exactly one of num_frames and duration_seconds, or omit both")
+        if self.width * self.height > VIDEO_MAX_PIXELS:
+            raise ValueError(f"width * height must not exceed {VIDEO_MAX_PIXELS}")
+        if self.width * self.height * self.resolved_frames() > VIDEO_MAX_PIXEL_FRAMES:
+            raise ValueError(f"width * height * aligned native frames must not exceed {VIDEO_MAX_PIXEL_FRAMES}")
+        if self.idempotency_key is not None and not self.idempotency_key.strip():
+            raise ValueError("idempotency_key cannot be blank")
+        return self
+
+    def resolved_frames(self) -> int:
+        requested = self.num_frames if self.num_frames is not None else math.ceil(
+            Fraction(str(self.duration_seconds)) * VIDEO_NATIVE_FPS)
+        return 5 + 17 * max(0, math.ceil(Fraction(requested - 5, 17)))
+
+
+class GeneratedVideo(BaseModel):
+    index: int
+    url: str
+    mime_type: str = "video/mp4"
+
+
+class VideoGenerationResponse(BaseModel):
+    id: str
+    provider: str = "spark"
+    prompt: str
+    videos: list[GeneratedVideo]
+    seed_text: str | None = None
+    video: dict[str, Any] | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class ImageGenerationRequest(BaseModel):
