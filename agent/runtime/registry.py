@@ -99,7 +99,7 @@ def list_agents() -> list[AgentInfo]:
         AgentInfo(
             id="image_generation_v1",
             name="AI 生图",
-            description="对话优先的 AI 生图 Agent，支持 MiniMax 图片输出和提示词修饰。",
+            description="对话优先的 AI 生图 Agent，支持 MiniMax / Spark 图片输出和提示词修饰。",
             runtime="self",
             framework="native",
             enabled=True,

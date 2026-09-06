@@ -102,7 +102,8 @@ test('programmatic mobile chat focus preserves native keyboard avoidance', () =>
 
 test('startup welcome is a real draft and never falls back to historical context', () => {
     const bootStart = appSource.indexOf('async function bootApp()');
-    const bootEnd = appSource.indexOf('\nfunction setView(', bootStart);
+    // Stop at bootApp's top-level closing brace, excluding neighboring functions.
+    const bootEnd = appSource.indexOf('\n}\n', bootStart) + 3;
     const bootSource = appSource.slice(bootStart, bootEnd);
     const restoreStart = appSource.indexOf('async function restoreInitialConversation()');
     const restoreEnd = appSource.indexOf('\nasync function startAgentTask(', restoreStart);
@@ -130,7 +131,8 @@ test('startup only blocks sending through the short authentication phase', () =>
         'startup must finish before the first conversation is selected or created',
     );
     const bootStart = appSource.indexOf('async function bootApp()');
-    const bootEnd = appSource.indexOf('\nfunction setView(', bootStart);
+    // Stop at bootApp's top-level closing brace, excluding neighboring functions.
+    const bootEnd = appSource.indexOf('\n}\n', bootStart) + 3;
     const bootSource = appSource.slice(bootStart, bootEnd);
     assert.match(bootSource, /loadAccounts\(\{ timeoutMs: STARTUP_ACCOUNT_TIMEOUT_MS \}\)/);
     assert.match(bootSource, /void refreshAll\(\);/);

@@ -56,6 +56,8 @@ class ChatRequest(BaseModel):
     attachments: list["ChatAttachment"] = Field(default_factory=list)
     agent_input: AgentInputPacket | None = None
     handoff: AgentInputPacket | None = None
+    # Internal options passed by the image workflow tool; not sent to the chat model as prose.
+    image_options: dict[str, Any] = Field(default_factory=dict, exclude=True)
     memory_enabled: bool = True
     run_id: Optional[str] = None
     disabled_tools: list[str] = Field(default_factory=list)

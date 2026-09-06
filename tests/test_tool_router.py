@@ -216,3 +216,51 @@ def test_pulse_topic_deletion_routes_to_delete_tool():
 
     assert route.activated_domains == ["pulse"]
     assert route.scored_tools[0]["name"] == "delete_pulse_topic"
+
+
+def test_cat_image_request_has_one_public_image_tool(engine):
+    from agent.schemas.chat import ChatRequest
+    catalog, tools, route = engine._routed_tool_definitions_for_request(
+        ChatRequest(conversation_id='cat-route', message='给我画一幅小猫图片', agent_id='super_chat'), agent_id='super_chat')
+    assert 'image_generation_v1' in {tool.name for tool in tools}
+    assert 'generate_image' not in {tool.name for tool in catalog}
+    assert route.activated_domains == ['image']
+
+
+def test_explicit_ascii_request_does_not_activate_image_domain():
+    router = ToolRouter()
+    assert 'image' not in router._activated_domains('给我画一幅 ASCII 小猫字符画')
+
+
+def test_disabling_unified_image_tool_leaves_no_direct_bypass(engine):
+    from agent.schemas.chat import ChatRequest
+    _, tools, _ = engine._routed_tool_definitions_for_request(
+        ChatRequest(conversation_id='cat-disabled',message='给我画一幅小猫图片',agent_id='super_chat'),
+        agent_id='super_chat',disabled_tools={'image_generation_v1'})
+    assert not {'image_generation_v1','generate_image'} & {tool.name for tool in tools}
+
+
+def test_drawing_phrases_activate_images_but_general_chat_does_not():
+    router = ToolRouter()
+    for query in ['帮我画一只猫','画个机器人','Draw me a cat','paint a landscape']:
+        assert 'image' in router._activated_domains(query)
+    for query in ['小猫为什么睡觉','这张画的作者是谁','ASCII cat','给我画一幅字符画']:
+        assert 'image' not in router._activated_domains(query)
+
+
+def test_image_tool_is_available_even_when_query_does_not_match_keywords(engine):
+    from agent.schemas.chat import ChatRequest
+    for query in ['帮我生成一只小猫', '来只橘猫，水彩风格', '你好']:
+        _, tools, _ = engine._routed_tool_definitions_for_request(
+            ChatRequest(conversation_id='image-always',message=query,agent_id='super_chat'),agent_id='super_chat')
+        assert 'image_generation_v1' in {tool.name for tool in tools}
+
+
+def test_image_execution_guard_excludes_questions_negation_and_text_art():
+    from agent.skills.router import explicit_image_generation_request
+    assert explicit_image_generation_request('帮我生成一只小猫')
+    assert explicit_image_generation_request('给我画一幅小猫图片')
+    for query in ['不要给我画一只猫', '为什么刚才生成一只猫失败了', '帮我生成一首诗',
+                  '帮我生成一个接口', '给我画一幅 ASCII 小猫', '小猫吃什么',
+                  '帮我生成一只小猫的提示词', '给我画一只猫，不要实际生成，只要提示词']:
+        assert not explicit_image_generation_request(query)

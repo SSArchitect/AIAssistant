@@ -9,21 +9,28 @@ IMAGE_ASPECT_RATIOS = {"1:1", "16:9", "4:3", "3:2", "2:3", "3:4", "9:16", "21:9"
 
 
 class ImageGenerationRequest(BaseModel):
-    prompt: str = Field(..., min_length=1, max_length=1500)
+    prompt: str = Field(..., min_length=1, max_length=4000)
+    provider: Literal["minimax", "spark"] | None = None
+    negative_prompt: str = Field(default="", max_length=4000)
+    idempotency_key: str | None = Field(default=None, min_length=1, max_length=128)
     model: str | None = None
     aspect_ratio: str = "1:1"
     response_format: Literal["url", "base64"] = "url"
     n: int = Field(default=1, ge=1, le=9)
     prompt_optimizer: bool = True
-    seed: int | None = None
-    width: int | None = Field(default=None, ge=512, le=2048)
-    height: int | None = Field(default=None, ge=512, le=2048)
+    seed: int | None = Field(default=None, strict=True, ge=0, le=4294967295)
+    width: int | None = Field(default=None, strict=True, ge=256, le=4096)
+    height: int | None = Field(default=None, strict=True, ge=256, le=4096)
     aigc_watermark: bool = False
     style: dict[str, Any] | None = None
     subject_reference: list[dict[str, Any]] | None = None
 
     @model_validator(mode="after")
     def validate_image_options(self) -> "ImageGenerationRequest":
+        if not self.prompt.strip():
+            raise ValueError("prompt cannot be blank")
+        if self.idempotency_key is not None and not self.idempotency_key.strip():
+            raise ValueError("idempotency_key cannot be blank")
         if self.aspect_ratio not in IMAGE_ASPECT_RATIOS:
             raise ValueError(f"aspect_ratio must be one of {sorted(IMAGE_ASPECT_RATIOS)}")
         if (self.width is None) != (self.height is None):

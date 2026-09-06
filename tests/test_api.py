@@ -820,3 +820,46 @@ async def test_generate_image_endpoint(client):
     assert data["aspect_ratio"] == "16:9"
     assert data["images"][0]["url"] == "https://example.com/generated.png"
     minimax_client.generate_image.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_generate_spark_image_endpoint(client):
+    from agent.aigc.spark_client import SparkImageClient
+    from agent.config import runtime_config
+    from agent.schemas.aigc import GeneratedImage, ImageGenerationResponse
+    response = ImageGenerationResponse(id="spark-task", provider="spark", model="z-image-base", prompt="robot",
+        aspect_ratio="1:1", response_format="url", images=[GeneratedImage(index=0, url="/static/generated/aigc/spark.png")])
+    with patch.dict(runtime_config._data, {"aigc.spark.base_url":"https://spark.test", "aigc.spark.api_key":"test"}), patch.object(
+            SparkImageClient, "generate", new=AsyncMock(return_value=response)) as generate:
+        result = await client.post("/agent/aigc/image", json={"provider":"spark", "prompt":"robot",
+            "negative_prompt":"blur", "idempotency_key":"request-1", "width":4096, "height":1024, "seed":0})
+    assert result.status_code == 200
+    assert result.json()["provider"] == "spark"
+    assert result.json()["images"][0]["url"] == "/static/generated/aigc/spark.png"
+    request = generate.await_args.args[0]
+    assert request.negative_prompt == "blur"
+    assert request.idempotency_key == "request-1"
+    assert request.seed == 0
+    assert (request.width, request.height) == (4096, 1024)
+
+
+@pytest.mark.asyncio
+async def test_generate_spark_endpoint_preserves_uncertain_task(client):
+    from agent.aigc.spark_client import SparkProviderError
+    with patch.object(main_module, "generate_image_with_provider", new=AsyncMock(side_effect=SparkProviderError(
+            "still running", code="wait_timeout", task_id="task-1", idempotency_key="key-1"))):
+        result = await client.post("/agent/aigc/image", json={"provider":"spark", "prompt":"robot"})
+    assert result.status_code == 502
+    assert result.json()["detail"] == {"message":"still running", "code":"wait_timeout", "task_id":"task-1", "idempotency_key":"key-1"}
+
+
+@pytest.mark.asyncio
+async def test_image_tool_catalog_exposes_one_entry_with_provider_options(client):
+    response = await client.get('/agent/skills')
+    assert response.status_code == 200
+    skills = {item['name']:item for item in response.json()['skills']}
+    assert 'generate_image' not in skills
+    assert 'image_generation_v1' in skills
+    options = {item['name']:item for item in skills['image_generation_v1']['parameters']}
+    assert options['provider']['enum'] == ['spark','minimax']
+    assert {'width','height','seed'} <= options.keys()

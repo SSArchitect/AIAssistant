@@ -10,8 +10,12 @@ import logging
 import re
 from time import perf_counter
 from typing import Any
+from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
+from agent.config import runtime_config
+from agent.aigc.image_service import generate_image as generate_image_with_provider
+from agent.aigc.spark_client import SparkImageClient, SparkProviderError
 from agent.aigc import (
     MiniMaxAIGCClient,
     apply_text_rendering_guard,
@@ -45,11 +49,12 @@ from agent.skills.base import SkillResult
 from agent.skills.governance import ToolGovernance
 from agent.skills.registry import SkillRegistry
 from agent.skills.builtin.agent_tool import AgentToolSkill
+from agent.skills.builtin.generate_image import GenerateImageSkill
 from agent.skills.builtin.drive import DRIVE_TOOL_NAMES
 from agent.skills.builtin.pulse import PULSE_TOOL_NAMES
 from agent.skills.builtin.todo import TODO_TOOL_NAMES
 from agent.skills.builtin.tool_search import ToolSearchSkill
-from agent.skills.router import CORE_ALWAYS_ON_TOOL_NAMES, ToolRoute, ToolRouter
+from agent.skills.router import CORE_ALWAYS_ON_TOOL_NAMES, ToolRoute, ToolRouter, explicit_image_generation_request
 from agent.trace import TraceStore
 from agent.weight_loss import WeightLossStore
 
@@ -2857,6 +2862,51 @@ class AgentEngine:
             return
         artifacts.append(artifact)
 
+    @staticmethod
+    def _restore_generated_image_links(content: str, new_messages: list[LLMMessage]) -> str:
+        """Keep generated media URLs grounded in this turn's successful tool output."""
+        image_calls = {
+            call.get("id")
+            for message in new_messages
+            for call in (message.tool_calls or [])
+            if call.get("name") == AIGC_AGENT_ID
+        }
+        image_pattern = re.compile(r"!\[([^\]]*)\]\(([^\s)]+)\)")
+        images: dict[str, str] = {}
+        for message in new_messages:
+            if message.role != "tool" or message.tool_call_id not in image_calls:
+                continue
+            try:
+                payload = json.loads(message.content)
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(payload, dict) or payload.get("success") is not True:
+                continue
+            data = payload.get("data")
+            if not isinstance(data, dict) or not isinstance(data.get("response"), str):
+                continue
+            for match in image_pattern.finditer(data["response"]):
+                url = match.group(2)
+                if url.startswith(("/static/", "https://", "http://", "data:image/")):
+                    images.setdefault(url, match.group(0))
+        if not images:
+            return content
+
+        def restore(match: re.Match) -> str:
+            url = match.group(2)
+            if not url.startswith("attachment://"):
+                return match.group(0)
+            filename = url.removeprefix("attachment://").rsplit("/", 1)[-1]
+            matches = [source for source in images if urlsplit(source).path.rsplit("/", 1)[-1] == filename]
+            if len(matches) == 1:
+                return f"![{match.group(1)}]({matches[0]})"
+            return ""
+
+        content = image_pattern.sub(restore, content)
+        displayed = {match.group(2) for match in image_pattern.finditer(content)}
+        missing = [markdown for url, markdown in images.items() if url not in displayed]
+        return "\n\n".join([content.rstrip(), *missing]).strip()
+
     def _merge_agent_tool_payload(
         self,
         *,
@@ -3215,6 +3265,17 @@ class AgentEngine:
             )
 
         task = str(arguments.get("task") or request.message or "").strip() or request.message
+        image_options = {}
+        if target_agent.id == AIGC_AGENT_ID:
+            option_names = {p.name for p in GenerateImageSkill().metadata().parameters} - {"prompt"}
+            supplied = {key: value for key, value in arguments.items() if key in option_names}
+            try:
+                prepared = await GenerateImageSkill().prepare_arguments(prompt="image workflow", **supplied)
+            except ValueError as exc:
+                return SkillResult(success=False, error=str(exc), error_code="invalid_tool_arguments")
+            image_options = {key: value for key, value in prepared.items()
+                             if key in set(supplied) | {"provider", "idempotency_key"}}
+            arguments = {**arguments, **image_options}
         context = str(arguments.get("context") or "").strip()
         reason = str(arguments.get("reason") or f"agent_tool:{target_agent.id}").strip() or f"agent_tool:{target_agent.id}"
         delegated_context_blocks = list(request.context_blocks or [])
@@ -3292,6 +3353,7 @@ class AgentEngine:
         delegated_request = request.model_copy(
             update={
                 "agent_id": target_agent.id,
+                "image_options": image_options,
                 "message": task,
                 "mode_ids": request.mode_ids,
                 "mode_prompts": request.mode_prompts,
@@ -8029,6 +8091,8 @@ class AgentEngine:
         review: dict[str, Any],
     ) -> str:
         raw_error = str(error).strip() or error.__class__.__name__
+        if isinstance(error, SparkProviderError) or (request.image_options.get("provider") or runtime_config.get("aigc.image_provider", "minimax")) == "spark":
+            return f"Spark 生图未完成：{raw_error}"
         normalized = raw_error.lower()
         final_prompt = str(review.get("final_prompt") or "")
         prompt_preview = " ".join(final_prompt.split())[:240]
@@ -8279,6 +8343,14 @@ class AgentEngine:
                 f"上传附件：\n{attachment_text}\n\n"
                 f"本轮额外上下文：\n{context_text}"
             )
+        if (request.image_options.get("provider") or runtime_config.get("aigc.image_provider", "minimax")) == "spark":
+            system += ("\n当前生图 Provider 是 Spark，支持单张 PNG 文生图，默认 1024×1024。"
+                       "支持自定义尺寸：单边 256–4096、16 的倍数，总像素 262144–4194304。"
+                       "例如 2048×2048、4096×1024、832×1216。用户要求具体尺寸时，"
+                       "在 JSON 中增加整数 width、height，保留原始尺寸；未指定时省略这两个字段，"
+                       "使用 aspect_ratio 对应的预设尺寸。参考图编辑仍不支持。"
+                       "不满足尺寸限制或需要参考图编辑时，设置 should_generate=false 并说明限制、询问调整，"
+                       "不要自动缩小或改写尺寸。")
         return [
             LLMMessage(role="system", content=system),
             LLMMessage(role="user", content=user),
@@ -8399,6 +8471,7 @@ class AgentEngine:
         raw: dict[str, Any] | None,
         *,
         fallback_prompt: str,
+        image_provider: str | None = None,
     ) -> dict[str, Any]:
         raw = raw or {}
         final_prompt = str(raw.get("final_prompt") or raw.get("prompt") or "").strip()
@@ -8435,7 +8508,22 @@ class AgentEngine:
             should_generate = False
             clarifying_question = clarifying_question or "请再补充一下你想生成的画面。"
 
+        dimensions = {}
+        if (image_provider or runtime_config.get("aigc.image_provider", "minimax")) == "spark" and (
+            raw.get("width") is not None or raw.get("height") is not None
+        ):
+            try:
+                size_request = ImageGenerationRequest(prompt=final_prompt or "size validation",
+                    width=raw.get("width"), height=raw.get("height"))
+                width, height = SparkImageClient.dimensions(size_request)
+                dimensions = {"width": width, "height": height}
+            except ValueError:
+                should_generate = False
+                clarifying_question = ("该尺寸不符合 Spark 要求：单边 256–4096 且为 16 的倍数，"
+                    "总像素 262144–4194304。请提供符合要求的宽高，例如 2048×2048。")
+
         return {
+            **dimensions,
             "should_generate": should_generate,
             "clarifying_question": clarifying_question,
             "final_prompt": final_prompt,
@@ -8458,8 +8546,9 @@ class AgentEngine:
                 "review_notes": [],
             }
         return self._coerce_aigc_review(
-            {"should_generate": True, "final_prompt": fallback_prompt, "aspect_ratio": "1:1"},
+            {"should_generate": True, "final_prompt": fallback_prompt, "aspect_ratio": "1:1", **request.image_options},
             fallback_prompt=fallback_prompt,
+            image_provider=request.image_options.get("provider"),
         )
 
     def _parse_aigc_review_response(
@@ -8468,11 +8557,14 @@ class AgentEngine:
         *,
         fallback_prompt: str,
         text_heavy_visual: bool = False,
+        image_options: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         parsed = self._extract_json_object(response_text)
         if parsed is None:
             parsed = {"should_generate": True, "final_prompt": response_text.strip() or fallback_prompt}
-        review = self._coerce_aigc_review(parsed, fallback_prompt=fallback_prompt)
+        options = image_options or {}
+        review = self._coerce_aigc_review({**parsed, **options}, fallback_prompt=fallback_prompt,
+                                        image_provider=options.get("provider"))
         if text_heavy_visual:
             review = apply_text_rendering_guard(review)
         return review
@@ -8509,7 +8601,7 @@ class AgentEngine:
                 lines.append("")
                 lines.append("图片 URL 通常会在 24 小时后失效。")
         else:
-            lines.append("MiniMax 返回成功，但没有图片数据。")
+            lines.append("生图服务返回成功，但没有图片数据。")
 
         return "\n".join(lines).strip()
 
@@ -8536,7 +8628,7 @@ class AgentEngine:
                 lines.append("")
                 lines.append("图片 URL 通常会在 24 小时后失效。")
         else:
-            lines.append("MiniMax 返回成功，但没有图片数据。")
+            lines.append("生图服务返回成功，但没有图片数据。")
 
         if research_brief:
             lines.extend(["", "**简要总结**"])
@@ -10596,6 +10688,7 @@ class AgentEngine:
             review_usage = review_response.usage
             review = self._parse_aigc_review_response(
                 review_response.content,
+                image_options=request.image_options,
                 fallback_prompt=fallback_prompt,
                 text_heavy_visual=text_heavy_visual,
             )
@@ -10691,13 +10784,21 @@ class AgentEngine:
             )
 
         subject_references = self._aigc_subject_references(request.attachments)
+        image_provider = request.image_options.get("provider") or runtime_config.get("aigc.image_provider", "minimax")
         image_request = ImageGenerationRequest(
+            provider=image_provider,
+            idempotency_key=(request.image_options.get("idempotency_key") or run_id) if image_provider == "spark" else request.image_options.get("idempotency_key"),
+            seed=request.image_options.get("seed"),
             prompt=review["final_prompt"],
+            width=request.image_options.get("width", review.get("width")),
+            height=request.image_options.get("height", review.get("height")),
             aspect_ratio=review["aspect_ratio"],
             response_format="url",
             n=1,
             prompt_optimizer=not text_heavy_visual,
             subject_reference=subject_references or None,
+            negative_prompt=(str(request.image_options.get("negative_prompt", review.get("negative_prompt") or ""))
+                             if image_provider == "spark" else str(request.image_options.get("negative_prompt") or "")),
         )
 
         share_card_result = None
@@ -10705,7 +10806,7 @@ class AgentEngine:
             try:
                 share_card_result = render_share_card_svg(research_brief, run_id=run_id)
             except Exception:
-                logger.exception("Local AIGC share-card rendering failed; falling back to MiniMax")
+                logger.exception("Local AIGC share-card rendering failed; falling back to image provider")
 
         if share_card_result:
             image_started = perf_counter()
@@ -10783,7 +10884,7 @@ class AgentEngine:
                 run_id,
                 type="aigc.image.started",
                 status="running",
-                title="MiniMax image generation started",
+                title="Image generation started",
                 payload={
                     "aspect_ratio": image_request.aspect_ratio,
                     "response_format": image_request.response_format,
@@ -10794,26 +10895,12 @@ class AgentEngine:
                 },
             )
             try:
-                image_client = MiniMaxAIGCClient.from_runtime_config()
-                raw_image = await image_client.generate_image(
-                    image_request.prompt,
-                    model=image_request.model,
-                    aspect_ratio=image_request.aspect_ratio,
-                    response_format=image_request.response_format,
-                    n=image_request.n,
-                    prompt_optimizer=image_request.prompt_optimizer,
-                    extra=image_request.minimax_extra(),
-                )
-                image_response = ImageGenerationResponse.from_minimax(
-                    raw_image,
-                    image_request,
-                    model=image_request.model or image_client.image_model,
-                )
+                image_response = await generate_image_with_provider(image_request)
                 self.trace_store.append_event(
                     run_id,
                     type="aigc.image.completed",
                     status="completed",
-                    title="MiniMax image generation completed",
+                    title="Image generation completed",
                     payload={
                         "model": image_response.model,
                         "image_count": len(image_response.images),
@@ -10847,10 +10934,11 @@ class AgentEngine:
                     run_id,
                     type="aigc.image.failed",
                     status="error",
-                    title="MiniMax image generation failed",
+                    title="Image generation failed",
                     payload={
                         "error_message": error_msg,
                         "raw_error_message": raw_error,
+                        **({"provider_context": e.context()} if isinstance(e, SparkProviderError) else {}),
                     },
                     duration_ms=int((perf_counter() - image_started) * 1000),
                 )
@@ -10895,7 +10983,7 @@ class AgentEngine:
                     plan=plan_infos or (research_plan if research_plan else None),
                     model_used=error_model_used,
                     tokens_used=error_tokens_used,
-                    error_type="",
+                    error_type="aigc_error",
                     agent_id=agent_id,
                     role_id=role_id,
                     runtime=runtime,
@@ -12015,6 +12103,21 @@ class AgentEngine:
             if not response.tool_calls:
                 if (
                     agent_id == SUPER_CHAT_AGENT_ID
+                    and tool_call_count == 0
+                    and AIGC_AGENT_ID in allowed_tool_names
+                    and explicit_image_generation_request(request.message)
+                ):
+                    forced_call = ToolCall(id=f"auto_image_{round_index + 1}", name=AIGC_AGENT_ID,
+                        arguments={"task": request.message, "reason": "用户明确要求实际生图，必须执行生图工具"})
+                    self.trace_store.append_event(
+                        run.run_id, type="agent_loop.image_forced", status="completed",
+                        title="Image tool inserted for an explicit generation request", step_id=forced_call.id,
+                        payload={"reason": "model_returned_without_tool_call_for_image_request",
+                                 "name": forced_call.name, "arguments": forced_call.arguments},
+                    )
+                    response = LLMResponse(content="",tool_calls=[forced_call],model=response.model,usage=response.usage)
+                elif (
+                    agent_id == SUPER_CHAT_AGENT_ID
                     and not auto_search_forced
                     and tool_call_count == 0
                     and self._super_chat_auto_retrieval_available(
@@ -12054,6 +12157,7 @@ class AgentEngine:
                     )
                 else:
                     # No tool calls — we have the final answer
+                    response.content = self._restore_generated_image_links(response.content, all_new_messages)
                     if stream_tool_capable_round:
                         # Promote the completed round exactly once. Until this
                         # point its deltas were explicitly provisional because a
@@ -12356,6 +12460,7 @@ class AgentEngine:
             )
             if request.thinking_enabled is True and response.reasoning:
                 reasoning_parts.append(response.reasoning)
+            response.content = self._restore_generated_image_links(response.content, all_new_messages)
             all_new_messages.append(LLMMessage(role="assistant", content=response.content))
 
         if agent_loop_enabled:

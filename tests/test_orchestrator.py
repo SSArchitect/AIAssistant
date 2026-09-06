@@ -2412,7 +2412,8 @@ async def test_super_chat_agent_loop_mode_prompts_are_injected(engine):
     ]
     assert all(node["id"] != "prompt.section.agent_context" for node in context_event.payload["context_nodes"])
     tool_names = {tool["name"] for tool in context_event.payload["final_model_request"]["tools"]}
-    assert {"image_generation_v1", "weight_loss_v1"}.isdisjoint(tool_names)
+    assert "image_generation_v1" in tool_names
+    assert "weight_loss_v1" not in tool_names
     assert "tool_search" in tool_names
     event_types = [event.type for event in result.events]
     assert "workflow.started" in event_types
@@ -3467,7 +3468,7 @@ async def test_image_generation_sensitive_error_returns_helpful_summary(engine):
             )
         )
 
-    assert result.error_type == ""
+    assert result.error_type == "aigc_error"
     assert "这次图片没有生成成功" in result.response
     assert "内容安全审核" in result.response
     assert "真实政治公众人物" in result.response
@@ -5619,3 +5620,134 @@ async def test_weight_loss_goal_command_body_metrics_do_not_become_calorie_goals
     assert profile["age_years"] == 26
     assert profile["daily_calorie_goal"] is None
     assert profile["maintenance_calories"] is None
+
+
+@pytest.mark.asyncio
+async def test_image_agent_uses_spark_provider_and_negative_prompt(engine):
+    from agent.aigc.spark_client import SparkImageClient
+    from agent.config import runtime_config
+    from agent.schemas.aigc import GeneratedImage, ImageGenerationResponse
+    review = LLMResponse(content=json.dumps({"should_generate":True, "final_prompt":"orange robot",
+        "aspect_ratio":"1:1", "negative_prompt":"blurry", "width":2048,"height":2048}), tool_calls=[], model="review-test", usage={})
+    image = ImageGenerationResponse(id="spark-task", provider="spark", model="z-image-base", prompt="orange robot",
+        aspect_ratio="1:1", response_format="url", images=[GeneratedImage(index=0, url="/static/generated/aigc/spark.png")])
+    provider = AsyncMock()
+    provider.chat = AsyncMock(return_value=review)
+    with patch.dict(runtime_config._data, {"aigc.image_provider":"spark", "aigc.spark.base_url":"https://spark.test",
+                                          "aigc.spark.api_key":"test"}), patch.object(engine, "_get_provider", return_value=provider), patch.object(
+            SparkImageClient, "generate", new=AsyncMock(return_value=image)) as generate:
+        result = await engine.process(ChatRequest(conversation_id="spark-workflow", message="画一个2048×2048橙色机器人",
+                                                 agent_id="image_generation_v1", mode_ids=["image_prompt_refine"]))
+    assert "![AI 生图 1](/static/generated/aigc/spark.png)" in result.response
+    request = generate.await_args.args[0]
+    assert request.provider == "spark"
+    assert request.negative_prompt == "blurry"
+    assert request.idempotency_key == result.run_id
+    review_messages = provider.chat.await_args.args[0]
+    assert "单边 256–4096" in review_messages[0].content
+    assert (request.width, request.height) == (2048, 2048)
+    assert "24 小时" not in result.response
+    completed = next(event for event in result.events if event.type == "aigc.image.completed")
+    assert completed.payload["provider"] == "spark"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('image_provider', ['spark', 'minimax'])
+async def test_unified_cat_image_tool_preserves_provider_and_options(engine, image_provider):
+    from agent.config import runtime_config
+    from agent.schemas.aigc import GeneratedImage, ImageGenerationResponse
+    delegate = agent_tool_response('image_generation_v1', '给我画一幅小猫图片', '用户需要实际图片')
+    delegate.tool_calls[0].arguments.update({'provider':image_provider,'width':2048,'height':2048,'seed':42})
+    review = LLMResponse(content='{"should_generate":true,"final_prompt":"a cute cat","aspect_ratio":"1:1"}',
+                         tool_calls=[],model='review',usage={})
+    final = LLMResponse(content='![小猫](/static/generated/aigc/cat.png)',tool_calls=[],model='chat',usage={})
+    image = ImageGenerationResponse(id='cat-task',provider=image_provider,model='test-image',prompt='a cute cat',
+        aspect_ratio='1:1',response_format='url',images=[GeneratedImage(index=0,url='/static/generated/aigc/cat.png')])
+    provider = AsyncMock()
+    provider.chat = AsyncMock(side_effect=[delegate,review,final])
+    with patch.dict(runtime_config._data, {'aigc.image_provider':'minimax' if image_provider == 'spark' else 'spark'}), patch.object(
+            engine,'_get_provider',return_value=provider), patch('agent.orchestrator.engine.generate_image_with_provider',
+            new=AsyncMock(return_value=image)) as generate:
+        result = await engine.process(ChatRequest(conversation_id='unified-cat',agent_id='super_chat',message='给我画一幅小猫图片'))
+    names = {t.name for t in provider.chat.await_args_list[0].kwargs['tools']}
+    assert 'image_generation_v1' in names
+    assert 'generate_image' not in names
+    assert 'ASCII' in provider.chat.await_args_list[0].args[0][0].content
+    assert '实际图片' in provider.chat.await_args_list[0].args[0][0].content
+    request = generate.await_args.args[0]
+    assert request.provider == image_provider
+    assert (request.width, request.height, request.seed) == (2048,2048,42)
+    assert '/static/generated/aigc/cat.png' in result.response
+    assert 'image_generation_v1' in result.skills_used
+    generate.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_image_provider_failure_is_returned_as_failed_tool_result(engine):
+    from agent.config import runtime_config
+    delegate = agent_tool_response('image_generation_v1','给我画一只小猫','用户需要图片')
+    delegate.tool_calls[0].arguments['provider'] = 'spark'
+    review = LLMResponse(content='{"should_generate":true,"final_prompt":"a cat","aspect_ratio":"1:1"}',
+        tool_calls=[],model='review',usage={})
+    final = LLMResponse(content='生图配置缺失，图片未生成。',tool_calls=[],model='chat',usage={})
+    provider = AsyncMock()
+    provider.chat = AsyncMock(side_effect=[delegate,review,final])
+    with patch.dict(runtime_config._data,{'aigc.spark.base_url':'','aigc.spark.api_key':''}), patch.object(
+        engine,'_get_provider',return_value=provider):
+        result = await engine.process(ChatRequest(conversation_id='image-config-failure',agent_id='super_chat',message='给我画一只小猫'))
+    payload = agent_tool_payload(provider.chat.await_args_list[-1].args[0], 'image_generation_v1')
+    assert payload['success'] is False
+    assert payload['error'] == 'aigc_error'
+    assert payload['data']['error_type'] == 'aigc_error'
+    assert '未生成' in result.response
+
+
+@pytest.mark.asyncio
+async def test_explicit_cat_generation_cannot_finish_with_placeholder_without_tool(engine):
+    from agent.schemas.aigc import GeneratedImage, ImageGenerationResponse
+    placeholder = LLMResponse(content='![小猫咪](https://placekitten.com/400/300)',tool_calls=[],model='chat',usage={})
+    review = LLMResponse(content='{"should_generate":true,"final_prompt":"a cat","aspect_ratio":"1:1"}',
+        tool_calls=[],model='review',usage={})
+    final = LLMResponse(content='![小猫](attachment://cat.png)',tool_calls=[],model='chat',usage={})
+    image = ImageGenerationResponse(provider='minimax',model='image-01',prompt='a cat',aspect_ratio='1:1',
+        response_format='url',images=[GeneratedImage(index=0,url='/static/generated/aigc/cat.png')])
+    provider = AsyncMock()
+    provider.chat = AsyncMock(side_effect=[placeholder,review,final])
+    with patch.object(engine,'_get_provider',return_value=provider), patch('agent.orchestrator.engine.generate_image_with_provider',
+            new=AsyncMock(return_value=image)) as generate:
+        result = await engine.process(ChatRequest(conversation_id='cat-placeholder',agent_id='super_chat',message='帮我生成一只小猫'))
+    generate.assert_awaited_once()
+    assert 'placekitten' not in result.response
+    assert 'attachment://' not in result.response
+    assert '/static/generated/aigc/cat.png' in result.response
+    assert 'image_generation_v1' in result.skills_used
+    assert any(e.type == 'agent_loop.image_forced' for e in result.events)
+
+
+@pytest.mark.parametrize('reply,expected', [
+    ('![cat](attachment://cat.png)', '![cat](/static/generated/aigc/cat.png)'),
+    ('![cat](/static/generated/aigc/cat.png)', '![cat](/static/generated/aigc/cat.png)'),
+    ('已生成。', '已生成。\n\n![AI 生图 1](/static/generated/aigc/cat.png)'),
+    ('![cat](attachment://unknown.png)', '![AI 生图 1](/static/generated/aigc/cat.png)'),
+])
+def test_generated_image_links_use_successful_tool_output(engine, reply, expected):
+    messages = [
+        LLMMessage(role='assistant', content='', tool_calls=[{'id':'image-call','name':'image_generation_v1','arguments':{}}]),
+        LLMMessage(role='tool', tool_call_id='image-call', content=json.dumps({
+            'success':True, 'data':{'response':'![AI 生图 1](/static/generated/aigc/cat.png)'}})),
+    ]
+    assert engine._restore_generated_image_links(reply, messages) == expected
+
+
+@pytest.mark.parametrize('tool_name,payload', [
+    ('image_generation_v1', {'success':False,'data':{'response':'![cat](/static/generated/aigc/cat.png)'}}),
+    ('search', {'success':True,'data':{'response':'![cat](/static/generated/aigc/cat.png)'}}),
+    ('image_generation_v1', {'success':True,'data':None}),
+    ('image_generation_v1', []),
+])
+def test_generated_image_links_ignore_failed_or_unrelated_tools(engine, tool_name, payload):
+    messages = [
+        LLMMessage(role='assistant',content='',tool_calls=[{'id':'call','name':tool_name,'arguments':{}}]),
+        LLMMessage(role='tool',tool_call_id='call',content=json.dumps(payload)),
+    ]
+    assert engine._restore_generated_image_links('没有生成图片。', messages) == '没有生成图片。'

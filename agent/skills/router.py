@@ -40,6 +40,31 @@ _DOMAIN_TRIGGERS: dict[str, tuple[str, ...]] = {
 }
 
 
+def _text_art_requested(query: str) -> bool:
+    return bool(re.search(r"ascii|字符画|文字画|文本画", query, re.IGNORECASE))
+
+
+def explicit_image_generation_request(query: str) -> bool:
+    """Conservative imperative guard; tool visibility does not depend on this matcher."""
+    text = query.strip()
+    if _text_art_requested(text) or re.search(r"提示词|prompt|不要.*(?:生成|生图|画)|不需要.*(?:生成|生图|画)", text, re.IGNORECASE):
+        return False
+    return bool(re.match(
+        r"(?:请|请你|帮我|给我|麻烦你)?(?:"
+        r"(?:画|绘制)(?:一[幅张只个]|[幅张只个]).+|"
+        r"(?:生成|制作)(?:一只|只).+|"
+        r"(?:生成|制作)(?:一[幅张]|[张幅]).{0,30}(?:图|画))|"
+        r"(?:please\s+)?(?:draw|paint)\s+(?:(?:me|us)\s+)?(?:a|an|the|some)\s+", text, re.IGNORECASE))
+
+
+def _drawing_requested(query: str) -> bool:
+    if _text_art_requested(query):
+        return False
+    return bool(re.search(
+        r"(?:画|绘制)(?:一[幅张只个]|[幅张只个])|(?:生成|制作)(?:一[幅张]|[张幅]).{0,30}(?:图|画)|"
+        r"\b(?:draw|paint)\s+(?:(?:me|us)\s+)?(?:a|an|the|some)\b", query, re.IGNORECASE))
+
+
 @dataclass(frozen=True)
 class ToolRoute:
     tools: list[ToolDefinition]
@@ -170,8 +195,13 @@ class ToolRouter:
             for value in tool.metadata.get("routing_keywords") or []
         ]
 
+        if "image" in domains and _text_art_requested(normalized_query):
+            return 0, []
         score = 0
         reasons: list[str] = []
+        if "image" in domains and _drawing_requested(normalized_query):
+            score += 64
+            reasons.append("intent:image_generation")
         compact_name = name.replace(" ", "")
         compact_query = normalized_query.replace(" ", "")
         if compact_name and compact_name in compact_query:
@@ -219,6 +249,11 @@ class ToolRouter:
         normalized = self._normalize(query)
         activated = []
         for domain, triggers in _DOMAIN_TRIGGERS.items():
+            if domain == "image" and _text_art_requested(normalized):
+                continue
+            if domain == "image" and _drawing_requested(normalized):
+                activated.append(domain)
+                continue
             if any(self._normalize(trigger) in normalized for trigger in triggers):
                 activated.append(domain)
         return activated

@@ -16,6 +16,8 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from agent.aigc import MiniMaxAIGCClient
+from agent.aigc.image_service import generate_image as generate_image_with_provider
+from agent.aigc.spark_client import SparkProviderError
 from agent.config import settings, runtime_config
 from agent.documents import DocumentParseError, parse_document
 from agent.llm.base import LLMMessage, RateLimitError
@@ -534,28 +536,15 @@ async def search(request: SearchRequest):
 
 @app.post("/agent/aigc/image", response_model=ImageGenerationResponse)
 async def generate_image(request: ImageGenerationRequest):
-    client = MiniMaxAIGCClient.from_runtime_config()
     try:
-        raw = await client.generate_image(
-            request.prompt,
-            model=request.model,
-            aspect_ratio=request.aspect_ratio,
-            response_format=request.response_format,
-            n=request.n,
-            prompt_optimizer=request.prompt_optimizer,
-            extra=request.minimax_extra(),
-        )
+        return await generate_image_with_provider(request)
+    except SparkProviderError as e:
+        raise HTTPException(status_code=502, detail={"message": str(e), **e.context()}) from e
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
         logger.exception("Image generation failed")
         raise HTTPException(status_code=502, detail=f"image generation failed: {e}") from e
-
-    return ImageGenerationResponse.from_minimax(
-        raw,
-        request,
-        model=request.model or client.image_model,
-    )
 
 
 def _sse(event: str, payload: dict) -> str:

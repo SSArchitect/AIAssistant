@@ -29,6 +29,7 @@ _llm_cfg = _yaml.get("llm", {})
 _providers = _llm_cfg.get("providers", {})
 _aigc_cfg = _yaml.get("aigc", {})
 _aigc_minimax_cfg = _aigc_cfg.get("minimax", {})
+_aigc_spark_cfg = _aigc_cfg.get("spark", {})
 _search_cfg = _yaml.get("search", {})
 _search_minimax_cfg = _search_cfg.get("minimax", {})
 _search_broad_cfg = _search_cfg.get("broad_retrieval", {})
@@ -84,7 +85,10 @@ class Settings(BaseSettings):
     dgx_streaming: str = str(_providers.get("dgx", {}).get("streaming", True)).lower()
     dgx_timeout: str = str(_providers.get("dgx", {}).get("timeout", 1800))
 
-    # MiniMax AIGC defaults
+    # Image provider and MiniMax speech defaults
+    image_provider: str = _aigc_cfg.get("image_provider", "minimax")
+    media_base_url: str = _aigc_spark_cfg.get("base_url", "")
+    media_api_key: str = ""
     minimax_image_model: str = _aigc_minimax_cfg.get("image_model", "image-01")
     minimax_speech_model: str = _aigc_minimax_cfg.get("speech_model", "speech-2.8-turbo")
     minimax_voice_id: str = _aigc_minimax_cfg.get("voice_id", "male-qn-qingse")
@@ -131,6 +135,9 @@ class RuntimeConfig:
             "llm.dgx.streaming": settings.dgx_streaming,
             "llm.dgx.timeout": settings.dgx_timeout,
             "aigc.minimax.base_url": settings.minimax_aigc_base_url,
+            "aigc.image_provider": settings.image_provider,
+            "aigc.spark.base_url": settings.media_base_url,
+            "aigc.spark.api_key": settings.media_api_key,
             "aigc.minimax.image_model": settings.minimax_image_model,
             "aigc.minimax.speech_model": settings.minimax_speech_model,
             "aigc.minimax.voice_id": settings.minimax_voice_id,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from agent.runtime.registry import get_agent
+from agent.skills.builtin.generate_image import GenerateImageSkill
 from agent.schemas.agent import AgentInfo
 from agent.skills.base import Skill, SkillMetadata, SkillParameter, SkillResult
 
@@ -21,7 +22,9 @@ class AgentToolSkill(Skill):
                 "meals, takeout, breakfast, lunch, or dinner in a life recap."
             )
         if self.agent.id == "image_generation_v1":
-            return "Use this agent for image generation, prompt refinement, visual design, posters, covers, and visual deliverables."
+            return ("Use this single image tool for both direct image generation and prompt refinement, visual design, posters and covers. "
+                    "For requests to draw a picture, call this tool and return the actual image; do not substitute ASCII art unless requested. "
+                    "The provider option selects Spark or MiniMax independently of the chat model.")
         return "Use this only when the current user request clearly requires this specialized agent."
 
     def metadata(self) -> SkillMetadata:
@@ -55,6 +58,8 @@ class AgentToolSkill(Skill):
                     required=False,
                     input_format="markdown",
                 ),
+                *([parameter for parameter in GenerateImageSkill().metadata().parameters if parameter.name != "prompt"]
+                  if self.agent.id == "image_generation_v1" else []),
             ],
             tags=["agent", "workflow", self.agent.id],
             source="system",
@@ -76,6 +81,7 @@ class AgentToolSkill(Skill):
                 else []
             ),
             allowed_agents=["super_chat"],
+            always_on=self.agent.id == "image_generation_v1",
             risk_level="medium",
             access="external",
             max_calls_per_run=4,

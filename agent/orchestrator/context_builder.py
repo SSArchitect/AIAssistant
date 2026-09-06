@@ -81,6 +81,13 @@ class ContextBuilder:
                     "- 如果 search 不可用、失败、结果少或来源可疑，要在回答中说明限制，并区分搜索片段和已核验事实。",
                 ]
             )
+        if "image_generation_v1" in normalized_tool_names:
+            tool_policy_lines.append(
+                "- 用户要求画图、生成图片（例如‘给我画一幅小猫图片’）时，调用 image_generation_v1，"
+                "展示工具返回的实际图片。除非用户明确要求 ASCII/字符画，否则不能用文字画代替图片。"
+                "工具失败时如实说明，不能声称图片已经生成。"
+                "禁止编造图片 URL 或使用占位图网站冒充本次生成结果；只有成功的生图工具结果才是交付依据。"
+            )
         if "tool_search" in normalized_tool_names:
             tool_policy_lines.extend(
                 [

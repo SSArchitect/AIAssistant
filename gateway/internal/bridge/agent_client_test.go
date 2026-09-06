@@ -782,3 +782,27 @@ func TestAgentClientReturnsStatusBodyOnError(t *testing.T) {
 		t.Fatalf("unexpected error: %s", got)
 	}
 }
+
+func TestAgentClientGenerateSparkImage(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatal(err)
+		}
+		if req["provider"] != "spark" || req["negative_prompt"] != "blur" || req["idempotency_key"] != "stable-key" || req["seed"] != float64(0) || req["width"] != float64(2048) {
+			t.Fatalf("Spark request fields were not preserved: %#v", req)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"spark-task","provider":"spark","model":"z-image-base","images":[{"index":0,"url":"/static/generated/aigc/spark.png","mime_type":"image/png"}],"metadata":{"seed":0,"idempotency_key":"stable-key"}}`))
+	}))
+	defer server.Close()
+	seed, size := 0, 2048
+	client := NewAgentClient(server.URL, time.Second)
+	result, err := client.GenerateImage(AIGCImageRequest{Prompt: "robot", Provider: "spark", NegativePrompt: "blur", IdempotencyKey: "stable-key", Seed: &seed, Width: &size, Height: &size})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Provider != "spark" || result.Metadata["idempotency_key"] != "stable-key" || result.Images[0].URL != "/static/generated/aigc/spark.png" {
+		t.Fatalf("Unexpected Spark response: %#v", result)
+	}
+}

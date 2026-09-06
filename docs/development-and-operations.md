@@ -279,6 +279,8 @@ Drive 与 Memory 的边界：
 
 ### 6.3 Tool Sources
 
+生图 Provider 配置、统一 `image_generation_v1` tool 与异步任务重试约定见 [Spark 生图接入](spark-image-provider.md)。
+
 当前工具路径：
 
 - Python 启动时从 `agent.skills.builtin` 和 `agent.skills.custom` 自动发现 `Skill`。

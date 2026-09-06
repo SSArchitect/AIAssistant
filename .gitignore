@@ -41,3 +41,6 @@ android/build/
 
 # OS
 .DS_Store
+
+# Generated image artifacts
+/web/static/generated/aigc/

@@ -236,6 +236,9 @@ type FollowUpResponse struct {
 }
 
 type AIGCImageRequest struct {
+	Provider         string                   `json:"provider,omitempty"`
+	NegativePrompt   string                   `json:"negative_prompt,omitempty"`
+	IdempotencyKey   string                   `json:"idempotency_key,omitempty"`
 	Prompt           string                   `json:"prompt" binding:"required"`
 	Model            string                   `json:"model,omitempty"`
 	AspectRatio      string                   `json:"aspect_ratio,omitempty"`
