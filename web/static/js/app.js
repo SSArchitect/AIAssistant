@@ -40,6 +40,7 @@ const EVAL_LLM_MODELS = [
 ];
 
 const VIEW_COPY = {
+    connect: ['views.connect.title', 'views.connect.subtitle'],
     chat: ['views.chat.title', 'views.chat.subtitle'],
     pulse: ['views.pulse.title', 'views.pulse.subtitle'],
     todos: ['views.todos.title', 'views.todos.subtitle'],
@@ -192,6 +193,7 @@ const I18N = {
             close: '关闭分享卡片',
         },
         views: {
+            connect: { title: 'Connect', subtitle: '管理连接端、独立来源会话与连接状态' },
             chat: { title: 'Super Chat', subtitle: '意图识别、Agent 调用与汇总回答入口' },
             pulse: { title: 'Pulse', subtitle: 'Topic 推荐、信息簇阅读与下一跳学习入口' },
             todos: { title: 'Todo', subtitle: '今日、逾期、待排期、月视图和高置信建议' },
@@ -1108,6 +1110,7 @@ const I18N = {
             close: 'Close share card',
         },
         views: {
+            connect: { title: 'Connect', subtitle: 'Manage connected apps, source conversations, and connection health' },
             chat: { title: 'Super Chat', subtitle: 'Intent routing, agent calls, and final answers' },
             pulse: { title: 'Pulse', subtitle: 'Topic seeds, information clusters, and next-step reading' },
             todos: { title: 'Todo', subtitle: 'Today, overdue, unscheduled items, month view, and high-confidence suggestions' },
@@ -2478,6 +2481,7 @@ function setLanguage(language) {
     refreshWelcomeIfEmpty();
     refreshMediaPreviewLabels();
     updateSendState();
+    if (activeView === 'connect') getConnectController()?.setVisible(true);
 }
 
 function apiUsesCrossOriginTransport() {
@@ -3035,6 +3039,7 @@ function dismissAccountLogin() {
 }
 
 async function switchAccount(userId, options = {}) {
+    connectController?.reset();
     const nextUserId = String(userId || '').trim();
     if (!nextUserId) {
         showAccountLogin();
@@ -3373,6 +3378,7 @@ function isCurrentConversationLoading() {
 }
 
 function sendBusyReason() {
+    if (currentConversationRecord(currentConversationId)?.source_id) return currentLanguage === 'zh' ? '此会话来自 Connect，请在原平台继续对话' : 'Continue this Connect conversation on its original platform';
     if (appBootstrapping || startupSendPending) return t('chat.preparingToSend');
     if (conversationCreatePromise && !currentConversationId) return t('chat.creatingConversation');
     if (isCurrentConversationLoading()) return t('chat.conversationRunning');
@@ -3387,6 +3393,10 @@ function updateSendState() {
     btnSend.setAttribute('aria-busy', busyReason ? 'true' : 'false');
     btnSend.setAttribute('aria-label', busyReason || t('actions.send'));
     btnSend.title = busyReason || t('actions.send');
+    const sourceConversation = Boolean(currentConversationRecord(currentConversationId)?.source_id);
+    messageInput.readOnly = sourceConversation;
+    if (sourceConversation) messageInput.placeholder = busyReason;
+    else messageInput.placeholder = t('chat.placeholder');
     if (btnAttach) {
         btnAttach.classList.toggle('active', attachedContexts.length > 0);
     }
@@ -3395,7 +3405,7 @@ function updateSendState() {
 }
 
 function updateRegenerateButtonsState() {
-    const loading = isCurrentConversationLoading();
+    const loading = isCurrentConversationLoading() || Boolean(currentConversationRecord(currentConversationId)?.source_id);
     messagesContainer.querySelectorAll('[data-regenerate-answer]').forEach((button) => {
         const message = button.closest('.message.assistant');
         const enabled = !loading
@@ -9679,9 +9689,23 @@ async function bootApp() {
     void refreshAll();
 }
 
+let connectController = null;
+function getConnectController() {
+    if (!connectController && globalThis.ConnectUI) connectController = globalThis.ConnectUI.createController({
+        element: document.getElementById('view-connect'), api: apiCall,
+        user: () => currentUserId && currentAccountToken ? currentUserId : '', language: () => currentLanguage,
+        currentRole: () => currentRoleId || 'default',
+        openConversation: async id => { await loadConversations(); await selectConversation(id); },
+        confirm: (message, options = {}) => confirmAction(message, { confirmText: currentLanguage === 'zh' ? '重发' : 'Resend', ...options }),
+    });
+    return connectController;
+}
+
 function setView(view, options = {}) {
     if (!VIEW_COPY[view]) return;
     activeView = view;
+    if (view === 'connect') getConnectController()?.setVisible(true);
+    else connectController?.setVisible(false);
 
     document.querySelectorAll('.nav-item').forEach((item) => {
         item.classList.toggle('active', item.dataset.view === view);

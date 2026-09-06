@@ -51,6 +51,7 @@ from agent.schemas.memory import (
 from agent.schemas.trace import RunListResponse, RunRecord
 from agent.skills.registry import SkillRegistry
 from agent.trace import TraceStore
+from agent.runs.store import ConnectRuns, RunConflict
 
 logging.basicConfig(
     level=logging.INFO,
@@ -64,6 +65,7 @@ skill_registry = SkillRegistry()
 trace_store = TraceStore()
 engine: AgentEngine | None = None
 active_stream_tasks: dict[str, asyncio.Task[ChatResponse]] = {}
+connect_runs: ConnectRuns | None = None
 SSE_HEARTBEAT_SECONDS = 15.0
 SSE_POLL_INTERVAL_SECONDS = 0.08
 
@@ -102,7 +104,8 @@ def _memory_storage_path() -> Path:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global engine
+    global engine, connect_runs
+    connect_runs = ConnectRuns(Path(os.environ.get("AGENT_CONNECT_RUNS_PATH", str(Path(__file__).resolve().parent.parent / "data" / "connect_runs.db"))))
     # Startup: discover and register skills
     skill_registry.auto_discover(
         "agent.skills.builtin",
@@ -119,6 +122,7 @@ async def lifespan(app: FastAPI):
     )
     yield
     # Shutdown
+    await connect_runs.close()
     logger.info("Agent engine shutting down")
 
 
@@ -163,6 +167,8 @@ async def delete_user_data(user_id: str):
         raise HTTPException(status_code=400, detail="user id is required")
     if normalized_user_id == "0":
         raise HTTPException(status_code=400, detail="the default account cannot be deleted")
+    if connect_runs is not None:
+        await connect_runs.purge_user(normalized_user_id)
     return {"status": "deleted", "deleted": engine.purge_user_data(normalized_user_id)}
 
 
@@ -761,6 +767,26 @@ async def resolve_tool_approval(
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/agent/connect/runs")
+async def submit_connect_run(request: ChatRequest):
+    if engine is None or connect_runs is None:
+        raise HTTPException(status_code=503, detail="Agent runtime not ready")
+    if not request.run_id or request.agent_id != "super_chat":
+        raise HTTPException(status_code=400, detail="Connect requires a stable run ID and super_chat")
+    try:
+        return connect_runs.submit(request, engine.process, active_stream_tasks)
+    except RunConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.get("/agent/connect/runs/{run_id}")
+async def get_connect_run(run_id: str, user_id: str):
+    result = connect_runs.get(run_id, user_id) if connect_runs else None
+    if result is None:
+        raise HTTPException(status_code=404, detail="run not found")
+    return result
 
 
 @app.get("/agent/runs/{run_id}", response_model=RunRecord)

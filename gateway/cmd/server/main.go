@@ -9,6 +9,7 @@ import (
 
 	"github.com/aan/agent-assistant-gateway/internal/bridge"
 	"github.com/aan/agent-assistant-gateway/internal/config"
+	"github.com/aan/agent-assistant-gateway/internal/connect"
 	"github.com/aan/agent-assistant-gateway/internal/database"
 	"github.com/aan/agent-assistant-gateway/internal/handlers"
 	"github.com/aan/agent-assistant-gateway/internal/middleware"
@@ -82,6 +83,20 @@ func main() {
 	todoHandler := handlers.NewTodoHandler()
 	driveHandler := handlers.NewDriveHandler(agentClient)
 	evalHandler := handlers.NewEvalHandler(projectRoot, dbPath, cfg.Agent.URL)
+	connectKey, err := connect.LoadKey(filepath.Join(filepath.Dir(dbPath), "connect.key"))
+	if err != nil {
+		slog.Error("Connect encryption key unavailable", "error", err)
+		os.Exit(1)
+	}
+	connectService, err := connect.NewService(database.DB, connectKey, handlers.NewConnectRunner(chatHandler), connect.NewFeishu(), connect.NewWeixin())
+	if err != nil {
+		slog.Error("Connect initialization failed", "error", err)
+		os.Exit(1)
+	}
+	defer connectService.Close()
+	connectService.Start()
+	connectHandler := handlers.NewConnectHandler(connectService)
+	adminHandler.SetConnectService(connectService)
 
 	// Setup router
 	r := gin.Default()
@@ -89,6 +104,7 @@ func main() {
 
 	// API routes
 	api := r.Group("/api")
+	connectHandler.Register(api)
 	{
 		api.GET("/health", healthHandler.Health)
 		api.GET("/app/version", appVersionHandler.Version)

@@ -6,6 +6,7 @@ type Conversation struct {
 	ID              string    `json:"id" gorm:"primaryKey"`
 	UserID          string    `json:"user_id" gorm:"index;not null;default:0;uniqueIndex:idx_conversation_user_request,priority:1"`
 	AgentID         string    `json:"agent_id" gorm:"not null;default:super_chat"`
+	SourceID        string    `json:"source_id,omitempty" gorm:"index"`
 	ClientRequestID *string   `json:"-" gorm:"uniqueIndex:idx_conversation_user_request,priority:2"`
 	Title           string    `json:"title"`
 	CreatedAt       time.Time `json:"created_at"`

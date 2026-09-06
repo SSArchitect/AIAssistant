@@ -98,6 +98,10 @@ func (h *ChatHandler) Chat(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "conversation not found"})
 		return
 	}
+	if conv.SourceID != "" {
+		c.JSON(http.StatusForbidden, gin.H{"error": "此会话属于 Connect 来源，请在原来源发送消息；Web 可查看历史与处理授权。"})
+		return
+	}
 
 	contextBlocks := h.persistedConversationContext(req.ConversationID, req.UserID)
 	if req.Regenerate {
@@ -412,9 +416,16 @@ func (h *ChatHandler) recoverCompletedRunResponse(runID string, req ChatRequestB
 }
 
 func (h *ChatHandler) persistedConversationContext(conversationID string, userID string) []string {
+	return h.persistedConversationContextBefore(conversationID, userID, 0)
+}
+
+func (h *ChatHandler) persistedConversationContextBefore(conversationID string, userID string, beforeID uint) []string {
 	var messages []models.Message
-	err := database.DB.
-		Where("conversation_id = ? AND user_id = ?", conversationID, normalizedUserID(userID)).
+	query := database.DB.Where("conversation_id = ? AND user_id = ?", conversationID, normalizedUserID(userID))
+	if beforeID > 0 {
+		query = query.Where("id < ?", beforeID)
+	}
+	err := query.
 		Order(messageReverseChronologicalOrder).
 		Limit(conversationContextMessageLimit).
 		Find(&messages).Error
@@ -757,6 +768,16 @@ func (h *ChatHandler) syncConfigToAgent(c *gin.Context) bool {
 }
 
 func (h *ChatHandler) saveAssistantMessage(conversationID string, userID string, agentResp *bridge.ChatResponse) *models.Message {
+	assistantMsg := buildAssistantMessage(conversationID, userID, agentResp)
+	if err := database.DB.Create(assistantMsg).Error; err != nil {
+		slog.Error("Failed to save assistant message", "error", err)
+		return nil
+	}
+	h.persistTokenUsage(conversationID, userID, assistantMsg, agentResp)
+	return assistantMsg
+}
+
+func buildAssistantMessage(conversationID string, userID string, agentResp *bridge.ChatResponse) *models.Message {
 	skillsJSON, _ := json.Marshal(agentResp.SkillsUsed)
 	citationsJSON, _ := json.Marshal(agentResp.Citations)
 	artifactsJSON, _ := json.Marshal(agentResp.Artifacts)
@@ -779,11 +800,6 @@ func (h *ChatHandler) saveAssistantMessage(conversationID string, userID string,
 		ErrorType:      agentResp.ErrorType,
 		CreatedAt:      time.Now(),
 	}
-	if err := database.DB.Create(&assistantMsg).Error; err != nil {
-		slog.Error("Failed to save assistant message", "error", err)
-		return nil
-	}
-	h.persistTokenUsage(conversationID, userID, &assistantMsg, agentResp)
 	return &assistantMsg
 }
 
@@ -816,12 +832,18 @@ func persistTokenUsageRecord(
 	createdAt time.Time,
 	agentResp *bridge.ChatResponse,
 ) {
+	if err := persistTokenUsageRecordDB(database.DB, conversationID, userID, messageID, agentID, createdAt, agentResp); err != nil {
+		slog.Warn("Failed to persist token usage", "conversation_id", conversationID, "message_id", messageID, "error", err)
+	}
+}
+
+func persistTokenUsageRecordDB(db *gorm.DB, conversationID, userID string, messageID uint, agentID string, createdAt time.Time, agentResp *bridge.ChatResponse) error {
 	if agentResp == nil {
-		return
+		return nil
 	}
 	usage := normalizeTokenUsage(agentResp.TokensUsed)
 	if !usage.hasTrackedCost() {
-		return
+		return nil
 	}
 	if strings.TrimSpace(agentID) == "" {
 		agentID = usageAgentID(conversationID, agentResp)
@@ -848,9 +870,7 @@ func persistTokenUsageRecord(
 		UsageJSON:                string(usageJSON),
 		CreatedAt:                createdAt,
 	}
-	if err := database.DB.Create(&record).Error; err != nil {
-		slog.Warn("Failed to persist token usage", "conversation_id", conversationID, "message_id", messageID, "run_id", agentResp.RunID, "agent_id", agentID, "error", err)
-	}
+	return db.Create(&record).Error
 }
 
 func normalizeTokenUsage(tokens map[string]int) tokenUsageBreakdown {

@@ -5,6 +5,8 @@
 
 开发、启动、测试和运行限制见：[Agent Assistant 开发与运行规范](./development-and-operations.md)。
 
+Super Chat 的多端接入、来源独立会话、Connect 一级导航与连接管理、内容交付和端侧执行协议见：[Connect 总体架构与协议设计](./connect-architecture-protocol.md)。微信与飞书是首批渠道 adapter，后续渠道与设备复用统一 Connect Core。
+
 ## 当前收敛决策（2026-07）
 
 当前个人版不再维护独立 Knowledge 服务、Knowledge API 和另一套文档表：
@@ -140,6 +142,7 @@ Tools      工具、MCP、插件管理
 Knowledge  文档、知识库、索引管理
 Runs       执行轨迹、调试、成本分析
 Settings   模型、密钥、系统配置
+Connect    选择已支持端、连接列表、连接检测、Disconnect / 重新连接
 ```
 
 关键体验：

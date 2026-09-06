@@ -4,6 +4,8 @@
 
 这份文档记录当前代码落地后的服务启动方式、开发流程、测试要求和已知限制。架构方向见 [agent-workbench-architecture.md](./agent-workbench-architecture.md)。
 
+Connect 的接入、来源隔离、持久化恢复、密钥备份和单进程部署约束见 [Connect 实现与接入说明](./connect-implementation.md)。
+
 生产服务器部署、Git bundle 兜底、systemd/Nginx 检查和线上配置同步流程见
 [server-deployment-runbook.md](./server-deployment-runbook.md)。Android APK、HTTPS、版本发现和
 增量 OTA 发布见 [android-release-runbook.md](./android-release-runbook.md)。

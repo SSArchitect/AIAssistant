@@ -6,6 +6,7 @@
     <meta name="referrer" content="no-referrer">
     <title>阿安的工作台</title>
     <link rel="stylesheet" href="/static/css/style.css?v=94">
+    <link rel="stylesheet" href="/static/css/connect.css?v=3">
 </head>
 <body>
     <div class="app">
@@ -75,6 +76,12 @@
                     </svg>
                     <span data-i18n="nav.projects">网盘</span>
                     <span class="nav-count" id="project-count"></span>
+                </button>
+                <button class="nav-item" type="button" data-view="connect">
+                    <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="m10 13 4-4M8 16l-1 1a4 4 0 0 1-6-6l4-4a4 4 0 0 1 6 0M16 8l1-1a4 4 0 0 1 6 6l-4 4a4 4 0 0 1-6 0"/>
+                    </svg>
+                    <span>Connect</span>
                 </button>
                 <div class="nav-group config-nav-group collapsed" data-nav-group="config">
                     <button class="nav-item nav-group-toggle" type="button" data-toggle-nav-group="config"
@@ -413,6 +420,7 @@
                 <div class="project-workbench" id="project-workbench"></div>
             </section>
 
+            <section class="view" id="view-connect" data-view-panel="connect"></section>
             <section class="view" id="view-role" data-view-panel="role">
                 <div class="role-config-workbench">
                     <aside class="role-config-list-panel">
@@ -762,7 +770,8 @@
     <script src="/static/js/stream-typewriter.js?v=2"></script>
     <script src="/static/js/share-card.js?v=4"></script>
     <script src="/static/js/file-actions.js?v=1"></script>
-    <script src="/static/js/app.js?v=144"></script>
+    <script src="/static/js/connect.js?v=4"></script>
+    <script src="/static/js/app.js?v=148"></script>
     <script src="/static/js/android-bridge.js?v=3"></script>
 </body>
 </html>

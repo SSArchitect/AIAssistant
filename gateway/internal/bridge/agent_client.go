@@ -645,11 +645,19 @@ func (c *AgentClient) ListAgents() (*AgentListResponse, error) {
 }
 
 func (c *AgentClient) ListRoles(userID string) (*RoleListResponse, error) {
+	return c.ListRolesContext(context.Background(), userID)
+}
+
+func (c *AgentClient) ListRolesContext(ctx context.Context, userID string) (*RoleListResponse, error) {
 	endpoint := c.baseURL + "/agent/roles"
 	if userID != "" {
 		endpoint += "?user_id=" + url.QueryEscape(userID)
 	}
-	resp, err := c.httpClient.Get(endpoint)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("roles request failed: %w", err)
 	}
@@ -882,7 +890,16 @@ func (c *AgentClient) ListRuns(conversationID string, userID string, limit int) 
 }
 
 func (c *AgentClient) GetRun(runID string) (*RunRecord, error) {
-	resp, err := c.httpClient.Get(c.baseURL + "/agent/runs/" + url.PathEscape(runID))
+	return c.GetRunContext(context.Background(), runID)
+}
+func (c *AgentClient) GetRunContext(ctx context.Context, runID string) (*RunRecord, error) {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/agent/runs/"+url.PathEscape(runID), nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("run request failed: %w", err)
 	}
@@ -902,7 +919,9 @@ func (c *AgentClient) GetRun(runID string) (*RunRecord, error) {
 }
 
 func (c *AgentClient) CancelRun(runID string) error {
-	httpReq, err := http.NewRequest(http.MethodPost, c.baseURL+"/agent/runs/"+url.PathEscape(runID)+"/cancel", nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/agent/runs/"+url.PathEscape(runID)+"/cancel", nil)
 	if err != nil {
 		return fmt.Errorf("build cancel run request: %w", err)
 	}

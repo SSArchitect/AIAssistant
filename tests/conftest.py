@@ -5,6 +5,11 @@ from agent.main import app, skill_registry, lifespan
 from agent.orchestrator.engine import AgentEngine
 
 
+@pytest.fixture(autouse=True)
+def isolated_connect_runtime(tmp_path, monkeypatch):
+    monkeypatch.setenv("AGENT_CONNECT_RUNS_PATH", str(tmp_path / "connect_runs.db"))
+
+
 @pytest.fixture(scope="session", autouse=True)
 def setup_skills():
     """Initialize skill registry once for all tests."""

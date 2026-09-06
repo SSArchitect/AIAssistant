@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/aan/agent-assistant-gateway/internal/bridge"
+	"github.com/aan/agent-assistant-gateway/internal/connect"
 	"github.com/aan/agent-assistant-gateway/internal/database"
 	"github.com/aan/agent-assistant-gateway/internal/models"
 	"github.com/gin-gonic/gin"
@@ -25,11 +26,14 @@ import (
 )
 
 type AdminHandler struct {
-	agent      *bridge.AgentClient
-	syncer     *ConfigSyncer
-	sessionsMu sync.Mutex
-	sessions   map[string]time.Time
+	connectService *connect.Service
+	agent          *bridge.AgentClient
+	syncer         *ConfigSyncer
+	sessionsMu     sync.Mutex
+	sessions       map[string]time.Time
 }
+
+func (h *AdminHandler) SetConnectService(s *connect.Service) { h.connectService = s }
 
 var llmProviders = []string{"claude", "openai", "gemini", "deepseek", "doubao", "minimax", "dgx", "ollama"}
 
@@ -425,6 +429,19 @@ func (h *AdminHandler) DeleteAccount(c *gin.Context) {
 		return
 	}
 
+	if h.connectService != nil {
+		connections, err := h.connectService.List(accountID)
+		if err != nil {
+			c.JSON(500, gin.H{"error": "failed to load connections"})
+			return
+		}
+		for _, connection := range connections {
+			if _, err := h.connectService.Disconnect(accountID, connection.ID); err != nil {
+				c.JSON(500, gin.H{"error": "failed to disconnect account"})
+				return
+			}
+		}
+	}
 	if h.agent != nil {
 		if err := h.agent.DeleteUserData(accountID); err != nil {
 			slog.Error("Failed to delete account data from agent", "account_id", accountID, "error", err)
@@ -434,7 +451,14 @@ func (h *AdminHandler) DeleteAccount(c *gin.Context) {
 	}
 
 	if err := database.DB.Transaction(func(tx *gorm.DB) error {
+		connections := tx.Unscoped().Model(&models.ConnectConnection{}).Select("id").Where("user_id = ?", accountID)
+		for _, m := range []any{&models.ConnectDelivery{}, &models.ConnectCheck{}} {
+			if err := tx.Where("connection_id IN (?)", connections).Delete(m).Error; err != nil {
+				return err
+			}
+		}
 		userModels := []interface{}{
+			&models.ConnectTurn{}, &models.ConnectSource{},
 			&models.AccountSession{},
 			&models.Message{},
 			&models.Conversation{},
@@ -457,6 +481,10 @@ func (h *AdminHandler) DeleteAccount(c *gin.Context) {
 			if err := tx.Where("user_id = ?", accountID).Delete(model).Error; err != nil {
 				return err
 			}
+		}
+		// Account deletion also purges creation tombstones from previously deleted connections.
+		if err := tx.Unscoped().Where("user_id = ?", accountID).Delete(&models.ConnectConnection{}).Error; err != nil {
+			return err
 		}
 
 		legacyModels := []interface{}{
