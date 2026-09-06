@@ -81,14 +81,14 @@ Android 容器启动及回到前台时会请求 `GET /api/app/version`，一小�
 
 ```bash
 AGENT_ASSISTANT_WEB_VERSION=2026.08.18.2
-AGENT_ASSISTANT_ANDROID_LATEST_VERSION_CODE=5
-AGENT_ASSISTANT_ANDROID_LATEST_VERSION_NAME=0.4.0
+AGENT_ASSISTANT_ANDROID_LATEST_VERSION_CODE=6
+AGENT_ASSISTANT_ANDROID_LATEST_VERSION_NAME=0.4.1
 AGENT_ASSISTANT_ANDROID_MIN_VERSION_CODE=1
-AGENT_ASSISTANT_ANDROID_APK_URL=https://www.architect8.cn/downloads/agent-assistant-0.4.0-debug.apk
+AGENT_ASSISTANT_ANDROID_APK_URL=https://www.architect8.cn/downloads/agent-assistant-0.4.1-debug.apk
 AGENT_ASSISTANT_ANDROID_APK_SHA256='<APK 的 64 位小写 SHA-256>'
 AGENT_ASSISTANT_ANDROID_APK_SIZE='<APK 精确字节数>'
 AGENT_ASSISTANT_ANDROID_PACKAGE_NAME=com.aan.agentassistant
-AGENT_ASSISTANT_ANDROID_RELEASE_NOTES='适配图片复制和系统下载目录'
+AGENT_ASSISTANT_ANDROID_RELEASE_NOTES='修复 App 内更新参数解析，包含键盘、图片复制与下载修复'
 ```
 
 当 `LATEST_VERSION_CODE` 高于 App 内置版本时，App 底部会显示更新提示。0.3.0 及以上版本
@@ -99,6 +99,17 @@ AGENT_ASSISTANT_ANDROID_RELEASE_NOTES='适配图片复制和系统下载目录'
 原生 Java/Kotlin、Capacitor 插件、权限和图标等改动仍需发布新 APK；只有 `web/` 页面资源
 适合走下面的 OTA。0.3.0 的内置更新器只是让后续 APK 升级不再跳转浏览器，并没有把原生
 改动变成 OTA。
+
+### 0.4.1 更新器修复
+
+0.4.1（`versionCode 6`）修复更新器读取数字参数的问题：Android JSON 把常用的文件大小
+和版本号存为 `Integer`，Capacitor 的 `PluginCall.getLong()` 只接受 `Long`，旧代码因此
+读到默认值 0，在实际下载前返回 `INVALID_UPDATE`。现在统一读取并校验正的安全整数，
+兼容 `Integer`、`Long` 和值为整数的 `Double`，继续拒绝无效参数。
+
+已经安装旧更新器的设备需通过浏览器下载新版 APK 并覆盖安装一次；Web OTA 不能修复
+原生参数读取代码。原生单元测试 `AppUpdaterPluginTest` 覆盖真实发布大小/版本、数字类型
+以及缺失、负数、小数、非有限数和安全整数范围边界。
 
 ## Web 资源增量 OTA
 

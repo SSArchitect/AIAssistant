@@ -81,10 +81,8 @@ public class AppUpdaterPlugin extends Plugin {
         String rawUrl = call.getString("url", "").trim();
         String expectedHash = call.getString("sha256", "").trim().toLowerCase(Locale.US);
         String expectedPackage = call.getString("packageName", getContext().getPackageName()).trim();
-        Long expectedSizeValue = call.getLong("size", 0L);
-        Long expectedVersionValue = call.getLong("versionCode", 0L);
-        long expectedSize = expectedSizeValue == null ? 0L : expectedSizeValue;
-        long expectedVersionCode = expectedVersionValue == null ? 0L : expectedVersionValue;
+        long expectedSize = positiveUpdateInteger(call.getData().opt("size"));
+        long expectedVersionCode = positiveUpdateInteger(call.getData().opt("versionCode"));
 
         if (!canRequestPackageInstalls()) {
             call.reject("Permission to install unknown apps is required.", "INSTALL_PERMISSION_REQUIRED");
@@ -154,6 +152,19 @@ public class AppUpdaterPlugin extends Plugin {
                 updateInProgress.set(false);
             }
         });
+    }
+
+    static long positiveUpdateInteger(Object value) {
+        // Android's JSON parser stores small integers as Integer. Capacitor's
+        // getLong only accepts Long, so it silently returns the default for
+        // normal APK sizes and version codes sent by JavaScript.
+        if (!(value instanceof Number)) return 0L;
+        double number = ((Number) value).doubleValue();
+        if (!Double.isFinite(number) || number <= 0 || number > 9007199254740991d
+            || number != Math.rint(number)) {
+            return 0L;
+        }
+        return ((Number) value).longValue();
     }
 
     private boolean canRequestPackageInstalls() {
