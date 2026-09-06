@@ -7,9 +7,14 @@ const root = path.resolve(__dirname, '..');
 const appSource = fs.readFileSync(path.join(root, 'web/static/js/app.js'), 'utf8');
 const cssSource = fs.readFileSync(path.join(root, 'web/static/css/style.css'), 'utf8');
 const bridgeSource = fs.readFileSync(path.join(root, 'mobile/android-bridge.js'), 'utf8');
+const fitnessSource = fs.readFileSync(path.join(root, 'web/static/js/fitness.js'), 'utf8');
 const capacitorConfig = JSON.parse(fs.readFileSync(path.join(root, 'capacitor.config.json'), 'utf8'));
 const appUpdaterSource = fs.readFileSync(
     path.join(root, 'android/app/src/main/java/com/aan/agentassistant/AppUpdaterPlugin.java'),
+    'utf8',
+);
+const nativeFilesSource = fs.readFileSync(
+    path.join(root, 'android/app/src/main/java/com/aan/agentassistant/NativeFilesPlugin.java'),
     'utf8',
 );
 const mainActivitySource = fs.readFileSync(
@@ -18,6 +23,7 @@ const mainActivitySource = fs.readFileSync(
 );
 const androidManifest = fs.readFileSync(path.join(root, 'android/app/src/main/AndroidManifest.xml'), 'utf8');
 const filePaths = fs.readFileSync(path.join(root, 'android/app/src/main/res/xml/file_paths.xml'), 'utf8');
+const androidBuildScript = fs.readFileSync(path.join(root, 'scripts/build_android_web.mjs'), 'utf8');
 
 function loadDriveShareUrl(apiBase, location) {
     const source = appSource.match(/function driveShareUrl\(item\) \{[\s\S]*?\n\}/)?.[0];
@@ -26,6 +32,12 @@ function loadDriveShareUrl(apiBase, location) {
         apiBase,
         { location },
     );
+}
+
+function loadMediaDownloadUrl(apiBase) {
+    const source = appSource.match(/function mediaDownloadUrl\(url, filename\) \{[\s\S]*?\n\}/)?.[0];
+    assert.ok(source, 'mediaDownloadUrl function should exist');
+    return Function('API_BASE', `${source}; return mediaDownloadUrl;`)(apiBase);
 }
 
 test('mobile Drive uses mutually exclusive library and detail panes', () => {
@@ -77,6 +89,21 @@ test('browser Drive share links remain on the current origin without an API base
     assert.equal(driveShareUrl({ share_enabled: false, share_token: 'token-1' }), '');
 });
 
+test('Android image downloads resolve both proxy and server paths against the configured API origin', () => {
+    const mobileDownloadUrl = loadMediaDownloadUrl('https://www.architect8.cn');
+    assert.equal(
+        mobileDownloadUrl('https://cdn.example.com/image 1.png', '回答.png'),
+        'https://www.architect8.cn/api/media/download?url=https%3A%2F%2Fcdn.example.com%2Fimage%201.png&filename=%E5%9B%9E%E7%AD%94.png',
+    );
+    assert.equal(
+        mobileDownloadUrl('/static/generated/image.png', 'image.png'),
+        'https://www.architect8.cn/static/generated/image.png',
+    );
+
+    const browserDownloadUrl = loadMediaDownloadUrl('');
+    assert.equal(browserDownloadUrl('/static/generated/image.png', 'image.png'), '/static/generated/image.png');
+});
+
 test('remote Android version discovery requires HTTPS', () => {
     assert.match(bridgeSource, /url\.protocol !== 'https:'/);
     assert.match(bridgeSource, /latest_version_code/);
@@ -100,6 +127,11 @@ test('Android native updates require verified metadata and use the in-app update
     assert.match(bridgeSource, /downloadProgress/);
 });
 
+test('Android web builds default to the APK versionCode instead of reporting version 1', () => {
+    assert.match(androidBuildScript, /androidBuildGradle\.match\(\/\\bversionCode/);
+    assert.match(androidBuildScript, /AGENT_ASSISTANT_ANDROID_VERSION_CODE \|\| gradleVersionCode/);
+});
+
 test('Android updater verifies HTTPS, checksum, package, version, and signing identity', () => {
     assert.match(mainActivitySource, /registerPlugin\(AppUpdaterPlugin\.class\)/);
     assert.match(androidManifest, /android\.permission\.REQUEST_INSTALL_PACKAGES/);
@@ -110,4 +142,30 @@ test('Android updater verifies HTTPS, checksum, package, version, and signing id
     assert.match(appUpdaterSource, /archiveVersionCode != expectedVersionCode/);
     assert.match(appUpdaterSource, /signatureDigests\(archiveInfo\)\.equals\(signatureDigests\(installedInfo\)\)/);
     assert.match(appUpdaterSource, /FileProvider\.getUriForFile/);
+});
+
+test('Android answer images use a native clipboard URI before the browser fallback', () => {
+    assert.match(bridgeSource, /registerPlugin\('NativeFiles'\)/);
+    assert.match(bridgeSource, /NativeFiles\.copyImage\(payload\)/);
+    assert.match(mainActivitySource, /registerPlugin\(NativeFilesPlugin\.class\)/);
+    assert.match(nativeFilesSource, /ClipboardManager/);
+    assert.match(nativeFilesSource, /ClipData\.newUri/);
+    assert.match(nativeFilesSource, /FileProvider\.getUriForFile/);
+});
+
+test('Android downloads save into the system Downloads collection with legacy permission fallback', () => {
+    assert.match(bridgeSource, /NativeFiles\.saveFile\(payload\)/);
+    assert.match(appSource, /FileActions\?\.hasNativeDownload\(\)/);
+    assert.match(appSource, /FileActions\.downloadBlob/);
+    assert.match(nativeFilesSource, /MediaStore\.Downloads\.getContentUri/);
+    assert.match(nativeFilesSource, /MediaStore\.MediaColumns\.IS_PENDING/);
+    assert.match(nativeFilesSource, /Environment\.getExternalStoragePublicDirectory/);
+    assert.match(androidManifest, /WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28"/);
+});
+
+test('all user-facing Blob downloads route through the shared mobile adapter', () => {
+    assert.match(appSource, /async function downloadDriveItem[\s\S]*?FileActions\.downloadBlob/);
+    assert.match(appSource, /async function downloadShareCardImage[\s\S]*?FileActions\.downloadBlob/);
+    assert.match(appSource, /async function saveImageFromUrl[\s\S]*?FileActions\.downloadBlob/);
+    assert.match(fitnessSource, /async function exportData[\s\S]*?FileActions\.downloadBlob/);
 });

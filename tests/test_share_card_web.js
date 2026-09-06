@@ -139,6 +139,13 @@ test('share card image URLs use direct same-origin access and proxy external ori
         '/static/generated/a.png',
     );
     assert.equal(
+        resolveShareCardImageFetchUrl('/static/generated/a.png', {
+            ...options,
+            resourceBase: 'https://api.example.com/',
+        }),
+        'https://api.example.com/static/generated/a.png',
+    );
+    assert.equal(
         resolveShareCardImageFetchUrl('https://cdn.example.com/a.png', options),
         '/api/media/download?url=https%3A%2F%2Fcdn.example.com%2Fa.png',
     );
@@ -290,9 +297,10 @@ test('assistant answers expose a card action and a copy/download preview dialog'
     assert.match(appSource, /data-share-answer-card/);
     assert.match(appSource, /renderShareCardActionButton\(copyEnabled\)/);
     assert.match(appSource, /closest\?\.\('\.message\.assistant\[data-copy-text\]'\)/);
-    assert.match(appSource, /new window\.ClipboardItem\(\{ 'image\/png': blob \}\)/);
+    assert.match(appSource, /FileActions\.copyImageBlob/);
+    assert.match(appSource, /FileActions\.downloadBlob/);
     assert.match(appSource, /shareCardLoading\.hidden = ready \|\| !shareCardState\.busy/);
     assert.match(indexSource, /id="share-card-dialog"[\s\S]*data-share-card-copy[\s\S]*data-share-card-download/);
-    assert.match(indexSource, /src="\/static\/js\/share-card\.js\?v=3"/);
+    assert.match(indexSource, /src="\/static\/js\/share-card\.js\?v=4"/);
     assert.match(styleSource, /body\.share-card-open\s*\{\s*overflow:\s*hidden/);
 });

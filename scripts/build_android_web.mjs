@@ -10,7 +10,12 @@ const apiBase = String(
 ).replace(/\/+$/, '');
 const packageJson = JSON.parse(readFileSync(resolve(projectRoot, 'package.json'), 'utf8'));
 const appVersionName = String(packageJson.version || '0.1.0');
-const appVersionCode = Number.parseInt(process.env.AGENT_ASSISTANT_ANDROID_VERSION_CODE || '1', 10);
+const androidBuildGradle = readFileSync(resolve(projectRoot, 'android', 'app', 'build.gradle'), 'utf8');
+const gradleVersionCode = androidBuildGradle.match(/\bversionCode\s+(\d+)/)?.[1] || '1';
+const appVersionCode = Number.parseInt(
+  process.env.AGENT_ASSISTANT_ANDROID_VERSION_CODE || gradleVersionCode,
+  10,
+);
 const webVersion = String(process.env.AGENT_ASSISTANT_WEB_VERSION || appVersionName);
 const otaSequence = Number.parseInt(process.env.AGENT_ASSISTANT_OTA_SEQUENCE || '0', 10);
 

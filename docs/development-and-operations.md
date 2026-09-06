@@ -1,6 +1,6 @@
 # Agent Assistant 开发与运行规范
 
-最后更新：2026-09-02
+最后更新：2026-09-03
 
 这份文档记录当前代码落地后的服务启动方式、开发流程、测试要求和已知限制。架构方向见 [agent-workbench-architecture.md](./agent-workbench-architecture.md)。
 
@@ -490,8 +490,10 @@ go vet ./...
 go test ./...
 go build -o /dev/null ./cmd/server/
 python3 -m pytest tests/ -v --tb=short
-node --check web/static/js/{chat-recovery,share-card,app,admin}.js  # 如果本机安装了 node
+node --check web/static/js/{chat-recovery,share-card,file-actions,app,fitness,admin}.js  # 如果本机安装了 node
+node --check mobile/{android-bridge.js,native-file-payload.cjs}
 node --test tests/test_*_web.js
+cd android && ./gradlew testDebugUnitTest  # 配置了 JDK 与 Android SDK 时
 config/config.yaml YAML 校验
 Python 核心 import 校验
 builtin skill discovery 校验
@@ -505,6 +507,9 @@ python3 -m pytest tests/test_api.py tests/test_trace.py
 
 cd gateway
 go test ./...
+
+JAVA_HOME=/path/to/jdk ANDROID_HOME=/path/to/android-sdk \
+  android/gradlew -p android testDebugUnitTest
 ```
 
 Feature 改动的强制测试规则：

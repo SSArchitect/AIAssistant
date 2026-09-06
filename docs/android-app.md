@@ -43,8 +43,8 @@ Android 资源里注入服务地址，不会改变网页端的同源 API 行为�
   release keystore，再生成签名 AAB。
 - Android 跨域调用使用 `X-Account-Session`、`X-User-ID` 等请求头；当前网页请求仍保留
   查询参数兼容路径。Gateway 的 CORS 配置已允许这些自定义请求头。
-- 已支持系统返回键、外链浏览器、系统分享桥接和 App 内 APK 下载更新，暂未接入推送
-  通知与深链。
+- 已支持系统返回键、外链浏览器、系统分享桥接、图片剪贴板、文件保存到系统下载目录和
+  App 内 APK 下载更新，暂未接入推送通知与深链。
 
 ## 软键盘避让
 
@@ -57,6 +57,22 @@ Android 资源里注入服务地址，不会改变网页端的同源 API 行为�
 配置回归测试为 `node --test tests/test_android_keyboard_web.js`。真机回归需检查点击输入框、
 切换输入法高度、收起键盘后布局恢复，以及 Android 15/16 和较旧 Android 的表现。
 
+## 手机端复制与下载
+
+0.4.0（`versionCode 5`）新增 `NativeFiles` 原生桥。回答分享卡片的“复制图片”会先把 PNG
+写入 App 缓存，再通过 `FileProvider` URI 放进 Android 系统剪贴板；回答图片、分享卡片、
+网盘文件和减重计划数据导出则统一写入系统的 `Download/Agent Assistant` 目录。
+
+Android 10 及以上使用 `MediaStore.Downloads`，不申请存储权限；Android 7–9 第一次下载时
+会请求旧版写入存储权限。网页浏览器继续使用标准 Clipboard API 和 `<a download>` 回退。
+
+这部分包含 Java 原生能力，必须安装 `versionCode >= 5` 的 APK，不能单独发布给旧 APK 的
+OTA。任何依赖这些入口的 OTA manifest 都必须设置：
+
+```bash
+AGENT_ASSISTANT_OTA_MIN_NATIVE_VERSION_CODE=5
+```
+
 ## 原生版本检测
 
 Android 容器启动及回到前台时会请求 `GET /api/app/version`，一小时内最多
@@ -65,14 +81,14 @@ Android 容器启动及回到前台时会请求 `GET /api/app/version`，一小�
 
 ```bash
 AGENT_ASSISTANT_WEB_VERSION=2026.08.18.2
-AGENT_ASSISTANT_ANDROID_LATEST_VERSION_CODE=3
-AGENT_ASSISTANT_ANDROID_LATEST_VERSION_NAME=0.3.0
+AGENT_ASSISTANT_ANDROID_LATEST_VERSION_CODE=5
+AGENT_ASSISTANT_ANDROID_LATEST_VERSION_NAME=0.4.0
 AGENT_ASSISTANT_ANDROID_MIN_VERSION_CODE=1
-AGENT_ASSISTANT_ANDROID_APK_URL=https://www.architect8.cn/downloads/agent-assistant-0.3.0-debug.apk
+AGENT_ASSISTANT_ANDROID_APK_URL=https://www.architect8.cn/downloads/agent-assistant-0.4.0-debug.apk
 AGENT_ASSISTANT_ANDROID_APK_SHA256='<APK 的 64 位小写 SHA-256>'
 AGENT_ASSISTANT_ANDROID_APK_SIZE='<APK 精确字节数>'
 AGENT_ASSISTANT_ANDROID_PACKAGE_NAME=com.aan.agentassistant
-AGENT_ASSISTANT_ANDROID_RELEASE_NOTES='新增 App 内安全下载更新'
+AGENT_ASSISTANT_ANDROID_RELEASE_NOTES='适配图片复制和系统下载目录'
 ```
 
 当 `LATEST_VERSION_CODE` 高于 App 内置版本时，App 底部会显示更新提示。0.3.0 及以上版本

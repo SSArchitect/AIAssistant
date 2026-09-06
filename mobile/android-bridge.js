@@ -3,8 +3,11 @@ import { App } from '@capacitor/app';
 import { Browser } from '@capacitor/browser';
 import { Share } from '@capacitor/share';
 import { CapacitorUpdater } from '@capgo/capacitor-updater';
+import nativeFilePayload from './native-file-payload.cjs';
 
 const AppUpdater = registerPlugin('AppUpdater');
+const NativeFiles = registerPlugin('NativeFiles');
+const { blobToNativeFilePayload } = nativeFilePayload;
 
 if (Capacitor.getPlatform() === 'android') {
   document.documentElement.classList.add('native-android');
@@ -403,6 +406,14 @@ if (Capacitor.getPlatform() === 'android') {
   globalThis.AgentAssistantNative = Object.freeze({
     async share({ title = '', text = '', url = '' } = {}) {
       await Share.share({ title, text, url, dialogTitle: title || '分享' });
+    },
+    async copyImage({ blob, filename = 'super-chat-answer.png' } = {}) {
+      const payload = await blobToNativeFilePayload(blob, filename);
+      return NativeFiles.copyImage(payload);
+    },
+    async downloadBlob({ blob, filename = 'download' } = {}) {
+      const payload = await blobToNativeFilePayload(blob, filename);
+      return NativeFiles.saveFile(payload);
     },
     checkForUpdate() {
       return checkForAppUpdate({ force: true });

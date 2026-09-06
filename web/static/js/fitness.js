@@ -472,17 +472,14 @@ function saveProfile() {
     showToast('计划已保存');
 }
 
-function exportData() {
+async function exportData() {
     const blob = new Blob([JSON.stringify(state, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `weight-loss-plan-${todayISO()}.json`;
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    URL.revokeObjectURL(url);
-    showToast('数据已导出');
+    try {
+        await globalThis.FileActions.downloadBlob(blob, `weight-loss-plan-${todayISO()}.json`);
+        showToast('数据已导出');
+    } catch {
+        showToast('导出失败，请稍后重试');
+    }
 }
 
 function importData(event) {

@@ -65,7 +65,11 @@ if command -v node >/dev/null 2>&1; then
     echo "[Web] Checking JavaScript syntax..."
     if node --check web/static/js/chat-recovery.js 2>&1 && \
        node --check web/static/js/share-card.js 2>&1 && \
+       node --check web/static/js/file-actions.js 2>&1 && \
        node --check web/static/js/app.js 2>&1 && \
+       node --check web/static/js/fitness.js 2>&1 && \
+       node --check mobile/android-bridge.js 2>&1 && \
+       node --check mobile/native-file-payload.cjs 2>&1 && \
        node --check web/static/js/admin.js 2>&1; then
         echo "  PASS: web JavaScript syntax"
     else
@@ -82,6 +86,26 @@ if command -v node >/dev/null 2>&1; then
     fi
 else
     echo "  SKIP: node not found, skipping JavaScript checks"
+fi
+
+echo ""
+
+# --- Android Checks ---
+echo "--- Android Checks ---"
+
+if java -version >/dev/null 2>&1 && \
+   { [ -n "${ANDROID_HOME:-}" ] || [ -n "${ANDROID_SDK_ROOT:-}" ] || [ -f "$PROJECT_DIR/android/local.properties" ]; }; then
+    cd "$PROJECT_DIR/android"
+    echo "[Android] Running local unit tests..."
+    if ./gradlew testDebugUnitTest 2>&1; then
+        echo "  PASS: Android unit tests"
+    else
+        echo "  FAIL: Android unit tests"
+        FAILED=1
+    fi
+    cd "$PROJECT_DIR"
+else
+    echo "  SKIP: Java or Android SDK not configured"
 fi
 
 echo ""

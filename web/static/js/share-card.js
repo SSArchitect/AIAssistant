@@ -284,7 +284,11 @@
     function resolveShareCardImageFetchUrl(url = '', options = {}) {
         const value = String(url).trim();
         if (!isSafeShareCardImageUrl(value)) return '';
-        if (value.startsWith('/') || value.startsWith('data:image/')) return value;
+        if (value.startsWith('data:image/')) return value;
+        if (value.startsWith('/')) {
+            const resourceBase = String(options.resourceBase || '').replace(/\/$/, '');
+            return resourceBase ? `${resourceBase}${value}` : value;
+        }
 
         const origin = String(options.locationOrigin || globalScope?.location?.origin || '').replace(/\/$/, '');
         try {

@@ -181,7 +181,9 @@ const I18N = {
             copyUnsupported: '当前浏览器不支持直接复制图片，请下载后分享。',
             copyFailed: '复制失败，请改用下载图片。',
             download: '下载图片',
+            downloading: '正在保存图片…',
             downloaded: '图片已下载。',
+            downloadFailed: '图片下载失败，请稍后重试。',
             generateFailed: '卡片生成失败，请稍后重试。',
             questionLabel: '提问',
             answerLabel: 'AI 回答',
@@ -322,6 +324,7 @@ const I18N = {
             chatPathTitle: 'Super Chat 网盘路径：{path}',
             folderContents: '{folders} 个文件夹 · {files} 个文件',
             download: '下载',
+            downloadFailed: '下载失败：{message}',
             shareTitle: '分享文档',
             shareEnabled: '已开启分享',
             shareDisabled: '分享未开启',
@@ -1094,7 +1097,9 @@ const I18N = {
             copyUnsupported: 'This browser cannot copy images directly. Download the image instead.',
             copyFailed: 'Copy failed. Please download the image instead.',
             download: 'Download image',
+            downloading: 'Saving image…',
             downloaded: 'Image downloaded.',
+            downloadFailed: 'Image download failed. Please try again.',
             generateFailed: 'Could not create the card. Please try again.',
             questionLabel: 'Question',
             answerLabel: 'AI Answer',
@@ -1235,6 +1240,7 @@ const I18N = {
             chatPathTitle: 'Super Chat drive path: {path}',
             folderContents: '{folders} folders · {files} files',
             download: 'Download',
+            downloadFailed: 'Download failed: {message}',
             shareTitle: 'Share document',
             shareEnabled: 'Sharing on',
             shareDisabled: 'Sharing off',
@@ -10874,18 +10880,36 @@ function driveItemIconSvg(item) {
     return `<svg class="${className}" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.1" aria-hidden="true" focusable="false"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8Z"/><path d="M14 3v5h5"/></svg>`;
 }
 
-function downloadDriveItem(id = '') {
+async function downloadDriveItem(id = '') {
     const item = driveItemById(id);
     if (!item || item.type !== 'file') return;
-    const params = new URLSearchParams();
+    const path = `/api/drive/items/${encodeURIComponent(id)}/download`;
+    const target = new URL(`${API_BASE}${path}`, window.location.href);
     if (currentAccountToken) {
-        params.set('account_session', currentAccountToken);
+        target.searchParams.set('account_session', currentAccountToken);
     } else if (currentUserId) {
-        params.set('user_id', currentUserId);
+        target.searchParams.set('user_id', currentUserId);
     }
-    const query = params.toString();
-    const url = `${API_BASE}/api/drive/items/${encodeURIComponent(id)}/download${query ? `?${query}` : ''}`;
-    window.open(url, '_blank', 'noopener');
+    const url = target.toString();
+    if (!globalThis.FileActions?.hasNativeDownload()) {
+        window.open(url, '_blank', 'noopener');
+        return;
+    }
+
+    try {
+        const resp = await fetch(url, { headers: apiHeaders() });
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const blob = await resp.blob();
+        await globalThis.FileActions.downloadBlob(blob, driveDisplayName(item));
+    } catch (error) {
+        const message = t('projects.downloadFailed', { message: error?.message || String(error) });
+        if (drivePreviewState.open && drivePreviewState.itemId === item.id) {
+            drivePreviewState.error = message;
+            renderDriveDocumentPreview();
+        } else {
+            window.alert(message);
+        }
+    }
 }
 
 function openChatWithDrivePath(folderId = currentProjectId) {
@@ -17154,7 +17178,9 @@ async function openAssistantShareCard(button) {
             answerLabel: t('shareCard.answerLabel'),
             truncatedLabel: t('shareCard.truncatedInImage'),
             imageFallbackLabel: t('shareCard.imageLoadFailed'),
-            imageProxyPath: '/api/media/download?url=',
+            imageProxyPath: `${API_BASE}/api/media/download?url=`,
+            locationOrigin: API_BASE || window.location.origin,
+            resourceBase: API_BASE,
             footer: `${t('shareCard.footer')} · ${shareCardFormattedDate()}`,
         });
         if (!shareCardState.open || shareCardState.renderId !== renderId) return;
@@ -17267,28 +17293,23 @@ async function copyShareCardImage() {
     const blob = shareCardState.blob;
     const renderId = shareCardState.renderId;
     if (!blob || shareCardState.busy) return;
-    if (!navigator.clipboard?.write || typeof window.ClipboardItem !== 'function') {
-        shareCardState.statusKey = 'shareCard.copyUnsupported';
-        shareCardState.statusVars = {};
-        shareCardState.statusType = 'error';
-        renderShareCardDialog();
-        return;
-    }
-
     shareCardState.busy = true;
     shareCardState.statusKey = 'shareCard.copying';
     shareCardState.statusType = '';
     renderShareCardDialog();
     try {
-        await navigator.clipboard.write([
-            new window.ClipboardItem({ 'image/png': blob }),
-        ]);
+        await globalThis.FileActions.copyImageBlob(
+            blob,
+            shareCardState.filename || 'super-chat-answer.png',
+        );
         if (!shareCardState.open || shareCardState.renderId !== renderId) return;
         shareCardState.statusKey = 'shareCard.copied';
         shareCardState.statusType = 'success';
-    } catch {
+    } catch (error) {
         if (!shareCardState.open || shareCardState.renderId !== renderId) return;
-        shareCardState.statusKey = 'shareCard.copyFailed';
+        shareCardState.statusKey = error?.code === 'IMAGE_CLIPBOARD_UNSUPPORTED'
+            ? 'shareCard.copyUnsupported'
+            : 'shareCard.copyFailed';
         shareCardState.statusType = 'error';
     } finally {
         if (!shareCardState.open || shareCardState.renderId !== renderId) return;
@@ -17297,13 +17318,33 @@ async function copyShareCardImage() {
     }
 }
 
-function downloadShareCardImage() {
+async function downloadShareCardImage() {
     if (!shareCardState.objectUrl || !shareCardState.blob || shareCardState.busy) return;
-    triggerDownload(shareCardState.objectUrl, shareCardState.filename || 'super-chat-answer.png');
-    shareCardState.statusKey = 'shareCard.downloaded';
+    const renderId = shareCardState.renderId;
+    shareCardState.busy = true;
+    shareCardState.statusKey = 'shareCard.downloading';
     shareCardState.statusVars = {};
-    shareCardState.statusType = 'success';
+    shareCardState.statusType = '';
     renderShareCardDialog();
+    try {
+        await globalThis.FileActions.downloadBlob(
+            shareCardState.blob,
+            shareCardState.filename || 'super-chat-answer.png',
+        );
+        if (!shareCardState.open || shareCardState.renderId !== renderId) return;
+        shareCardState.statusKey = 'shareCard.downloaded';
+        shareCardState.statusVars = {};
+        shareCardState.statusType = 'success';
+    } catch {
+        if (!shareCardState.open || shareCardState.renderId !== renderId) return;
+        shareCardState.statusKey = 'shareCard.downloadFailed';
+        shareCardState.statusVars = {};
+        shareCardState.statusType = 'error';
+    } finally {
+        if (!shareCardState.open || shareCardState.renderId !== renderId) return;
+        shareCardState.busy = false;
+        renderShareCardDialog();
+    }
 }
 
 function renderInputMeta(meta) {
@@ -18137,7 +18178,8 @@ async function downloadMediaPreview() {
 
 async function saveImageFromUrl(url, filename) {
     if (isSafeDataImageUrl(url)) {
-        triggerDownload(url, filename);
+        const resp = await fetch(url);
+        await globalThis.FileActions.downloadBlob(await resp.blob(), filename);
         return;
     }
 
@@ -18150,9 +18192,7 @@ async function saveImageFromUrl(url, filename) {
         if (!resp.ok) throw new Error(`Download failed: ${resp.status}`);
         const blob = await resp.blob();
         if (blob.type && !blob.type.startsWith('image/')) throw new Error('Not an image response');
-        const objectUrl = URL.createObjectURL(blob);
-        triggerDownload(objectUrl, filename);
-        setTimeout(() => URL.revokeObjectURL(objectUrl), 30000);
+        await globalThis.FileActions.downloadBlob(blob, filename);
         return;
     } catch (err) {
         throw err;
@@ -18161,18 +18201,9 @@ async function saveImageFromUrl(url, filename) {
 
 function mediaDownloadUrl(url, filename) {
     if (/^https?:\/\//i.test(url)) {
-        return `/api/media/download?url=${encodeURIComponent(url)}&filename=${encodeURIComponent(filename)}`;
+        return `${API_BASE}/api/media/download?url=${encodeURIComponent(url)}&filename=${encodeURIComponent(filename)}`;
     }
-    return url;
-}
-
-function triggerDownload(href, filename) {
-    const link = document.createElement('a');
-    link.href = href;
-    link.download = filename;
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
+    return API_BASE && String(url || '').startsWith('/') ? `${API_BASE}${url}` : url;
 }
 
 function showMediaPreviewStatus(message, type = '') {
@@ -18739,7 +18770,7 @@ document.addEventListener('click', async (event) => {
     const shareCardDownloadTarget = event.target.closest('[data-share-card-download]');
     if (shareCardDownloadTarget && !shareCardDownloadTarget.disabled) {
         event.preventDefault();
-        downloadShareCardImage();
+        await downloadShareCardImage();
         return;
     }
 
@@ -18843,7 +18874,7 @@ document.addEventListener('click', async (event) => {
     const drivePreviewDownloadButton = event.target.closest('[data-drive-preview-download]');
     if (drivePreviewDownloadButton && !drivePreviewDownloadButton.disabled) {
         event.preventDefault();
-        downloadDriveItem(drivePreviewDownloadButton.dataset.drivePreviewDownload);
+        await downloadDriveItem(drivePreviewDownloadButton.dataset.drivePreviewDownload);
         return;
     }
 
@@ -19242,7 +19273,7 @@ document.addEventListener('click', async (event) => {
     const projectDownloadDocumentButton = event.target.closest('[data-project-download-document]');
     if (projectDownloadDocumentButton && !projectDownloadDocumentButton.disabled) {
         event.preventDefault();
-        downloadDriveItem(projectDownloadDocumentButton.dataset.projectDownloadDocument);
+        await downloadDriveItem(projectDownloadDocumentButton.dataset.projectDownloadDocument);
         return;
     }
 
