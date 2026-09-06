@@ -426,8 +426,6 @@ video {
 
 .sidebar-section[hidden],
 .sidebar-section.collapsed .conversation-search,
-.sidebar-section.collapsed .conversation-show-all,
-.conversation-show-all[hidden],
 .management-back[hidden] {
     display: none;
 }
@@ -453,20 +451,11 @@ video {
     font-size: 12px;
 }
 
-.conversation-show-all {
-    border: 0;
-    background: transparent;
-    color: var(--primary);
-    cursor: pointer;
-    font: inherit;
+.conversation-page-status {
+    padding: 12px 8px;
+    color: var(--text-soft);
     font-size: 12px;
-    text-align: left;
-}
-
-.conversation-show-all {
-    flex: 0 0 auto;
-    min-height: 32px;
-    padding: 5px 18px;
+    text-align: center;
 }
 
 .management-back {
@@ -10455,7 +10444,6 @@ body.drive-selecting {
     .sidebar .nav-item,
     .pinned-agent-item,
     .conversation-item,
-    .conversation-show-all,
     .management-back {
         min-height: 44px;
     }

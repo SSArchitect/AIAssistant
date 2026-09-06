@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="referrer" content="no-referrer">
     <title>阿安的工作台</title>
-    <link rel="stylesheet" href="/static/css/style.css?v=97">
+    <link rel="stylesheet" href="/static/css/style.css?v=98">
     <link rel="stylesheet" href="/static/css/connect.css?v=3">
 </head>
 <body>
@@ -87,8 +87,7 @@
                     <input id="conversation-search" type="search" autocomplete="off" placeholder="搜索会话" aria-label="搜索会话"
                            data-i18n-placeholder="sidebar.searchConversations" data-i18n-aria-label="sidebar.searchConversations">
                 </div>
-                <div class="conversation-list" id="conversation-list"></div>
-                <button class="conversation-show-all" id="conversation-show-all" type="button" aria-expanded="false" aria-controls="conversation-list" hidden></button>
+                <div class="conversation-list" id="conversation-list" tabindex="0" aria-label="最近会话" data-i18n-aria-label="sidebar.recent"></div>
             </section>
 
             <div class="sidebar-footer">
@@ -767,7 +766,8 @@
     <script src="/static/js/share-card.js?v=4"></script>
     <script src="/static/js/file-actions.js?v=1"></script>
     <script src="/static/js/connect.js?v=4"></script>
-    <script src="/static/js/app.js?v=149"></script>
+    <script src="/static/js/conversation-pager.js?v=1"></script>
+    <script src="/static/js/app.js?v=150"></script>
     <script src="/static/js/android-bridge.js?v=4"></script>
 </body>
 </html>

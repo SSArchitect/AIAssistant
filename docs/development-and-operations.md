@@ -173,12 +173,15 @@ GET  /api/agents
 GET  /api/runs
 GET  /api/runs/:id
 GET  /api/conversations
+GET  /api/conversations?limit=20&cursor=<next_cursor>&q=<title>
 POST /api/conversations
 GET  /api/conversations/:id
 POST /api/pulse/focus-today/open
 GET  /api/admin/settings
 PUT  /api/admin/settings
 ```
+
+会话列表传入 `limit`（1–100）时启用分页，响应包含 `conversations`、`total`、`has_more` 和 `next_cursor`。游标按更新时间和 ID 倒序定位，`q` 按当前账号的标题搜索；不传 `limit` 的旧调用保持全列表契约。侧栏每页 20 条，接近底部自动加载，搜索和账号切换会重置游标。
 
 `POST /api/chat` 会透传 Python Agent 返回的 debug 字段：
 

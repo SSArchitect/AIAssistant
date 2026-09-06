@@ -326,6 +326,7 @@ test('timed API requests abort and return a typed timeout error', async () => {
 
 test('background conversation refresh preserves a conversation created while it was loading', async () => {
     const source = extractFunctionDeclaration('loadConversations');
+    const syncSource = extractFunctionDeclaration('syncSidebarConversationPage');
     const state = JSON.parse(await vm.runInNewContext(`
         (async () => {
             let currentConversationId = null;
@@ -337,6 +338,11 @@ test('background conversation refresh preserves a conversation created while it 
             const renderConversationList = () => {};
             const updateTopbar = () => {};
             const refreshWelcomeIfEmpty = () => {};
+            ${syncSource}
+            const getSidebarConversationPager = () => ({ refresh: async () => {
+                const data = await apiCall();
+                syncSidebarConversationPage({ items: data.conversations, loading: false, error: '' });
+            }});
             ${source}
             const pending = loadConversations();
             currentConversationId = 'new-local';

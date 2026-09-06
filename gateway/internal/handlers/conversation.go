@@ -1,9 +1,11 @@
 package handlers
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -52,11 +54,60 @@ type conversationMessageResponse struct {
 	CreatedAt      time.Time `json:"created_at"`
 }
 
+type conversationCursor struct {
+	UpdatedAt time.Time `json:"updated_at"`
+	ID        string    `json:"id"`
+}
+
 func (h *ConversationHandler) List(c *gin.Context) {
 	userID := requestUserID(c)
-	var conversations []models.Conversation
-	database.DB.Where("user_id = ?", userID).Order("updated_at desc").Find(&conversations)
-	c.JSON(http.StatusOK, gin.H{"conversations": conversations})
+	query := database.DB.Where("user_id = ?", userID)
+	var conversations = make([]models.Conversation, 0)
+	// Keep the original contract for API clients that do not request pagination.
+	if c.Query("limit") == "" {
+		if err := query.Order("updated_at desc, id desc").Find(&conversations).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list conversations"})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"conversations": conversations})
+		return
+	}
+	limit, err := strconv.Atoi(c.Query("limit"))
+	if err != nil || limit < 1 || limit > 100 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "limit must be between 1 and 100"})
+		return
+	}
+	if search := strings.TrimSpace(c.Query("q")); search != "" {
+		escaped := strings.NewReplacer("\\", "\\\\", "%", "\\%", "_", "\\_").Replace(search)
+		query = query.Where("title LIKE ? ESCAPE '\\'", "%"+escaped+"%")
+	}
+	var total int64
+	if err := query.Model(&models.Conversation{}).Count(&total).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to count conversations"})
+		return
+	}
+	if encoded := c.Query("cursor"); encoded != "" {
+		var cursor conversationCursor
+		raw, err := base64.RawURLEncoding.DecodeString(encoded)
+		if err != nil || json.Unmarshal(raw, &cursor) != nil || cursor.ID == "" || cursor.UpdatedAt.IsZero() {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid conversation cursor"})
+			return
+		}
+		query = query.Where("updated_at < ? OR (updated_at = ? AND id < ?)", cursor.UpdatedAt, cursor.UpdatedAt, cursor.ID)
+	}
+	if err := query.Order("updated_at desc, id desc").Limit(limit + 1).Find(&conversations).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list conversations"})
+		return
+	}
+	more := len(conversations) > limit
+	next := ""
+	if more {
+		conversations = conversations[:limit]
+		last := conversations[len(conversations)-1]
+		raw, _ := json.Marshal(conversationCursor{UpdatedAt: last.UpdatedAt, ID: last.ID})
+		next = base64.RawURLEncoding.EncodeToString(raw)
+	}
+	c.JSON(http.StatusOK, gin.H{"conversations": conversations, "has_more": more, "next_cursor": next, "total": total})
 }
 
 func (h *ConversationHandler) Create(c *gin.Context) {

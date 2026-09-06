@@ -82,8 +82,9 @@ const I18N = {
             recent: '最近会话',
             searchConversations: '搜索会话',
             noMatchingConversations: '没有匹配的会话',
-            showAllConversations: '查看全部（{count}）',
-            showRecentConversations: '只看最近 10 条',
+            loadingConversations: '正在加载更早的会话…',
+            loadConversationsFailed: '会话加载失败',
+            retryConversations: '重试',
             fullConfig: '管理员配置',
             modelSelect: '模型选择',
             defaultModel: '默认模型',
@@ -1008,8 +1009,9 @@ const I18N = {
             recent: 'Recent Chats',
             searchConversations: 'Search conversations',
             noMatchingConversations: 'No matching conversations',
-            showAllConversations: 'View all ({count})',
-            showRecentConversations: 'Show recent 10',
+            loadingConversations: 'Loading older conversations…',
+            loadConversationsFailed: 'Could not load conversations',
+            retryConversations: 'Retry',
             fullConfig: 'Admin Settings',
             modelSelect: 'Model selection',
             defaultModel: 'Default Model',
@@ -2059,7 +2061,9 @@ const DRIVE_BINARY_EXTENSIONS = new Set([
 let activeView = 'chat';
 let currentConversationId = null;
 let conversations = [];
-let showAllSidebarConversations = false;
+let sidebarConversationPager = null;
+let sidebarConversationSearchTimer = null;
+let sidebarConversationFillFrame = null;
 let conversationRenderCache = new Map();
 let agents = [];
 let tools = [];
@@ -2268,7 +2272,6 @@ const accountPasswordInput = document.getElementById('account-password-input');
 const accountLoginError = document.getElementById('account-login-error');
 const conversationList = document.getElementById('conversation-list');
 const conversationSearch = document.getElementById('conversation-search');
-const conversationShowAll = document.getElementById('conversation-show-all');
 const messagesContainer = document.getElementById('messages');
 const inputArea = document.getElementById('input-area');
 const chatHistoryTools = document.getElementById('chat-history-tools');
@@ -2414,6 +2417,7 @@ function syncMobileSidebarState() {
 function setSidebarOpen(open) {
     sidebar.classList.toggle('hidden', !open);
     syncMobileSidebarState();
+    if (open) scheduleSidebarConversationFill();
 }
 
 function closeMobileSidebar() {
@@ -3927,12 +3931,7 @@ function togglePinnedAgent(agentId) {
 }
 
 async function loadConversations(options = {}) {
-    const data = await apiCall('GET', '/api/conversations', null, options);
-    const currentLocalConversation = currentConversationRecord();
-    conversations = data.conversations || [];
-    if (currentLocalConversation && !conversations.some((item) => item.id === currentLocalConversation.id)) {
-        conversations.unshift(currentLocalConversation);
-    }
+    await getSidebarConversationPager().refresh(options);
     const current = currentConversationRecord();
     if (current) applyConversationAgent(current);
     renderConversationList();
@@ -4007,6 +4006,7 @@ async function deleteConversation(id) {
         await apiCall('DELETE', `/api/conversations/${encodeURIComponent(id)}`);
         forgetConversationRender(id);
         conversations = conversations.filter((c) => c.id !== id);
+        sidebarConversationPager?.remove(id);
         if (currentConversationId === id) {
             resetConversationCreateState();
             currentConversationId = null;
@@ -9842,7 +9842,7 @@ function updateCounts() {
         const driveCount = driveContentItems().length;
         projectSectionCount.textContent = driveCount ? String(driveCount) : '';
     }
-    if (conversationSectionCount) conversationSectionCount.textContent = conversations.length ? String(conversations.length) : '';
+    if (conversationSectionCount) conversationSectionCount.textContent = sidebarConversationPager?.snapshot().total ? String(sidebarConversationPager.snapshot().total) : '';
 }
 
 function renderHealth() {
@@ -9860,43 +9860,76 @@ function renderHealth() {
     systemStatus.classList.toggle('warn', !agentOk);
 }
 
-function selectSidebarConversations(items, query, showAll, currentId, titleFor) {
-    const needle = String(query || '').trim().toLocaleLowerCase();
-    if (needle) return items.filter(item => String(titleFor(item) || '').toLocaleLowerCase().includes(needle));
-    if (showAll) return items.slice();
-    const recent = items.slice(0, 10);
-    const current = items.find(item => item.id === currentId);
-    if (current && !recent.some(item => item.id === currentId)) recent[recent.length - 1] = current;
-    return recent;
+function getSidebarConversationPager() {
+    if (!sidebarConversationPager) {
+        sidebarConversationPager = ConversationPager.create({
+            fetchPage: ({ query, cursor, limit }, options) => {
+                const params = new URLSearchParams({ limit: String(limit) });
+                if (query) params.set('q', query);
+                if (cursor) params.set('cursor', cursor);
+                return apiCall('GET', `/api/conversations?${params}`, null, options);
+            },
+            onChange: syncSidebarConversationPage,
+        });
+    }
+    return sidebarConversationPager;
 }
 
-function resetSidebarConversationFilter() {
-    showAllSidebarConversations = false;
-    if (conversationSearch) conversationSearch.value = '';
-}
-
-function toggleSidebarConversationList() {
-    showAllSidebarConversations = !showAllSidebarConversations;
+function syncSidebarConversationPage(state) {
+    if (!state.loading && !state.error) {
+        const cached = new Map(conversations.map(item => [item.id, item]));
+        state.items.forEach(item => cached.set(item.id, item));
+        conversations = Array.from(cached.values());
+    }
     renderConversationList();
 }
 
-function renderConversationList() {
-    if (conversationSectionCount) {
-        conversationSectionCount.textContent = conversations.length ? String(conversations.length) : '';
-    }
-    const query = conversationSearch?.value || '';
-    const visible = selectSidebarConversations(conversations, query, showAllSidebarConversations, currentConversationId, displayConversationTitle);
-    if (conversationShowAll) {
-        conversationShowAll.hidden = Boolean(query.trim()) || conversations.length <= 10;
-        conversationShowAll.textContent = t(showAllSidebarConversations ? 'sidebar.showRecentConversations' : 'sidebar.showAllConversations', { count: conversations.length });
-        conversationShowAll.setAttribute('aria-expanded', String(showAllSidebarConversations));
-    }
-    if (!visible.length) {
-        conversationList.innerHTML = `<div class="empty-inline">${escapeHtml(t(query.trim() ? 'sidebar.noMatchingConversations' : 'sidebar.emptyConversations'))}</div>`;
-        return;
-    }
+function resetSidebarConversationFilter() {
+    clearTimeout(sidebarConversationSearchTimer);
+    sidebarConversationSearchTimer = null;
+    if (conversationSearch) conversationSearch.value = '';
+    sidebarConversationPager?.reset();
+    if (conversationList) conversationList.scrollTop = 0;
+}
 
-    conversationList.innerHTML = visible.map((conv) => {
+function searchSidebarConversations() {
+    clearTimeout(sidebarConversationSearchTimer);
+    getSidebarConversationPager().reset(conversationSearch?.value || '');
+    conversationList.scrollTop = 0;
+    sidebarConversationSearchTimer = setTimeout(() => {
+        sidebarConversationSearchTimer = null;
+        void getSidebarConversationPager().loadMore();
+    }, 250);
+}
+
+function loadOlderSidebarConversations() {
+    const pager = getSidebarConversationPager();
+    const state = pager.snapshot();
+    if (state.loading || state.error || !state.hasMore || sidebarConversationSearchTimer) return;
+    if (conversationList.clientHeight > 0 && conversationList.scrollHeight - conversationList.clientHeight - conversationList.scrollTop <= 48) {
+        void pager.loadMore();
+    }
+}
+
+function scheduleSidebarConversationFill() {
+    if (sidebarConversationFillFrame !== null) return;
+    sidebarConversationFillFrame = requestAnimationFrame(() => {
+        sidebarConversationFillFrame = null;
+        if (!sidebar.classList.contains('hidden') && conversationList.clientHeight > 0
+            && conversationList.scrollHeight <= conversationList.clientHeight + 1) loadOlderSidebarConversations();
+    });
+}
+
+function renderConversationList() {
+    if (!conversationList) return;
+    const state = sidebarConversationPager?.snapshot() || { items: [], query: '', loading: false, error: '', total: 0 };
+    if (conversationSectionCount) conversationSectionCount.textContent = state.total ? String(state.total) : '';
+    const cached = new Map(conversations.map(item => [item.id, item]));
+    const visible = state.items.map(item => cached.get(item.id) || item);
+    const current = cached.get(currentConversationId);
+    if (!state.query && current && !visible.some(item => item.id === current.id)) visible.unshift(current);
+    const scrollTop = conversationList.scrollTop;
+    const rows = visible.map((conv) => {
         const isActive = conv.id === currentConversationId;
         const deleting = pendingConversationDeletes.has(conv.id);
         return `
@@ -9906,6 +9939,14 @@ function renderConversationList() {
             </div>
         `;
     }).join('');
+    let status = '';
+    if (state.loading) status = `<div class="conversation-page-status" role="status">${escapeHtml(t('sidebar.loadingConversations'))}</div>`;
+    else if (state.error) status = `<div class="conversation-page-status" role="status">${escapeHtml(t('sidebar.loadConversationsFailed'))} <button class="btn-secondary" type="button" data-retry-conversations>${escapeHtml(t('sidebar.retryConversations'))}</button></div>`;
+    else if (!visible.length) status = `<div class="empty-inline">${escapeHtml(t(state.query ? 'sidebar.noMatchingConversations' : 'sidebar.emptyConversations'))}</div>`;
+    conversationList.innerHTML = rows + status;
+    conversationList.setAttribute('aria-busy', String(state.loading));
+    conversationList.scrollTop = scrollTop;
+    if (sidebarConversationPager && !state.loading && !state.error) scheduleSidebarConversationFill();
 }
 
 function renderProjectList() {
@@ -13024,7 +13065,8 @@ async function returnToTraceConversation(conversationId = '') {
 
     try {
         if (!conversations.some((conv) => conv.id === targetId)) {
-            await loadConversations();
+            const data = await loadConversation(targetId);
+            if (data.conversation) conversations.push(data.conversation);
         }
         if (conversations.some((conv) => conv.id === targetId)) {
             await selectConversation(targetId);
@@ -14826,6 +14868,7 @@ async function renderConversationMessages(id, options = {}) {
         if (data.conversation) {
             const index = conversations.findIndex((conv) => conv.id === data.conversation.id);
             if (index >= 0) conversations[index] = data.conversation;
+            else conversations.push(data.conversation);
             applyConversationAgent(data.conversation);
         }
         syncQuestionHistoryFromMessages(messages);
@@ -14851,6 +14894,7 @@ async function renderConversationMessages(id, options = {}) {
         }
     }
 
+    renderConversationList();
     updateChatHistoryControls();
     updateTopbar();
     focusMessageInput();
@@ -15886,7 +15930,7 @@ async function selectConversation(id) {
 }
 
 async function restoreInitialConversation() {
-    if (currentConversationId && conversations.some((conv) => conv.id === currentConversationId)) {
+    if (currentConversationId) {
         applyConversationAgent(currentConversationRecord(currentConversationId));
         setSelectedModesForConversation(currentConversationId);
         setThinkingForConversation(currentConversationId);
@@ -20415,8 +20459,14 @@ if (btnNewChat) {
     btnNewChat.addEventListener('click', () => startNewTopic());
 }
 
-conversationSearch?.addEventListener('input', renderConversationList);
-conversationShowAll?.addEventListener('click', toggleSidebarConversationList);
+conversationSearch?.addEventListener('input', searchSidebarConversations);
+conversationList?.addEventListener('scroll', loadOlderSidebarConversations, { passive: true });
+conversationList?.addEventListener('click', event => {
+    if (event.target.closest('[data-retry-conversations]')) void getSidebarConversationPager().loadMore();
+});
+if (window.ResizeObserver && conversationList) {
+    new ResizeObserver(scheduleSidebarConversationFill).observe(conversationList);
+}
 
 btnToggleSidebar.addEventListener('click', () => {
     setSidebarOpen(sidebar.classList.contains('hidden'));

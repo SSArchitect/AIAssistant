@@ -205,57 +205,74 @@ test('Android back closes the drawer before returning from management details to
     assert.equal(clicks.at(-1), 'minimize');
 });
 
-test('recent conversations are bounded, searchable across all titles, and retain the current conversation', () => {
-    const select = vm.runInNewContext(`${extractFunctionDeclaration('selectSidebarConversations')}; selectSidebarConversations`);
-    const rows = Array.from({ length: 14 }, (_, i) => ({ id: String(i), title: `Topic ${i}` }));
-    const titles = row => row.title;
-    assert.equal(select(rows, '', false, null, titles).length, 10);
-    assert.deepEqual(Array.from(select(rows, '', false, '13', titles), row => row.id), ['0','1','2','3','4','5','6','7','8','13']);
-    assert.equal(select(rows, '', true, null, titles).length, 14);
-    assert.deepEqual(Array.from(select(rows, ' TOPIC 13 ', false, null, titles), row => row.id), ['13']);
-    assert.equal(select(rows, 'missing', false, '13', titles).length, 0);
-    assert.equal(select([], '', false, null, titles).length, 0);
-    assert.equal(rows.length, 14);
+test('sidebar removes the show-all button and wires scrolling to the cursor pager', () => {
+    assert.doesNotMatch(indexSource, /conversation-show-all/);
+    assert.match(indexSource, /conversation-pager\.js/);
+    assert.match(appSource, /conversationList\?\.addEventListener\('scroll', loadOlderSidebarConversations/);
 });
 
-test('conversation controls expand, collapse, filter all titles, and reset for another account', () => {
-    const list = { innerHTML: '' };
-    const search = { value: '' };
-    const button = { hidden: true, setAttribute(name, value) { this[name] = value; } };
+test('scrolling near the end requests more once; loading, errors, and exhaustion block automatic requests', () => {
+    let calls = 0;
+    const state = { loading: false, error: '', hasMore: true };
+    const list = { clientHeight: 200, scrollHeight: 600, scrollTop: 0 };
     const context = vm.createContext({
-        conversations: Array.from({ length: 12 }, (_, i) => ({ id: String(i), title: `Chat ${i}` })),
-        conversationList: list, conversationSearch: search, conversationShowAll: button,
-        conversationSectionCount: {}, showAllSidebarConversations: false, currentConversationId: null,
+        conversationList: list, sidebarConversationSearchTimer: null,
+        getSidebarConversationPager: () => ({ snapshot: () => state, loadMore: () => { calls++; state.loading = true; } }),
+    });
+    vm.runInContext(extractFunctionDeclaration('loadOlderSidebarConversations'), context);
+    vm.runInContext('loadOlderSidebarConversations()', context);
+    assert.equal(calls, 0);
+    list.scrollTop = 360;
+    vm.runInContext('loadOlderSidebarConversations(); loadOlderSidebarConversations()', context);
+    assert.equal(calls, 1);
+    state.loading = false; state.error = 'offline';
+    vm.runInContext('loadOlderSidebarConversations()', context);
+    assert.equal(calls, 1);
+    state.error = ''; state.hasMore = false;
+    vm.runInContext('loadOlderSidebarConversations()', context);
+    assert.equal(calls, 1);
+});
+
+test('page rendering preserves scroll position and the current conversation, including failure and empty search states', () => {
+    const state = { items: [{ id: 'older', title: 'Old' }], query: '', total: 40, loading: false, error: '' };
+    const list = { innerHTML: '', scrollTop: 180, setAttribute() {} };
+    const context = vm.createContext({
+        sidebarConversationPager: { snapshot: () => state }, conversationList: list, conversationSectionCount: {},
+        conversations: [{ id: 'new', title: 'New local' }], currentConversationId: 'new',
         pendingConversationDeletes: new Set(), displayConversationTitle: row => row.title,
         escapeHtml: value => String(value).replaceAll('<', '&lt;'), escapeAttr: value => value,
-        t: key => key,
+        t: key => key, scheduleSidebarConversationFill() {},
     });
-    for (const name of ['selectSidebarConversations', 'renderConversationList', 'toggleSidebarConversationList', 'resetSidebarConversationFilter']) {
-        vm.runInContext(extractFunctionDeclaration(name), context);
-    }
+    vm.runInContext(extractFunctionDeclaration('renderConversationList'), context);
     vm.runInContext('renderConversationList()', context);
-    assert.equal((list.innerHTML.match(/data-conversation-id=/g) || []).length, 10);
-    assert.equal(button.hidden, false);
-    vm.runInContext('toggleSidebarConversationList()', context);
-    assert.equal((list.innerHTML.match(/data-conversation-id=/g) || []).length, 12);
-    assert.equal(button['aria-expanded'], 'true');
-    vm.runInContext('toggleSidebarConversationList()', context);
-    assert.equal(button['aria-expanded'], 'false');
-    search.value = 'chat 11';
+    assert.match(list.innerHTML, /New local/); assert.match(list.innerHTML, /Old/);
+    assert.equal(list.scrollTop, 180);
+    state.error = 'offline';
     vm.runInContext('renderConversationList()', context);
-    assert.match(list.innerHTML, /Chat 11/);
-    assert.equal(button.hidden, true);
-    search.value = 'absent';
+    assert.match(list.innerHTML, /data-retry-conversations/); assert.match(list.innerHTML, /Old/);
+    state.error = ''; state.query = 'missing'; state.items = [];
     vm.runInContext('renderConversationList()', context);
     assert.match(list.innerHTML, /sidebar.noMatchingConversations/);
+    assert.doesNotMatch(list.innerHTML, /New local/);
+});
+
+test('search resets cursor immediately and account reset clears pending search work', () => {
+    const events = []; let callback;
+    const context = vm.createContext({
+        conversationSearch: { value: 'old title' }, conversationList: { scrollTop: 100 }, sidebarConversationSearchTimer: null,
+        clearTimeout: id => events.push(['clear', id]), setTimeout: fn => { callback = fn; return 7; },
+        getSidebarConversationPager: () => ({ reset: query => events.push(['query', query]), loadMore: () => events.push(['load']) }),
+        sidebarConversationPager: { reset: () => events.push(['reset']) },
+    });
+    vm.runInContext(`${extractFunctionDeclaration('searchSidebarConversations')}\n${extractFunctionDeclaration('resetSidebarConversationFilter')}`, context);
+    vm.runInContext('searchSidebarConversations()', context);
+    assert.deepEqual(events[1], ['query', 'old title']);
+    assert.equal(context.conversationList.scrollTop, 0);
+    callback();
+    assert.deepEqual(events.at(-1), ['load']);
     vm.runInContext('resetSidebarConversationFilter()', context);
-    assert.equal(search.value, '');
-    assert.equal(context.showAllSidebarConversations, false);
-    context.conversations = [];
-    vm.runInContext('renderConversationList()', context);
-    assert.equal(button.hidden, true);
-    assert.match(list.innerHTML, /sidebar.emptyConversations/);
-    assert.match(extractFunctionDeclaration('switchAccount'), /resetSidebarConversationFilter\(\)/);
+    assert.equal(context.conversationSearch.value, '');
+    assert.deepEqual(events.at(-1), ['reset']);
 });
 
 test('empty or missing pinned agents hide the section; disabled agents stay disabled without runtime details', () => {
