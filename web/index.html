@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="referrer" content="no-referrer">
     <title>阿安的工作台</title>
-    <link rel="stylesheet" href="/static/css/style.css?v=94">
+    <link rel="stylesheet" href="/static/css/style.css?v=97">
     <link rel="stylesheet" href="/static/css/connect.css?v=3">
 </head>
 <body>
@@ -20,31 +20,9 @@
                     </svg>
                     <span data-i18n="app.name">阿安的工作台</span>
                 </div>
-                <div class="account-picker">
-                    <label class="visually-hidden" for="account-select" data-i18n="account.label">帐号</label>
-                    <select id="account-select" class="account-select" aria-label="帐号" data-i18n-aria-label="account.label"></select>
-                    <button class="icon-button account-add-button" id="btn-add-account" type="button" title="切换/注册帐号" data-i18n-title="account.switch">
-                        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.3">
-                            <path d="M8 7h12"/>
-                            <path d="m16 3 4 4-4 4"/>
-                            <path d="M16 17H4"/>
-                            <path d="m8 13-4 4 4 4"/>
-                        </svg>
-                    </button>
-                </div>
             </div>
 
-            <section class="sidebar-section nav-section" data-sidebar-section="nav">
-                <button class="sidebar-section-toggle" type="button"
-                        data-toggle-sidebar-section="nav"
-                        aria-expanded="true"
-                        aria-controls="sidebar-nav">
-                    <span data-i18n="sidebar.navigation">导航</span>
-                    <span class="section-count" id="nav-section-count"></span>
-                    <svg class="section-chevron" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.4">
-                        <path d="m6 9 6 6 6-6"/>
-                    </svg>
-                </button>
+            <section class="sidebar-section nav-section">
             <nav class="workbench-nav" id="sidebar-nav" aria-label="Workbench">
                 <button class="nav-item active" type="button" data-view="chat">
                     <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2">
@@ -77,109 +55,15 @@
                     <span data-i18n="nav.projects">网盘</span>
                     <span class="nav-count" id="project-count"></span>
                 </button>
-                <button class="nav-item" type="button" data-view="connect">
-                    <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2">
-                        <path d="m10 13 4-4M8 16l-1 1a4 4 0 0 1-6-6l4-4a4 4 0 0 1 6 0M16 8l1-1a4 4 0 0 1 6 6l-4 4a4 4 0 0 1-6 0"/>
-                    </svg>
-                    <span>Connect</span>
-                </button>
-                <div class="nav-group config-nav-group collapsed" data-nav-group="config">
-                    <button class="nav-item nav-group-toggle" type="button" data-toggle-nav-group="config"
-                            aria-expanded="false" aria-controls="config-subnav">
-                        <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2">
-                            <circle cx="12" cy="12" r="3"/>
-                            <path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 1.55V21a2 2 0 1 1-4 0v-.05a1.7 1.7 0 0 0-1-1.55 1.7 1.7 0 0 0-1.88.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-1.55-1H3a2 2 0 1 1 0-4h.05A1.7 1.7 0 0 0 4.6 9a1.7 1.7 0 0 0-.34-1.88l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-1.55V3a2 2 0 1 1 4 0v.05a1.7 1.7 0 0 0 1 1.55 1.7 1.7 0 0 0 1.88-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.7 1.7 0 0 0 19.4 9c.16.32.35.64.55.95H21a2 2 0 1 1 0 4h-1.05A1.7 1.7 0 0 0 19.4 15Z"/>
-                        </svg>
-                        <span data-i18n="nav.config">Config</span>
-                        <svg class="nav-group-chevron" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.4">
-                            <path d="m6 9 6 6 6-6"/>
-                        </svg>
-                    </button>
-                    <div class="nav-submenu" id="config-subnav">
-                        <button class="nav-item nav-subitem" type="button" data-view="role">
-                            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2">
-                                <circle cx="12" cy="8" r="4"/>
-                                <path d="M4 21a8 8 0 0 1 16 0"/>
-                            </svg>
-                            <span data-i18n="nav.role">Role</span>
-                        </button>
-                        <button class="nav-item nav-subitem" type="button" data-view="developer">
-                            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2">
-                                <path d="M12 20v-6"/>
-                                <path d="M18 20v-8"/>
-                                <path d="M6 20v-4"/>
-                                <path d="M4 4h16v6H4z"/>
-                            </svg>
-                            <span data-i18n="nav.memory">Memory</span>
-                        </button>
-                        <button class="nav-item nav-subitem" type="button" data-view="tools">
-                            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2">
-                                <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.8-3.8a6 6 0 0 1-7.9 7.9l-6.7 6.7a2.1 2.1 0 0 1-3-3l6.7-6.7a6 6 0 0 1 7.9-7.9l-3.8 3.8Z"/>
-                            </svg>
-                            <span data-i18n="nav.tools">Tool</span>
-                            <span class="nav-count" id="tool-count"></span>
-                        </button>
-                        <button class="nav-item nav-subitem" type="button" data-view="agents">
-                            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2">
-                                <path d="M12 8V4H8"/>
-                                <rect x="4" y="8" width="16" height="12" rx="2"/>
-                                <path d="M2 14h2M20 14h2M9 13v2M15 13v2"/>
-                            </svg>
-                            <span data-i18n="nav.agents">Agents</span>
-                            <span class="nav-count" id="agent-count"></span>
-                        </button>
-                    </div>
-                </div>
-                <div class="nav-group developer-nav-group collapsed" data-nav-group="developer">
-                    <button class="nav-item nav-group-toggle" type="button" data-toggle-nav-group="developer"
-                            aria-expanded="false" aria-controls="developer-subnav">
-                        <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2">
-                            <path d="m16 18 6-6-6-6"/>
-                            <path d="m8 6-6 6 6 6"/>
-                            <path d="m14 4-4 16"/>
-                        </svg>
-                        <span data-i18n="nav.developer">Developer</span>
-                        <svg class="nav-group-chevron" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.4">
-                            <path d="m6 9 6 6 6-6"/>
-                        </svg>
-                    </button>
-                    <div class="nav-submenu" id="developer-subnav">
-                        <button class="nav-item nav-subitem" type="button" data-view="trace">
-                            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2">
-                                <path d="M4 19V5"/>
-                                <path d="M4 12h6l2-4 3 8 2-4h3"/>
-                            </svg>
-                            <span data-i18n="nav.trace">Trace</span>
-                            <span class="nav-count" id="run-count"></span>
-                        </button>
-                        <button class="nav-item nav-subitem" type="button" data-view="eval">
-                            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2">
-                                <path d="M4 5h16"/>
-                                <path d="M4 12h16"/>
-                                <path d="M4 19h16"/>
-                                <path d="m8 9 2 2 4-4"/>
-                                <path d="m8 16 2 2 4-4"/>
-                            </svg>
-                            <span data-i18n="nav.eval">Eval</span>
-                        </button>
-                        <a class="nav-item nav-subitem nav-external-link" href="/admin.html">
-                            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2">
-                                <path d="M15 3h6v6M14 10l7-7"/>
-                                <path d="M19 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h6"/>
-                            </svg>
-                            <span data-i18n="nav.adminConfig">管理员配置</span>
-                        </a>
-                    </div>
-                </div>
             </nav>
             </section>
 
-            <section class="sidebar-section pinned-section" data-sidebar-section="pinned">
+            <section class="sidebar-section pinned-section" data-sidebar-section="pinned" hidden>
                 <button class="sidebar-section-toggle" type="button"
                         data-toggle-sidebar-section="pinned"
                         aria-expanded="true"
                         aria-controls="pinned-agent-list">
-                    <span data-i18n="sidebar.pinned">固定 Agent</span>
+                    <span data-i18n="sidebar.pinned">常用 Agent</span>
                     <span class="section-count" id="pinned-section-count"></span>
                     <svg class="section-chevron" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.4">
                         <path d="m6 9 6 6 6-6"/>
@@ -199,17 +83,30 @@
                         <path d="m6 9 6 6 6-6"/>
                     </svg>
                 </button>
+                <div class="conversation-search">
+                    <input id="conversation-search" type="search" autocomplete="off" placeholder="搜索会话" aria-label="搜索会话"
+                           data-i18n-placeholder="sidebar.searchConversations" data-i18n-aria-label="sidebar.searchConversations">
+                </div>
                 <div class="conversation-list" id="conversation-list"></div>
+                <button class="conversation-show-all" id="conversation-show-all" type="button" aria-expanded="false" aria-controls="conversation-list" hidden></button>
             </section>
 
             <div class="sidebar-footer">
-                <div class="model-picker">
-                    <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2">
-                        <path d="M12 2v20M2 12h20M4.9 4.9l14.2 14.2M19.1 4.9 4.9 19.1"/>
-                    </svg>
-                    <select id="model-select" class="model-select" aria-label="模型选择" data-i18n-aria-label="sidebar.modelSelect">
-                        <option value="" data-i18n="sidebar.defaultModel">Default Model</option>
-                    </select>
+                <button class="nav-item" id="btn-management" type="button" data-view="management">
+                    <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 2v3m0 14v3M2 12h3m14 0h3M5 5l2 2m10 10 2 2M5 19l2-2M17 7l2-2"/></svg>
+                    <span data-i18n="nav.management">设置与管理</span>
+                </button>
+                <div class="account-picker">
+                    <label class="visually-hidden" for="account-select" data-i18n="account.label">帐号</label>
+                    <select id="account-select" class="account-select" aria-label="帐号" data-i18n-aria-label="account.label"></select>
+                    <button class="icon-button account-add-button" id="btn-add-account" type="button" title="切换/注册帐号" data-i18n-title="account.switch">
+                        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.3">
+                            <path d="M8 7h12"/>
+                            <path d="m16 3 4 4-4 4"/>
+                            <path d="M16 17H4"/>
+                            <path d="m8 13-4 4 4 4"/>
+                        </svg>
+                    </button>
                 </div>
             </div>
         </aside>
@@ -227,6 +124,12 @@
                     <p id="view-subtitle">意图识别、Agent 调用与汇总回答入口</p>
                 </div>
                 <div class="topbar-actions">
+                    <button class="btn-secondary management-back" id="management-back" type="button" data-view="management" hidden>
+                        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true">
+                            <path d="m12 5-7 7 7 7M5 12h14"/>
+                        </svg>
+                        <span data-i18n="management.back">返回设置与管理</span>
+                    </button>
                     <button class="language-toggle" id="language-toggle" type="button" title="Language">EN</button>
                     <button class="btn-secondary new-topic-button" id="btn-new-chat" type="button" title="新话题" data-i18n-title="actions.newChat">
                         <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.4">
@@ -260,7 +163,7 @@
                         </div>
                     </div>
                     <select id="agent-select" hidden aria-hidden="true" tabindex="-1"></select>
-                    <span class="model-pill" id="current-model"></span>
+
                     <button class="icon-button" id="btn-refresh" type="button" title="刷新数据" data-i18n-title="actions.refresh">
                         <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
                             <path d="M21 12a9 9 0 0 1-9 9 9.8 9.8 0 0 1-6.7-2.7"/>
@@ -418,6 +321,99 @@
                 <input id="project-upload-input" type="file" multiple hidden
                        accept=".txt,.md,.markdown,.csv,.tsv,.json,.jsonl,.yaml,.yml,.xml,.html,.htm,.log,.ini,.toml,.env,.conf,.cfg,.properties,.rst,.adoc,.tex,.srt,.vtt,.ics,.lock,.js,.jsx,.ts,.tsx,.css,.scss,.less,.vue,.svelte,.py,.go,.java,.c,.h,.cpp,.hpp,.cs,.rs,.rb,.php,.sh,.bash,.zsh,.fish,.sql,.swift,.scala,.kt,.kts,.lua,.r,.pl,.dart,.pdf,.doc,.docx,.rtf,.odt,.xls,.xlsx,.ods,.ppt,.pptx,.odp,.key,.numbers,.pages,.zip,.rar,.7z,.tar,.gz,.tgz,.bz2,image/*,audio/*,video/*,text/*,application/json,application/xml,application/pdf">
                 <div class="project-workbench" id="project-workbench"></div>
+            </section>
+
+            <section class="view" id="view-management" data-view-panel="management">
+                <div class="management-workbench">
+                    <section class="management-section" aria-labelledby="management-model-title">
+                        <h2 id="management-model-title" data-i18n="sidebar.modelSelect">模型选择</h2>
+                        <div class="model-picker management-model-picker">
+                            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                                <path d="M12 2v20M2 12h20M4.9 4.9l14.2 14.2M19.1 4.9 4.9 19.1"/>
+                            </svg>
+                            <select id="model-select" class="model-select" aria-labelledby="management-model-title">
+                                <option value="" data-i18n="sidebar.defaultModel">默认模型</option>
+                            </select>
+                            <span id="current-model" class="visually-hidden"></span>
+                        </div>
+                    </section>
+                    <section class="management-section" aria-labelledby="management-connect-title">
+                        <h2 id="management-connect-title" data-i18n="management.connections">应用连接</h2>
+                        <div class="management-grid">
+                            <button class="nav-item management-entry" type="button" data-view="connect">
+                    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M10 13a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-2 2M14 11a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l2-2"/></svg>
+                    <span>Connect</span>
+                </button>
+                        </div>
+                    </section>
+                    <section class="management-section" aria-labelledby="management-config-title">
+                        <h2 id="management-config-title" data-i18n="management.assistant">助手配置</h2>
+                        <div class="management-grid">
+                            <button class="nav-item management-entry" type="button" data-view="role">
+                            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2">
+                                <circle cx="12" cy="8" r="4"/>
+                                <path d="M4 21a8 8 0 0 1 16 0"/>
+                            </svg>
+                            <span data-i18n="nav.role">Role</span>
+                        </button>
+                            <button class="nav-item management-entry" type="button" data-view="developer">
+                            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M12 20v-6"/>
+                                <path d="M18 20v-8"/>
+                                <path d="M6 20v-4"/>
+                                <path d="M4 4h16v6H4z"/>
+                            </svg>
+                            <span data-i18n="nav.memory">Memory</span>
+                        </button>
+                            <button class="nav-item management-entry" type="button" data-view="tools">
+                            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.8-3.8a6 6 0 0 1-7.9 7.9l-6.7 6.7a2.1 2.1 0 0 1-3-3l6.7-6.7a6 6 0 0 1 7.9-7.9l-3.8 3.8Z"/>
+                            </svg>
+                            <span data-i18n="nav.tools">Tool</span>
+                            <span class="nav-count" id="tool-count"></span>
+                        </button>
+                            <button class="nav-item management-entry" type="button" data-view="agents">
+                            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M12 8V4H8"/>
+                                <rect x="4" y="8" width="16" height="12" rx="2"/>
+                                <path d="M2 14h2M20 14h2M9 13v2M15 13v2"/>
+                            </svg>
+                            <span data-i18n="nav.agents">Agents</span>
+                            <span class="nav-count" id="agent-count"></span>
+                        </button>
+                        </div>
+                    </section>
+                    <section class="management-section" aria-labelledby="management-developer-title">
+                        <h2 id="management-developer-title" data-i18n="management.developer">开发与调试</h2>
+                        <div class="management-grid">
+                            <button class="nav-item management-entry" type="button" data-view="trace">
+                            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M4 19V5"/>
+                                <path d="M4 12h6l2-4 3 8 2-4h3"/>
+                            </svg>
+                            <span data-i18n="nav.trace">Trace</span>
+                            <span class="nav-count" id="run-count"></span>
+                        </button>
+                            <button class="nav-item management-entry" type="button" data-view="eval">
+                            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M4 5h16"/>
+                                <path d="M4 12h16"/>
+                                <path d="M4 19h16"/>
+                                <path d="m8 9 2 2 4-4"/>
+                                <path d="m8 16 2 2 4-4"/>
+                            </svg>
+                            <span data-i18n="nav.eval">Eval</span>
+                        </button>
+                            <a class="nav-item management-entry nav-external-link" href="/admin.html">
+                            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M15 3h6v6M14 10l7-7"/>
+                                <path d="M19 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h6"/>
+                            </svg>
+                            <span data-i18n="nav.adminConfig">管理员配置</span>
+                        </a>
+                        </div>
+                    </section>
+                </div>
             </section>
 
             <section class="view" id="view-connect" data-view-panel="connect"></section>
@@ -772,6 +768,6 @@
     <script src="/static/js/file-actions.js?v=1"></script>
     <script src="/static/js/connect.js?v=4"></script>
     <script src="/static/js/app.js?v=149"></script>
-    <script src="/static/js/android-bridge.js?v=3"></script>
+    <script src="/static/js/android-bridge.js?v=4"></script>
 </body>
 </html>

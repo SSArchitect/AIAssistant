@@ -40,6 +40,7 @@ const EVAL_LLM_MODELS = [
 ];
 
 const VIEW_COPY = {
+    management: ['views.management.title', 'views.management.subtitle'],
     connect: ['views.connect.title', 'views.connect.subtitle'],
     chat: ['views.chat.title', 'views.chat.subtitle'],
     pulse: ['views.pulse.title', 'views.pulse.subtitle'],
@@ -61,6 +62,7 @@ const I18N = {
             pulse: 'Pulse',
             todos: 'Todo',
             projects: '网盘',
+            management: '设置与管理',
             config: 'Config',
             role: 'Role',
             memory: 'Memory',
@@ -74,10 +76,14 @@ const I18N = {
         },
         sidebar: {
             navigation: '导航',
-            pinned: '固定 Agent',
+            pinned: '常用 Agent',
             todos: '今日待办',
             projects: '网盘',
             recent: '最近会话',
+            searchConversations: '搜索会话',
+            noMatchingConversations: '没有匹配的会话',
+            showAllConversations: '查看全部（{count}）',
+            showRecentConversations: '只看最近 10 条',
             fullConfig: '管理员配置',
             modelSelect: '模型选择',
             defaultModel: '默认模型',
@@ -192,7 +198,11 @@ const I18N = {
             truncatedInImage: '回答较长，图片已展示前半部分',
             close: '关闭分享卡片',
         },
+        management: {
+            connections: '应用连接', assistant: '助手配置', developer: '开发与调试', back: '返回设置与管理',
+        },
         views: {
+            management: { title: '设置与管理', subtitle: '管理连接、助手能力和开发工具' },
             connect: { title: 'Connect', subtitle: '管理连接端、独立来源会话与连接状态' },
             chat: { title: 'Super Chat', subtitle: '意图识别、Agent 调用与汇总回答入口' },
             pulse: { title: 'Pulse', subtitle: 'Topic 推荐、信息簇阅读与下一跳学习入口' },
@@ -978,6 +988,7 @@ const I18N = {
             pulse: 'Pulse',
             todos: 'Todo',
             projects: 'Drive',
+            management: 'Settings & Management',
             config: 'Config',
             role: 'Role',
             memory: 'Memory',
@@ -995,6 +1006,10 @@ const I18N = {
             todos: "Today's Todos",
             projects: 'Drive',
             recent: 'Recent Chats',
+            searchConversations: 'Search conversations',
+            noMatchingConversations: 'No matching conversations',
+            showAllConversations: 'View all ({count})',
+            showRecentConversations: 'Show recent 10',
             fullConfig: 'Admin Settings',
             modelSelect: 'Model selection',
             defaultModel: 'Default Model',
@@ -1109,7 +1124,11 @@ const I18N = {
             truncatedInImage: 'This answer is too long to fit in one image',
             close: 'Close share card',
         },
+        management: {
+            connections: 'Connections', assistant: 'Assistant settings', developer: 'Development & debugging', back: 'Back to settings',
+        },
         views: {
+            management: { title: 'Settings & Management', subtitle: 'Manage connections, assistant capabilities, and developer tools' },
             connect: { title: 'Connect', subtitle: 'Manage connected apps, source conversations, and connection health' },
             chat: { title: 'Super Chat', subtitle: 'Intent routing, agent calls, and final answers' },
             pulse: { title: 'Pulse', subtitle: 'Topic seeds, information clusters, and next-step reading' },
@@ -2040,6 +2059,7 @@ const DRIVE_BINARY_EXTENSIONS = new Set([
 let activeView = 'chat';
 let currentConversationId = null;
 let conversations = [];
+let showAllSidebarConversations = false;
 let conversationRenderCache = new Map();
 let agents = [];
 let tools = [];
@@ -2247,6 +2267,8 @@ const accountNameInput = document.getElementById('account-name-input');
 const accountPasswordInput = document.getElementById('account-password-input');
 const accountLoginError = document.getElementById('account-login-error');
 const conversationList = document.getElementById('conversation-list');
+const conversationSearch = document.getElementById('conversation-search');
+const conversationShowAll = document.getElementById('conversation-show-all');
 const messagesContainer = document.getElementById('messages');
 const inputArea = document.getElementById('input-area');
 const chatHistoryTools = document.getElementById('chat-history-tools');
@@ -3082,6 +3104,7 @@ async function switchAccount(userId, options = {}) {
     roleMemoryStatusText = '';
     roleMemoryDeletingIds = new Set();
     conversations = [];
+    resetSidebarConversationFilter();
     tools = [];
     toolUserSettings = {};
     toolMcpConfig = { enabled: false, servers: '' };
@@ -9705,24 +9728,30 @@ function getConnectController() {
     return connectController;
 }
 
+function navigationSectionForView(view) {
+    return ['management', 'connect', 'role', 'developer', 'tools', 'agents', 'trace', 'eval'].includes(view)
+        ? 'management' : view;
+}
+
+function updateNavigationSelection(view) {
+    document.querySelectorAll('.nav-item[data-view]').forEach((item) => {
+        const selected = item.dataset.view === view
+            || (item.id === 'btn-management' && navigationSectionForView(view) === 'management');
+        item.classList.toggle('active', selected);
+        if (selected) item.setAttribute('aria-current', 'page');
+        else item.removeAttribute('aria-current');
+    });
+    const back = document.getElementById('management-back');
+    if (back) back.hidden = view === 'management' || navigationSectionForView(view) !== 'management';
+}
+
 function setView(view, options = {}) {
     if (!VIEW_COPY[view]) return;
     activeView = view;
     if (view === 'connect') getConnectController()?.setVisible(true);
     else connectController?.setVisible(false);
 
-    document.querySelectorAll('.nav-item').forEach((item) => {
-        item.classList.toggle('active', item.dataset.view === view);
-    });
-    document.querySelectorAll('[data-nav-group]').forEach((group) => {
-        const active = Array.from(group.querySelectorAll('.nav-item[data-view]')).some((item) => item.dataset.view === view);
-        group.classList.toggle('active', active);
-        if (active) {
-            group.classList.remove('collapsed');
-            const toggle = group.querySelector('[data-toggle-nav-group]');
-            if (toggle) toggle.setAttribute('aria-expanded', 'true');
-        }
-    });
+    updateNavigationSelection(view);
     document.querySelectorAll('[data-view-panel]').forEach((panel) => {
         panel.classList.toggle('active', panel.dataset.viewPanel === view);
     });
@@ -9831,16 +9860,43 @@ function renderHealth() {
     systemStatus.classList.toggle('warn', !agentOk);
 }
 
+function selectSidebarConversations(items, query, showAll, currentId, titleFor) {
+    const needle = String(query || '').trim().toLocaleLowerCase();
+    if (needle) return items.filter(item => String(titleFor(item) || '').toLocaleLowerCase().includes(needle));
+    if (showAll) return items.slice();
+    const recent = items.slice(0, 10);
+    const current = items.find(item => item.id === currentId);
+    if (current && !recent.some(item => item.id === currentId)) recent[recent.length - 1] = current;
+    return recent;
+}
+
+function resetSidebarConversationFilter() {
+    showAllSidebarConversations = false;
+    if (conversationSearch) conversationSearch.value = '';
+}
+
+function toggleSidebarConversationList() {
+    showAllSidebarConversations = !showAllSidebarConversations;
+    renderConversationList();
+}
+
 function renderConversationList() {
     if (conversationSectionCount) {
         conversationSectionCount.textContent = conversations.length ? String(conversations.length) : '';
     }
-    if (!conversations.length) {
-        conversationList.innerHTML = `<div class="empty-inline">${escapeHtml(t('sidebar.emptyConversations'))}</div>`;
+    const query = conversationSearch?.value || '';
+    const visible = selectSidebarConversations(conversations, query, showAllSidebarConversations, currentConversationId, displayConversationTitle);
+    if (conversationShowAll) {
+        conversationShowAll.hidden = Boolean(query.trim()) || conversations.length <= 10;
+        conversationShowAll.textContent = t(showAllSidebarConversations ? 'sidebar.showRecentConversations' : 'sidebar.showAllConversations', { count: conversations.length });
+        conversationShowAll.setAttribute('aria-expanded', String(showAllSidebarConversations));
+    }
+    if (!visible.length) {
+        conversationList.innerHTML = `<div class="empty-inline">${escapeHtml(t(query.trim() ? 'sidebar.noMatchingConversations' : 'sidebar.emptyConversations'))}</div>`;
         return;
     }
 
-    conversationList.innerHTML = conversations.map((conv) => {
+    conversationList.innerHTML = visible.map((conv) => {
         const isActive = conv.id === currentConversationId;
         const deleting = pendingConversationDeletes.has(conv.id);
         return `
@@ -11464,8 +11520,10 @@ function renderPinnedAgents() {
         pinnedSectionCount.textContent = pinnedAgents.length ? String(pinnedAgents.length) : '';
     }
 
+    const section = pinnedAgentList.closest('[data-sidebar-section]');
+    if (section) section.hidden = pinnedAgents.length === 0;
     if (!pinnedAgents.length) {
-        pinnedAgentList.innerHTML = `<div class="empty-inline">${escapeHtml(t('sidebar.emptyPinned'))}</div>`;
+        pinnedAgentList.innerHTML = '';
         return;
     }
 
@@ -11473,11 +11531,11 @@ function renderPinnedAgents() {
         <button class="pinned-agent-item ${agent.id === currentAgentId ? 'active' : ''}"
                 type="button"
                 data-start-agent-id="${escapeAttr(agent.id)}"
+                title="${escapeAttr(agent.enabled ? agent.name || agent.id : t('agents.unavailable'))}"
                 ${agent.enabled ? '' : 'disabled'}>
             <span class="pinned-agent-icon">${escapeHtml(agentIconText(agent))}</span>
             <span class="pinned-agent-body">
                 <strong>${escapeHtml(agent.name || agent.id)}</strong>
-                <small>${escapeHtml(agent.enabled ? agent.framework || agent.runtime || 'agent' : t('agents.unavailable'))}</small>
             </span>
         </button>
     `).join('');
@@ -19066,17 +19124,6 @@ document.addEventListener('click', async (event) => {
         return;
     }
 
-    const navGroupToggle = event.target.closest('[data-toggle-nav-group]');
-    if (navGroupToggle) {
-        event.preventDefault();
-        const group = navGroupToggle.closest('[data-nav-group]');
-        if (group) {
-            const collapsed = group.classList.toggle('collapsed');
-            navGroupToggle.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
-        }
-        return;
-    }
-
     const viewTarget = event.target.closest('[data-view]');
     if (viewTarget) {
         if (viewTarget.dataset.view === 'chat') {
@@ -20367,6 +20414,9 @@ btnSend.addEventListener('click', () => handleSend());
 if (btnNewChat) {
     btnNewChat.addEventListener('click', () => startNewTopic());
 }
+
+conversationSearch?.addEventListener('input', renderConversationList);
+conversationShowAll?.addEventListener('click', toggleSidebarConversationList);
 
 btnToggleSidebar.addEventListener('click', () => {
     setSidebarOpen(sidebar.classList.contains('hidden'));

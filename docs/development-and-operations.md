@@ -6,6 +6,8 @@
 
 Connect 的接入、来源隔离、持久化恢复、密钥备份和单进程部署约束见 [Connect 实现与接入说明](./connect-implementation.md)。
 
+桌面侧栏与手机 App 的导航结构、设置入口和返回层级见 [手机 App 导航整理方案](./mobile-navigation-layout.md)。
+
 生产服务器部署、Git bundle 兜底、systemd/Nginx 检查和线上配置同步流程见
 [server-deployment-runbook.md](./server-deployment-runbook.md)。Android APK、HTTPS、版本发现和
 增量 OTA 发布见 [android-release-runbook.md](./android-release-runbook.md)。
@@ -420,7 +422,7 @@ Conversation Eval 有两种运行模式：
 - `evals/conversation/run_history.json`：最近多次回归的轻量历史记录。
 - `evals/conversation/runs/<run_id>.json`：每次回归的完整报告快照。
 
-Web 工作台里可以在 Developer -> Eval 中一键采集候选、编辑候选、批准用例、运行 Historical Check 和 Isolated Replay，并查看总分、历史记录、每个用例的分数和运行详情。候选挖掘默认会尝试用当前 LLM 补全场景、意图、期望项和 1-5 分维度标准；如果 LLM 不可用，会保留确定性规则兜底，候选 metadata 会记录 enrichment 状态。
+Web 工作台里可以在 设置与管理 -> 开发与调试 -> Eval 中一键采集候选、编辑候选、批准用例、运行 Historical Check 和 Isolated Replay，并查看总分、历史记录、每个用例的分数和运行详情。候选挖掘默认会尝试用当前 LLM 补全场景、意图、期望项和 1-5 分维度标准；如果 LLM 不可用，会保留确定性规则兜底，候选 metadata 会记录 enrichment 状态。
 
 `mcp.servers` 目前只是通用配置入口，尚未实现通用 MCP server 启动、tool discovery、权限审批和动态注册。MiniMax Token Plan MCP 已作为 search provider 的专项集成接入。
 

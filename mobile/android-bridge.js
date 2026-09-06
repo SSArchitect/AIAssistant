@@ -415,6 +415,12 @@ if (Capacitor.getPlatform() === 'android') {
       return;
     }
 
+    const managementBack = document.getElementById('management-back');
+    if (managementBack instanceof HTMLElement && !managementBack.hidden) {
+      managementBack.click();
+      return;
+    }
+
     const activeView = document.querySelector('[data-view-panel].active');
     if (activeView?.getAttribute('data-view-panel') !== 'chat') {
       const chatNavigation = document.querySelector('[data-view="chat"]');

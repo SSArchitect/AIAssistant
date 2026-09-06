@@ -31,10 +31,10 @@ test('account switch discards stale async connection responses', async () => {
     assert.deepEqual(paths, ['/api/connect/v1/catalog', '/api/connect/v1/connections', '/api/connect/v1/roles']);
     assert.deepEqual(controller.getState().roles, []);
 });
-test('Connect has its own navigation entry and loads its view module', () => {
+test('Connect is available from management and loads its view module', () => {
     const html = fs.readFileSync('web/index.html', 'utf8');
     assert.match(html, /data-view="connect"/);
-    assert.ok(html.indexOf('data-view="connect"') < html.indexOf('data-nav-group="config"'));
+    assert.ok(html.indexOf('data-view="connect"') > html.indexOf('id="view-management"'));
     assert.match(html, /data-view-panel="connect"/);
     assert.match(html, /static\/js\/connect.js/);
 });
