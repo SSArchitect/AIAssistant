@@ -33,17 +33,18 @@ type ConnectConnection struct {
 	DeletedAt      gorm.DeletedAt `json:"-" gorm:"index"`
 }
 type ConnectSource struct {
-	ID             string    `json:"id" gorm:"primaryKey"`
-	ConnectionID   string    `json:"connection_id" gorm:"index"`
-	UserID         string    `json:"-" gorm:"index"`
-	Peer           string    `json:"peer"`
-	Sender         string    `json:"sender"`
-	Thread         string    `json:"thread,omitempty"`
-	Epoch          uint64    `json:"epoch"`
-	ConversationID string    `json:"conversation_id"`
-	ContextSecret  string    `json:"-"`
-	CreatedAt      time.Time `json:"created_at"`
-	UpdatedAt      time.Time `json:"updated_at"`
+	ID             string     `json:"id" gorm:"primaryKey"`
+	ConnectionID   string     `json:"connection_id" gorm:"index"`
+	UserID         string     `json:"-" gorm:"index"`
+	Peer           string     `json:"peer"`
+	Sender         string     `json:"sender"`
+	Thread         string     `json:"thread,omitempty"`
+	Epoch          uint64     `json:"epoch"`
+	ConversationID string     `json:"conversation_id"`
+	ContextSecret  string     `json:"-"`
+	LastMessageAt  *time.Time `json:"-"`
+	CreatedAt      time.Time  `json:"created_at"`
+	UpdatedAt      time.Time  `json:"updated_at"`
 }
 type ConnectTurn struct {
 	Request        string    `json:"-"`

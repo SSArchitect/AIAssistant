@@ -19,6 +19,8 @@ import (
 	"gorm.io/gorm"
 )
 
+const conversationIdleTimeout = 30 * time.Minute
+
 type Service struct {
 	db          *gorm.DB
 	cipher      cipher.AEAD
@@ -574,6 +576,13 @@ func (s *Service) Accept(id string, generation uint64, in Inbound) (models.Conne
 		} else if err != nil {
 			return err
 		}
+		// Older sources have no dedicated ordinary-message timestamp. Preserve
+		// their last source update once, before controls can change UpdatedAt.
+		if source.LastMessageAt == nil && source.ConversationID != "" {
+			last := source.UpdatedAt
+			source.LastMessageAt = &last
+		}
+		now := tx.NowFunc()
 		if in.ContextToken != "" {
 			source.ContextSecret, err = s.seal(sourceID, Config{"context_token": in.ContextToken})
 			if err != nil {
@@ -587,8 +596,16 @@ func (s *Service) Accept(id string, generation uint64, in Inbound) (models.Conne
 			if err = tx.Model(&models.Conversation{}).Where("id = ? AND user_id = ?", source.ConversationID, c.UserID).Count(&existing).Error; err != nil {
 				return err
 			}
-			// A user may have deleted this conversation in the workbench. The next message starts fresh.
-			if existing == 0 {
+			idle := false
+			if existing > 0 && source.LastMessageAt != nil && now.Sub(*source.LastMessageAt) >= conversationIdleTimeout {
+				var active int64
+				if err = tx.Model(&models.ConnectTurn{}).Where("source_id = ? AND status IN ?", sourceID, []string{"queued", "running"}).Count(&active).Error; err != nil {
+					return err
+				}
+				idle = active == 0
+			}
+			// Deleted or idle conversations start fresh; old turns retain their routing.
+			if existing == 0 || idle {
 				source.ConversationID = ""
 				source.Epoch++
 			}
@@ -599,6 +616,9 @@ func (s *Service) Accept(id string, generation uint64, in Inbound) (models.Conne
 				return err
 			}
 			source.ConversationID = conv.ID
+		}
+		if !control {
+			source.LastMessageAt = &now
 		}
 		out = models.ConnectTurn{ID: newID("turn_"), SourceID: sourceID, ExternalID: in.MessageID, PayloadHash: digest, ConnectionID: id, Generation: generation, UserID: c.UserID, ConversationID: source.ConversationID, RunID: newID("run_"), RoleID: EffectiveRole(c.RoleID), Text: in.Text, Status: "queued"}
 		if control {
@@ -652,7 +672,6 @@ func (s *Service) Accept(id string, generation uint64, in Inbound) (models.Conne
 		if err = tx.Create(&out).Error; err != nil {
 			return err
 		}
-		now := time.Now()
 		return tx.Model(&c).Updates(map[string]any{"last_inbound_at": now, "status": "connected"}).Error
 	})
 	return out, e
