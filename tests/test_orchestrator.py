@@ -4272,7 +4272,8 @@ async def test_streams_final_answer_after_tool_call(engine):
 
 
 @pytest.mark.asyncio
-async def test_provider_can_stream_tool_choice_and_direct_summary(engine):
+@pytest.mark.parametrize("provider_name,model", [("dgx", "stream-tool-model"), ("minimax", "MiniMax-M3")])
+async def test_provider_can_stream_tool_choice_and_direct_summary(engine, provider_name, model):
     """Providers that retain streamed tool calls can stream the first model round."""
     tokens = []
     provisional_tokens = []
@@ -4280,8 +4281,6 @@ async def test_provider_can_stream_tool_choice_and_direct_summary(engine):
     forwarded_kwargs = []
 
     class StreamingToolProvider:
-        model = "stream-tool-model"
-        provider_name = "dgx"
         streaming_enabled = True
         supports_streaming_tool_calls = True
 
@@ -4300,7 +4299,10 @@ async def test_provider_can_stream_tool_choice_and_direct_summary(engine):
                 )
             )
 
-    with patch.object(engine, "_get_provider", return_value=StreamingToolProvider()):
+    provider = StreamingToolProvider()
+    provider.model = model
+    provider.provider_name = provider_name
+    with patch.object(engine, "_get_provider", return_value=provider):
         result = await engine.process(
             ChatRequest(
                 conversation_id="conv-stream-direct-summary",

@@ -481,6 +481,13 @@ func compactTraceEvents(events []bridge.RunEvent) []bridge.RunEvent {
 	}
 	compact := make([]bridge.RunEvent, 0, len(events))
 	for _, event := range events {
+		payload := compactTracePayload(event.Payload)
+		if event.Type == "model.reasoning" {
+			// This is user-visible conversation content, retained for reopening the thought timeline.
+			if text, ok := event.Payload["text"].(string); ok {
+				payload["text"] = text
+			}
+		}
 		compact = append(compact, bridge.RunEvent{
 			ID:         event.ID,
 			RunID:      event.RunID,
@@ -488,7 +495,7 @@ func compactTraceEvents(events []bridge.RunEvent) []bridge.RunEvent {
 			Status:     event.Status,
 			Title:      event.Title,
 			StepID:     event.StepID,
-			Payload:    compactTracePayload(event.Payload),
+			Payload:    payload,
 			DurationMS: event.DurationMS,
 			CreatedAt:  event.CreatedAt,
 		})
@@ -506,6 +513,7 @@ func compactTracePayload(payload map[string]interface{}) map[string]interface{} 
 		"budget_error_type": true, "budget_reason": true, "citation_count": true,
 		"command_text": true, "count": true, "error_message": true,
 		"content": true, "content_chars": true,
+		"name": true, "model_event_id": true,
 		"error_type": true, "failed_tool_call_count": true, "final_prompt_char_count": true,
 		"finalization_status": true, "image_count": true,
 		"information_strategy": true, "max_failed_tool_calls": true, "max_model_rounds": true,

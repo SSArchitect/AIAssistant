@@ -4,6 +4,27 @@ from __future__ import annotations
 from agent.trace import TraceStore
 
 
+def test_round_reasoning_and_tool_results_keep_order_after_reload(tmp_path, engine):
+    path = tmp_path / 'thoughts.db'
+    engine.trace_store = TraceStore(path)
+    run = engine.trace_store.start_run(conversation_id='thoughts', input_text='test', agent_id='general_assistant', runtime='self')
+    first = engine.trace_store.append_event(run.run_id, type='model.started', status='running', payload={'round': 1})
+    engine._record_model_reasoning(run.run_id, 'first plan')
+    engine.trace_store.append_event(run.run_id, type='tool.completed', status='completed', payload={'result_preview': 'result'})
+    second = engine.trace_store.append_event(run.run_id, type='model.started', status='running', payload={'round': 2})
+    engine._record_model_reasoning(run.run_id, 'second plan')
+    engine.trace_store.complete_run(run.run_id, output='answer', model_used='test', tokens_used={}, skills_used=[])
+    restored = TraceStore(path).get_run(run.run_id)
+    assert [event.type for event in restored.events] == [
+        'run.started', 'model.started', 'model.reasoning', 'tool.completed', 'model.started', 'model.reasoning', 'run.completed',
+    ]
+    thoughts = [event.payload for event in restored.events if event.type == 'model.reasoning']
+    assert thoughts == [
+        {'text': 'first plan', 'model_event_id': first.id, 'round': 1},
+        {'text': 'second plan', 'model_event_id': second.id, 'round': 2},
+    ]
+
+
 def test_trace_store_records_completed_run_with_events():
     store = TraceStore()
     run = store.start_run(

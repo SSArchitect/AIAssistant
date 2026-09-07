@@ -607,7 +607,13 @@ async def chat_stream(request: ChatRequest):
 
         async def on_reasoning(reasoning: str) -> None:
             if stream_request.thinking_enabled is True:
-                await enqueue("reasoning", reasoning)
+                run = trace_store.get_run(run_id)
+                started = next((event for event in reversed(run.events) if event.type == "model.started"), None) if run else None
+                await enqueue("reasoning", {
+                    "text": reasoning,
+                    "model_event_id": started.id if started else "",
+                    "round": started.payload.get("round") if started else None,
+                })
 
         async def on_intermediate(text: str, round_index: int) -> None:
             await enqueue("intermediate", {"text": text, "round": round_index})
@@ -652,6 +658,8 @@ async def chat_stream(request: ChatRequest):
                     elif event_type == "intermediate":
                         streamed_text = ""
                         yield _sse(event_type, payload)
+                    elif event_type == "reasoning":
+                        yield _sse(event_type, payload)
                     else:
                         yield _sse(event_type, {"text": payload})
                     emitted_output = True
@@ -680,6 +688,8 @@ async def chat_stream(request: ChatRequest):
                     yield _sse(event_type, {"text": payload})
                 elif event_type == "intermediate":
                     streamed_text = ""
+                    yield _sse(event_type, payload)
+                elif event_type == "reasoning":
                     yield _sse(event_type, payload)
                 else:
                     yield _sse(event_type, {"text": payload})

@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+from types import SimpleNamespace
 
 import pytest
 import pytest_asyncio
@@ -10,6 +12,7 @@ from unittest.mock import AsyncMock, patch
 
 import agent.main as main_module
 from agent.llm.base import LLMResponse, LLMStreamChunk, ToolCall
+from agent.llm.minimax_provider import MiniMaxProvider
 from agent.main import app, skill_registry, lifespan
 from agent.search import SearchResult, SearchService, WebPageContent
 
@@ -646,6 +649,61 @@ async def test_chat_stream_respects_dgx_thinking_switch(
     assert forwarded == [thinking_enabled]
     assert ("event: reasoning" in resp.text) is expects_reasoning_event
     assert ('"reasoning": "private chain"' in resp.text) is expects_reasoning_event
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("thinking_enabled", [True, False])
+@pytest.mark.parametrize("inline", [True, False])
+@pytest.mark.parametrize("streaming", [True, False])
+async def test_minimax_reasoning_stays_out_of_sse_answer(client, thinking_enabled, inline, streaming):
+    provider = MiniMaxProvider(api_key="test-key")
+    provider.streaming_enabled = streaming
+    message = SimpleNamespace(
+        content="<think>test reasoning</think>\n\nfinal answer" if inline else "final answer",
+        reasoning_details=[] if inline else [{"type": "reasoning.text", "text": "test reasoning"}],
+        tool_calls=[],
+    )
+    async def chunks():
+        if not inline:
+            yield SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(
+                content=None, reasoning_details=message.reasoning_details,
+            ))])
+        for char in message.content:
+            yield SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content=char))])
+
+    provider.client.chat.completions.create = AsyncMock(return_value=chunks() if streaming else SimpleNamespace(
+        model=provider.model, usage=None, choices=[SimpleNamespace(message=message)],
+    ))
+    with patch.object(main_module.engine, "_get_provider", return_value=provider):
+        response = await client.post('/agent/chat/stream', json={
+            'conversation_id': 'minimax-reasoning-display', 'message': 'answer briefly',
+            'thinking_enabled': thinking_enabled,
+        })
+    assert response.status_code == 200
+    events = []
+    for block in response.text.split('\n\n'):
+        lines = block.splitlines()
+        if len(lines) == 2 and lines[0].startswith('event: ') and lines[1].startswith('data: '):
+            events.append((lines[0][7:], json.loads(lines[1][6:])))
+    assert ''.join(data['text'] for event, data in events if event == 'token') == 'final answer'
+    final = next(data for event, data in events if event == 'response')
+    assert final['response'] == 'final answer'
+    assert final.get('reasoning', '') == ('test reasoning' if thinking_enabled else '')
+    reasoning_events = [data['text'] for event, data in events if event == 'reasoning']
+    assert ''.join(reasoning_events) == ('test reasoning' if thinking_enabled else '')
+    if thinking_enabled:
+        event_names = [event for event, _ in events]
+        assert event_names.index('reasoning') < event_names.index('token')
+        start = next(data for event, data in events if event == 'trace' and data['type'] == 'model.started')
+        for event, data in events:
+            if event == 'reasoning':
+                assert data['model_event_id'] == start['id']
+                assert data['round'] == 1
+        thought = next(event for event in final['events'] if event['type'] == 'model.reasoning')
+        assert thought['payload']['text'] == 'test reasoning'
+        assert thought['payload']['model_event_id'] == start['id']
+    else:
+        assert not any(event['type'] == 'model.reasoning' for event in final['events'])
 
 
 @pytest.mark.asyncio

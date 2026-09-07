@@ -2782,7 +2782,12 @@ function selectedModelProviderKey() {
 }
 
 function selectedModelSupportsThinking() {
-    return selectedModelProviderKey() === 'dgx';
+    const provider = selectedModelProviderKey();
+    if (provider === 'dgx') return true;
+    if (provider !== 'minimax') return false;
+    const value = String(modelSelect?.value || '');
+    const model = value.split(':').slice(1).join(':') || settings['llm.minimax.model'] || 'MiniMax-M3';
+    return model === 'MiniMax-M3';
 }
 
 function thinkingRequestPayload() {
@@ -15237,25 +15242,34 @@ async function resolveToolApproval(button) {
 
 function renderProcessPanel(events = [], options = {}) {
     const items = buildProcessTimeline(events, options);
-    if (!items.length) return '';
+    if (!items.length && !options.live) return '';
 
     const expanded = Boolean(options.expanded);
     const live = Boolean(options.live);
     const totalDuration = processTotalDuration(events);
-    const title = traceCopy('执行过程', 'Process');
+    const counts = ThinkingProcess.summarize(events);
+    const overview = [
+        counts.rounds ? traceCopy(`${counts.rounds} 轮思考`, `${counts.rounds} reasoning round${counts.rounds === 1 ? '' : 's'}`) : '',
+        counts.toolCalls ? traceCopy(`${counts.toolCalls} 次工具调用`, `${counts.toolCalls} tool call${counts.toolCalls === 1 ? '' : 's'}`) : '',
+    ].filter(Boolean).join(' · ');
+    const title = live ? traceCopy('思考中', 'Thinking') : traceCopy('思考过程', 'Thought process');
     const durationLabel = Number.isFinite(totalDuration)
-        ? traceCopy(`总耗时 ${formatProcessDuration(totalDuration)}`, `Total ${formatProcessDuration(totalDuration)}`)
+        ? formatProcessDuration(totalDuration)
         : '';
 
     return `
         <details class="process-panel ${live ? 'live' : ''}" ${expanded ? 'open' : ''}>
             <summary class="process-summary">
-                <span class="process-summary-title">${escapeHtml(title)}</span>
-                ${durationLabel ? `<span class="process-summary-duration">${escapeHtml(durationLabel)}</span>` : ''}
+                <span class="process-summary-icon">${processIcon('reasoning')}</span>
+                <span class="process-summary-copy">
+                    <span class="process-summary-title">${escapeHtml(title)}</span>
+                    ${overview ? `<span class="process-summary-overview">${escapeHtml(overview)}</span>` : ''}
+                </span>
+                ${durationLabel ? `<span class="process-summary-duration" aria-label="${escapeAttr(traceCopy(`总耗时 ${durationLabel}`, `Total ${durationLabel}`))}">${escapeHtml(durationLabel)}</span>` : ''}
                 <span class="process-summary-arrow" aria-hidden="true"></span>
             </summary>
             <ol class="process-list">
-                ${items.map(renderProcessTimelineItem).join('')}
+                ${items.length ? items.map(renderProcessTimelineItem).join('') : `<li class="thinking-pending">${traceCopy('正在分析任务…', 'Analyzing the task…')}</li>`}
             </ol>
         </details>
     `;
@@ -15263,7 +15277,12 @@ function renderProcessPanel(events = [], options = {}) {
 
 function renderProcessPanelInto(container, panelHtml = '') {
     const scrollState = captureProcessScrollState(container);
+    const openResults = new Set(Array.from(container?.querySelectorAll?.('[data-process-disclosure]') || [])
+        .filter(element => element.open).map(element => element.dataset.processDisclosure));
     container.innerHTML = panelHtml;
+    for (const element of container?.querySelectorAll?.('[data-process-disclosure]') || []) {
+        if (openResults.has(element.dataset.processDisclosure)) element.open = true;
+    }
     restoreProcessScrollState(container, scrollState);
 }
 
@@ -15314,43 +15333,27 @@ function formatProcessDuration(ms) {
 }
 
 function buildProcessTimeline(events = [], options = {}) {
-    const items = (Array.isArray(events) ? events : [])
+    const timeline = ThinkingProcess.mergeTimeline(Array.isArray(events) ? events : [], options.reasoningEvents || [], options.reasoning);
+    const reasoningAnchors = new Set(timeline.filter(event => event.type === 'model.reasoning').map(event => event.payload?.model_event_id));
+    return timeline
         .filter(isProcessEventVisible)
-        .map((event, index) => processTimelineItem(event, index))
+        .filter(event => event.type !== 'model.started' || !reasoningAnchors.has(event.id))
+        .map((event, index) => {
+            if (event.type === 'model.started' && timeline.some(item => item.type === 'model.completed' && item.payload?.round === event.payload?.round)) {
+                event = { ...event, status: 'completed' };
+            }
+            return processTimelineItem(event, index);
+        })
         .filter(Boolean);
-    const reasoning = String(options.reasoning || '').trim();
-    if (!reasoning) return items;
-
-    const reasoningItem = {
-        id: 'thinking-reasoning',
-        type: 'thinking.reasoning',
-        kind: 'reasoning',
-        status: options.live ? 'running' : 'completed',
-        label: t('thinking.reasoningTitle'),
-        detail: reasoning,
-        meta: [],
-        links: [],
-    };
-    const terminalIndex = items.findIndex((item) => (
-        item.type === 'run.completed'
-        || item.type === 'run.partial'
-        || item.type === 'run.failed'
-        || item.type === 'run.cancelled'
-    ));
-    if (terminalIndex >= 0) items.splice(terminalIndex, 0, reasoningItem);
-    else items.push(reasoningItem);
-    return items;
 }
 
 function isProcessEventVisible(event = {}) {
     const type = String(event.type || '');
     if (!type) return false;
-    if (type === 'context.built' || type === 'memory.loaded') return true;
-    if (type === 'memory.review.started' || type === 'memory.review.completed' || type === 'memory.review.failed') return true;
-    if (type === 'memory.compaction.started' || type === 'memory.compaction.completed' || type === 'memory.compaction.failed' || type === 'memory.compaction.skipped') return true;
-    if (type === 'memory.extracted' || type === 'memory.failed') return true;
+    if (type === 'context.built' || type.startsWith('memory.') || type.startsWith('workflow.')) return false;
+    if (type === 'agent.input_context.received' || type.startsWith('tool.governance.')) return false;
+    if (['run.started', 'run.completed', 'model.completed'].includes(type)) return false;
     if (type.startsWith('run.')) return true;
-    if (type.startsWith('workflow.')) return true;
     if (type.startsWith('thinking.')) return true;
     if (type.startsWith('aigc.')) return true;
     if (type.startsWith('model.')) return true;
@@ -15364,9 +15367,20 @@ function isProcessEventVisible(event = {}) {
 
 function processTimelineItem(event = {}, index = 0) {
     const payload = event.payload || {};
-    const display = traceEventDisplay(event);
+    let display = event.type === 'model.reasoning'
+        ? { label: payload.round ? traceCopy(`第 ${payload.round} 轮思考`, `Round ${payload.round} reasoning`) : t('thinking.reasoningTitle'), detail: payload.text || '' }
+        : traceEventDisplay(event);
+    if (['tool.started', 'tool.completed', 'tool.failed'].includes(event.type)) {
+        const name = ThinkingProcess.toolName(event) || traceCopy('工具', 'Tool');
+        const action = event.type === 'tool.started' ? traceCopy('调用', 'Call') : traceCopy('结果', 'Result');
+        display = { ...display, label: `${action} · ${name}` };
+    } else if (event.type === 'model.started') {
+        display = { label: payload.round ? traceCopy(`第 ${payload.round} 轮 · 分析任务`, `Round ${payload.round} · Analyze`) : traceCopy('分析任务', 'Analyze'), detail: '' };
+    } else if (event.type === 'model.intermediate') {
+        display.label = traceCopy('阶段分析', 'Intermediate analysis');
+    }
     const status = normalizeTraceStatus(event.status);
-    const duration = Number.isInteger(event.duration_ms) ? formatDuration(event.duration_ms) : '';
+    const duration = Number.isFinite(event.duration_ms) ? formatProcessDuration(event.duration_ms) : '';
     return {
         id: event.id || `${event.type || 'event'}-${index}`,
         type: event.type || '',
@@ -15374,17 +15388,15 @@ function processTimelineItem(event = {}, index = 0) {
         status,
         label: display.label || event.title || event.type || t('trace.event'),
         detail: processEventDetail(event, display.detail),
-        meta: [
-            payload.workflow_node || payload.node || '',
-            event.step_id ? `step:${shortDebugId(event.step_id)}` : '',
-            duration,
-        ].filter(Boolean),
+        meta: [duration].filter(Boolean),
         links: processEventLinks(event),
+        result: ['tool.completed', 'tool.failed'].includes(event.type) ? payload.result_preview : null,
     };
 }
 
 function processEventKind(event = {}) {
     const type = String(event.type || '');
+    if (type === 'model.reasoning') return 'reasoning';
     if (type.startsWith('tool.') || type.startsWith('approval.') || type.startsWith('citations.')) return 'tool';
     if (type.startsWith('model.')) return 'model';
     if (type.startsWith('thinking.') || type.startsWith('workflow.')) return 'plan';
@@ -15441,9 +15453,7 @@ function processEventDetail(event = {}, fallback = '') {
     } else if (type === 'model.intermediate') {
         if (payload.content) parts.push(payload.content);
     } else if (type === 'model.started') {
-        const round = payload.round ? `${traceCopy('轮次', 'Round')} ${payload.round}` : '';
-        const tools = Number.isFinite(payload.tools_count) ? traceCopy(`可用工具 ${payload.tools_count}`, `${payload.tools_count} tools`) : '';
-        parts.push([round, tools, payload.streaming ? traceCopy('流式输出', 'streaming') : ''].filter(Boolean).join(' / '));
+        return '';
     } else if (type === 'model.completed') {
         const toolCount = Array.isArray(payload.tool_calls) ? payload.tool_calls.length : 0;
         parts.push([
@@ -15560,27 +15570,48 @@ function processEventLinks(event = {}) {
     return [...new Set(urls.map((url) => String(url || '').trim()).filter((url) => url && isSafeContentUrl(url)))].slice(0, 4);
 }
 
+function processIcon(kind) {
+    const paths = {
+        reasoning: '<path d="M9 18h6m-5 3h4M8.1 14.5a6 6 0 1 1 7.8 0c-.6.5-.9 1.2-.9 2H9c0-.8-.3-1.5-.9-2Z"/>',
+        tool: '<path d="m8 8-4 4 4 4m8-8 4 4-4 4m-3-10-2 16"/>',
+        result: '<path d="m8 12 3 3 5-6"/><circle cx="12" cy="12" r="9"/>',
+        completed: '<path d="m5 12 4 4L19 6"/>',
+        error: '<path d="M12 8v5m0 3h.01"/><circle cx="12" cy="12" r="9"/>',
+        event: '<path d="M6 7h12M6 12h12M6 17h8"/>',
+    };
+    return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths[kind] || paths.event}</svg>`;
+}
+
 function renderProcessTimelineItem(item) {
     const detail = item.detail
         ? `<div class="process-item-detail">${escapeHtml(item.detail)}</div>`
         : '';
     const meta = item.meta.length
-        ? `<div class="process-item-meta">${item.meta.map((value) => `<span>${escapeHtml(value)}</span>`).join('')}</div>`
+        ? `<span class="process-item-duration">${item.meta.map(escapeHtml).join(' · ')}</span>`
         : '';
     const links = item.links.length
         ? `<div class="process-item-links">${item.links.map((url) => renderSafeLink(url, hostFromUrl(url) || shortDebugId(url))).join('')}</div>`
         : '';
+    const result = item.result
+        ? `<details class="thinking-tool-result" data-process-disclosure="${escapeAttr(item.id)}"><summary>${traceCopy('查看工具结果', 'View tool result')}</summary><pre>${escapeHtml(typeof item.result === 'string' ? item.result : JSON.stringify(item.result, null, 2))}</pre></details>`
+        : '';
+    const marker = item.status === 'error' ? 'error'
+        : ['tool.completed', 'tool.failed'].includes(item.type) ? 'result'
+        : ['reasoning', 'model'].includes(item.kind) ? 'reasoning' : item.kind;
+    const status = item.status === 'completed'
+        ? `${processIcon('completed')}<span class="visually-hidden">${escapeHtml(processStatusLabel(item.status))}</span>`
+        : escapeHtml(processStatusLabel(item.status));
     return `
         <li class="process-item ${escapeAttr(item.status)} ${escapeAttr(item.kind)}">
-            <span class="process-item-dot" aria-hidden="true"></span>
+            <span class="process-item-marker" aria-hidden="true">${processIcon(marker)}</span>
             <div class="process-item-body">
                 <div class="process-item-head">
                     <strong>${escapeHtml(item.label)}</strong>
-                    <span>${escapeHtml(processStatusLabel(item.status))}</span>
+                    <span class="process-item-aside">${meta}<span class="process-item-status">${status}</span></span>
                 </div>
                 ${detail}
+                ${result}
                 ${links}
-                ${meta}
             </div>
         </li>
     `;
@@ -16620,7 +16651,7 @@ async function sendMessageStream(conversationId, query, streamView, attachmentCo
                 } else if (event === 'reasoning') {
                     const chunk = data.text || '';
                     streamedReasoning += chunk;
-                    streamView.enqueueReasoning(chunk);
+                    streamView.enqueueReasoning(chunk, data);
                 } else if (event === 'response') {
                     finalResponse = data;
                     runId = data.run_id || runId;
@@ -16710,8 +16741,9 @@ function appendStreamingAssistantMessage(regenerateQuery = '', conversationId = 
     let lastReasoning = '';
     let lastEvents = [];
     let lastMeta = {};
-    let processExpanded = true;
-    let processTouched = false;
+    const thinkingState = ThinkingProcess.createState();
+    renderProcessPanelInto(traceEl, renderProcessPanel([], { expanded: true, live: true }));
+    contentEl.innerHTML = '';
 
     function finishStreamingTask() {
         if (cancelTaskId) streamingTaskCancellers.delete(cancelTaskId);
@@ -16721,8 +16753,7 @@ function appendStreamingAssistantMessage(regenerateQuery = '', conversationId = 
     function rememberProcessPanelIntent(summary) {
         const panel = summary?.closest?.('.process-panel');
         if (!panel || !traceEl.contains(panel)) return;
-        processExpanded = !panel.open;
-        processTouched = true;
+        thinkingState.setExpanded(!panel.open);
     }
 
     traceEl.addEventListener('click', (event) => {
@@ -16740,16 +16771,17 @@ function appendStreamingAssistantMessage(regenerateQuery = '', conversationId = 
         const shouldFollow = shouldFollowConversationStream(conversationId, div);
         const wasEmpty = !lastContent;
         lastContent = text || '';
+        if (lastContent) thinkingState.startAnswer();
         div.classList.toggle('has-final-content', Boolean(lastContent));
         div.dataset.copyText = lastContent;
         updateCopyButtonState(div, Boolean(lastContent));
         statusEl.hidden = true;
         if (wasEmpty && lastContent && (lastEvents.length || lastReasoning)) {
-            if (!processTouched) processExpanded = false;
             renderProcessPanelInto(traceEl, renderProcessPanel(lastEvents, {
-                expanded: processExpanded,
+                expanded: thinkingState.expanded,
                 live: false,
                 reasoning: lastReasoning,
+                reasoningEvents: thinkingState.reasoningEvents(),
             }));
         }
         contentEl.innerHTML = formatContent(lastContent);
@@ -16759,11 +16791,11 @@ function appendStreamingAssistantMessage(regenerateQuery = '', conversationId = 
     function renderReasoningValue(text) {
         const shouldFollow = shouldFollowConversationStream(conversationId, div);
         lastReasoning = String(text || '');
-        if (!processTouched && !lastContent) processExpanded = true;
         renderProcessPanelInto(traceEl, renderProcessPanel(lastEvents, {
-            expanded: processExpanded,
-            live: !lastContent,
+            expanded: thinkingState.expanded,
+            live: thinkingState.live,
             reasoning: lastReasoning,
+            reasoningEvents: thinkingState.reasoningEvents(),
         }));
         if (shouldFollow) scrollToBottom(conversationId, div);
     }
@@ -16788,7 +16820,8 @@ function appendStreamingAssistantMessage(regenerateQuery = '', conversationId = 
         setReasoning(text) {
             reasoningBuffer.setImmediate(text);
         },
-        enqueueReasoning(chunk) {
+        enqueueReasoning(chunk, meta = {}) {
+            thinkingState.appendReasoning(chunk, meta);
             reasoningBuffer.enqueue(chunk);
         },
         finishReasoning(text) {
@@ -16803,14 +16836,15 @@ function appendStreamingAssistantMessage(regenerateQuery = '', conversationId = 
             div.classList.remove('has-final-content');
             div.dataset.copyText = '';
             updateCopyButtonState(div, false);
-            if (!processTouched) processExpanded = true;
+            thinkingState.resume();
             renderProcessPanelInto(traceEl, renderProcessPanel(lastEvents, {
-                expanded: processExpanded,
+                expanded: thinkingState.expanded,
                 live: true,
                 reasoning: lastReasoning,
+                reasoningEvents: thinkingState.reasoningEvents(),
             }));
             statusEl.hidden = true;
-            contentEl.innerHTML = '<div class="loading-dots"><span></span><span></span><span></span></div>';
+            contentEl.innerHTML = '';
             if (shouldFollow) scrollToBottom(conversationId, div);
         },
         setMeta(meta) {
@@ -16840,11 +16874,11 @@ function appendStreamingAssistantMessage(regenerateQuery = '', conversationId = 
                 input: regenerateQuery, agent_id: taskAgentId, events: lastEvents,
                 started_at: lastEvents.find(event => event.type === 'run.started')?.created_at || taskStartedAt,
                 status: terminalEvent ? terminalEvent.type.slice(4) : 'running', completed_at: terminalEvent?.created_at });
-            const shouldExpand = processTouched ? processExpanded : (!lastContent && !taskEl.innerHTML);
             const processPanel = renderProcessPanel(lastEvents, {
-                expanded: shouldExpand,
-                live: !lastContent,
+                expanded: thinkingState.expanded,
+                live: thinkingState.live,
                 reasoning: lastReasoning,
+                reasoningEvents: thinkingState.reasoningEvents(),
             });
             renderProcessPanelInto(traceEl, processPanel);
             if (!lastContent && !processPanel && !taskEl.innerHTML) {
@@ -16877,6 +16911,7 @@ function appendStreamingAssistantMessage(regenerateQuery = '', conversationId = 
             }
             this.setReasoning(resp.reasoning || lastReasoning);
             this.setContent(resp.response || lastContent);
+            thinkingState.finish();
             artifactsEl.innerHTML = renderArtifactPanel(resp.artifacts || []);
             citationsEl.innerHTML = renderCitationPanel(resp.citations || []);
             const skills = resp.skills_used || [];
@@ -16914,11 +16949,12 @@ function appendStreamingAssistantMessage(regenerateQuery = '', conversationId = 
             div.classList.toggle('has-final-content', Boolean(message));
             updateCopyButtonState(div, Boolean(message));
             if (lastEvents.length || lastReasoning) {
-                if (!processTouched) processExpanded = false;
+                thinkingState.finish();
                 renderProcessPanelInto(traceEl, renderProcessPanel(lastEvents, {
-                    expanded: processExpanded,
+                    expanded: thinkingState.expanded,
                     live: false,
                     reasoning: lastReasoning,
+                    reasoningEvents: thinkingState.reasoningEvents(),
                 }));
             }
             contentEl.innerHTML = errorBanner(
@@ -16950,11 +16986,12 @@ function appendStreamingAssistantMessage(regenerateQuery = '', conversationId = 
             div.classList.toggle('has-final-content', Boolean(message));
             updateCopyButtonState(div, Boolean(message));
             if (lastEvents.length || lastReasoning) {
-                if (!processTouched) processExpanded = false;
+                thinkingState.finish();
                 renderProcessPanelInto(traceEl, renderProcessPanel(lastEvents, {
-                    expanded: processExpanded,
+                    expanded: thinkingState.expanded,
                     live: false,
                     reasoning: lastReasoning,
+                    reasoningEvents: thinkingState.reasoningEvents(),
                 }));
             }
             contentEl.innerHTML = `<div class="streaming-cancelled">${escapeHtml(message)}</div>`;
@@ -18116,7 +18153,8 @@ function formatContent(text, options = {}) {
         return `%%CODEBLOCK_${idx}%%`;
     });
 
-    const lines = processed.split('\n');
+    const lines = options.allowMedia === false ? processed.split('\n')
+        : globalThis.VideoMedia.normalizeMarkdownLines(processed.split('\n'));
     const html = [];
     let paragraph = [];
     let listType = '';

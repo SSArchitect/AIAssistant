@@ -266,6 +266,8 @@ test('live message puts the task card below execution while keeping the result b
         currentConversationId: 'c', currentAgentId: 'super_chat', STREAM_TYPEWRITER: null,
         document: { createElement: () => div }, messagesContainer: { querySelector: () => null, appendChild() {} },
         renderAssistantActions: () => '', createAdaptiveTypingBuffer: () => ({}),
+        ThinkingProcess: require('../web/static/js/thinking-process.js'),
+        renderProcessPanel: () => '', renderProcessPanelInto() {},
     });
     const start = appSource.indexOf('function appendStreamingAssistantMessage(');
     const end = appSource.indexOf('\nfunction ', start + 1);

@@ -433,6 +433,12 @@ Web 工作台里可以在 设置与管理 -> 开发与调试 -> Eval 中一键�
 
 ### 6.4 Trace 事件
 
+聊天中的「思考过程」使用通用时间线展示每轮模型思考、工具调用和工具结果。模型思考以
+`model.reasoning` 事件保存，payload 包含 `text`、`round` 和对应 `model.started` 的
+`model_event_id`；实时 `reasoning` SSE 使用相同的轮次标识，避免多轮内容合并后丢失顺序。
+最终答案的 `token` 开始输出前组件默认展开，工具轮次的临时正文留在组件内；开始最终回答时
+自动收起，之后保留用户手动展开状态。刷新会话从 trace 恢复时间线，旧消息仍兼容聚合 `reasoning`。
+
 每次 chat 必须创建 run，并返回 `run_id` 与 `events`。基础事件约定：
 
 ```text
@@ -446,6 +452,7 @@ memory.compaction.completed
 memory.compaction.skipped
 memory.compaction.failed
 model.started
+model.reasoning
 model.completed
 model.failed
 tool.started
@@ -478,7 +485,7 @@ run.failed
 - 失败必须有 `run.started` 和 `run.failed`，并写入 `error_type`、`error_message`。
 - 模型调用、工具调用、检索、handoff、人工确认等步骤都应写事件。
 - `payload` 可以保留调试信息，但不要写入明文密钥。
-- 前端 trace panel 默认折叠，避免影响正常聊天阅读。
+- 前端思考组件在最终回答输出前默认展开，开始回答时自动收起；历史消息默认折叠，用户可随时展开回看。
 
 ## 7. 测试要求
 

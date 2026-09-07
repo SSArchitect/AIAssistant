@@ -65,6 +65,7 @@ if command -v node >/dev/null 2>&1; then
     echo "[Web] Checking JavaScript syntax..."
     if node --check web/static/js/chat-recovery.js 2>&1 && \
        node --check web/static/js/long-tasks.js 2>&1 && \
+       node --check web/static/js/thinking-process.js 2>&1 && \
        node --check web/static/js/conversation-pager.js 2>&1 && \
        node --check web/static/js/connect.js 2>&1 && \
        node --check web/static/js/share-card.js 2>&1 && \

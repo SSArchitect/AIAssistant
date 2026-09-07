@@ -199,7 +199,7 @@ test('chat stream wires tokens and reasoning through the secondary buffers', () 
     const htmlSource = fs.readFileSync(path.join(root, 'web/index.html'), 'utf8');
     assert.match(htmlSource, /stream-typewriter\.js/);
     assert.match(appSource, /streamView\.enqueueContent\(chunk\)/);
-    assert.match(appSource, /streamView\.enqueueReasoning\(chunk\)/);
+    assert.match(appSource, /streamView\.enqueueReasoning\(chunk, data\)/);
     assert.match(appSource, /await Promise\.all\(\[/);
     assert.match(appSource, /streamView\.finishContent/);
     assert.match(appSource, /streamView\.finishReasoning/);

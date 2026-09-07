@@ -82,6 +82,26 @@ func TestCompactTraceEventsKeepsTimelineDetailsWithoutLargePayloads(t *testing.T
 	}
 }
 
+func TestCompactTraceKeepsRoundReasoningAndToolNames(t *testing.T) {
+	thought := strings.Repeat("逐轮思考", 500)
+	events := compactTraceEvents([]bridge.RunEvent{
+		{Type: "model.reasoning", Payload: map[string]interface{}{"text": thought, "round": 2, "model_event_id": "model-2", "messages": "omit"}},
+		{Type: "tool.completed", Payload: map[string]interface{}{"name": "search", "text": "not reasoning", "result_preview": "result"}},
+	})
+	if events[0].Payload["text"] != thought || events[0].Payload["model_event_id"] != "model-2" || events[0].Payload["round"] != 2 {
+		t.Fatal("round reasoning must survive conversation history compaction intact")
+	}
+	if events[1].Payload["name"] != "search" {
+		t.Fatal("tool name missing from thought timeline")
+	}
+	if _, found := events[0].Payload["messages"]; found {
+		t.Fatal("unrelated messages must remain omitted")
+	}
+	if _, found := events[1].Payload["text"]; found {
+		t.Fatal("only model.reasoning may retain full text")
+	}
+}
+
 func TestStoredRunStatusPreservesPartialRun(t *testing.T) {
 	events := []bridge.RunEvent{
 		{

@@ -265,12 +265,22 @@ class AgentEngine:
         provider: LLMProvider,
         request: ChatRequest,
     ) -> dict[str, bool]:
-        if (
-            request.thinking_enabled is None
-            or getattr(provider, "provider_name", "") != "dgx"
-        ):
+        provider_name = getattr(provider, "provider_name", "")
+        supported = provider_name == "dgx" or (
+            provider_name == "minimax" and getattr(provider, "model", "") == "MiniMax-M3"
+        )
+        if request.thinking_enabled is None or not supported:
             return {}
         return {"thinking_enabled": request.thinking_enabled}
+
+    def _record_model_reasoning(self, run_id: str, text: str) -> None:
+        run = self.trace_store.get_run(run_id)
+        started = next((event for event in reversed(run.events) if event.type == "model.started"), None) if run else None
+        self.trace_store.append_event(
+            run_id, type="model.reasoning", status="completed", title="Model reasoning",
+            payload={"text": text, "model_event_id": started.id if started else "",
+                     "round": started.payload.get("round") if started else None},
+        )
 
     async def _chat_with_retry(
         self,
@@ -12098,6 +12108,9 @@ class AgentEngine:
 
             if request.thinking_enabled is True and response.reasoning:
                 reasoning_parts.append(response.reasoning)
+                self._record_model_reasoning(run.run_id, response.reasoning)
+                if not stream_model_round:
+                    await self._emit_token(on_reasoning, response.reasoning)
             model_duration_ms = int((perf_counter() - model_started) * 1000)
             model_completed_payload = {
                 "round": round_index + 1,
@@ -12509,6 +12522,8 @@ class AgentEngine:
             )
             if request.thinking_enabled is True and response.reasoning:
                 reasoning_parts.append(response.reasoning)
+                self._record_model_reasoning(run.run_id, response.reasoning)
+                await self._emit_token(on_reasoning, response.reasoning)
             response.content = self._restore_generated_image_links(response.content, all_new_messages)
             response.content = self._restore_generated_video_links(response.content, all_new_messages)
             all_new_messages.append(LLMMessage(role="assistant", content=response.content))

@@ -103,6 +103,13 @@ class OpenAIProvider(LLMProvider):
     def _extra_chat_kwargs(self, *, thinking_enabled: bool | None = None) -> dict:
         return {}
 
+    def _extract_reasoning(self, message) -> str:
+        return (
+            getattr(message, "reasoning", None)
+            or getattr(message, "reasoning_content", None)
+            or ""
+        )
+
     def _supports_prompt_cache_key(self) -> bool:
         if self.provider_name != "openai":
             return False
@@ -184,11 +191,7 @@ class OpenAIProvider(LLMProvider):
 
         return LLMResponse(
             content=message.content or "",
-            reasoning=(
-                getattr(message, "reasoning", None)
-                or getattr(message, "reasoning_content", None)
-                or ""
-            ),
+            reasoning=self._extract_reasoning(message),
             tool_calls=tool_calls,
             model=response.model,
             usage=self._usage_payload(response.usage),
@@ -250,11 +253,7 @@ class OpenAIProvider(LLMProvider):
             if not chunk.choices:
                 continue
             delta = chunk.choices[0].delta
-            reasoning = (
-                getattr(delta, "reasoning", None)
-                or getattr(delta, "reasoning_content", None)
-                or ""
-            )
+            reasoning = self._extract_reasoning(delta)
             if reasoning:
                 reasoning_parts.append(reasoning)
                 yield LLMStreamChunk(reasoning=reasoning)
