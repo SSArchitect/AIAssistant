@@ -10,6 +10,66 @@ const FileActions = require('../web/static/js/file-actions.js');
 const videoPath = '/static/generated/aigc/spark-video-5ad06019a7b44f9fa9b0810502f6c78e.mp4';
 const traceMarkdown = `[纸鹤视频（480×864，~5.17 秒）](${videoPath})`;
 
+test('the chat formatter still renders text and video when a cached module has no normalizer', () => {
+    const app = fs.readFileSync(path.join(__dirname, '../web/static/js/app.js'), 'utf8');
+    const format = app.match(/function formatContent\(text, options = \{\}\) \{[\s\S]*?\n\}/)[0];
+    const legacy = { ...VideoMedia };
+    delete legacy.normalizeMarkdownLines;
+    const context = {
+        VideoMedia: legacy,
+        renderMediaMarkdown: line => {
+            const item = legacy.parseMarkdown(line);
+            return item ? legacy.render(item.url, item.title) : '';
+        },
+        renderInlineMarkdown: value => value, isMarkdownTableStart: () => false,
+    };
+    assert.equal(vm.runInNewContext(`${format}; formatContent('正常回复')`, context), '<p>正常回复</p>');
+    context.text = traceMarkdown;
+    assert.match(vm.runInNewContext(`${format}; formatContent(text)`, context), /<video /);
+});
+
+test('historical duplicate generated videos use the local sibling URL and keep the first caption', () => {
+    const lines = [`[小兔子](https://mini.amini.net${videoPath}?download=1#t=0)`, '', '视频小档案：',
+        `[AI 生视频 1](${videoPath})`];
+    const result = VideoMedia.normalizeMarkdownLines(lines);
+    assert.equal(result[0], `[小兔子](${videoPath})`);
+    assert.equal(result.filter(line => VideoMedia.parseMarkdown(line)).length, 1);
+    assert.ok(result.includes('视频小档案：'));
+    assert.ok(lines[0].includes('mini.amini.net')); // Do not mutate stored messages.
+});
+
+test('history normalization preserves distinct videos and external links without a matching local path', () => {
+    const lines = [`[外部](https://cdn.test${videoPath})`, '[视频](https://cdn.test/other.mp4)',
+        '[本地](/static/generated/aigc/another.mp4)', '正文'];
+    assert.deepEqual(VideoMedia.normalizeMarkdownLines(lines), lines);
+    const sameFilename = [`[外部](https://cdn.test/other/${VideoMedia.filename(videoPath)})`, traceMarkdown];
+    assert.deepEqual(VideoMedia.normalizeMarkdownLines(sameFilename), sameFilename);
+    assert.deepEqual(VideoMedia.normalizeMarkdownLines([traceMarkdown, traceMarkdown]), [traceMarkdown, '']);
+});
+
+test('the chat formatter repairs the real duplicate pattern, excluding fenced code and media-disabled output', () => {
+    const app = fs.readFileSync(path.join(__dirname, '../web/static/js/app.js'), 'utf8');
+    const format = app.match(/function formatContent\(text, options = \{\}\) \{[\s\S]*?\n\}/)[0];
+    const text = `[小兔子](https://mini.amini.net${videoPath})\n\n${traceMarkdown}`;
+    const context = {
+        VideoMedia, text, renderMediaMarkdown: line => {
+            const item = VideoMedia.parseMarkdown(line);
+            return item ? VideoMedia.render(item.url, item.title, { apiBase: 'https://app.test' }) : '';
+        }, renderInlineMarkdown: value => value, isMarkdownTableStart: () => false,
+        escapeHtml: value => value, escapeAttr: value => value, renderCodeCopyButton: () => '',
+    };
+    const html = vm.runInNewContext(`${format}; formatContent(text)`, context);
+    assert.equal((html.match(/<video /g) || []).length, 1);
+    assert.ok(html.includes(`src="https://app.test${videoPath}"`));
+    assert.ok(!html.includes('mini.amini.net'));
+    const disabled = vm.runInNewContext(`${format}; formatContent(text, { allowMedia: false })`, context);
+    assert.ok(disabled.includes('mini.amini.net'));
+    const code = vm.runInNewContext(`${format}; formatContent(text)`, {
+        ...context, text: `[小兔子](https://mini.amini.net${videoPath})\n\n\`\`\`md\n${traceMarkdown}\n\`\`\``,
+    });
+    assert.ok(code.includes(`src="https://mini.amini.net${videoPath}"`));
+});
+
 test('the production trace link renders a video player and an explicit download button', () => {
     const parsed = VideoMedia.parseMarkdown(traceMarkdown);
     assert.deepEqual(parsed, { url: videoPath, title: '纸鹤视频（480×864，~5.17 秒）' });

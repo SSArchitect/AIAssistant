@@ -1,6 +1,7 @@
 import { cpSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { build } from 'esbuild';
+import { verifyWebBundle } from './verify_web_bundle.mjs';
 
 const projectRoot = resolve(import.meta.dirname, '..');
 const sourceDir = resolve(projectRoot, 'web');
@@ -44,4 +45,5 @@ await build({
   minify: true,
 });
 
-console.log(`Android web assets built with API base: ${apiBase}`);
+verifyWebBundle(outputDir);
+console.log(`Android web assets built and module APIs verified with API base: ${apiBase}`);

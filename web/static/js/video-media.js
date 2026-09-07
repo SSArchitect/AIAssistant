@@ -45,6 +45,24 @@
         return isVideoUrl(value) ? { url: value, title: '' } : null;
     }
 
+    // Called after fenced code is extracted. A local sibling is required evidence
+    // before repairing a historical URL; unrelated external videos stay untouched.
+    function normalizeMarkdownLines(lines) {
+        const items = lines.map(parseMarkdown);
+        const localUrls = new Set(items.filter(item => item
+            && /^\/static\/generated\/aigc\/[\w-]+\.mp4$/.test(item.url)).map(item => item.url));
+        const displayed = new Set();
+        return lines.map((line, index) => {
+            const item = items[index];
+            if (!item) return line;
+            const path = new URL(item.url, 'https://media.invalid').pathname;
+            if (!localUrls.has(path)) return line;
+            if (displayed.has(path)) return '';
+            displayed.add(path);
+            return item.url === path ? line : `[${item.title || DEFAULT_LABELS.video}](${path})`;
+        });
+    }
+
     function filename(value) {
         try {
             const name = decodeURIComponent(new URL(value, 'https://media.invalid').pathname.split('/').pop())
@@ -121,5 +139,5 @@
         if (status) { status.textContent = message; status.hidden = false; }
     }
 
-    return { resolveUrl, parseMarkdown, filename, render, download, downloadFromButton, updateMetadata, showPlaybackError };
+    return { resolveUrl, parseMarkdown, normalizeMarkdownLines, filename, render, download, downloadFromButton, updateMetadata, showPlaybackError };
 }));

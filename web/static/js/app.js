@@ -18153,8 +18153,9 @@ function formatContent(text, options = {}) {
         return `%%CODEBLOCK_${idx}%%`;
     });
 
-    const lines = options.allowMedia === false ? processed.split('\n')
-        : globalThis.VideoMedia.normalizeMarkdownLines(processed.split('\n'));
+    const sourceLines = processed.split('\n');
+    const lines = options.allowMedia !== false && typeof globalThis.VideoMedia?.normalizeMarkdownLines === 'function'
+        ? globalThis.VideoMedia.normalizeMarkdownLines(sourceLines) : sourceLines;
     const html = [];
     let paragraph = [];
     let listType = '';
