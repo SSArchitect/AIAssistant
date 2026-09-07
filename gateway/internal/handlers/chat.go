@@ -1221,10 +1221,20 @@ func (h *ChatHandler) ListTasks(c *gin.Context) {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "task status temporarily unavailable"})
 		return
 	}
-	// Defense in depth: the gateway account remains authoritative.
+	// Only real, account-owned conversations belong in the user task launcher.
+	// Pulse precomputation and other internal jobs use synthetic conversation IDs.
+	var conversationIDs []string
+	if err := database.DB.Model(&models.Conversation{}).Where("user_id = ?", userID).Pluck("id", &conversationIDs).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "task conversations temporarily unavailable"})
+		return
+	}
+	conversations := make(map[string]bool, len(conversationIDs))
+	for _, id := range conversationIDs {
+		conversations[id] = true
+	}
 	owned := make([]bridge.RunRecord, 0, len(result.Runs))
 	for _, run := range result.Runs {
-		if normalizedUserID(run.UserID) == userID {
+		if normalizedUserID(run.UserID) == userID && conversations[run.ConversationID] {
 			owned = append(owned, run)
 		}
 	}

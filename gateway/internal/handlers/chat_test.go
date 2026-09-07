@@ -1731,11 +1731,17 @@ func (w *failingStreamWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 
 func TestListTasksFiltersForeignRuns(t *testing.T) {
 	gin.SetMode(gin.TestMode)
+	if err := database.Init(filepath.Join(t.TempDir(), "assistant.db")); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.DB.Create(&models.Conversation{ID: "real-chat", UserID: "user-a"}).Error; err != nil {
+		t.Fatal(err)
+	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Query().Get("user_id") != "user-a" {
 			t.Errorf("unexpected account: %s", r.URL)
 		}
-		_, _ = w.Write([]byte(`{"runs":[{"run_id":"owned","user_id":"user-a"},{"run_id":"foreign","user_id":"user-b"}]}`))
+		_, _ = w.Write([]byte(`{"runs":[{"run_id":"owned","user_id":"user-a","conversation_id":"real-chat"},{"run_id":"foreign","user_id":"user-b"}]}`))
 	}))
 	defer server.Close()
 	handler := NewChatHandler(bridge.NewAgentClient(server.URL, time.Second))
@@ -1745,5 +1751,68 @@ func TestListTasksFiltersForeignRuns(t *testing.T) {
 	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/tasks?user_id=user-a", nil))
 	if response.Code != http.StatusOK || strings.Contains(response.Body.String(), "foreign") || !strings.Contains(response.Body.String(), "owned") {
 		t.Fatalf("unexpected tasks: %d %s", response.Code, response.Body.String())
+	}
+}
+
+func TestListTasksExcludesSystemJobsAndDeletedConversations(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	if err := database.Init(filepath.Join(t.TempDir(), "assistant.db")); err != nil {
+		t.Fatal(err)
+	}
+	for _, conv := range []models.Conversation{
+		{ID: "real-chat", UserID: "user-a", Title: "请刷新 Pulse 后生成研究报告"},
+		{ID: "pulse-discussion", UserID: "user-a"},
+		{ID: "foreign-chat", UserID: "user-b"},
+	} {
+		if err := database.DB.Create(&conv).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(bridge.RunListResponse{Runs: []bridge.RunRecord{
+			{RunID: "manual", UserID: "user-a", ConversationID: "real-chat", Status: "running"},
+			{RunID: "discussion", UserID: "user-a", ConversationID: "pulse-discussion", Status: "completed"},
+			{RunID: "precompute", UserID: "user-a", ConversationID: "pulse-user-a-2026-09-07", Status: "running"},
+			{RunID: "repair", UserID: "user-a", ConversationID: "pulse-user-a-2026-09-07-json-repair", Status: "completed"},
+			{RunID: "other-system", UserID: "user-a", ConversationID: "nightly-maintenance", Status: "running"},
+			{RunID: "deleted", UserID: "user-a", ConversationID: "deleted-chat", Status: "failed"},
+			{RunID: "forged", UserID: "user-a", ConversationID: "foreign-chat", Status: "running"},
+		}})
+	}))
+	defer server.Close()
+	router := gin.New()
+	router.GET("/api/tasks", NewChatHandler(bridge.NewAgentClient(server.URL, time.Second)).ListTasks)
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/tasks?user_id=user-a", nil))
+	var result bridge.RunListResponse
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Runs) != 2 || result.Runs[0].RunID != "manual" || result.Runs[1].RunID != "discussion" {
+		t.Fatalf("unexpected task projection: %+v", result.Runs)
+	}
+}
+
+func TestListTasksConversationLookupFailureDoesNotExposeSystemJobs(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	if err := database.Init(filepath.Join(t.TempDir(), "assistant.db")); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.DB.Migrator().DropTable(&models.Conversation{}); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"runs":[{"run_id":"system-job","user_id":"user-a","conversation_id":"pulse-internal"}]}`))
+	}))
+	defer server.Close()
+	router := gin.New()
+	router.GET("/api/tasks", NewChatHandler(bridge.NewAgentClient(server.URL, time.Second)).ListTasks)
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/tasks?user_id=user-a", nil))
+	if response.Code != http.StatusInternalServerError || strings.Contains(response.Body.String(), "system-job") {
+		t.Fatalf("unexpected response: %d %s", response.Code, response.Body.String())
 	}
 }
