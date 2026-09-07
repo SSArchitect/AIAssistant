@@ -361,7 +361,7 @@ async def test_ambient_drive_index_does_not_expose_drive_tools_on_first_round(en
     assert "list_drive_documents" not in initial_tools
     assert "tool_search" in initial_tools
     assert "notes.md" in messages[0].content
-    assert routed.payload["policy"]["max_dynamic_tools"] == 3
+    assert routed.payload["policy"]["max_dynamic_tools"] == 6
     assert routed.payload["policy"]["min_dynamic_score"] == 60
 
 

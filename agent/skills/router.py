@@ -7,7 +7,7 @@ from typing import Any, Iterable
 from agent.llm.base import ToolDefinition
 
 
-DEFAULT_MAX_DYNAMIC_TOOLS = 3
+DEFAULT_MAX_DYNAMIC_TOOLS = 6
 DEFAULT_MIN_DYNAMIC_SCORE = 60
 CORE_ALWAYS_ON_TOOL_NAMES = {
     "open_url",

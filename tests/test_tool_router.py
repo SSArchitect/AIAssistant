@@ -28,8 +28,10 @@ def test_router_keeps_core_tools_and_caps_high_priority_dynamic_exposure():
     names = {tool.name for tool in route.tools}
 
     assert CORE_ALWAYS_ON_TOOL_NAMES.issubset(names)
-    assert len(route.tools) == len(CORE_ALWAYS_ON_TOOL_NAMES) + 3
-    assert len(route.deferred_tools) == 9
+    assert len(route.tools) == len(CORE_ALWAYS_ON_TOOL_NAMES) + 6
+    assert len(route.scored_tools) == 6
+    assert len(route.deferred_tools) == 6
+    assert names.isdisjoint(item["name"] for item in route.deferred_tools)
     assert route.activated_domains == ["drive"]
 
 
