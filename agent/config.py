@@ -65,6 +65,7 @@ class Settings(BaseSettings):
 
     # Doubao - API key from env var DOUBAO_API_KEY
     doubao_api_key: str = ""
+    doubao_base_url: str = _providers.get("doubao", {}).get("base_url", "https://ark.cn-beijing.volces.com/api/v3")
     doubao_model: str = _providers.get("doubao", {}).get("model", "doubao-1-5-pro-256k-250115")
 
     # MiniMax - API key from env var MINIMAX_API_KEY
@@ -122,6 +123,7 @@ class RuntimeConfig:
             "llm.deepseek.api_key": settings.deepseek_api_key,
             "llm.deepseek.model": settings.deepseek_model,
             "llm.doubao.api_key": settings.doubao_api_key,
+            "llm.doubao.base_url": settings.doubao_base_url,
             "llm.doubao.model": settings.doubao_model,
             "llm.minimax.api_key": settings.minimax_api_key,
             "llm.minimax.base_url": settings.minimax_base_url,
@@ -230,6 +232,10 @@ class RuntimeConfig:
     @property
     def doubao_model(self) -> str:
         return self.get("llm.doubao.model", "doubao-1-5-pro-256k-250115")
+
+    @property
+    def doubao_base_url(self) -> str:
+        return self.get("llm.doubao.base_url", settings.doubao_base_url).strip() or settings.doubao_base_url
 
     @property
     def minimax_api_key(self) -> str:

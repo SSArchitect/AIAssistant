@@ -40,10 +40,11 @@ const PROVIDER_CONFIG = [
     },
     {
         key: 'doubao',
-        label: 'Doubao',
+        label: '火山引擎 / Volcengine',
         apiKeyPlaceholder: 'ark-...',
         fields: [
             { key: 'llm.doubao.api_key', id: 'doubao-api-key', type: 'password', labelKey: 'fields.apiKey', placeholder: 'ark-...' },
+            { key: 'llm.doubao.base_url', id: 'doubao-base-url', type: 'text', labelKey: 'fields.baseUrl', placeholder: 'https://ark.cn-beijing.volces.com/api/plan/v3' },
         ],
     },
     {
@@ -133,7 +134,7 @@ const I18N = {
                 openai: 'OpenAI API 配置，也支持兼容接口',
                 gemini: 'Google Gemini API 配置',
                 deepseek: 'DeepSeek API 配置',
-                doubao: '火山方舟豆包 API 配置',
+                doubao: '火山方舟 Agent Plan / 按量 API。Plan 刷新加载官方文本模型清单，实际可用性以套餐为准；请选择模型发送消息验证。',
                 minimax: 'MiniMax Token Plan 配置，包含文本、生图和语音默认模型',
                 dgx: '通过公网 OpenAI 兼容接口访问本地 DGX Spark 模型',
                 ollama: '本地 Ollama 服务配置',
@@ -289,7 +290,7 @@ const I18N = {
                 openai: 'OpenAI API configuration, including compatible APIs',
                 gemini: 'Google Gemini API configuration',
                 deepseek: 'DeepSeek API configuration',
-                doubao: 'Volcengine ARK Doubao API configuration',
+                doubao: 'Volcengine ARK Agent Plan / pay-as-you-go API. Plan refresh loads the official text model catalog; availability depends on your plan. Send a chat message to verify access.',
                 minimax: 'MiniMax Token Plan configuration for text, image, and speech defaults',
                 dgx: 'Local DGX Spark models exposed through a public OpenAI-compatible endpoint',
                 ollama: 'Local Ollama service configuration',
@@ -1446,6 +1447,9 @@ function showValidationResult(provider, item) {
     if (item.success) {
         resultEl.textContent = item.message || t('messages.validated', { provider: label });
         resultEl.className = 'test-result compact success';
+    } else if (item.status === 'pending') {
+        resultEl.textContent = item.message || t('status.pending');
+        resultEl.className = 'test-result compact';
     } else if (item.status === 'missing') {
         resultEl.textContent = item.message || t('messages.validationMissing', { provider: label });
         resultEl.className = 'test-result compact error';

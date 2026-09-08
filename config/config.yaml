@@ -30,7 +30,8 @@ llm:
       model: deepseek-chat
     doubao:
       # API key is read from DOUBAO_API_KEY env var
-      model: doubao-1-5-pro-256k-250115
+      base_url: https://ark.cn-beijing.volces.com/api/plan/v3
+      model: doubao-seed-2.1-turbo
     minimax:
       # API key is read from MINIMAX_API_KEY env var or admin settings
       base_url: https://api.minimaxi.com/v1

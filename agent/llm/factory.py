@@ -48,6 +48,7 @@ def create_provider(name: str | None = None) -> LLMProvider:
         return DoubaoProvider(
             api_key=runtime_config.doubao_api_key,
             model=model_override or runtime_config.doubao_model,
+            base_url=runtime_config.doubao_base_url,
         )
     elif provider_name == "minimax":
         return MiniMaxProvider(

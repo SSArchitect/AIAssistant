@@ -921,6 +921,17 @@ async def validate_provider(request: ValidateProviderRequest):
             }
 
         models = await _fetch_models(provider_name)
+        from agent.llm.doubao_provider import is_agent_plan_url
+
+        if provider_name == "doubao" and is_agent_plan_url(runtime_config.doubao_base_url):
+            return {
+                "success": False,
+                "status": "pending",
+                "provider": provider_name,
+                "message": "Agent Plan model catalog loaded. Credentials are not verified; send a chat message with the selected model to check access.",
+                "model_count": len(models),
+                "validated_at": checked_at,
+            }
         return {
             "success": True,
             "status": "verified",
@@ -963,7 +974,7 @@ def _provider_api_key(provider_name: str) -> str:
         "openai": runtime_config.openai_api_key,
         "gemini": runtime_config.gemini_api_key,
         "deepseek": runtime_config.deepseek_api_key,
-        "doubao": runtime_config.doubao_api_key,
+        "doubao": runtime_config.doubao_api_key.strip(),
         "minimax": runtime_config.minimax_api_key,
         "dgx": runtime_config.dgx_api_key,
     }
@@ -1047,14 +1058,18 @@ async def _fetch_models(provider_name: str) -> list[dict]:
 
     elif provider_name == "doubao":
         import openai
-        api_key = runtime_config.doubao_api_key
+        from agent.llm.doubao_provider import PLAN_MODELS, is_agent_plan_url
+
+        api_key = runtime_config.doubao_api_key.strip()
         if not api_key:
-            raise ValueError("Doubao API key not configured")
-        client = openai.AsyncOpenAI(
+            raise ValueError("Volcengine API key not configured")
+        if is_agent_plan_url(runtime_config.doubao_base_url):
+            return [{"id": model, "name": model} for model in PLAN_MODELS]
+        async with openai.AsyncOpenAI(
             api_key=api_key,
-            base_url="https://ark.cn-beijing.volces.com/api/v3",
-        )
-        resp = await client.models.list()
+            base_url=runtime_config.doubao_base_url,
+        ) as client:
+            resp = await client.models.list()
         models = []
         for m in resp.data:
             models.append({"id": m.id, "name": m.id})

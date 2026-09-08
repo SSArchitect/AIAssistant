@@ -1928,7 +1928,7 @@ const PROVIDERS = [
     { key: 'openai', label: 'OpenAI', checkKey: 'llm.openai.api_key' },
     { key: 'gemini', label: 'Gemini', checkKey: 'llm.gemini.api_key' },
     { key: 'deepseek', label: 'DeepSeek', checkKey: 'llm.deepseek.api_key' },
-    { key: 'doubao', label: 'Doubao', checkKey: 'llm.doubao.api_key' },
+    { key: 'doubao', label: '火山引擎 / Volcengine', checkKey: 'llm.doubao.api_key' },
     { key: 'minimax', label: 'MiniMax', checkKey: 'llm.minimax.api_key' },
     { key: 'dgx', label: 'DGX Spark', checkKey: 'llm.dgx.api_key' },
     { key: 'ollama', label: 'Ollama', checkKey: 'llm.ollama.base_url' },
@@ -14574,10 +14574,11 @@ async function testProvider(providerKey, button) {
         renderSettings();
         const nextResultEl = document.getElementById(`provider-test-${providerKey}`);
         if (nextResultEl) {
-            nextResultEl.textContent = item?.success ? t('settings.connected') : t('settings.failed');
+            nextResultEl.textContent = item?.status === 'pending' ? t('settings.pending')
+                : item?.success ? t('settings.connected') : t('settings.failed');
             nextResultEl.title = item?.message || '';
             nextResultEl.classList.toggle('ok', Boolean(item?.success));
-            nextResultEl.classList.toggle('error', !item?.success);
+            nextResultEl.classList.toggle('error', !item?.success && item?.status !== 'pending');
         }
     } catch (err) {
         resultEl.textContent = t('settings.failed');
