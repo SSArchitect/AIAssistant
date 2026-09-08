@@ -17,6 +17,11 @@ MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 class DataProError(ValueError):
     """Safe, user-facing error; never include upstream text or credentials."""
 
+    def __init__(self, message: str, *, error_code: str = "professional_search_failed", data: dict | None = None):
+        super().__init__(message)
+        self.error_code = error_code
+        self.data = data
+
 
 def datapro_api_key() -> str:
     return runtime_config.get("search.datapro.api_key").strip() or runtime_config.doubao_api_key.strip()
@@ -175,6 +180,16 @@ class DataProClient:
                 payload = json.loads("\n".join(texts))
             except (ValueError, TypeError):
                 raise DataProError("Invalid professional search dataset payload") from None
+        if isinstance(payload, dict) and payload.get("code") in (4003, "4003") and payload.get("dataset_type") == "stock_finance":
+            # Observed stock_finance error: a sector/screener query could not resolve a security.
+            # Use a fixed recovery message instead of forwarding arbitrary upstream msg text.
+            raise DataProError(
+                "未匹配到证券：请使用上下文已有的具体证券名称或代码，一次最多3只，并明确指标和日期。"
+                "金融数据库不能把板块、概念或龙头股筛选条件当作证券名称；"
+                "尚未确定标的时先用 search 查明，再查询专业数据。不要原样重试当前 query。",
+                error_code="professional_search_entity_not_found",
+                data={"provider_code": 4003, "dataset_type": "stock_finance"},
+            )
         if not isinstance(payload, dict) or payload.get("code") not in (0, "0"):
             raise DataProError("Professional search dataset request failed; check dataset access and query")
         if not isinstance(payload.get("items"), list) or any(not isinstance(item, dict) for item in payload["items"]):

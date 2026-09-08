@@ -10,6 +10,7 @@ from agent.skills.builtin.professional_search import ProfessionalSearchSkill
 from agent.skills.registry import SkillRegistry
 from agent.skills.router import ToolRouter
 from agent.skills.builtin.tool_search import ToolSearchSkill
+from agent.skills.builtin.dataset_search import FinanceSearchSkill
 
 
 @pytest.fixture
@@ -138,6 +139,94 @@ async def test_safe_upstream_errors(tool_result):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("structured", [False, True])
+@pytest.mark.parametrize("code", [4003, "4003"])
+async def test_unmatched_security_reports_actionable_query_error(configured, monkeypatch, structured, code):
+    # Regression for run_c8298fa20f44424f94f4cd647bfff5e3: sector description was treated as a security name.
+    transport, calls = server({
+        "code": code, "msg": "未找到匹配证券 volcengine-key", "trace_id": "trace-4003",
+        "dataset_type": "stock_finance", "items": [],
+    }, structured=structured)
+    client = DataProClient(api_key="volcengine-key", transport=transport)
+    monkeypatch.setattr(DataProClient, "from_runtime_config", classmethod(lambda cls: client))
+    result = await ProfessionalSearchSkill().execute(query="CPO 光模块 龙头股 市值 市盈率 2026年9月")
+    assert not result.success
+    assert result.error_code == "professional_search_entity_not_found"
+    assert "证券名称或代码" in result.error
+    assert "search" in result.error
+    assert "权限" not in result.error
+    assert "volcengine-key" not in result.error
+    assert result.data == {"provider_code": 4003, "dataset_type": "stock_finance"}
+    assert result.retryable is False
+    assert len([c for c in calls if c["method"] == "tools/call"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_4003_for_other_dataset_is_not_misclassified_as_security_error(configured, monkeypatch):
+    transport, _ = server({"code": 4003, "dataset_type": "vehicle_config", "items": []})
+    client = DataProClient(api_key="volcengine-key", transport=transport)
+    monkeypatch.setattr(DataProClient, "from_runtime_config", classmethod(lambda cls: client))
+    result = await ProfessionalSearchSkill().execute(query="车型")
+    assert result.error_code == "professional_search_failed"
+
+
+def test_financial_tool_contract_explains_entity_and_screener_limits(configured):
+    description = FinanceSearchSkill().metadata().description
+    assert "一次最多3只" in description
+    assert "板块" in description and "先用 search" in description
+    assert "证券名称或代码" in description
+
+
+@pytest.mark.asyncio
+async def test_agent_receives_entity_error_and_can_correct_query(configured, monkeypatch):
+    from unittest.mock import AsyncMock
+    from agent.llm.base import LLMResponse, ToolCall
+    from agent.orchestrator.engine import AgentEngine
+    from agent.schemas.chat import ChatRequest
+
+    bad_transport, bad_calls = server({"code": 4003, "dataset_type": "stock_finance", "items": []})
+    good_transport, good_calls = server()
+    clients = [DataProClient(api_key="volcengine-key", transport=t) for t in [bad_transport, good_transport]]
+    monkeypatch.setattr(DataProClient, "from_runtime_config", classmethod(lambda cls: clients.pop(0)))
+    registry = SkillRegistry()
+    registry.register(FinanceSearchSkill())
+    engine = AgentEngine(registry)
+    rounds = 0
+
+    async def chat(messages, **kwargs):
+        nonlocal rounds
+        rounds += 1
+        if rounds == 1:
+            securities = ["CPO 光模块 龙头股"]
+        elif rounds == 2:
+            failure = json.loads(next(m.content for m in reversed(messages) if m.role == "tool"))
+            assert failure["error_code"] == "professional_search_entity_not_found"
+            assert failure["data"]["provider_code"] == 4003
+            assert "证券名称或代码" in failure["error"]
+            securities = ["中际旭创", "新易盛", "天孚通信"]
+        else:
+            success = json.loads(next(m.content for m in reversed(messages) if m.role == "tool"))
+            assert success["success"] and success["data"]["items"] == dataset()["items"]
+            return LLMResponse(content="已按具体证券取得数据。", model="test")
+        return LLMResponse(content="", model="test", tool_calls=[ToolCall(
+            id=f"lookup-{rounds}", name="finance_search", arguments={"securities": securities, "indicators": "市值 市盈率", "period": "2026年9月"},
+        )])
+
+    provider = AsyncMock()
+    provider.chat.side_effect = chat
+    monkeypatch.setattr(engine, "_get_provider", lambda *args, **kwargs: provider)
+    result = await engine.process(ChatRequest(
+        conversation_id="datapro-recover-4003", message="用专业检索对比 CPO 龙头股",
+        memory_enabled=False,
+    ))
+    assert result.response == "已按具体证券取得数据。"
+    assert rounds == 3
+    failed_query = next(c["params"]["arguments"]["query"] for c in bad_calls if c["method"] == "tools/call")
+    corrected_query = next(c["params"]["arguments"]["query"] for c in good_calls if c["method"] == "tools/call")
+    assert failed_query != corrected_query
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("schema", [{}, {"properties": {"query": {"type": "integer"}}},
     {"properties": {"query": {"type": "string"}}, "required": ["query", "secret"]}])
 async def test_changed_tool_contract_does_not_issue_paid_call(schema):
@@ -237,46 +326,42 @@ async def test_disabled_skill_does_not_call_client(configured):
     assert not result.success and result.error_code == "not_configured"
 
 
-@pytest.mark.parametrize("query", ["查企业工商信息", "比亚迪股票ROE", "宏观经济指标", "汽车车型销量", "自动驾驶学术论文"])
-def test_tool_discovery_and_routing(configured, query):
-    registry = SkillRegistry()
-    registry.auto_discover("agent.skills.builtin")
-    assert registry.get("professional_search") is not None
-    routed = ToolRouter().route(registry.get_tool_definitions(), query=query)
-    assert "professional_search" in {t.name for t in routed.tools}
-    casual = ToolRouter().route(registry.get_tool_definitions(), query="你好")
-    assert "professional_search" not in {t.name for t in casual.tools}
-
-
 @pytest.mark.asyncio
-@pytest.mark.parametrize("query", [
-    "看看这家公司有没有官司", "比亚迪去年赚了多少钱", "新能源车卖得怎么样",
-    "帮我找自动驾驶的研究资料", "查一下国内生产总值", "公司股东和经营状况",
-    "上市公司净利润", "查一下GDP", "find corporate litigation data",
+@pytest.mark.parametrize("query, expected", [
+    ("查企业工商信息", "company_search"), ("比亚迪股票ROE", "finance_search"),
+    ("宏观经济指标", "macro_search"), ("汽车车型销量", "vehicle_search"),
+    ("自动驾驶学术论文", "academic_search"), ("看看这家公司有没有官司", "company_search"),
+    ("比亚迪去年赚了多少钱", "finance_search"), ("新能源车卖得怎么样", "vehicle_search"),
+    ("帮我找自动驾驶的研究资料", "academic_search"), ("查一下国内生产总值", "macro_search"),
+    ("公司股东和经营状况", "company_search"), ("上市公司净利润", "finance_search"),
+    ("查一下GDP", "macro_search"), ("find corporate litigation data", "company_search"),
 ])
-async def test_colloquial_queries_route_and_discover_professional_search(configured, query):
+async def test_domain_and_colloquial_queries_route_to_specific_tool(configured, query, expected):
     registry = SkillRegistry()
     registry.auto_discover("agent.skills.builtin")
     catalog = registry.get_tool_definitions()
     route = ToolRouter().route(catalog, query=query)
-    assert "professional_search" in {t.name for t in route.tools}
+    assert expected in {t.name for t in route.tools}
+    assert "professional_search" not in {t.name for t in route.tools}
     found = await ToolSearchSkill(lambda: catalog).execute(query=query, limit=1)
-    assert found.data["matches"][0]["name"] == "professional_search"
+    assert found.data["matches"][0]["name"] == expected
+    casual = ToolRouter().route(catalog, query="你好")
+    assert expected not in {t.name for t in casual.tools}
 
 
 @pytest.mark.asyncio
 async def test_tool_search_respects_exposure_and_disabled_tools(configured):
     registry = SkillRegistry()
-    registry.register(ProfessionalSearchSkill())
+    registry.register(FinanceSearchSkill())
     discovery = ToolSearchSkill(registry.get_tool_definitions)
-    found = await discovery.execute(query="专业数据查询")
-    assert found.data["matches"][0]["name"] == "professional_search"
-    exposed = await discovery.execute(query="专业数据查询", _exposed_tool_names=["professional_search"])
+    found = await discovery.execute(query="金融数据查询")
+    assert found.data["matches"][0]["name"] == "finance_search"
+    exposed = await discovery.execute(query="金融数据查询", _exposed_tool_names=["finance_search"])
     assert exposed.data["matches"] == []
-    excluded = await discovery.execute(query="专业数据查询", _allowed_tool_names=["search"])
+    excluded = await discovery.execute(query="金融数据查询", _allowed_tool_names=["search"])
     assert excluded.data["matches"] == []
     runtime_config.update({"search.datapro.enabled": "false"})
-    disabled = await discovery.execute(query="专业数据查询")
+    disabled = await discovery.execute(query="金融数据查询")
     assert disabled.data["matches"] == []
 
 
@@ -291,22 +376,22 @@ async def test_agent_discovers_then_executes_professional_search(configured, mon
     client = DataProClient(api_key="volcengine-key", transport=transport)
     monkeypatch.setattr(DataProClient, "from_runtime_config", classmethod(lambda cls: client))
     registry = SkillRegistry()
-    registry.register(ProfessionalSearchSkill())
+    registry.register(FinanceSearchSkill())
     engine = AgentEngine(registry)
     provider = AsyncMock()
     provider.chat.side_effect = [
         LLMResponse(content="", tool_calls=[ToolCall(id="discover", name="tool_search", arguments={"query": "查询专业金融数据"})], model="test"),
-        LLMResponse(content="", tool_calls=[ToolCall(id="retrieve", name="professional_search", arguments={"query": "比亚迪ROE", "limit": 2})], model="test"),
+        LLMResponse(content="", tool_calls=[ToolCall(id="retrieve", name="finance_search", arguments={"securities": ["比亚迪"], "indicators": "ROE", "period": "2026年第一季度", "limit": 2})], model="test"),
         LLMResponse(content="已取得数据。", model="test"),
     ]
     monkeypatch.setattr(engine, "_get_provider", lambda *args, **kwargs: provider)
     result = await engine.process(ChatRequest(conversation_id="datapro-discovery", message="请使用专用能力完成这项工作", memory_enabled=False))
     first = {t.name for t in provider.chat.await_args_list[0].kwargs["tools"]}
     second = {t.name for t in provider.chat.await_args_list[1].kwargs["tools"]}
-    assert "tool_search" in first and "professional_search" not in first
-    assert "professional_search" in second
-    assert {"tool_search", "professional_search"}.issubset(result.skills_used)
-    assert any(e.type == "tools.expanded" and "professional_search" in e.payload["added_tools"] for e in result.events)
+    assert "tool_search" in first and "finance_search" not in first
+    assert "finance_search" in second
+    assert {"tool_search", "finance_search"}.issubset(result.skills_used)
+    assert any(e.type == "tools.expanded" and "finance_search" in e.payload["added_tools"] for e in result.events)
     assert any(e.type == "tool.governance.allowed" for e in result.events)
     assert len([c for c in calls if c["method"] == "tools/call"]) == 1
     messages = provider.chat.await_args_list[2].args[0]

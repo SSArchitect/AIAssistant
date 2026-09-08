@@ -12,6 +12,8 @@ class ProfessionalSearchSkill(Skill):
                 "专业数据检索：查询企业工商、企业风险（司法/处罚）、金融指标/行情/财报、宏观经济、"
                 "汽车配置/销量和学术论文时优先使用。通过火山引擎专业数据集按 query 自动路由。"
                 "query 保留公司全称或代码、指标、时间、地区、车型等用户给定条件，不添加未验证事实。"
+                "金融查询必须提供具体证券名称或代码，一次最多3只；不能用板块、概念、龙头股等条件筛选证券。"
+                "若要找某板块的龙头或筛选标的，先用 search 确认证券，再用本工具查指标。"
                 "结果包含结构化表格和数据来源；保留统计口径、单位和时间，引用实际返回的 URL 或数据集/来源标识，"
                 "无 URL 时不要编造链接或声称已打开网页。普通新闻、网页和其他事实使用 search。"
                 "无结果或失败时明确说明，可再用 search 补充来源。"
@@ -21,6 +23,7 @@ class ProfessionalSearchSkill(Skill):
                 SkillParameter(name="limit", type="integer", description="本地保留的结果条数，不改变服务端检索或计费。", required=False, default=20, minimum=1, maximum=49),
             ],
             enabled=datapro_enabled(),
+            discoverable=False,
             tags=["search", "professional", "datapro", "finance", "academic"],
             domains=["search"],
             routing_keywords=[
@@ -49,5 +52,5 @@ class ProfessionalSearchSkill(Skill):
         try:
             data = await DataProClient.from_runtime_config().search(query, limit=limit)
         except DataProError as exc:
-            return SkillResult(success=False, error=str(exc), error_code="professional_search_failed")
+            return SkillResult(success=False, error=str(exc), error_code=exc.error_code, data=exc.data)
         return SkillResult(success=True, data=data)

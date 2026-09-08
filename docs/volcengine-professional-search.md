@@ -1,8 +1,17 @@
 # 火山引擎专业检索
 
 依据[专业数据集官方文档](https://docs.volcengine.com/docs/82379/2479086?lang=zh)，
-新增内置工具 `professional_search`，查询企业工商、企业风险、金融、宏观经济、
-汽车配置、汽车销量和科研学术数据。服务端根据自然语言 query 选择数据集。
+工具层按领域拆分，底层共用同一个 HTTP MCP 客户端；服务端仍根据生成的自然语言 query 选择数据集。
+
+| 工具 | 查询范围 | 参数 |
+| --- | --- | --- |
+| `finance_search` | 证券财报、行情、估值 | `securities`（1–3只）、`indicators`、`period` |
+| `company_search` | 工商、股东、企业风险 | `companies`（1–5家）、`dataset`（business/risk）、`query` |
+| `macro_search` | 宏观经济、地区和产业指标 | `query`（明确指标、地区、时间） |
+| `vehicle_search` | 汽车配置、销量 | `dataset`（configuration/sales）、`query` |
+| `academic_search` | 科研论文、期刊、文献 | `query` |
+
+旧 `professional_search` 仅保留兼容入口，不参与初始路由或 `tool_search` 发现。
 
 ## 接口与配置
 
@@ -18,15 +27,17 @@
 - `search.datapro.timeout` 默认 60 秒，覆盖初始化、工具发现和查询全流程；
   有效配置范围为大于 0 且不超过 120 秒，无效值回退到 60 秒。
 
-示例参数：
+`finance_search` 示例参数：
 
 ```json
-{"query": "比亚迪 002594 2026 年第一季度 ROE 盈利水平", "limit": 20}
+{"securities": ["中际旭创", "新易盛", "天孚通信"], "indicators": "市值 市盈率", "period": "2026年9月8日", "limit": 3}
 ```
 
 `limit` 为本地返回条数上限（1–49），不会改变服务端检索或费用。
 金融、汽车、企业等数据集各自的查询限制以官方文档为准，query 应明确实体、时间、
 地区和指标；例如企业查询使用完整公司名称或统一信用代码。
+金融数据库按具体证券查询，一次最多 3 只；不能用“CPO 龙头股”等板块筛选条件替代证券名称。
+如需板块对比，应先用 `search` 确定标的，再提供具体证券名称或代码查询财务/估值指标。
 
 ## 结果与错误
 
@@ -47,14 +58,20 @@
 带入只是让模型可以选择调用，并不强制发起检索；无领域线索的任意表达不保证命中。
 执行走现有 Tool Governance 和 Trace，支持 `auto` / `confirm` / `deny` 及每次 run 调用上限。
 普通搜索继续使用 `search`；专业搜索不加入每个普通网页查询的默认召回源。
+旧 `professional_search` 的 deny/confirm 策略由新工具继承；若为某个新工具显式配置策略，则该工具使用新策略。
+禁用旧入口时会同时从可用目录中排除全部领域工具；单独禁用领域工具只影响自身。
 
 鉴权失败、超时、HTTP/MCP/数据集错误返回失败状态，错误不转发上游原文或密钥。
+`stock_finance` 返回业务码 `4003` 时，工具返回
+`professional_search_entity_not_found` 和明确的查询修正提示，保留安全的业务码及数据集类型。
+这表示证券实体未匹配，不是权限错误；模型可按已有证券名称/代码重新查询，
+未确定标的时先使用普通搜索。不会原样自动重试，也不会把失败伪装为成功。
 返回空 `items` 表示成功但无匹配数据；不会伪造网页结果或静默切换数据服务。
 
 ## 验证
 
 ```bash
-python3 -m pytest tests/test_datapro_search.py tests/test_skills.py tests/test_tool_router.py
+python3 -m pytest tests/test_datapro_search.py tests/test_dataset_tools.py tests/test_skills.py tests/test_tool_router.py tests/test_tool_governance.py
 ./scripts/test.sh
 ```
 
@@ -68,5 +85,6 @@ python3 -m pytest tests/test_datapro_search.py tests/test_skills.py tests/test_t
 宏观示例曾返回 `code=0` 但 `items=[]`，服务端提示超出支持范围；
 接口连通不等于每个数据集或每条 query 都有数据，回答需保留该限制。
 
-本机 Agent 已重载并保留原运行时配置，`/agent/skills` 与 Gateway `/api/tools`
-均确认 `professional_search.enabled=true`，并返回新增的同义表达路由关键词。
+此前版本已在线上确认专业数据集已启用。针对 run_c8298fa20f44424f94f4cd647bfff5e3，
+复现板块描述查询返回 `4003`；将同一查询改为具体三家证券后，约17.4秒返回三家数据。
+拆分后的回归测试覆盖各领域请求、金融参数边界、4003分类、查询恢复、工具发现和策略继承。

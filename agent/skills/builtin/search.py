@@ -10,7 +10,8 @@ class SearchSkill(Skill):
             name="search",
             description=(
                 "默认事实检索工具；当回答需要外部知识、当前事实或可核验来源时，必须先调用 search 再回答，"
-                "企业工商/风险、金融指标、宏观经济、汽车配置/销量、学术论文优先使用可用的 professional_search；"
+                "具体证券指标使用 finance_search；企业工商/风险使用 company_search；宏观数据使用 macro_search；"
+                "汽车配置/销量使用 vehicle_search；学术论文使用 academic_search。板块选股先用 search 确定标的。"
                 "不要凭模型记忆裸答。覆盖场景包括可核验实体或编号、产品或服务、使用方法、"
                 "维修保养、兼容性、错误码、规格、版本、价格、库存、新闻、政策、医疗、法律、"
                 "金融、投资和安全风险。优先找官方、一手或高可信来源；回答时引用结果 URL，"

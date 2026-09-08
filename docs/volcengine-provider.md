@@ -24,7 +24,7 @@ Agent Plan 没有 OpenAI `/models` 接口（2026-09-08 实测返回 404）。
 测试：`python3 -m pytest tests/test_doubao_provider.py` 和
 `node --test tests/test_admin_model_refresh_web.js`，完成后运行 `./scripts/test.sh`。
 
-专业数据集通过独立工具 `professional_search` 接入，复用火山引擎 Key 或使用
+专业数据集通过金融、企业、宏观、汽车、学术五个领域工具接入，复用火山引擎 Key 或使用
 `DATAPRO_API_KEY` / `search.datapro.api_key` 专属 Key。覆盖企业、金融、宏观经济、
 汽车和学术数据，保留完整结构化结果。配置、权限要求及测试见
 [专业检索接入说明](volcengine-professional-search.md)。

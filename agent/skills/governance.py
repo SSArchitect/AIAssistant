@@ -115,7 +115,10 @@ class ToolGovernance:
         step_id: str | None = None,
     ) -> ToolGovernanceDecision:
         meta = skill.metadata()
-        configured_policy = str((request.tool_policies or {}).get(meta.name) or "").strip().lower()
+        policies = request.tool_policies or {}
+        configured_policy = str(
+            policies.get(meta.name) or policies.get(getattr(skill, "policy_parent", "")) or ""
+        ).strip().lower()
         grant_key = (
             str(request.user_id or "0"),
             str(request.conversation_id or ""),

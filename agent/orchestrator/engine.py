@@ -2723,7 +2723,7 @@ class AgentEngine:
         }
         definitions: list[ToolDefinition] = []
         for tool in self.skill_registry.get_tool_definitions():
-            if tool.name in disabled:
+            if tool.name in disabled or tool.metadata.get("policy_parent") in disabled:
                 continue
             allowed_agents = {
                 str(value).strip()

@@ -344,7 +344,7 @@ Pulse 自动预计算只覆盖近期使用过有效帐号会话的活跃用户�
 
 Search 已作为一个内置 skill 接入：
 
-专业数据集使用独立的 `professional_search` skill，按查询意图动态启用，
+专业数据集使用`finance_search`、`company_search`、`macro_search`、`vehicle_search`、`academic_search` 五个 skill，按查询意图动态启用，
 支持企业工商/风险、金融、宏观经济、汽车配置/销量、学术论文。默认复用火山引擎 Key，
 可通过 `DATAPRO_API_KEY` / `search.datapro.api_key` 覆盖，
 `search.datapro.enabled` 控制启用，`search.datapro.timeout` 控制调用总超时。
