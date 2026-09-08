@@ -11813,7 +11813,6 @@ class AgentEngine:
         for round_index in range(MAX_MODEL_ROUNDS):
             model_rounds_used = round_index + 1
             model_started = perf_counter()
-            has_tool_results = any(message.role == "tool" for message in messages)
             stream_tool_capable_round = (
                 getattr(provider, "supports_streaming_tool_calls", False) is True
                 and bool(tools)
@@ -11821,7 +11820,10 @@ class AgentEngine:
             stream_model_round = (
                 on_token is not None
                 and getattr(provider, "streaming_enabled", True) is not False
-                and (stream_tool_capable_round or has_tool_results or not tools)
+                # A tool result does not mean the next model round is final.
+                # Keep text-only streaming adapters on chat while tools exist,
+                # so later rounds can still return structured tool calls.
+                and (stream_tool_capable_round or not tools)
                 and getattr(provider, "disable_stream_after_tools", False) is not True
             )
             model_started_payload = {

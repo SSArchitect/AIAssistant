@@ -27,7 +27,7 @@ class OpenAIProvider(LLMProvider):
         provider_label: str = "OpenAI",
         max_tokens: int | None = None,
         streaming_enabled: bool = True,
-        supports_streaming_tool_calls: bool = False,
+        supports_streaming_tool_calls: bool = True,
     ):
         api_key = (api_key or "").strip()
         if not api_key:

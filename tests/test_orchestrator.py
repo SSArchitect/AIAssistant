@@ -4223,8 +4223,8 @@ async def test_image_generation_agent_can_ask_for_clarification(engine):
 
 
 @pytest.mark.asyncio
-async def test_streams_final_answer_after_tool_call(engine):
-    """Streaming requests should emit final-answer tokens after tools resolve."""
+async def test_text_only_stream_provider_keeps_tools_until_final_answer(engine):
+    """Text-only streaming cannot safely decide whether more tools are needed."""
     tool_response = LLMResponse(
         content="",
         tool_calls=[
@@ -4234,17 +4234,16 @@ async def test_streams_final_answer_after_tool_call(engine):
         usage={"input": 10, "output": 2},
     )
 
-    async def stream_answer(*args, **kwargs):
-        yield "streamed "
-        yield "answer"
-
     tokens = []
 
     with patch.object(engine, "_get_provider") as mock_provider:
         provider = AsyncMock()
         provider.model = "stream-model"
-        provider.chat = AsyncMock(return_value=tool_response)
-        provider.chat_stream = stream_answer
+        provider.supports_streaming_tool_calls = False
+        provider.chat = AsyncMock(side_effect=[tool_response, LLMResponse(
+            content="final answer", model="stream-model", usage={"input": 12, "output": 3},
+        )])
+        provider.chat_stream = AsyncMock()
         mock_provider.return_value = provider
 
         result = await engine.process(
@@ -4257,18 +4256,20 @@ async def test_streams_final_answer_after_tool_call(engine):
             on_token=tokens.append,
         )
 
-    assert tokens == ["streamed ", "answer"]
-    assert result.response == "streamed answer"
+    assert tokens == []  # The SSE endpoint delivers the completed response.
+    assert result.response == "final answer"
     assert result.model_used == "stream-model"
     assert "echo" in result.skills_used
-    assert provider.chat.call_count == 1
+    assert provider.chat.call_count == 2
+    provider.chat_stream.assert_not_called()
+    assert all(call.kwargs["tools"] for call in provider.chat.call_args_list)
     assert [event.type for event in result.events].count("model.started") == 2
     streaming_events = [
         event
         for event in result.events
         if event.type == "model.started" and event.payload.get("streaming")
     ]
-    assert len(streaming_events) == 1
+    assert len(streaming_events) == 0
 
 
 @pytest.mark.asyncio
