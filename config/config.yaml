@@ -57,6 +57,9 @@ aigc:
     voice_id: male-qn-qingse
 
 search:
+  datapro:
+    enabled: true
+    timeout: 60
   broad_retrieval:
     min_provider_coverage: 2
     provider_limit_multiplier: 2

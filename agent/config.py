@@ -32,6 +32,7 @@ _aigc_minimax_cfg = _aigc_cfg.get("minimax", {})
 _aigc_spark_cfg = _aigc_cfg.get("spark", {})
 _search_cfg = _yaml.get("search", {})
 _search_minimax_cfg = _search_cfg.get("minimax", {})
+_search_datapro_cfg = _search_cfg.get("datapro", {})
 _search_broad_cfg = _search_cfg.get("broad_retrieval", {})
 _database_cfg = _yaml.get("database", {})
 
@@ -65,6 +66,7 @@ class Settings(BaseSettings):
 
     # Doubao - API key from env var DOUBAO_API_KEY
     doubao_api_key: str = ""
+    datapro_api_key: str = ""
     doubao_base_url: str = _providers.get("doubao", {}).get("base_url", "https://ark.cn-beijing.volces.com/api/v3")
     doubao_model: str = _providers.get("doubao", {}).get("model", "doubao-1-5-pro-256k-250115")
 
@@ -143,6 +145,9 @@ class RuntimeConfig:
             "aigc.minimax.image_model": settings.minimax_image_model,
             "aigc.minimax.speech_model": settings.minimax_speech_model,
             "aigc.minimax.voice_id": settings.minimax_voice_id,
+            "search.datapro.enabled": str(_search_datapro_cfg.get("enabled", True)).lower(),
+            "search.datapro.api_key": settings.datapro_api_key,
+            "search.datapro.timeout": str(_search_datapro_cfg.get("timeout", 60)),
             "search.minimax.enabled": str(_search_minimax_cfg.get("enabled", True)).lower(),
             "search.minimax.command": _search_minimax_cfg.get("command", "uvx"),
             "search.minimax.args": json.dumps(

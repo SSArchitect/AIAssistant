@@ -344,6 +344,13 @@ Pulse 自动预计算只覆盖近期使用过有效帐号会话的活跃用户�
 
 Search 已作为一个内置 skill 接入：
 
+专业数据集使用独立的 `professional_search` skill，按查询意图动态启用，
+支持企业工商/风险、金融、宏观经济、汽车配置/销量、学术论文。默认复用火山引擎 Key，
+可通过 `DATAPRO_API_KEY` / `search.datapro.api_key` 覆盖，
+`search.datapro.enabled` 控制启用，`search.datapro.timeout` 控制调用总超时。
+结构化数据与普通网页召回分开处理，配置和权限要求见
+[火山引擎专业检索](volcengine-professional-search.md)。
+
 - `search.local.documents`：JSON 数组，本地关键词检索源。
 - `search.http.base_url`：后台统一 search 服务地址，默认以 `q` 和 `limit` 查询参数请求。
 - `search.http.api_key`：可选 Bearer token。
