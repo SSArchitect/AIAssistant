@@ -31,7 +31,9 @@ _aigc_cfg = _yaml.get("aigc", {})
 _aigc_minimax_cfg = _aigc_cfg.get("minimax", {})
 _aigc_spark_cfg = _aigc_cfg.get("spark", {})
 _search_cfg = _yaml.get("search", {})
+_search_web_cfg = _search_cfg.get("web", {})
 _search_minimax_cfg = _search_cfg.get("minimax", {})
+_search_doubao_cfg = _search_cfg.get("doubao", {})
 _search_datapro_cfg = _search_cfg.get("datapro", {})
 _search_broad_cfg = _search_cfg.get("broad_retrieval", {})
 _database_cfg = _yaml.get("database", {})
@@ -145,6 +147,10 @@ class RuntimeConfig:
             "aigc.minimax.image_model": settings.minimax_image_model,
             "aigc.minimax.speech_model": settings.minimax_speech_model,
             "aigc.minimax.voice_id": settings.minimax_voice_id,
+            "search.web.enabled": str(_search_web_cfg.get("enabled", False)).lower(),
+            "search.doubao.enabled": str(_search_doubao_cfg.get("enabled", True)).lower(),
+            "search.doubao.edition": _search_doubao_cfg.get("edition", "custom"),
+            "search.doubao.timeout": str(_search_doubao_cfg.get("timeout", 10)),
             "search.datapro.enabled": str(_search_datapro_cfg.get("enabled", True)).lower(),
             "search.datapro.api_key": settings.datapro_api_key,
             "search.datapro.timeout": str(_search_datapro_cfg.get("timeout", 60)),

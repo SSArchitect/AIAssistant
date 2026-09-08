@@ -45,3 +45,12 @@ class DoubaoProvider(OpenAIProvider):
     ):
         super().__init__(api_key=api_key, model=model, base_url=base_url, provider_label="Volcengine")
         self.provider_name = "doubao"
+
+    def _extra_chat_kwargs(self, *, thinking_enabled: bool | None = None) -> dict:
+        if thinking_enabled is None:
+            return {}
+        return {
+            "extra_body": {
+                "thinking": {"type": "enabled" if thinking_enabled else "disabled"},
+            },
+        }

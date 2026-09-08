@@ -1,6 +1,7 @@
 from agent.search.service import (
     BingRSSSearchProvider,
     DuckDuckGoSearchProvider,
+    DoubaoSearchProvider,
     HTTPSearchProvider,
     LLMSearchQueryRewriter,
     MiniMaxMCPSearchProvider,
@@ -19,6 +20,7 @@ from agent.search.service import (
 __all__ = [
     "BingRSSSearchProvider",
     "DuckDuckGoSearchProvider",
+    "DoubaoSearchProvider",
     "HTTPSearchProvider",
     "LLMSearchQueryRewriter",
     "MiniMaxMCPSearchProvider",

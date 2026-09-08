@@ -355,6 +355,11 @@ Search 已作为一个内置 skill 接入：
 - `search.http.base_url`：后台统一 search 服务地址，默认以 `q` 和 `limit` 查询参数请求。
 - `search.http.api_key`：可选 Bearer token。
 - `search.http.query_param`：可选查询参数名，默认 `q`。
+- `search.doubao.enabled`：启用豆包搜索召回源 `doubao-search`，默认 `true`；复用 `llm.doubao.api_key`（包括 `DOUBAO_API_KEY` 环境变量），无 Key 时不注册。
+- `search.doubao.api_key`：可选独立搜索 Key，配置后优先于火山引擎模型 Key；密钥不写入 YAML。
+- `search.doubao.edition`：默认 `custom`，使用 `https://open.feedcoopapi.com/search_api/web_search`；可显式设为 `global`，使用 `https://open.feedcoopapi.com/search_api/global_search`。搜索地址独立于 `llm.doubao.base_url`，不通过 Ark 聊天接口。Global 仅支持按量计费，不自动切换版本。
+- `search.doubao.timeout`：单次 HTTP 请求超时，默认 `10` 秒；同时受 `search.recall.timeout_seconds` 的召回预算约束。
+- 默认检索和 `sources=web` 自动包含豆包；可用 `sources=doubao-search` 单独调试。每个查询只召回一次，Custom 使用相关摘要 `Summary`（缺失时用 `Snippet`），Global 合并文本摘要，最多保留 900 字符；保留来源 URL、发布时间、站点和插图，不将搜索摘要标记为已打开正文。鉴权、限流、超时和业务错误进入 `provider_errors`，其他源继续工作。
 - `search.minimax.enabled`：启用 MiniMax Token Plan MCP 网络搜索，默认 `true`。需要可用的 `llm.minimax.api_key` 或 `search.minimax.api_key`。
 - `search.minimax.command`：MCP 启动命令，默认 `uvx`。
 - `search.minimax.args`：MCP 启动参数 JSON，默认 `["--with","mcp<2","minimax-coding-plan-mcp","-y"]`；`mcp<2` 用于兼容当前 `minimax-coding-plan-mcp` 使用的 FastMCP API。
@@ -362,8 +367,9 @@ Search 已作为一个内置 skill 接入：
 - `search.minimax.timeout`：单次 MCP 请求超时时间，默认 `60` 秒。
 - `search.min_provider_coverage`：通用 web 检索至少等待多少个 provider 完成后才允许提前收敛，默认 `2`；设为 `1` 可恢复更偏速度的首个相关结果策略。
 - `search.provider_limit_multiplier`：每个 provider 的候选召回倍数，默认 `2`，最终仍按调用方 `limit` 截断。
-- `search.recall.max_queries`：单个 provider 最多使用多少个 query variant 做召回，默认 `2`；HTTP/本地/MiniMax 源默认只请求一次，DuckDuckGo/Bing fallback 会使用原 query 加一个降噪关键词 query。
+- `search.recall.max_queries`：单个 provider 最多使用多少个 query variant 做召回，默认 `2`；HTTP/本地/MiniMax/豆包源默认只使用一个 query variant（失败时仍按重试策略执行），DuckDuckGo/Bing fallback 会使用原 query 加一个降噪关键词 query。
 - `search.rewrite.enabled`：启用 LLM query rewrite，默认 `true`；失败会退回词法 rewrite。
+- Search 的 query rewrite 和 LLM rerank 对支持思考开关的 OpenAI 兼容 Provider 显式传入 `thinking_enabled=false`；火山 Provider 映射为 `thinking.type=disabled`，避免短 JSON 任务先执行长时间深度思考。未传开关的其他模型调用保持原默认行为。Trace 为改写、召回、排序、重排及图片补充记录各阶段耗时，超时回退记录 `TimeoutError`，不再留下空错误。
 - `search.rewrite.provider`：rewrite 使用的 LLM provider，默认使用 `llm.default_provider`。
 - `search.rewrite.max_queries`：LLM rewrite 最多生成多少条候选 query，默认 `4`；实际召回仍受 `search.recall.max_queries` 和 provider 的 `recall_query_limit` 限制。
 - `search.rewrite.timeout_seconds`：LLM rewrite 超时时间，默认 `12` 秒。
@@ -372,7 +378,8 @@ Search 已作为一个内置 skill 接入：
 - `search.rerank.max_candidates`：送入 LLM rerank 的最大候选数，默认 `10`。
 - `search.rerank.timeout_seconds`：LLM rerank 超时时间，默认 `20` 秒。
 - `search.rerank.min_score`：LLM rerank 保留候选的最低分，默认 `0.5`。
-- `search.web.enabled`：是否启用 DuckDuckGo HTML fallback，默认 `true`。
+- LLM rerank 保留完整候选判断依据，默认仅返回与候选 index 对齐的 `scores` 数组，由程序排序和过滤；不再要求逐条生成解释，减少输出耗时。Trace 保留分数、候选映射及 token 用量，`reason` 默认为空。数组长度不符、非数字、非有限数或越界分数会触发 BM25 回退；兼容旧版带 index/score/reason 的返回结构。
+- `search.web.enabled`：是否启用 DuckDuckGo HTML fallback，默认 `false`（YAML `search.web.enabled`）；显式设为 `true` 可以重新启用。工具参数 `sources=web` 仍是通用网页检索别名，会选择可用的豆包、MiniMax、Bing 等源，不代表启用 DuckDuckGo。
 
 SearchService 会先生成词法 query variants；启用 LLM rewrite 时，会在保留词法兜底的基础上使用模型通用知识生成同义词、别名、缩写/全称、跨语言和型号拆分等多 query 扩召。LLM rewrite 会尽量同时覆盖中文和英文 query，并在 query 数有限时优先保留互补语种，避免中文搜索引擎只拿英文 query 召回。之后汇总多个 provider 的候选，通过 `agent.search.ranking` 做 BM25 相关性排序、低相关过滤和来源多样性重排，再由 LLM rerank 按原始 query 的实体、限定词、任务意图和文档形态做最终筛选；结果仍按调用方 `limit` 截断。
 

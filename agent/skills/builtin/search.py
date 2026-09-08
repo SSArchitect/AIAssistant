@@ -42,7 +42,7 @@ class SearchSkill(Skill):
                     description=(
                         "可选来源名称，用英文逗号分隔。普通联网检索留空或用 web；"
                         "web 表示通用网络搜索别名，会自动选择可用网页 provider。"
-                        "仅调试或强制来源时指定 local、http、bing-rss 或 minimax-mcp；"
+                        "仅调试或强制来源时指定 local、http、bing-rss、minimax-mcp 或 doubao-search；"
                         "不要为普通事实检索单独指定 bing-rss。"
                     ),
                     required=False,
@@ -216,7 +216,7 @@ class SearchSkill(Skill):
                 success=False,
                 error=(
                     "No search providers configured. Set search.local.documents, "
-                    "search.http.base_url, search.minimax.enabled, or search.web.enabled."
+                    "search.http.base_url, search.doubao.enabled, search.minimax.enabled, or search.web.enabled."
                 ),
             )
 

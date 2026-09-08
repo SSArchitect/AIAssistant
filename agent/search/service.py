@@ -5,6 +5,7 @@ from html.parser import HTMLParser
 import ipaddress
 import json
 import logging
+import math
 import os
 import re
 import shutil
@@ -210,6 +211,14 @@ class SearchReranker(Protocol):
         ...
 
 
+def _search_llm_options(provider: Any) -> dict[str, Any]:
+    # Search planning/ranking needs short structured output, not deep reasoning.
+    # Other provider implementations retain the original LLMProvider signature.
+    from agent.llm.openai_provider import OpenAIProvider
+
+    return {"thinking_enabled": False} if isinstance(provider, OpenAIProvider) else {}
+
+
 class LLMSearchQueryRewriter:
     """Use an LLM to produce recall-oriented query variants with lexical fallback."""
 
@@ -287,7 +296,7 @@ class LLMSearchQueryRewriter:
         ]
 
         response = await asyncio.wait_for(
-            self._provider.chat(messages, temperature=0),
+            self._provider.chat(messages, temperature=0, **_search_llm_options(self._provider)),
             timeout=self._timeout_seconds,
         )
         payload = _json_object_from_text(response.content)
@@ -416,8 +425,10 @@ class LLMSearchReranker:
                     "候选结果 JSON：\n"
                     f"{json.dumps(candidate_payload, ensure_ascii=False)}\n\n"
                     "请按这个精确结构返回 JSON：\n"
-                    '{"results":[{"index":1,"score":0.0,"reason":"short reason"}]}\n'
-                    "分数范围是 0.0 到 1.0。尽量评审每个候选。"
+                    '{"scores":[0.85,0.30]}\n'
+                    f"scores 必须有 {len(candidates)} 个数字，与候选 index 从 1 开始一一对应。"
+                    "每个分数范围是 0.0 到 1.0，必须评审每个候选；"
+                    "只输出分数数组，不输出理由或其他字段，不调整数组顺序，排序由程序完成。"
                     "0.80 以上表示能直接回答原始查询，且命中核心实体和多数显式约束；"
                     "0.50-0.79 表示有用的部分答案，或关于核心实体的权威来源但覆盖约束不完整；"
                     "0.20-0.49 表示较弱、邻近但不充分的匹配；"
@@ -431,11 +442,29 @@ class LLMSearchReranker:
         ]
 
         response = await asyncio.wait_for(
-            self._provider.chat(messages, temperature=0),
+            self._provider.chat(messages, temperature=0, **_search_llm_options(self._provider)),
             timeout=self._timeout_seconds,
         )
         payload = _json_object_from_text(response.content)
         raw_items = payload.get("results")
+        if "scores" in payload:
+            scores = payload["scores"]
+            # A partial/invalid positional vector cannot be matched safely to candidates.
+            # Keep accepting the previous indexed response for provider compatibility.
+            if not isinstance(scores, list) or len(scores) != len(candidates):
+                raise ValueError("LLM rerank scores must match candidate count")
+            if any(
+                isinstance(score, bool)
+                or not isinstance(score, (int, float))
+                or not math.isfinite(score)
+                or not 0.0 <= score <= 1.0
+                for score in scores
+            ):
+                raise ValueError("LLM rerank scores must be finite numbers in [0, 1]")
+            raw_items = [
+                {"index": index, "score": score}
+                for index, score in enumerate(scores, start=1)
+            ]
         if not isinstance(raw_items, list):
             raise ValueError("LLM rerank response missing results list")
 
@@ -781,6 +810,137 @@ class HTTPSearchProvider:
                 item,
                 excluded_keys={"title", "name", "snippet", "summary", "content", "url", "link", "source"},
             ),
+        )
+
+
+class DoubaoSearchProvider:
+    """Volcengine Doubao Search Custom/Global API, independent of Ark chat."""
+
+    name = "doubao-search"
+    recall_query_limit = 1
+    ENDPOINTS = {
+        "custom": "https://open.feedcoopapi.com/search_api/web_search",
+        "global": "https://open.feedcoopapi.com/search_api/global_search",
+    }
+
+    def __init__(
+        self,
+        *,
+        api_key: str,
+        edition: str = "custom",
+        timeout: float = 10,
+        transport: Any | None = None,
+    ):
+        self._edition = edition.strip().lower()
+        if self._edition not in self.ENDPOINTS:
+            raise ValueError("Doubao search edition must be custom or global")
+        self._base_url = self.ENDPOINTS[self._edition]
+        self._api_key = api_key.strip()
+        self._timeout = timeout
+        self._transport = transport
+
+    async def search(self, query: str, *, limit: int = 5) -> list[SearchResult]:
+        query = query.strip()[:100]
+        if not query or limit <= 0:
+            return []
+        if not self._api_key:
+            raise ValueError("Doubao search API key not configured")
+        limit = min(limit, 20 if self._edition == "global" else 50)
+        body: dict[str, Any] = {"Query": query, "SearchType": "web"}
+        if self._edition == "global":
+            body.update({"DocCount": limit, "MaxSnippetLength": 500})
+        else:
+            body.update({"Count": limit, "Filter": {"NeedUrl": True}})
+
+        async with httpx.AsyncClient(timeout=self._timeout, transport=self._transport) as client:
+            response = await client.post(
+                self._base_url,
+                headers={"Authorization": f"Bearer {self._api_key}"},
+                json=body,
+            )
+            response.raise_for_status()
+            payload = response.json()
+
+        if not isinstance(payload, dict):
+            raise ValueError("Invalid Doubao search response")
+        response_metadata = payload.get("ResponseMetadata") or {}
+        if not isinstance(response_metadata, dict):
+            raise ValueError("Invalid Doubao search response metadata")
+        error = response_metadata.get("Error")
+        if error:
+            code = error.get("Code", "unknown") if isinstance(error, dict) else "unknown"
+            self._raise_api_error(code)
+        result = payload.get("Result")
+        if not isinstance(result, dict):
+            raise ValueError("Invalid Doubao search result")
+        if result.get("ErrorCode") not in (None, 0, "0"):
+            self._raise_api_error(result["ErrorCode"])
+        key = "Documents" if self._edition == "global" else "WebResults"
+        items = result.get(key) or []
+        if not isinstance(items, list):
+            raise ValueError("Invalid Doubao search result list")
+        results = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            url = str(item.get("Url") or "").strip()
+            if not _is_public_http_url(url):
+                continue
+            results.append(self._coerce_result(item, url, response_metadata))
+            if len(results) >= limit:
+                break
+        return results
+
+    def _raise_api_error(self, code: Any) -> None:
+        # Do not forward arbitrary upstream messages or credentials into traces.
+        code_text = str(code).replace(self._api_key, "[redacted]")[:100]
+        raise ValueError(
+            f"Doubao search API error ({code_text}); check search API key and service access"
+        )
+
+    def _coerce_result(self, item: dict[str, Any], url: str, response_metadata: dict) -> SearchResult:
+        metadata: dict[str, Any] = {
+            "edition": self._edition,
+            "request_id": response_metadata.get("RequestId", ""),
+        }
+        if self._edition == "global":
+            snippets = item.get("Snippet")
+            snippets = [s for s in snippets if isinstance(s, dict)] if isinstance(snippets, list) else []
+            snippet = "\n".join(str(s["Text"]) for s in snippets if s.get("Type") == "text" and s.get("Text"))
+            images = [s["Image"] for s in snippets if s.get("Type") == "image" and isinstance(s.get("Image"), dict)]
+            info = item.get("DocumentInfo")
+            info = info if isinstance(info, dict) else {}
+            host = item.get("HostInfo")
+            host = host if isinstance(host, dict) else {}
+            metadata.update({
+                "published_at": info.get("PublishTime", ""),
+                "site_name": host.get("Hostname", ""),
+                "authority": host.get("AuthorityLevel", ""),
+                "rank": item.get("Rank"),
+            })
+        else:
+            # Summary carries query-relevant evidence; Snippet is only listing text.
+            snippet = str(item.get("Summary") or item.get("Snippet") or "")
+            images = item.get("InlineImages")
+            images = images if isinstance(images, list) else []
+            metadata.update({
+                "published_at": item.get("PublishTime", ""),
+                "site_name": item.get("SiteName", ""),
+                "authority": item.get("AuthInfoDes", ""),
+                "authority_level": item.get("AuthInfoLevel"),
+                "rank_score": item.get("RankScore"),
+            })
+        image_url = next((
+            str(img["ImageUrl"]) for img in images
+            if isinstance(img, dict) and _is_public_http_url(str(img.get("ImageUrl") or ""))
+        ), "")
+        return SearchResult(
+            title=str(item.get("Title") or url),
+            snippet=snippet[:SEARCH_SNIPPET_MAX_CHARS],
+            url=url,
+            source=self.name,
+            image_url=image_url,
+            metadata=metadata,
         )
 
 
@@ -1478,6 +1638,7 @@ class SearchService:
         "local": 0,
         "http": 1,
         "web": 2,
+        "doubao-search": 3,
         "minimax-mcp": 3,
         "bing-rss": 4,
     }
@@ -1537,6 +1698,17 @@ class SearchService:
                 )
             )
 
+        doubao_enabled = runtime_config.get("search.doubao.enabled", "true").strip().lower()
+        doubao_api_key = runtime_config.get("search.doubao.api_key").strip() or runtime_config.doubao_api_key.strip()
+        if doubao_enabled not in {"0", "false", "no", "off"} and doubao_api_key:
+            providers.append(
+                DoubaoSearchProvider(
+                    api_key=doubao_api_key,
+                    edition=runtime_config.get("search.doubao.edition", "custom"),
+                    timeout=_parse_float(runtime_config.get("search.doubao.timeout", "10"), default=10),
+                )
+            )
+
         minimax_enabled = runtime_config.get("search.minimax.enabled", "true").lower()
         minimax_api_key = runtime_config.get("search.minimax.api_key") or runtime_config.minimax_api_key
         if minimax_enabled not in {"0", "false", "no", "off"} and minimax_api_key:
@@ -1572,7 +1744,7 @@ class SearchService:
                 )
             )
 
-        web_enabled = runtime_config.get("search.web.enabled", "true").lower()
+        web_enabled = runtime_config.get("search.web.enabled", "false").lower()
         if web_enabled not in {"0", "false", "no", "off"}:
             providers.append(
                 DuckDuckGoSearchProvider(
@@ -1670,6 +1842,7 @@ class SearchService:
             SEARCH_PROVIDER_LIMIT_MAX,
             max(limit, limit * self._provider_limit_multiplier),
         )
+        rewrite_started = perf_counter()
         if rewrite_query:
             query_rewrite = await self._build_query_rewrite(query)
         else:
@@ -1683,12 +1856,14 @@ class SearchService:
                 "queries": [query],
                 "reason": "caller_disabled_rewrite",
             }
+        query_rewrite["duration_ms"] = int((perf_counter() - rewrite_started) * 1000)
         query_variants = list(query_rewrite.get("queries") or [])
         self._last_query_variants = query_variants
         self._last_query_rewrite = query_rewrite
         self._last_trace_nodes = [_query_rewrite_trace_node(query_rewrite)]
         stop_when_relevant = generic_web_requested or not selected
         min_provider_coverage = min(len(providers), self._min_provider_coverage)
+        recall_started = perf_counter()
         if len(providers) > 1:
             results, provider_errors, recall_attempts = await self._search_providers_concurrently(
                 providers,
@@ -1717,6 +1892,7 @@ class SearchService:
                 provider_errors=provider_errors,
                 provider_limit=provider_limit,
                 concurrent=len(providers) > 1,
+                duration_ms=int((perf_counter() - recall_started) * 1000),
             )
         )
         if (
@@ -1824,7 +2000,7 @@ class SearchService:
             fallback = dict(lexical_plan)
             fallback["status"] = "partial"
             fallback["provider"] = self._query_rewriter.name
-            fallback["error"] = str(e)[:500]
+            fallback["error"] = (str(e) or type(e).__name__)[:500]
             fallback["fallback"] = "lexical"
             return fallback
 
@@ -1878,7 +2054,7 @@ class SearchService:
                 input_count=len(results),
                 output_results=fallback,
                 limit=limit,
-                error=str(e)[:500],
+                error=(str(e) or type(e).__name__)[:500],
             )
         return reranked[:limit], _llm_rerank_trace_node(
             status=str(metadata.get("status") or "completed"),
@@ -2400,6 +2576,7 @@ def _query_rewrite_trace_node(query_rewrite: dict[str, Any]) -> dict[str, Any]:
         "original_query": query_rewrite.get("original_query"),
         "queries": queries,
         "query_count": len(queries),
+        "duration_ms": query_rewrite.get("duration_ms", 0),
     }
     for key in (
         "provider",
@@ -2452,6 +2629,7 @@ def _recall_trace_node(
     provider_errors: list[str],
     provider_limit: int,
     concurrent: bool,
+    duration_ms: int = 0,
 ) -> dict[str, Any]:
     timed_out_count = sum(1 for attempt in attempts if attempt.get("status") == "timed_out")
     error_count = sum(1 for attempt in attempts if attempt.get("status") == "error")
@@ -2460,6 +2638,7 @@ def _recall_trace_node(
         "node": "recall",
         "status": status,
         "mode": "concurrent" if concurrent else "sequential",
+        "duration_ms": duration_ms,
         "providers": [provider.name for provider in providers],
         "provider_count": len(providers),
         "queries": queries,

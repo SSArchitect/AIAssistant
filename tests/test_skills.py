@@ -2981,6 +2981,7 @@ class TestSearchSkill:
 
     def test_search_service_from_runtime_config_reads_broad_retrieval_settings(self):
         keys = [
+            "search.doubao.enabled",
             "llm.minimax.api_key",
             "search.bing.enabled",
             "search.local.documents",
@@ -3004,6 +3005,7 @@ class TestSearchSkill:
         try:
             runtime_config.update(
                 {
+                    "search.doubao.enabled": "false",
                     "llm.minimax.api_key": "",
                     "search.bing.enabled": "false",
                     "search.local.documents": '[{"title":"Runtime Search","content":"runtime config search quality"}]',
