@@ -224,3 +224,42 @@ test('playback failures keep the video block and offer the open/download fallbac
     assert.match(status.textContent, /打开视频/);
     assert.doesNotThrow(() => VideoMedia.showPlaybackError({}));
 });
+
+test('emphasis around standalone video links still creates playable media', () => {
+    for (const wrapper of ['**', '__', '*', '_', '***']) {
+        for (const prefix of ['', '- ', '1. ']) {
+            const line = `${prefix}${wrapper}[▶️ 点击观看：令的加油视频](${videoPath})${wrapper}`;
+            assert.deepEqual(VideoMedia.parseMarkdown(line), { url: videoPath, title: '▶️ 点击观看：令的加油视频' }, line);
+        }
+    }
+    for (const line of [`**说明 ${traceMarkdown}**`, `**\`${traceMarkdown}\`**`,
+        `**${traceMarkdown}*`, '**[网页](https://example.test/article)**',
+        `**${traceMarkdown} ${traceMarkdown}**`]) {
+        assert.equal(VideoMedia.parseMarkdown(line), null, line);
+    }
+});
+
+test('the formatter renders the bold video link from run 1e94f2e9 and preserves code-only views', () => {
+    const app = fs.readFileSync(path.join(__dirname, '../web/static/js/app.js'), 'utf8');
+    const format = app.match(/function formatContent\(text, options = \{\}\) \{[\s\S]*?\n\}/)[0];
+    const link = `**[▶️ 点击观看：令的加油视频](${videoPath})**`;
+    const context = {
+        VideoMedia, text: `视频出炉啦\n\n${link}\n\n视频规格`,
+        renderMediaMarkdown: line => {
+            const item = VideoMedia.parseMarkdown(line);
+            return item ? VideoMedia.render(item.url, item.title, { apiBase: 'https://app.test' }) : '';
+        },
+        renderInlineMarkdown: value => value, isMarkdownTableStart: () => false,
+        escapeHtml: value => value, escapeAttr: value => value, renderCodeCopyButton: () => '',
+    };
+    const html = vm.runInNewContext(`${format}; formatContent(text)`, context);
+    assert.equal((html.match(/<video /g) || []).length, 1);
+    assert.ok(html.includes(`src="https://app.test${videoPath}"`));
+    assert.ok(html.includes('下载视频'));
+    assert.ok(!html.includes('**['));
+    const disabled = vm.runInNewContext(`${format}; formatContent(text, { allowMedia: false })`, context);
+    assert.ok(!disabled.includes('<video '));
+    const code = vm.runInNewContext(`${format}; formatContent(text)`, { ...context, text: '```md\n' + link + '\n```' });
+    assert.ok(!code.includes('<video '));
+    assert.ok(code.includes(link));
+});

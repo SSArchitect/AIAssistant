@@ -37,7 +37,13 @@
     }
 
     function parseMarkdown(line) {
-        const value = String(line || '').trim().replace(/^(?:[-*+]\s+|\d+[.)]\s+)/, '');
+        let value = String(line || '').trim().replace(/^(?:[-*+]\s+|\d+[.)]\s+)/, '');
+        // Model replies often emphasize an entire media link. Keep recognizing
+        // the standalone link without treating prose or inline code as media.
+        let emphasis;
+        while ((emphasis = value.match(/^(\*\*|__|\*|_)(.+)\1$/))) {
+            value = emphasis[2].trim();
+        }
         const match = value.match(/^!?\[([^\]]*)\]\(([^\s)]+)\)$/);
         if (match && resolveUrl(match[2]) && (isVideoUrl(match[2]) || /^(video|视频)$/i.test(match[1]))) {
             return { url: match[2], title: match[1] };
