@@ -196,7 +196,7 @@ test('download button displays retry guidance and is reenabled on failure', asyn
 
 test('the real chat Markdown renderer routes arbitrary video labels through VideoMedia', () => {
     const app = fs.readFileSync(path.join(__dirname, '../web/static/js/app.js'), 'utf8');
-    const render = app.match(/function renderMediaMarkdown\(line\) \{[\s\S]*?\n\}/)[0];
+    const render = app.match(/function renderMediaMarkdown\(line, options = \{\}\) \{[\s\S]*?\n\}/)[0];
     const html = vm.runInNewContext(`${render}; renderMediaMarkdown(line)`, {
         VideoMedia, globalThis: { VideoMedia }, line: traceMarkdown,
         renderVideoBlock: (url, title) => VideoMedia.render(url, title),
@@ -262,4 +262,147 @@ test('the formatter renders the bold video link from run 1e94f2e9 and preserves 
     const code = vm.runInNewContext(`${format}; formatContent(text)`, { ...context, text: '```md\n' + link + '\n```' });
     assert.ok(!code.includes('<video '));
     assert.ok(code.includes(link));
+});
+
+// Exercise the actual inline + block renderers together: a stubbed inline
+// renderer concealed the unclickable relative links in production message 1836.
+function createChatRenderContext(apiBase = 'https://www.architect8.cn') {
+    const app = fs.readFileSync(path.join(__dirname, '../web/static/js/app.js'), 'utf8');
+    const names = ['formatContent', 'renderInlineMarkdown', 'renderMediaMarkdown',
+        'renderVideoBlock', 'videoMediaLabels', 'renderSafeLink', 'isSafeContentUrl',
+        'isSafeDataImageUrl', 'isImageUrl', 'isVideoUrl', 'isMarkdownTableStart',
+        'isMarkdownTableRow', 'splitMarkdownTableRow', 'isMarkdownTableSeparatorCell',
+        'renderArtifactPanel', 'normalizeArtifacts', 'renderDriveArtifactCard',
+        'renderMessageHtml', 'appendStreamingAssistantMessage'];
+    const source = names.map(name => app.match(new RegExp(`function ${name}\\([^]*?\\n\\}`))[0]).join('\n');
+    const escape = value => String(value ?? '').replace(/[&<>"']/g, char => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+    }[char]));
+    const context = vm.createContext({
+        VideoMedia, API_BASE: apiBase, t: value => value,
+        escapeHtml: escape, escapeAttr: escape, renderCodeCopyButton: () => '',
+    });
+    vm.runInContext(source, context);
+    return context;
+}
+
+function renderChatFixture(text, options = {}, apiBase) {
+    return createChatRenderContext(apiBase).formatContent(text, options);
+}
+
+const latestVideoPath = '/static/generated/aigc/spark-video-7c81872152c44a5ca7846782128cb04a.mp4';
+const latestVideoLink = `[陈千语卖萌跳舞视频（MP4）](${latestVideoPath})`;
+
+test('production message 1836 renders a playable video with an emoji before its bold link', () => {
+    const html = renderChatFixture(`跳起来啦～老板请看：\n\n🎬 **${latestVideoLink}**\n\n**视频信息：**\n- 📐 画幅：480 × 864 竖屏\n- ⏱️ 时长：约 5.17 秒`);
+    assert.equal((html.match(/<video /g) || []).length, 1);
+    assert.ok(html.includes(`src="https://www.architect8.cn${latestVideoPath}"`));
+    assert.ok(html.includes(`href="https://www.architect8.cn${latestVideoPath}"`));
+    assert.ok(html.includes('data-video-download-src'));
+    assert.ok(html.includes('🎬'));
+    assert.ok(html.includes('画幅：480 × 864'));
+    assert.ok(!html.includes(latestVideoLink));
+});
+
+test('embedded video links preserve surrounding prose, emphasis, lists and multiple videos', () => {
+    const other = '[另一个](/static/generated/aigc/another.mp4)';
+    for (const line of [`请看 **${latestVideoLink}**，可以下载。`,
+        `**请看 ${latestVideoLink}，可以下载。**`, `- 请看 ${latestVideoLink}，可以下载。`]) {
+        const html = renderChatFixture(line);
+        assert.equal((html.match(/<video /g) || []).length, 1);
+        assert.ok(html.includes('请看'));
+        assert.ok(html.includes('可以下载。'));
+        assert.ok(!/<p>(?:(?!<\/p>)[^])*<figure/.test(html), 'player must not be nested in a paragraph');
+    }
+    const html = renderChatFixture(`请看 ${latestVideoLink} 和 ${other}，${latestVideoLink} 是第一个。`);
+    assert.equal((html.match(/<video /g) || []).length, 2);
+    assert.ok(html.includes('是第一个。'));
+});
+
+test('relative inline video links remain clickable with media disabled and use the client API origin', () => {
+    for (const base of ['', 'https://www.architect8.cn']) {
+        const html = renderChatFixture(`请看 **${latestVideoLink}**。`, { allowMedia: false }, base);
+        assert.ok(!html.includes('<video '));
+        assert.ok(html.includes(`href="${base}${latestVideoPath}"`));
+        assert.ok(html.includes('<strong><a'));
+    }
+});
+
+test('embedded video detection excludes inline and fenced code, unsafe URLs and ordinary links', () => {
+    for (const text of ['`' + latestVideoLink + '`', '``' + latestVideoLink + '``',
+        '```md\n🎬 **' + latestVideoLink + '**\n```',
+        '[bad](//evil.test/a.mp4)', '[bad](/\\evil.test/a.mp4)',
+        '[bad](javascript:alert)', '[网页](https://example.test/article)']) {
+        assert.ok(!renderChatFixture(text).includes('<video '), text);
+    }
+    const html = renderChatFixture('`' + latestVideoLink + '` 请看 ' + traceMarkdown);
+    assert.equal((html.match(/<video /g) || []).length, 1);
+    assert.ok(!html.includes(`src="https://www.architect8.cn${latestVideoPath}"`));
+    for (const url of ['//evil.test/a.mp4', '/\\evil.test/a.mp4']) {
+        assert.ok(!renderChatFixture(`[bad](${url})`, { allowMedia: false }).includes('<a '));
+    }
+});
+
+const typedVideo = { type: 'video', item_id: latestVideoPath, url: latestVideoPath,
+    title: '生成视频', mime_type: 'video/mp4' };
+
+function addMessageChromeStubs(context) {
+    Object.assign(context, {
+        currentConversationId: 'c', currentAgentId: 'super_chat', STREAM_TYPEWRITER: null,
+        renderAssistantActions: () => '', renderUserMessageActions: () => '',
+        renderProcessPanel: () => '', renderProcessPanelInto() {}, renderMessageDivider: () => '',
+        renderInlineLongTask: () => '', renderApprovalPanel: () => '', renderCitationPanel: () => '',
+        renderInputMeta: () => '', renderApprovalCards: () => '',
+        shouldFollowConversationStream: () => false, updateCopyButtonState() {}, updateAssistantActions() {},
+        scheduleTaskResultRead() {}, renderPersistedFollowUpsAfterMessage() {},
+        updateFollowUpButtonsState() {}, updateRegenerateButtonsState() {},
+        ThinkingProcess: require('../web/static/js/thinking-process.js'),
+    });
+}
+
+test('history renders typed videos even with no model link and never duplicates Markdown players', () => {
+    const context = createChatRenderContext();
+    addMessageChromeStubs(context);
+    for (const prose of ['', '已经做好了，没有链接。', `🎬 **${latestVideoLink}**`, latestVideoLink]) {
+        const html = context.renderMessageHtml('assistant', prose, [], '', '', [], '', '', [], [typedVideo]);
+        assert.equal((html.match(/<video /g) || []).length, 1, prose);
+        assert.ok(html.includes(`src="https://www.architect8.cn${latestVideoPath}"`));
+        assert.ok(html.includes('data-video-download-src'));
+        assert.ok(!html.includes('data-drive-artifact-id'));
+    }
+});
+
+test('stream finalization uses typed artifacts with no link or arbitrarily formatted prose', () => {
+    for (const prose of ['没有链接的完成说明', `🎬 **${latestVideoLink}**`]) {
+        const context = createChatRenderContext();
+        addMessageChromeStubs(context);
+        const children = {};
+        const element = () => ({ dataset: {}, classList: { toggle() {}, remove() {} },
+            addEventListener() {}, remove() {}, contains: () => true });
+        const div = { ...element(), querySelector: selector => children[selector] ||= element() };
+        Object.assign(context, {
+            document: { createElement: () => div },
+            messagesContainer: { querySelector: () => null, appendChild() {} },
+            createAdaptiveTypingBuffer: render => ({ setImmediate: render, enqueue: render, reset() {} }),
+        });
+        const view = context.appendStreamingAssistantMessage('', 'c');
+        view.finalize({ response: prose, artifacts: [typedVideo], events: [] });
+        const html = children['.streaming-content'].innerHTML + children['.streaming-artifacts'].innerHTML;
+        assert.equal((html.match(/<video /g) || []).length, 1);
+        assert.ok(html.includes(`src="https://www.architect8.cn${latestVideoPath}"`));
+        assert.ok(html.includes('data-video-download-src'));
+    }
+});
+
+test('typed video artifacts reject invalid media, deduplicate by URL, and do not suppress legacy fallback', () => {
+    const context = createChatRenderContext();
+    for (const item of [null, { ...typedVideo, url: '//evil.test/a.mp4' },
+        { ...typedVideo, url: 'javascript:x' }, { ...typedVideo, mime_type: 'text/html' },
+        { ...typedVideo, mime_type: 42 }, { ...typedVideo, url: '/page.html' }]) {
+        assert.equal(VideoMedia.getArtifacts([item]).length, 0);
+        assert.equal(context.renderArtifactPanel([item]), '');
+        assert.match(context.formatContent(latestVideoLink, { artifacts: [item] }), /<video /);
+    }
+    assert.equal(VideoMedia.getArtifacts([typedVideo, { ...typedVideo, item_id: 'other' }]).length, 1);
+    assert.equal((context.renderArtifactPanel([typedVideo, typedVideo]).match(/<video /g) || []).length, 1);
 });

@@ -16738,6 +16738,7 @@ function appendStreamingAssistantMessage(regenerateQuery = '', conversationId = 
     const approvalsEl = div.querySelector('.streaming-approvals');
     const cancelActionsEl = div.querySelector('.streaming-task-actions');
     let lastContent = '';
+    let lastArtifacts = [];
     let provisionalContent = '';
     let lastReasoning = '';
     let lastEvents = [];
@@ -16785,7 +16786,7 @@ function appendStreamingAssistantMessage(regenerateQuery = '', conversationId = 
                 reasoningEvents: thinkingState.reasoningEvents(),
             }));
         }
-        contentEl.innerHTML = formatContent(lastContent);
+        contentEl.innerHTML = formatContent(lastContent, { artifacts: lastArtifacts });
         if (shouldFollow) scrollToBottom(conversationId, div);
     }
 
@@ -16911,6 +16912,7 @@ function appendStreamingAssistantMessage(regenerateQuery = '', conversationId = 
                 return;
             }
             this.setReasoning(resp.reasoning || lastReasoning);
+            lastArtifacts = resp.artifacts || [];
             this.setContent(resp.response || lastContent);
             thinkingState.finish();
             artifactsEl.innerHTML = renderArtifactPanel(resp.artifacts || []);
@@ -17240,7 +17242,7 @@ function renderMessageHtml(
             processPanel ? renderMessageDivider() : '',
             taskCard,
             approvalPanel,
-            formatContent(content),
+            formatContent(content, { artifacts }),
             artifactPanel,
             citationPanel ? renderMessageDivider() : '',
             citationPanel,
@@ -17888,11 +17890,13 @@ function handleMessageImageError(event) {
 }
 
 function renderArtifactPanel(artifacts = []) {
-    const normalized = normalizeArtifacts(artifacts);
-    if (!normalized.length) return '';
+    const normalized = normalizeArtifacts(artifacts).filter(item => item.type !== 'video');
+    const videos = globalThis.VideoMedia.getArtifacts?.(artifacts) || [];
+    if (!normalized.length && !videos.length) return '';
     return `
         <div class="message-artifacts">
             ${normalized.map(renderDriveArtifactCard).join('')}
+            ${videos.map(item => renderVideoBlock(item.url, item.title || item.name)).join('')}
         </div>
     `;
 }
@@ -18155,6 +18159,9 @@ function formatContent(text, options = {}) {
     });
 
     const sourceLines = processed.split('\n');
+    // Structured tool artifacts own video playback. Markdown remains a fallback
+    // for historical messages and cannot create duplicate players in new ones.
+    const allowVideo = !(globalThis.VideoMedia?.getArtifacts?.(options.artifacts) || []).length;
     const lines = options.allowMedia !== false && typeof globalThis.VideoMedia?.normalizeMarkdownLines === 'function'
         ? globalThis.VideoMedia.normalizeMarkdownLines(sourceLines) : sourceLines;
     const html = [];
@@ -18202,7 +18209,7 @@ function formatContent(text, options = {}) {
             continue;
         }
 
-        const media = options.allowMedia === false ? '' : renderMediaMarkdown(trimmed);
+        const media = options.allowMedia === false ? '' : renderMediaMarkdown(trimmed, { allowVideo });
         if (media) {
             flushAll();
             html.push(media);
@@ -18376,7 +18383,11 @@ function renderInlineMarkdown(text) {
         return `%%INLINE_${idx}%%`;
     });
 
-    processed = processed.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, (_, label, url) => {
+    processed = processed.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+|\/[^\s)]+)\)/g, (match, label, url) => {
+        if (url.startsWith('/')) {
+            url = globalThis.VideoMedia?.resolveUrl(url, typeof API_BASE === 'string' ? API_BASE : '');
+            if (!url) return match;
+        }
         const idx = placeholders.length;
         placeholders.push(renderSafeLink(url, label));
         return `%%INLINE_${idx}%%`;
@@ -18399,9 +18410,18 @@ function renderInlineMarkdown(text) {
     return processed;
 }
 
-function renderMediaMarkdown(line) {
+function renderMediaMarkdown(line, options = {}) {
     const videoLink = globalThis.VideoMedia.parseMarkdown(line);
-    if (videoLink) return renderVideoBlock(videoLink.url, videoLink.title);
+    if (videoLink) return options.allowVideo === false ? '' : renderVideoBlock(videoLink.url, videoLink.title);
+
+    const embeddedVideos = options.allowVideo === false ? [] : globalThis.VideoMedia.findMarkdownVideos?.(line) || [];
+    if (embeddedVideos.length) {
+        // Render the original prose (including clickable links) and then its
+        // players. Disabling media in this nested pass prevents recursion and
+        // keeps figures outside paragraphs, lists and headings.
+        return formatContent(line, { allowMedia: false })
+            + embeddedVideos.map(item => renderVideoBlock(item.url, item.title)).join('');
+    }
 
     const image = line.match(/^!\[([^\]]*)\]\((https?:\/\/[^\s)]+|\/[^\s)]+|data:image\/[a-z0-9.+-]+;base64,[^\s)]+)\)$/i);
     if (image) {
@@ -18409,14 +18429,14 @@ function renderMediaMarkdown(line) {
     }
 
     const video = line.match(/^\[(?:video|视频)\]\((https?:\/\/[^\s)]+|\/[^\s)]+)\)$/i);
-    if (video) {
+    if (video && options.allowVideo !== false) {
         return renderVideoBlock(video[1]);
     }
 
     if (isImageUrl(line)) {
         return renderImageBlock(line, '');
     }
-    if (isVideoUrl(line)) {
+    if (options.allowVideo !== false && isVideoUrl(line)) {
         return renderVideoBlock(line);
     }
     return '';

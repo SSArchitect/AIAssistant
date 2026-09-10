@@ -14,6 +14,7 @@ from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
 from agent.config import runtime_config
+from agent.aigc.artifacts import video_artifacts_from_result
 from agent.aigc.image_service import generate_image as generate_image_with_provider
 from agent.aigc.spark_client import SparkImageClient, SparkProviderError
 from agent.aigc.prompt_policy import (
@@ -3822,6 +3823,8 @@ class AgentEngine:
                 )
             else:
                 skills_used.append(tc.name)
+                for artifact in video_artifacts_from_result(tc.name, execution.result_data):
+                    self._append_unique_artifact(artifacts, artifact)
                 self._append_unique_artifact(
                     artifacts,
                     self._drive_artifact_from_tool_result(tc.name, execution.result_data),

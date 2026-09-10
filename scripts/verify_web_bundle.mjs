@@ -30,24 +30,35 @@ export function verifyWebBundle(directory) {
     }
   }
 
-  const start = app.indexOf('function formatContent(');
-  const end = app.indexOf('\nfunction ', start + 1);
-  assert.ok(start >= 0 && end > start, 'Missing chat formatter');
   const escape = value => String(value).replace(/[&<>"']/g, char => ({
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
   })[char]);
   Object.assign(context, {
-    renderInlineMarkdown: escape, escapeHtml: escape, escapeAttr: escape,
-    renderCodeCopyButton: () => '', isMarkdownTableStart: () => false,
-    renderMediaMarkdown: line => {
-      const item = context.VideoMedia.parseMarkdown(line);
-      return item ? context.VideoMedia.render(item.url, item.title) : '';
-    },
+    escapeHtml: escape, escapeAttr: escape, API_BASE: 'https://app.test', t: value => value,
+    renderCodeCopyButton: () => '',
   });
-  vm.runInContext(app.slice(start, end), context);
+  // Verify the shipped renderers together; stubbing the inline renderer used to
+  // conceal broken relative links and structured-media integration.
+  for (const name of ['formatContent', 'renderInlineMarkdown', 'renderMediaMarkdown',
+    'renderVideoBlock', 'videoMediaLabels', 'renderSafeLink', 'isSafeContentUrl',
+    'isSafeDataImageUrl', 'isImageUrl', 'isVideoUrl', 'normalizeArtifacts',
+    'renderArtifactPanel', 'renderDriveArtifactCard', 'isMarkdownTableStart',
+    'isMarkdownTableRow', 'splitMarkdownTableRow', 'isMarkdownTableSeparatorCell']) {
+    const start = app.indexOf(`function ${name}(`);
+    const end = app.indexOf('\nfunction ', start + 1);
+    assert.ok(start >= 0 && end > start, `Missing renderer: ${name}`);
+    vm.runInContext(app.slice(start, end), context);
+  }
   assert.equal(context.formatContent('发布验证'), '<p>发布验证</p>');
-  const video = context.formatContent('[视频](/static/generated/aigc/bundle-smoke.mp4)');
+  const url = '/static/generated/aigc/bundle-smoke.mp4';
+  const video = context.formatContent(`🎬 **[视频](${url})**`);
   assert.match(video, /<video[^>]+controls/);
+  const artifacts = [{ type: 'video', url, mime_type: 'video/mp4' }];
+  for (const text of ['完成，没有链接', `🎬 **[视频](${url})**`]) {
+    const rendered = context.formatContent(text, { artifacts }) + context.renderArtifactPanel(artifacts);
+    assert.equal((rendered.match(/<video /g) || []).length, 1);
+    assert.ok(rendered.includes(`src="https://app.test${url}"`));
+  }
   assert.match(context.formatContent('```text\n<code>\n```'), /&lt;code&gt;/);
   return { scripts: scripts.length, methods, smokeRender: true };
 }

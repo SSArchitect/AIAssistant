@@ -51,6 +51,29 @@
         return isVideoUrl(value) ? { url: value, title: '' } : null;
     }
 
+    function getArtifacts(artifacts) {
+        const videos = new Map();
+        for (const item of Array.isArray(artifacts) ? artifacts : []) {
+            if (!item || item.type !== 'video') continue;
+            const url = resolveUrl(item.url);
+            if (!url || !isVideoUrl(url) || (item.mime_type && !/^video\//i.test(String(item.mime_type)))) continue;
+            if (!videos.has(url)) videos.set(url, { ...item, url });
+        }
+        return [...videos.values()];
+    }
+
+    function findMarkdownVideos(line) {
+        // Ignore code spans before scanning links embedded in prose. Keep the
+        // original line for text rendering so no surrounding content is lost.
+        const value = String(line || '').replace(/(`+)[\s\S]*?\1/g, '');
+        const videos = new Map();
+        for (const match of value.matchAll(/!?\[[^\]]*\]\([^\s)]+\)/g)) {
+            const item = parseMarkdown(match[0]);
+            if (item && !videos.has(item.url)) videos.set(item.url, item);
+        }
+        return [...videos.values()];
+    }
+
     // Called after fenced code is extracted. A local sibling is required evidence
     // before repairing a historical URL; unrelated external videos stay untouched.
     function normalizeMarkdownLines(lines) {
@@ -145,5 +168,5 @@
         if (status) { status.textContent = message; status.hidden = false; }
     }
 
-    return { resolveUrl, parseMarkdown, normalizeMarkdownLines, filename, render, download, downloadFromButton, updateMetadata, showPlaybackError };
+    return { resolveUrl, parseMarkdown, normalizeMarkdownLines, filename, getArtifacts, findMarkdownVideos, render, download, downloadFromButton, updateMetadata, showPlaybackError };
 }));
