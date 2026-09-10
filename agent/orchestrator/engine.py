@@ -16,6 +16,11 @@ from zoneinfo import ZoneInfo
 from agent.config import runtime_config
 from agent.aigc.image_service import generate_image as generate_image_with_provider
 from agent.aigc.spark_client import SparkImageClient, SparkProviderError
+from agent.aigc.prompt_policy import (
+    IMAGE_PROMPT_GUIDANCE,
+    PROFESSIONAL_IMAGE_PROMPT_GUIDANCE,
+    SHORT_IMAGE_TEXT_GUIDANCE,
+)
 from agent.aigc import (
     MiniMaxAIGCClient,
     apply_text_rendering_guard,
@@ -8387,10 +8392,12 @@ class AgentEngine:
             + "。默认 1:1。\n"
             "- review_notes 要面向用户可见、实用、简短。"
         )
+        system += IMAGE_PROMPT_GUIDANCE
         if professional:
             system += (
                 "\n- 已启用专业模式：生图前补全主体、构图、镜头、光线、材质、色彩、氛围、风格约束和负向约束。"
             )
+            system += PROFESSIONAL_IMAGE_PROMPT_GUIDANCE
         else:
             system += (
                 "\n- 已启用轻量审查：在不覆盖用户原意的前提下澄清并润色提示词。"
@@ -8402,6 +8409,8 @@ class AgentEngine:
                 "- 使用干净的分享卡构图，用图标、编号卡片、徽章、色条、空文本带，以及最多五个大号短标签表达结构。\n"
                 "- 精确中文文案和事实行不要进入生成像素；在 review_notes 中说明精确文案应另行用 UI/SVG 排版。"
             )
+        else:
+            system += SHORT_IMAGE_TEXT_GUIDANCE
 
         if has_research_brief:
             user = (

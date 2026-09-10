@@ -3,6 +3,32 @@ from __future__ import annotations
 import re
 from typing import Any
 
+# Provider-neutral rules adapted from https://developers.openai.com/api/docs/guides/image-prompting
+# after the 2026-09-10 Spark prompt comparison. Keep model-specific API options out.
+IMAGE_PROMPT_GUIDANCE = (
+    "\n- 明确用户要求的图片用途，按场景、主体、可见细节、构图与约束组织提示词；"
+    "标签只为清晰可读，不依赖特殊语法。"
+    "\n- 保留主体数量、相对位置、比例、留白区域和禁止出现的内容；"
+    "不擅自增加人物、道具、品牌、文字或故事。用户已经明确的细节只整理，不随意扩写。"
+    "\n- 保留用户指定的视觉媒介；仅在写实需求下明确自然摄影纹理，"
+    "不要把插画等其他风格强制改成照片。"
+    "\n- 尺寸、seed 等 API 参数与视觉内容分开，遵循当前 Provider 的参数规则；"
+    "只补充有用信息，消除冲突和重复，不堆砌画质口号。"
+)
+
+PROFESSIONAL_IMAGE_PROMPT_GUIDANCE = (
+    "\n- 将氛围落实为可见的光线方向、明暗、材质与色彩；"
+    "镜头参数只作为外观提示，避免互相矛盾的景深与清晰度要求。"
+    "\n- 主体有动作时，说明视线方向、身体取景、相对尺度和接触位置，"
+    "保留用户给定的动作与物体数量、容量等细节；遵循物种自然肢体结构，"
+    "不把动物前爪描述成人手抓握，不额外设计复杂姿势。"
+)
+
+SHORT_IMAGE_TEXT_GUIDANCE = (
+    "\n- 用户要求的简短文字用引号原样保留，说明位置、排版和出现次数，不添加其他文案；"
+    "用户要求无文字时，明确禁止文字、标志或水印。"
+)
+
 TEXT_HEAVY_MARKERS = (
     "信息图",
     "对比图",

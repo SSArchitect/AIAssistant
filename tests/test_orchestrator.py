@@ -5648,6 +5648,8 @@ async def test_image_agent_uses_spark_provider_and_negative_prompt(engine):
     assert request.idempotency_key == result.run_id
     review_messages = provider.chat.await_args.args[0]
     assert "单边 256–4096" in review_messages[0].content
+    assert "主体数量、相对位置、比例、留白区域" in review_messages[0].content
+    assert "视线方向、身体取景、相对尺度和接触位置" in review_messages[0].content
     assert (request.width, request.height) == (2048, 2048)
     assert "24 小时" not in result.response
     completed = next(event for event in result.events if event.type == "aigc.image.completed")
