@@ -144,31 +144,6 @@ test('failed citation thumbnails fall back to the text layout', () => {
     assert.equal(state.className, 'has-image');
 });
 
-test('failed message images remove the complete media figure', () => {
-    const source = extractFunctionDeclaration('handleMessageImageError');
-    const state = {
-        removed: false,
-    };
-    const mediaFigure = {
-        remove: () => {
-            state.removed = true;
-        },
-    };
-    const image = {
-        matches: (selector) => selector === '.message-media img',
-        closest: (selector) => (
-            selector === '.message-media' ? mediaFigure : null
-        ),
-    };
-
-    vm.runInNewContext(
-        `${source}\nhandleMessageImageError({ target: image });`,
-        { image },
-    );
-
-    assert.equal(state.removed, true);
-});
-
 test('message image fallback ignores unrelated image errors', () => {
     const source = extractFunctionDeclaration('handleMessageImageError');
     const image = {
@@ -182,4 +157,93 @@ test('message image fallback ignores unrelated image errors', () => {
         `${source}\nhandleMessageImageError({ target: image });`,
         { image },
     ));
+});
+
+function imageContext(apiBase = '') {
+    return {
+        API_BASE: apiBase, VideoMedia: require('../web/static/js/video-media.js'),
+        URL, escapeAttr: value => String(value).replace(/"/g, '&quot;'), escapeHtml: String,
+        t: value => value, traceCopy: (zh, en) => en,
+        suggestedImageDownloadName: () => 'image.png',
+    };
+}
+function imageCode(...names) { return names.map(extractFunctionDeclaration).join('\n'); }
+function renderImage(url, apiBase = '') {
+    return vm.runInNewContext(imageCode('renderImageBlock', 'isImageUrl', 'isSafeContentUrl', 'isSafeDataImageUrl')
+        + '\nrenderImageBlock(url, "Generated image")', { ...imageContext(apiBase), url });
+}
+
+test('generated images and preview/open links resolve against the Android API origin', () => {
+    const url = '/static/generated/aigc/spark-regression.png';
+    const html = renderImage(url, 'https://www.architect8.cn/');
+    for (const attribute of ['src', 'data-media-preview-src', 'href']) {
+        assert.ok(html.includes(`${attribute}="https://www.architect8.cn${url}"`), attribute);
+    }
+    assert.match(html, /data-image-retry/);
+    assert.match(html, /data-image-fallback[^>]*hidden/);
+});
+
+test('web relative images, signed external images and base64 images remain supported', () => {
+    for (const [url, base] of [['/static/test.png', ''],
+        ['https://cdn.example.com/test.jpeg?Expires=123&Signature=abc', 'https://app.test'],
+        ['data:image/png;base64,AAAA', 'https://app.test']]) {
+        assert.ok(renderImage(url, base).includes(`src="${url}"`));
+    }
+});
+
+test('image renderer rejects unsafe and non-image addresses', () => {
+    for (const url of ['//evil.test/a.png', '/\\evil.test/a.png', 'javascript:alert(1)',
+        'https://user:password@evil.test/a.png', '/static/video.mp4', 'data:image/svg+xml;base64,AAAA']) {
+        assert.equal(renderImage(url, 'https://app.test'), '', url);
+    }
+});
+
+function imageState() {
+    const preview = { hidden: false, dataset: { mediaPreviewSrc: 'https://app.test/image.png' } };
+    const fallback = { hidden: true };
+    const status = { textContent: '' };
+    const retry = { disabled: false };
+    const parts = { '[data-media-preview-src]': preview, '[data-image-fallback]': fallback,
+        '[data-image-status]': status, '[data-image-retry]': retry };
+    const figure = { querySelector: selector => parts[selector], remove() { throw Error('must preserve figure'); } };
+    const image = { matches: selector => selector === '.message-media img', closest: () => figure,
+        removeAttribute: () => {}, src: preview.dataset.mediaPreviewSrc };
+    parts.img = image;
+    retry.closest = () => figure;
+    return { preview, fallback, status, retry, image };
+}
+
+test('failed message images retain a visible explanation and allow retry through success', () => {
+    const state = imageState();
+    const context = { ...imageContext(), ...state };
+    vm.createContext(context);
+    vm.runInContext(imageCode('handleMessageImageError', 'handleMessageImageLoad', 'retryMessageImage'), context);
+    context.handleMessageImageError({ target: state.image });
+    assert.equal(state.preview.hidden, true);
+    assert.equal(state.fallback.hidden, false);
+    assert.match(state.status.textContent, /failed/i);
+    context.retryMessageImage(state.retry);
+    assert.equal(state.retry.disabled, true);
+    assert.equal(state.image.src, state.preview.dataset.mediaPreviewSrc);
+    assert.equal(state.image.loading, 'eager');
+    assert.match(state.status.textContent, /loading/i);
+    context.handleMessageImageLoad({ target: state.image });
+    assert.equal(state.preview.hidden, false);
+    assert.equal(state.fallback.hidden, true);
+    assert.equal(state.retry.disabled, false);
+});
+
+test('failed retries keep their recovery controls and unrelated load events are ignored', () => {
+    const state = imageState();
+    const context = { ...imageContext(), ...state };
+    vm.createContext(context);
+    vm.runInContext(imageCode('handleMessageImageError', 'handleMessageImageLoad', 'retryMessageImage'), context);
+    context.handleMessageImageError({ target: state.image });
+    context.retryMessageImage(state.retry);
+    context.handleMessageImageError({ target: state.image });
+    assert.equal(state.retry.disabled, false);
+    assert.equal(state.fallback.hidden, false);
+    assert.doesNotThrow(() => context.handleMessageImageLoad({ target: { matches: () => false } }));
+    assert.match(appSource, /document\.addEventListener\('load', handleMessageImageLoad, true\)/);
+    assert.match(appSource, /retryMessageImage\(imageRetryButton\)/);
 });

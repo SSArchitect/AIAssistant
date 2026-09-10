@@ -17886,7 +17886,38 @@ function handleCitationImageError(event) {
 function handleMessageImageError(event) {
     const image = event?.target;
     if (!image?.matches?.('.message-media img')) return;
-    image.closest('.message-media')?.remove();
+    const figure = image.closest('.message-media');
+    const fallback = figure?.querySelector('[data-image-fallback]');
+    if (!fallback) return;
+    figure.querySelector('[data-media-preview-src]').hidden = true;
+    fallback.hidden = false;
+    figure.querySelector('[data-image-status]').textContent = traceCopy(
+        '图片加载失败，可重试或打开原图。', 'Image failed to load. Retry or open the original.');
+    figure.querySelector('[data-image-retry]').disabled = false;
+}
+
+function handleMessageImageLoad(event) {
+    const image = event?.target;
+    if (!image?.matches?.('.message-media img')) return;
+    const figure = image.closest('.message-media');
+    const fallback = figure?.querySelector('[data-image-fallback]');
+    if (!fallback) return;
+    figure.querySelector('[data-media-preview-src]').hidden = false;
+    fallback.hidden = true;
+    figure.querySelector('[data-image-retry]').disabled = false;
+}
+
+function retryMessageImage(button) {
+    const figure = button.closest('.message-media');
+    const image = figure?.querySelector('img');
+    const url = figure?.querySelector('[data-media-preview-src]')?.dataset.mediaPreviewSrc;
+    if (!image || !url || button.disabled) return;
+    button.disabled = true;
+    figure.querySelector('[data-image-status]').textContent = traceCopy('正在加载图片…', 'Loading image…');
+    // Reuse the exact URL, including signed query parameters, without regenerating.
+    image.loading = 'eager';
+    image.removeAttribute('src');
+    image.src = url;
 }
 
 function renderArtifactPanel(artifacts = []) {
@@ -18443,6 +18474,7 @@ function renderMediaMarkdown(line, options = {}) {
 }
 
 function renderImageBlock(url, alt = '') {
+    url = isSafeDataImageUrl(url) ? url : globalThis.VideoMedia.resolveUrl(url, API_BASE);
     if (!isSafeContentUrl(url) || !isImageUrl(url)) return '';
     const label = alt || t('media.preview');
     const downloadName = suggestedImageDownloadName(url, alt);
@@ -18460,6 +18492,13 @@ function renderImageBlock(url, alt = '') {
                      decoding="async"
                      referrerpolicy="no-referrer">
             </button>
+            <div class="message-image-fallback" data-image-fallback hidden>
+                <p role="status" data-image-status></p>
+                <div class="message-image-actions">
+                    <button class="message-video-download" type="button" data-image-retry>${escapeHtml(traceCopy('重试', 'Retry'))}</button>
+                    <a href="${escapeAttr(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(traceCopy('打开原图', 'Open original'))}</a>
+                </div>
+            </div>
             ${alt ? `<figcaption>${escapeHtml(alt)}</figcaption>` : ''}
         </figure>
     `;
@@ -19313,6 +19352,13 @@ document.addEventListener('click', async (event) => {
     if (mediaDownloadButton && !mediaDownloadButton.disabled) {
         event.preventDefault();
         await downloadMediaPreview();
+        return;
+    }
+
+    const imageRetryButton = event.target.closest('[data-image-retry]');
+    if (imageRetryButton) {
+        event.preventDefault();
+        retryMessageImage(imageRetryButton);
         return;
     }
 
@@ -20759,6 +20805,7 @@ messagesContainer?.addEventListener('scroll', scheduleChatHistoryControlsUpdate,
 messagesContainer?.addEventListener('scroll', scheduleTaskResultRead, { passive: true });
 document.addEventListener('error', handleCitationImageError, true);
 document.addEventListener('error', handleMessageImageError, true);
+document.addEventListener('load', handleMessageImageLoad, true);
 document.addEventListener('loadedmetadata', (event) => {
     globalThis.VideoMedia.updateMetadata(event.target, { seconds: t('media.seconds') });
 }, true);

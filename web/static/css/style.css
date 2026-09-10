@@ -2377,6 +2377,25 @@ video {
     font-size: 12px;
 }
 
+.media-preview-trigger[hidden],
+.message-image-fallback[hidden] {
+    display: none;
+}
+
+.message-image-fallback {
+    padding: 12px 16px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    color: var(--text-muted);
+}
+
+.message-image-actions {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 12px;
+}
+
 .message-media figcaption {
     margin-top: 6px;
     color: var(--text-muted);
