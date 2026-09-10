@@ -831,3 +831,25 @@ func TestListTasksScopesAccountAndHandlesErrors(t *testing.T) {
 		})
 	}
 }
+
+func TestAgentClientGenerateSparkImageInput(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatal(err)
+		}
+		if req["mode"] != "image_to_image" || req["image_data_url"] != "data:image/png;base64,YQ==" || req["denoise"] != 0.45 || req["image_fit"] != "center_crop" {
+			t.Fatalf("image input fields were lost: %#v", req)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"spark-task","provider":"spark","model":"z-image-base","images":[]}`))
+	}))
+	defer server.Close()
+	strength := 0.45
+	_, err := NewAgentClient(server.URL, time.Second).GenerateImage(AIGCImageRequest{
+		Prompt: "redraw", Provider: "spark", Mode: "image_to_image", ImageDataURL: "data:image/png;base64,YQ==", Denoise: &strength, ImageFit: "center_crop",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}

@@ -236,6 +236,11 @@ type FollowUpResponse struct {
 }
 
 type AIGCImageRequest struct {
+	Mode             string                   `json:"mode,omitempty"`
+	ImageAssetID     string                   `json:"image_asset_id,omitempty"`
+	ImageDataURL     string                   `json:"image_data_url,omitempty"`
+	Denoise          *float64                 `json:"denoise,omitempty"`
+	ImageFit         string                   `json:"image_fit,omitempty"`
 	Provider         string                   `json:"provider,omitempty"`
 	NegativePrompt   string                   `json:"negative_prompt,omitempty"`
 	IdempotencyKey   string                   `json:"idempotency_key,omitempty"`
@@ -592,6 +597,17 @@ func (c *AgentClient) GenerateFollowUps(req FollowUpRequest) (*FollowUpResponse,
 	return &followUpResp, nil
 }
 
+// ImageGenerationError preserves the Agent's distinction between invalid input
+// and upstream failures when the Gateway serves the image API.
+type ImageGenerationError struct {
+	StatusCode int
+	Body       string
+}
+
+func (e *ImageGenerationError) Error() string {
+	return fmt.Sprintf("image generation returned status %d: %s", e.StatusCode, e.Body)
+}
+
 func (c *AgentClient) GenerateImage(req AIGCImageRequest) (*AIGCImageResponse, error) {
 	body, err := json.Marshal(req)
 	if err != nil {
@@ -610,7 +626,7 @@ func (c *AgentClient) GenerateImage(req AIGCImageRequest) (*AIGCImageResponse, e
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("image generation returned status %d: %s", resp.StatusCode, string(respBody))
+		return nil, &ImageGenerationError{StatusCode: resp.StatusCode, Body: string(respBody)}
 	}
 
 	var imageResp AIGCImageResponse

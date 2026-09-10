@@ -1,5 +1,7 @@
 # Spark 生图 Provider 与统一 AI 生图工具
 
+2026-09-10 扩展：新增 Spark 图生图附件选择和上传适配，详见 [图片输入接入](spark-image-inputs.md)。需要目标 Provider 开放 image_to_image 模式；此处代码更新不等于远端已部署。
+
 共用 Spark 地址与密钥的文生视频工具见 [Spark 生视频工具](spark-video-provider.md)。
 
 实现基于 Media Provider 接口协议 v1（2026-09-06，0.2.0）：固定 Z-Image Base、单张 PNG 文生图，默认 1024×1024。宽高单边 256–4096、16 的倍数，总像素 262144–4194304；支持 2048×2048、4096×1024、832×1216 等尺寸。后续协议参数扩展集中在 `agent/aigc/spark_client.py`，HTTP API、Agent workflow 和 tool 共用 `agent/aigc/image_service.py`。
@@ -40,7 +42,7 @@ AI 生图是 Super Chat 的常驻工具，每轮都会提供 schema，不再依�
 }
 ```
 
-工具可用参数：`task`、`reason`、可选的 `context`、`provider`、`negative_prompt`、`width`、`height`、`aspect_ratio`、`seed`、`idempotency_key`。尺寸同时提供或同时省略，显式宽高优先于 `aspect_ratio`；不提供宽高时，按比例选取符合协议的预设尺寸。Spark 提示词最多 4000 字符，seed 为 0–4294967295 整数，省略则随机。Spark 的宽高必须 16 对齐，1920×1080 会报错，1920×1088 合法；4096×4096 因总像素超限报错，不会自动缩小。当前不支持参考图、模型选择、批量出图；这些请求明确报错，不静默丢弃。Provider 不执行 MiniMax 的 `prompt_optimizer`；需要修饰时使用上层 AI 生图工作流。
+工具可用参数：`task`、`reason`、可选的 `context`、`provider`、`negative_prompt`、`width`、`height`、`aspect_ratio`、`seed`、`idempotency_key`。尺寸同时提供或同时省略，显式宽高优先于 `aspect_ratio`；不提供宽高时，按比例选取符合协议的预设尺寸。Spark 提示词最多 4000 字符，seed 为 0–4294967295 整数，省略则随机。Spark 的宽高必须 16 对齐，1920×1080 会报错，1920×1088 合法；4096×4096 因总像素超限报错，不会自动缩小。模型选择、批量出图仍不支持。图生图通过 mode=image_to_image、image_asset_id / image_data_url 或工具的 image_attachment_index 接入，不复用 MiniMax 的 subject_reference 格式。Provider 不执行 MiniMax 的 `prompt_optimizer`；需要修饰时使用上层 AI 生图工作流。
 
 原有 `POST /api/aigc/image`（Gateway）和 `POST /agent/aigc/image`（内部 Agent）均支持新增的 `provider`、`negative_prompt`、`idempotency_key` 字段。API 保留 `response_format: "url" | "base64"`，tool 返回可展示 URL。
 

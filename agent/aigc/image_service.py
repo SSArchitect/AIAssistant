@@ -12,6 +12,8 @@ async def generate_image(request: ImageGenerationRequest) -> ImageGenerationResp
         return await client.generate(request)
     if provider != "minimax":
         raise ValueError(f"Unknown image provider: {provider}")
+    if request.mode == "image_to_image" or request.denoise is not None or request.image_fit is not None:
+        raise ValueError("These image-to-image options require provider=spark")
     if request.width is not None and not (512 <= request.width <= 2048 and 512 <= request.height <= 2048):
         raise ValueError("MiniMax width and height must be between 512 and 2048")
     if len(request.prompt) > 1500:

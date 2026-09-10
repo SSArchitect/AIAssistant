@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 from math import gcd, isfinite
 import struct
 import uuid
@@ -13,6 +14,7 @@ import httpx
 
 from agent.aigc.progress import BACKGROUND_TIMEOUT, background_enabled, emit_progress
 from agent.schemas.aigc import GeneratedImage, ImageGenerationRequest, ImageGenerationResponse
+from agent.aigc.image_inputs import decode_image_data_url
 
 OUTPUT_DIR = Path(__file__).resolve().parents[2] / "web/static/generated/aigc"
 PENDING = {"submitting", "queued", "running", "recovering"}
@@ -186,6 +188,32 @@ class SparkTaskClient:
         self._report(payload, key, "saving")
         return task
 
+    async def _prepare_image_input(self, client, request, payload, key):
+        if not payload.get("mode", "").startswith("image_to_"):
+            return
+        asset_field = "image_asset_id" if payload["type"] == "image" else "first_frame_asset_id"
+        data_field = "image_data_url" if payload["type"] == "image" else "first_frame_data_url"
+        if payload["input"].get(asset_field):
+            return
+        value = getattr(request, data_field, None)
+        if not value:
+            raise ValueError("Image input mode requires an asset ID or a resolved image attachment")
+        content, media_type = decode_image_data_url(value)
+        # Stable across process restarts; changed bytes with the same task key conflict.
+        upload_key = "input-" + hashlib.sha256(key.encode()).hexdigest()
+        self._report(payload, key, "uploading")
+        response = await self._request(client, "POST", "/v1/assets", content=content,
+            headers={"Content-Type": media_type, "Idempotency-Key": upload_key})
+        try:
+            asset = response.json()
+            asset_id = asset["id"]
+            if str(uuid.UUID(asset_id)) != asset_id or asset.get("status") not in {"ready", "expired"}:
+                raise ValueError()
+        except (ValueError, KeyError, TypeError, AttributeError):
+            raise SparkProviderError("Spark returned an invalid image asset", code="invalid_response") from None
+        # Expired upload replays are valid: the following task POST may resume an existing task.
+        payload["input"][asset_field] = asset_id
+
 
 class SparkImageClient(SparkTaskClient):
     @staticmethod
@@ -204,16 +232,24 @@ class SparkImageClient(SparkTaskClient):
         if request.n != 1:
             raise ValueError("Spark currently supports one image per task (n=1)")
         if request.model or request.style or request.subject_reference or request.aigc_watermark:
-            raise ValueError("Spark does not support model selection, style, reference images or watermark options")
-        return {"type": "image", "input": {
+            raise ValueError("Spark does not support model selection, style, MiniMax subject_reference or watermark options; use image_asset_id or image_data_url for image input")
+        payload = {"type": "image", "input": {
             "prompt": request.prompt, "negative_prompt": request.negative_prompt,
             "width": width, "height": height, "seed": request.seed,
         }}
+        if request.mode == "image_to_image":
+            payload["mode"] = request.mode
+            payload["input"].update(denoise=request.denoise if request.denoise is not None else .45,
+                image_fit=request.image_fit or "center_crop")
+            if request.image_asset_id:
+                payload["input"]["image_asset_id"] = request.image_asset_id
+        return payload
 
     async def _generate(self, request: ImageGenerationRequest, payload: dict, key: str) -> ImageGenerationResponse:
         async with httpx.AsyncClient(base_url=self.base_url, headers={"Authorization": f"Bearer {self.api_key}"},
                                      timeout=httpx.Timeout(60, connect=10), follow_redirects=False,
                                      transport=self.transport) as client:
+            await self._prepare_image_input(client, request, payload, key)
             task = await self._wait_for_task(client, payload, key)
             task_id = task["id"]
             task_path = "/v1/tasks/" + quote(task_id, safe="")
@@ -247,7 +283,9 @@ class SparkImageClient(SparkTaskClient):
                 prompt=request.prompt, aspect_ratio=f"{width // gcd(width, height)}:{height // gcd(width, height)}",
                 response_format=request.response_format,
                 images=[image], metadata={"seed": task.get("seed"), "idempotency_key": key,
-                                         "width": width, "height": height})
+                                         "width": width, "height": height,
+                                         **({"mode": task.get("mode") or payload.get("mode"), "source": task.get("source")}
+                                            if payload.get("mode") else {})})
 
     async def _download(self, client: httpx.AsyncClient, path: str, *, expected_size: tuple[int, int]) -> bytes:
         # Stream with a size bound; retry a broken transfer from its beginning.

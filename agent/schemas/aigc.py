@@ -31,6 +31,11 @@ class VideoGenerationRequest(BaseModel):
         StrictStr, Field(pattern=r"^[0-9]{1,20}$")
     ] | None = None
     idempotency_key: str | None = Field(default=None, min_length=1, max_length=128)
+    mode: Literal["text_to_video", "image_to_video"] | None = None
+    first_frame_asset_id: str | None = Field(default=None, pattern=r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+    first_frame_data_url: str | None = Field(default=None, max_length=22369700, repr=False)
+    image_attachment_index: int | None = Field(default=None, strict=True, ge=1)
+    image_fit: Literal["center_crop", "stretch"] | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -59,6 +64,7 @@ class VideoGenerationRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_video_options(self) -> "VideoGenerationRequest":
+        validate_image_source(self, "first_frame_asset_id", "first_frame_data_url", "image_to_video")
         if not self.prompt.strip():
             raise ValueError("prompt cannot be blank")
         if (self.num_frames is None) == (self.duration_seconds is None):
@@ -109,9 +115,18 @@ class ImageGenerationRequest(BaseModel):
     aigc_watermark: bool = False
     style: dict[str, Any] | None = None
     subject_reference: list[dict[str, Any]] | None = None
+    mode: Literal["text_to_image", "image_to_image"] | None = None
+    image_asset_id: str | None = Field(default=None, pattern=r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+    image_data_url: str | None = Field(default=None, max_length=22369700, repr=False)
+    image_attachment_index: int | None = Field(default=None, strict=True, ge=1)
+    denoise: float | None = Field(default=None, strict=True, gt=0, le=1, allow_inf_nan=False)
+    image_fit: Literal["center_crop", "stretch"] | None = None
 
     @model_validator(mode="after")
     def validate_image_options(self) -> "ImageGenerationRequest":
+        validate_image_source(self, "image_asset_id", "image_data_url", "image_to_image")
+        if self.denoise is not None and self.mode != "image_to_image":
+            raise ValueError("denoise requires image_to_image mode")
         if not self.prompt.strip():
             raise ValueError("prompt cannot be blank")
         if self.idempotency_key is not None and not self.idempotency_key.strip():
@@ -133,6 +148,18 @@ class ImageGenerationRequest(BaseModel):
         if self.aigc_watermark:
             extra["aigc_watermark"] = True
         return extra
+
+
+def validate_image_source(request, asset_field, data_field, image_mode):
+    sources = [getattr(request, asset_field), getattr(request, data_field), request.image_attachment_index]
+    if sum(value is not None for value in sources) > 1:
+        raise ValueError("Choose one image source: asset ID, data URL or attachment index")
+    if any(value is not None for value in sources):
+        if request.mode and request.mode != image_mode:
+            raise ValueError("Image input is incompatible with text generation mode")
+        request.mode = image_mode
+    if request.image_fit is not None and request.mode != image_mode:
+        raise ValueError("image_fit requires image input mode")
 
 
 class GeneratedImage(BaseModel):

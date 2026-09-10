@@ -1536,7 +1536,12 @@ func (h *ChatHandler) GenerateImage(c *gin.Context) {
 
 	resp, err := h.agent.GenerateImage(req)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "agent error: " + err.Error()})
+		status := http.StatusBadGateway
+		var imageError *bridge.ImageGenerationError
+		if errors.As(err, &imageError) && imageError.StatusCode >= 400 && imageError.StatusCode <= 599 {
+			status = imageError.StatusCode
+		}
+		c.JSON(status, gin.H{"error": "agent error: " + err.Error()})
 		return
 	}
 

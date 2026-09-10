@@ -351,6 +351,10 @@ async def test_video_rejects_mismatched_poll_response(tmp_path, changes):
 @pytest.mark.parametrize('reply', [
     '视频已生成。', '[视频](attachment://spark-video-test.mp4)',
     '![视频](/static/generated/aigc/spark-video-test.mp4)',
+    '[小兔子](https://mini.amini.net/static/generated/aigc/spark-video-test.mp4)',
+    '[小兔子](https://mini.amini.net/static/generated/aigc/spark-video-test.mp4?download=1#t=0)',
+    '[小兔子](https://mini.amini.net/static/generated/aigc/spark-video-test.mp4)\n\n'
+    '[AI 生视频 1](/static/generated/aigc/spark-video-test.mp4)',
 ])
 def test_video_links_restore_actual_url_without_image_syntax(engine, reply):
     messages = [LLMMessage(role='assistant', content='', tool_calls=[{'id': 'call', 'name': 'generate_video', 'arguments': {}}]),
@@ -360,6 +364,20 @@ def test_video_links_restore_actual_url_without_image_syntax(engine, reply):
     assert result.count('/static/generated/aigc/spark-video-test.mp4') == 1
     assert '![' not in result
     assert 'attachment://' not in result
+    assert 'mini.amini.net' not in result
+
+
+def test_video_link_restore_preserves_unrelated_urls_and_distinct_outputs(engine):
+    urls = ['/static/generated/aigc/spark-video-test.mp4', '/static/generated/aigc/spark-video-other.mp4']
+    messages = [LLMMessage(role='assistant', content='', tool_calls=[{'id': 'call', 'name': 'generate_video'}]),
+                LLMMessage(role='tool', tool_call_id='call', content=json.dumps({
+                    'success': True, 'data': {'videos': [{'url': url} for url in urls]}}))]
+    unrelated = ['https://cdn.test/other/spark-video-test.mp4',
+                 'https://cdn.test/static/generated/aigc/unknown.mp4', 'https://[invalid/a.mp4']
+    reply = '\n\n'.join(f'[参考]({url})' for url in unrelated)
+    result = engine._restore_generated_video_links(reply, messages)
+    for url in urls + unrelated:
+        assert result.count(f']({url})') == 1
 
 
 @pytest.mark.asyncio

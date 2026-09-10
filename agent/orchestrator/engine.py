@@ -2837,6 +2837,15 @@ class AgentEngine:
         if skill is None:
             return SkillResult(success=False, error=f"Unknown skill: {skill_name}")
         try:
+            if skill_name == "generate_video" and (arguments.get("mode") == "image_to_video" or arguments.get("image_attachment_index") is not None):
+                from agent.aigc.image_inputs import attachment_image
+                arguments = dict(arguments)
+                index = arguments.get("image_attachment_index")
+                if index is not None and (arguments.get("first_frame_asset_id") or arguments.get("first_frame_data_url")):
+                    raise ValueError("Choose one image source")
+                if not arguments.get("first_frame_asset_id") and not arguments.get("first_frame_data_url"):
+                    arguments["first_frame_data_url"] = attachment_image(request.attachments, index)
+                    arguments.pop("image_attachment_index", None)
             prepared_arguments = await asyncio.wait_for(
                 skill.prepare_arguments(**arguments),
                 timeout=skill.metadata().timeout_seconds,
@@ -2925,6 +2934,7 @@ class AgentEngine:
 
     @staticmethod
     def _restore_generated_video_links(content: str, new_messages: list[LLMMessage]) -> str:
+        """Use successful tool URLs, correcting invented origins and duplicate embeds."""
         video_calls = {
             call.get("id") for message in new_messages for call in (message.tool_calls or [])
             if call.get("name") == "generate_video"
@@ -2950,18 +2960,31 @@ class AgentEngine:
         if not videos:
             return content
         link_pattern = re.compile(r"!?\[([^\]]*)\]\(([^\s)]+)\)")
+        displayed: set[str] = set()
 
         def restore(match: re.Match) -> str:
             url = match.group(2)
-            if url in videos:
-                return f"[{match.group(1)}]({url})"
+            canonical = url if url in videos else None
+            # Match the full generated path, never just an external URL's filename.
+            try:
+                parsed = urlsplit(url)
+                if parsed.scheme in {"http", "https"} and parsed.netloc and parsed.path in videos:
+                    canonical = parsed.path
+            except ValueError:
+                pass
             if url.startswith("attachment://") and url.endswith(".mp4"):
                 matches = [source for source in videos if source.rsplit("/", 1)[-1] == url.rsplit("/", 1)[-1]]
-                return f"[{match.group(1)}]({matches[0]})" if len(matches) == 1 else ""
-            return match.group(0)
+                if len(matches) != 1:
+                    return ""
+                canonical = matches[0]
+            if canonical is None:
+                return match.group(0)
+            if canonical in displayed:
+                return ""
+            displayed.add(canonical)
+            return f"[{match.group(1)}]({canonical})"
 
         content = link_pattern.sub(restore, content)
-        displayed = {match.group(2) for match in link_pattern.finditer(content)}
         return "\n\n".join([content.rstrip(), *(link for url, link in videos.items() if url not in displayed)]).strip()
 
     def _merge_agent_tool_payload(
@@ -7128,7 +7151,7 @@ class AgentEngine:
                 )
             if request.attachments:
                 constraints.append(
-                    "上传媒体可作为视觉参考；只有图片 data_url 应进入 subject_reference 参数。"
+                    "上传图片可作为视觉参考；Spark 用图生图图片资产输入，MiniMax 用 subject_reference，实际图片字节由后端传递。"
                 )
 
         handoff_messages = self._aigc_handoff_messages(request=request, history=history)
@@ -10842,7 +10865,12 @@ class AgentEngine:
 
         subject_references = self._aigc_subject_references(request.attachments)
         image_provider = request.image_options.get("provider") or runtime_config.get("aigc.image_provider", "minimax")
+        from agent.aigc.image_inputs import spark_image_options
+        source_options = (spark_image_options(request.image_options, request.attachments) if image_provider == "spark" else
+            {key: request.image_options[key] for key in ("mode", "image_asset_id", "image_data_url", "image_attachment_index", "denoise", "image_fit")
+             if request.image_options.get(key) is not None})
         image_request = ImageGenerationRequest(
+            **source_options,
             provider=image_provider,
             idempotency_key=(request.image_options.get("idempotency_key") or run_id) if image_provider == "spark" else request.image_options.get("idempotency_key"),
             seed=request.image_options.get("seed"),
@@ -10853,13 +10881,13 @@ class AgentEngine:
             response_format="url",
             n=1,
             prompt_optimizer=not text_heavy_visual,
-            subject_reference=subject_references or None,
+            subject_reference=(subject_references or None) if image_provider != "spark" else None,
             negative_prompt=(str(request.image_options.get("negative_prompt", review.get("negative_prompt") or ""))
                              if image_provider == "spark" else str(request.image_options.get("negative_prompt") or "")),
         )
 
         share_card_result = None
-        if text_heavy_visual and research_brief:
+        if text_heavy_visual and research_brief and image_request.mode != "image_to_image":
             try:
                 share_card_result = render_share_card_svg(research_brief, run_id=run_id)
             except Exception:

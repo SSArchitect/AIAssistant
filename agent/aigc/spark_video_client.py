@@ -25,9 +25,13 @@ class SparkVideoClient(SparkTaskClient):
     @staticmethod
     def payload(request: VideoGenerationRequest) -> dict:
         # Do not replace duration input with aligned frames: they are distinct idempotent requests.
-        inputs = request.model_dump(exclude={"idempotency_key"}, exclude_none=True)
+        inputs = request.model_dump(exclude={"idempotency_key", "mode", "first_frame_data_url", "image_attachment_index"}, exclude_none=True)
         inputs["seed"] = request.seed
-        return {"type": "video", "input": inputs}
+        payload = {"type": "video", "input": inputs}
+        if request.mode == "image_to_video":
+            payload["mode"] = request.mode
+            inputs["image_fit"] = request.image_fit or "center_crop"
+        return payload
 
     @staticmethod
     def _task(response: httpx.Response) -> dict:
@@ -40,6 +44,7 @@ class SparkVideoClient(SparkTaskClient):
         async with httpx.AsyncClient(base_url=self.base_url, headers={"Authorization": f"Bearer {self.api_key}"},
                                      timeout=httpx.Timeout(60, connect=10), follow_redirects=False,
                                      transport=self.transport) as client:
+            await self._prepare_image_input(client, request, payload, key)
             # Replaying POST with the original key also resumes tasks when new video submissions are disabled.
             task = await self._wait_for_task(client, payload, key)
             video = task.get("video")
@@ -68,6 +73,8 @@ class SparkVideoClient(SparkTaskClient):
             # Provider-persisted execution parameters take precedence over local request estimates.
             metadata.update(video or {})
             metadata.update({"seed": task.get("seed"), "seed_text": task.get("seed_text"), "idempotency_key": key})
+            if payload.get("mode"):
+                metadata.update(mode=task.get("mode") or payload["mode"], source=task.get("source"))
             return VideoGenerationResponse(id=task["id"], prompt=request.prompt,
                 videos=[GeneratedVideo(index=0, url="/static/generated/aigc/" + filename)],
                 seed_text=task.get("seed_text"), video=video, metadata=metadata)

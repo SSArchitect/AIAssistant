@@ -22,12 +22,16 @@ class GenerateVideoSkill(Skill):
                          "or audio timing; it does not interpolate motion. "
                          "Preserve explicit user width×height exactly: portrait 480×864 means width=480, height=864. "
                          "Never swap dimensions or claim rotation makes a landscape result equivalent to portrait. "
-                         "Describe motion, camera and sound in prompt. Text-to-video only: no reference images, "
-                         "negative prompt or model choice. Return the actual video link; use response video metadata "
+                         "Describe motion, camera and sound in prompt. For image-to-video select an attached image as the first frame "
+                         "using image_attachment_index and mode=image_to_video. No negative prompt or model choice. Return the actual video link; use response video metadata "
                          "for resolved duration/frame counts and seed_text for exact 64-bit seed. "
                          "Generation can take several minutes. A wait_timeout does not cancel the task; "
                          "resume with exactly the original prompt/options and returned idempotency_key, never a new key."),
             parameters=[
+                SkillParameter(name="mode", type="string", description="text_to_video or image_to_video (animate one first-frame image).", required=False, enum=["text_to_video", "image_to_video"]),
+                SkillParameter(name="image_attachment_index", type="integer", description="1-based position of the first-frame image in this message's attachments. Select explicitly when multiple images exist. Never copy base64.", required=False, minimum=1),
+                SkillParameter(name="first_frame_asset_id", type="string", description="Previously uploaded Spark asset ID, alternative to an attachment.", required=False),
+                SkillParameter(name="image_fit", type="string", description="Adapt image to output dimensions: center_crop (default) or stretch.", required=False, enum=["center_crop", "stretch"]),
                 SkillParameter(name="prompt", type="string", description="Exact scene, motion, camera and sound prompt.",
                                min_length=1, max_length=4000),
                 SkillParameter(name="num_frames", type="integer", description="Native frames at 24 FPS, 5–3592, rounded up to 17k+5. Exclusive with duration_seconds; omit both for 124.",
@@ -48,7 +52,7 @@ class GenerateVideoSkill(Skill):
             tags=["video", "generation"], domains=["video"],
             routing_keywords=["生视频", "生成视频", "制作视频", "文生视频", "generate video", "text to video"],
             allowed_agents=["super_chat"], always_on=True, risk_level="medium", access="external",
-            max_calls_per_run=4, timeout_seconds=570, sensitive_arguments=["prompt"],
+            max_calls_per_run=4, timeout_seconds=570, sensitive_arguments=["prompt", "first_frame_data_url"],
         )
 
     def to_tool_definition(self) -> dict:
