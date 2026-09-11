@@ -21,9 +21,10 @@ class GenerateImageSkill(Skill):
                          "Spark supports one PNG: each dimension 256–4096 in multiples of 16, total pixels 262144–4194304. "
                          "After an uncertain Spark result, reuse the original input and returned idempotency_key."),
             parameters=[
-                SkillParameter(name="mode", type="string", description="text_to_image or image_to_image (Spark redraw based on one image).", required=False, enum=["text_to_image", "image_to_image"]),
+                SkillParameter(name="mode", type="string", description="Spark mode: text generation, redraw, or character stylization from a source image.", required=False, enum=["text_to_image", "image_to_image", "character_stylization"]),
                 SkillParameter(name="image_attachment_index", type="integer", description="1-based position of the source image in this message's attachments. Required to choose among multiple images; never copy base64 into tool arguments.", required=False, minimum=1),
                 SkillParameter(name="image_asset_id", type="string", description="Previously uploaded Spark image asset ID. Alternative to an attachment.", required=False),
+                SkillParameter(name="character_style", type="string", description="Character stylization preset: anime or chibi (Q版). Requires a source image and provider=spark; do not set denoise. Output at most 1048576 pixels.", required=False, enum=["anime", "chibi"]),
                 SkillParameter(name="denoise", type="number", description="Spark redraw strength >0 to 1; default 0.45. Higher changes more of the original image.", required=False, minimum=0, maximum=1),
                 SkillParameter(name="image_fit", type="string", description="Adapt source to output dimensions: center_crop (default) or stretch.", required=False, enum=["center_crop", "stretch"]),
                 SkillParameter(name="prompt", type="string", description="Exact visual prompt.", max_length=4000),
@@ -53,7 +54,7 @@ class GenerateImageSkill(Skill):
         request = ImageGenerationRequest(**kwargs)
         arguments = request.model_dump(include=allowed, exclude_none=True)
         arguments["provider"] = request.provider or runtime_config.get("aigc.image_provider", "minimax")
-        if arguments["provider"] != "spark" and (request.mode == "image_to_image" or request.denoise is not None or request.image_fit is not None):
+        if arguments["provider"] != "spark" and (request.mode in ("image_to_image", "character_stylization") or request.denoise is not None or request.image_fit is not None):
             raise ValueError("These image-to-image options require provider=spark")
         if arguments["provider"] == "spark" and not request.idempotency_key:
             arguments["idempotency_key"] = str(uuid.uuid4())

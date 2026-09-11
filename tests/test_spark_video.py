@@ -52,7 +52,7 @@ async def test_video_submit_poll_download(tmp_path, frames):
         assert request.headers['authorization'] == 'Bearer test-secret'
         if request.method == 'POST':
             assert request.headers['idempotency-key'] == 'original-key'
-            assert json.loads(request.content) == {'type': 'video', 'input': {
+            assert json.loads(request.content) == {'type': 'video', 'template': 'video.text.v1', 'input': {
                 'prompt': prompt, 'width': 864, 'height': 480, 'fps': 24,
                 'num_frames': frames, 'seed': None}}
             return httpx.Response(202, json=task('submitting'))

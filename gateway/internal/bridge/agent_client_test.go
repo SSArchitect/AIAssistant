@@ -853,3 +853,27 @@ func TestAgentClientGenerateSparkImageInput(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestGenerateCharacterStylizationFields(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatal(err)
+		}
+		if req["mode"] != "character_stylization" || req["character_style"] != "chibi" || req["image_asset_id"] != "asset" {
+			t.Fatalf("character fields were lost: %#v", req)
+		}
+		if _, present := req["denoise"]; present {
+			t.Fatal("unexpected redraw strength")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"character","provider":"spark","model":"qwen-image-edit-2511","images":[]}`))
+	}))
+	defer server.Close()
+	_, err := NewAgentClient(server.URL, time.Second).GenerateImage(AIGCImageRequest{
+		Prompt: "keep outfit", Provider: "spark", Mode: "character_stylization", CharacterStyle: "chibi", ImageAssetID: "asset",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}

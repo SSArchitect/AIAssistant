@@ -412,7 +412,8 @@ func TestChatRegenerateSkipsPersistingDuplicateUserMessage(t *testing.T) {
 		"query": "explain this again",
 		"stream": false,
 		"agent_id": "super_chat",
-		"regenerate": true
+		"regenerate": true,
+		"suppress_follow_ups": true
 	}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/chat", body)
 	req.Header.Set("Content-Type", "application/json")

@@ -1,5 +1,7 @@
 # Spark 生视频工具
 
+2026-09-11：Spark 请求现选择 `video.text.v1` / `video.image.v1`，目标需支持 Provider 0.8 模板协议，详见 [模板接入](spark-template-provider.md)。
+
 按 Provider 0.5.0 的 `VIDEO_API_PROTOCOL.md`（2026-09-06）接入文生视频。Super Chat 自动发现并常驻提供 `generate_video` 工具，复用现有工具权限、调用次数限制和 Trace。
 
 ## 配置与使用

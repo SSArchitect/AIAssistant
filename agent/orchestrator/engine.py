@@ -10879,7 +10879,7 @@ class AgentEngine:
         image_provider = request.image_options.get("provider") or runtime_config.get("aigc.image_provider", "minimax")
         from agent.aigc.image_inputs import spark_image_options
         source_options = (spark_image_options(request.image_options, request.attachments) if image_provider == "spark" else
-            {key: request.image_options[key] for key in ("mode", "image_asset_id", "image_data_url", "image_attachment_index", "denoise", "image_fit")
+            {key: request.image_options[key] for key in ("mode", "image_asset_id", "image_data_url", "image_attachment_index", "denoise", "image_fit", "character_style")
              if request.image_options.get(key) is not None})
         image_request = ImageGenerationRequest(
             **source_options,
@@ -10887,8 +10887,10 @@ class AgentEngine:
             idempotency_key=(request.image_options.get("idempotency_key") or run_id) if image_provider == "spark" else request.image_options.get("idempotency_key"),
             seed=request.image_options.get("seed"),
             prompt=review["final_prompt"],
-            width=request.image_options.get("width", review.get("width")),
-            height=request.image_options.get("height", review.get("height")),
+            width=(request.image_options.get("width") if source_options.get("mode") == "character_stylization"
+                   else request.image_options.get("width", review.get("width"))),
+            height=(request.image_options.get("height") if source_options.get("mode") == "character_stylization"
+                    else request.image_options.get("height", review.get("height"))),
             aspect_ratio=review["aspect_ratio"],
             response_format="url",
             n=1,
@@ -10899,7 +10901,7 @@ class AgentEngine:
         )
 
         share_card_result = None
-        if text_heavy_visual and research_brief and image_request.mode != "image_to_image":
+        if text_heavy_visual and research_brief and image_request.mode not in ("image_to_image", "character_stylization"):
             try:
                 share_card_result = render_share_card_svg(research_brief, run_id=run_id)
             except Exception:

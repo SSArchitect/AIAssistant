@@ -189,7 +189,7 @@ class SparkTaskClient:
         return task
 
     async def _prepare_image_input(self, client, request, payload, key):
-        if not payload.get("mode", "").startswith("image_to_"):
+        if payload.get("mode") not in ("image_to_image", "image_to_video", "character_stylization"):
             return
         asset_field = "image_asset_id" if payload["type"] == "image" else "first_frame_asset_id"
         data_field = "image_data_url" if payload["type"] == "image" else "first_frame_data_url"
@@ -224,6 +224,14 @@ class SparkImageClient(SparkTaskClient):
         if (not 256 <= width <= 4096 or not 256 <= height <= 4096 or
                 width % 16 or height % 16 or not 262144 <= width * height <= 4194304):
             raise ValueError("Spark dimensions must be 256–4096, multiples of 16, with 262144–4194304 total pixels")
+        if request.mode == "character_stylization":
+            if request.width is None:
+                # Keep the selected ratio with a conservative one-megapixel preset.
+                width, height = {"1:1": (1024,1024), "16:9": (1024,576), "9:16": (576,1024),
+                    "4:3": (1024,768), "3:4": (768,1024), "3:2": (1152,768),
+                    "2:3": (768,1152), "21:9": (1344,576)}[request.aspect_ratio]
+            if width * height > 1048576:
+                raise ValueError("Character stylization supports at most 1048576 output pixels")
         return width, height
 
     @staticmethod
@@ -233,14 +241,25 @@ class SparkImageClient(SparkTaskClient):
             raise ValueError("Spark currently supports one image per task (n=1)")
         if request.model or request.style or request.subject_reference or request.aigc_watermark:
             raise ValueError("Spark does not support model selection, style, MiniMax subject_reference or watermark options; use image_asset_id or image_data_url for image input")
-        payload = {"type": "image", "input": {
+        # Provider 0.8 templates pin the public effect/model contract. Keep the
+        # consistent legacy selectors for shared lifecycle handling and replay.
+        template = {
+            None: "image.text.v1",
+            "text_to_image": "image.text.v1",
+            "image_to_image": "image.edit.v1",
+            "character_stylization": f"image.character.{request.character_style}.v1",
+        }[request.mode]
+        payload = {"type": "image", "template": template, "input": {
             "prompt": request.prompt, "negative_prompt": request.negative_prompt,
             "width": width, "height": height, "seed": request.seed,
         }}
-        if request.mode == "image_to_image":
+        if request.mode in ("image_to_image", "character_stylization"):
             payload["mode"] = request.mode
-            payload["input"].update(denoise=request.denoise if request.denoise is not None else .45,
-                image_fit=request.image_fit or "center_crop")
+            payload["input"]["image_fit"] = request.image_fit or "center_crop"
+            if request.mode == "character_stylization":
+                payload["input"]["character_style"] = request.character_style
+            else:
+                payload["input"]["denoise"] = request.denoise if request.denoise is not None else .45
             if request.image_asset_id:
                 payload["input"]["image_asset_id"] = request.image_asset_id
         return payload
@@ -279,11 +298,13 @@ class SparkImageClient(SparkTaskClient):
                 finally:
                     temporary.unlink(missing_ok=True)
                 image = GeneratedImage(index=0, url="/static/generated/aigc/" + filename)
-            return ImageGenerationResponse(id=task_id, provider="spark", model="z-image-base",
+            return ImageGenerationResponse(id=task_id, provider="spark", model="qwen-image-edit-2511" if request.mode == "character_stylization" else "z-image-base",
                 prompt=request.prompt, aspect_ratio=f"{width // gcd(width, height)}:{height // gcd(width, height)}",
                 response_format=request.response_format,
                 images=[image], metadata={"seed": task.get("seed"), "idempotency_key": key,
+                                         "template": task.get("template") or payload["template"],
                                          "width": width, "height": height,
+                                         **({"stylization": task.get("stylization")} if request.mode == "character_stylization" else {}),
                                          **({"mode": task.get("mode") or payload.get("mode"), "source": task.get("source")}
                                             if payload.get("mode") else {})})
 

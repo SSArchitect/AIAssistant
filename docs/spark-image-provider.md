@@ -1,5 +1,7 @@
 # Spark 生图 Provider 与统一 AI 生图工具
 
+2026-09-11：Spark 请求现使用 Provider 0.8 的公共模板 ID，工具参数保持兼容，详见 [模板接入](spark-template-provider.md)。
+
 2026-09-10 扩展：新增 Spark 图生图附件选择和上传适配，详见 [图片输入接入](spark-image-inputs.md)。需要目标 Provider 开放 image_to_image 模式；此处代码更新不等于远端已部署。
 
 共用 Spark 地址与密钥的文生视频工具见 [Spark 生视频工具](spark-video-provider.md)。

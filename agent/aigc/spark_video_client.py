@@ -1,4 +1,4 @@
-"""Spark Provider v0.5 text-to-video with bounded, atomic MP4 downloads."""
+"""Spark Provider 0.8 video templates with bounded, atomic MP4 downloads."""
 from __future__ import annotations
 
 import asyncio
@@ -27,7 +27,8 @@ class SparkVideoClient(SparkTaskClient):
         # Do not replace duration input with aligned frames: they are distinct idempotent requests.
         inputs = request.model_dump(exclude={"idempotency_key", "mode", "first_frame_data_url", "image_attachment_index"}, exclude_none=True)
         inputs["seed"] = request.seed
-        payload = {"type": "video", "input": inputs}
+        template = "video.image.v1" if request.mode == "image_to_video" else "video.text.v1"
+        payload = {"type": "video", "template": template, "input": inputs}
         if request.mode == "image_to_video":
             payload["mode"] = request.mode
             inputs["image_fit"] = request.image_fit or "center_crop"
@@ -72,7 +73,8 @@ class SparkVideoClient(SparkTaskClient):
                         "num_frames": request.resolved_frames(), "fps": request.fps, "audio": True}
             # Provider-persisted execution parameters take precedence over local request estimates.
             metadata.update(video or {})
-            metadata.update({"seed": task.get("seed"), "seed_text": task.get("seed_text"), "idempotency_key": key})
+            metadata.update({"seed": task.get("seed"), "seed_text": task.get("seed_text"), "idempotency_key": key,
+                             "template": task.get("template") or payload["template"]})
             if payload.get("mode"):
                 metadata.update(mode=task.get("mode") or payload["mode"], source=task.get("source"))
             return VideoGenerationResponse(id=task["id"], prompt=request.prompt,

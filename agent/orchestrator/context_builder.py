@@ -87,6 +87,7 @@ class ContextBuilder:
                 "展示工具返回的实际图片。除非用户明确要求 ASCII/字符画，否则不能用文字画代替图片。"
                 "工具失败时如实说明，不能声称图片已经生成。"
                 "基于上传图片重绘时使用 provider=spark、mode=image_to_image 和 image_attachment_index（本轮附件序号，从 1 开始）；"
+                "角色二次元化或Q版化时用 provider=spark、mode=character_stylization、character_style=anime或chibi，并选择源图附件；此模式不要传denoise，输出最多1048576像素。"
                 "denoise 控制重绘强度，默认 0.45；这不是保证其他细节不变的精确编辑。不要复制图片 base64。"
                 "禁止编造图片 URL 或使用占位图网站冒充本次生成结果；只有成功的生图工具结果才是交付依据。"
             )

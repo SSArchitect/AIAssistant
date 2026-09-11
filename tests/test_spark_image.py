@@ -45,7 +45,7 @@ async def test_spark_submit_poll_authenticated_download(tmp_path, response_forma
         assert request.headers['authorization'] == 'Bearer secret-test-key'
         if request.method == 'POST':
             assert request.headers['idempotency-key'] == 'stable-key'
-            assert json.loads(request.content) == {'type': 'image', 'input': {
+            assert json.loads(request.content) == {'type': 'image', 'template': 'image.text.v1', 'input': {
                 'prompt': 'robot', 'negative_prompt': 'blur', 'width': 1024, 'height': 1024, 'seed': 42}}
             return httpx.Response(202, json=task('queued'))
         if '/artifacts/' in request.url.path:

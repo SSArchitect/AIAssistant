@@ -39,14 +39,16 @@ def attachment_image(attachments, index=None):
 
 
 def spark_image_options(options, attachments):
-    result = {key: options[key] for key in ("mode", "image_asset_id", "image_data_url", "denoise", "image_fit")
+    result = {key: options[key] for key in ("mode", "image_asset_id", "image_data_url", "denoise", "image_fit", "character_style")
               if options.get(key) is not None}
+    if result.get('character_style') and not result.get('mode'):
+        result['mode'] = 'character_stylization'
     index = options.get('image_attachment_index')
     if index is not None and any(options.get(key) is not None for key in ("image_asset_id", "image_data_url")):
         raise ValueError("Choose one image source: asset ID, data URL or attachment index")
     has_image = any(item.kind == 'image' and item.data_url.startswith('data:image/') for item in attachments)
     if not result.get('image_asset_id') and not result.get('image_data_url') and (
-            index is not None or result.get('mode') == 'image_to_image' or (has_image and not result.get('mode'))):
+            index is not None or result.get('mode') in ('image_to_image', 'character_stylization') or (has_image and not result.get('mode'))):
         result['image_data_url'] = attachment_image(attachments, index)
         result.setdefault('mode', 'image_to_image')
     return result

@@ -236,6 +236,7 @@ type FollowUpResponse struct {
 }
 
 type AIGCImageRequest struct {
+	CharacterStyle   string                   `json:"character_style,omitempty"`
 	Mode             string                   `json:"mode,omitempty"`
 	ImageAssetID     string                   `json:"image_asset_id,omitempty"`
 	ImageDataURL     string                   `json:"image_data_url,omitempty"`

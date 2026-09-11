@@ -24,6 +24,7 @@ class AgentToolSkill(Skill):
         if self.agent.id == "image_generation_v1":
             return ("Use this single image tool for both direct image generation and prompt refinement, visual design, posters and covers. "
                     "For requests to draw a picture, call this tool and return the actual image; do not substitute ASCII art unless requested. "
+                    "For character stylization, use provider=spark, mode=character_stylization, character_style=anime or chibi and image_attachment_index; omit denoise. "
                     "For Spark redraw from an attached image, use mode=image_to_image and image_attachment_index. "
                     "The provider option selects Spark or MiniMax independently of the chat model.")
         return "Use this only when the current user request clearly requires this specialized agent."

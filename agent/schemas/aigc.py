@@ -115,7 +115,8 @@ class ImageGenerationRequest(BaseModel):
     aigc_watermark: bool = False
     style: dict[str, Any] | None = None
     subject_reference: list[dict[str, Any]] | None = None
-    mode: Literal["text_to_image", "image_to_image"] | None = None
+    mode: Literal["text_to_image", "image_to_image", "character_stylization"] | None = None
+    character_style: Literal["anime", "chibi"] | None = None
     image_asset_id: str | None = Field(default=None, pattern=r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
     image_data_url: str | None = Field(default=None, max_length=22369700, repr=False)
     image_attachment_index: int | None = Field(default=None, strict=True, ge=1)
@@ -124,7 +125,16 @@ class ImageGenerationRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_image_options(self) -> "ImageGenerationRequest":
-        validate_image_source(self, "image_asset_id", "image_data_url", "image_to_image")
+        if self.character_style and self.mode is None:
+            self.mode = "character_stylization"
+        image_mode = "character_stylization" if self.mode == "character_stylization" else "image_to_image"
+        validate_image_source(self, "image_asset_id", "image_data_url", image_mode)
+        if self.mode == "character_stylization":
+            if not self.character_style or not any(value is not None for value in
+                    (self.image_asset_id, self.image_data_url, self.image_attachment_index)):
+                raise ValueError("character_stylization requires character_style and one source image")
+        elif self.character_style is not None:
+            raise ValueError("character_style requires character_stylization mode")
         if self.denoise is not None and self.mode != "image_to_image":
             raise ValueError("denoise requires image_to_image mode")
         if not self.prompt.strip():
