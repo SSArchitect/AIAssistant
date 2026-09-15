@@ -251,6 +251,10 @@ func (h *AdminHandler) GetCosts(c *gin.Context) {
 
 		addUsageTotals(&summary.CostTotals, usage)
 		addUsageTotals(&accountSummary.CostTotals, usage)
+		if isBackgroundUsage(usage.AgentID) {
+			addUsageTotals(&accountSummary.BackgroundCost, usage)
+			addUsageTotals(&summary.BackgroundCost, usage)
+		}
 		dailySummary := dailyByDate[usageDay]
 		if dailySummary == nil {
 			dailySummary = &CostDailySummary{Date: usageDay}
@@ -301,6 +305,12 @@ func (h *AdminHandler) GetCosts(c *gin.Context) {
 		ensureDaySet(accountModuleActiveDays, accountModuleKey)[usageDay] = true
 	}
 
+	activitySummary, err := loadAdminAccountActivity(accountByID, time.Now())
+	if err != nil {
+		slog.Error("Failed to load account activity report", "error", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load account activity"})
+		return
+	}
 	accountSummaries := make([]CostAccountSummary, 0, len(accountByID))
 	for _, account := range accountByID {
 		account.ActiveDays = len(accountActiveDays[account.ID])
@@ -375,6 +385,7 @@ func (h *AdminHandler) GetCosts(c *gin.Context) {
 
 	c.JSON(http.StatusOK, CostReportResponse{
 		Summary:         summary,
+		Activity:        activitySummary,
 		Filter:          filter.Response(),
 		DailySeries:     dailySeries,
 		Accounts:        accountSummaries,
@@ -571,6 +582,7 @@ type costReportFilter struct {
 }
 
 type CostReportSummary struct {
+	BackgroundCost               CostTotals        `json:"background_cost"`
 	TotalAccounts                int               `json:"total_accounts"`
 	AccountsWithPasswords        int               `json:"accounts_with_passwords"`
 	ActiveAccounts               int               `json:"active_accounts"`
@@ -592,6 +604,7 @@ type CostDailySummary struct {
 }
 
 type CostAccountSummary struct {
+	AdminAccountActivity
 	ID                string            `json:"id"`
 	Name              string            `json:"name"`
 	Exists            bool              `json:"exists"`
@@ -619,6 +632,7 @@ type CostModuleSummary struct {
 }
 
 type CostReportResponse struct {
+	Activity        AdminActivitySummary `json:"activity"`
 	Summary         CostReportSummary    `json:"summary"`
 	Filter          CostReportFilter     `json:"filter"`
 	DailySeries     []CostDailySummary   `json:"daily_series"`

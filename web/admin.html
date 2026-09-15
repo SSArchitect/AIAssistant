@@ -127,6 +127,29 @@
                                 <button class="cost-range-button" type="button" data-cost-range="all" data-i18n="cost.allTime">全部</button>
                             </div>
                         </div>
+                        <div class="cost-table-block">
+                            <div class="cost-chart-head">
+                                <h3 data-i18n="activity.title">真实活跃与自动生成</h3>
+                                <span id="activity-as-of">-</span>
+                            </div>
+                            <p class="cost-note" data-i18n="activity.desc">活跃状态按最近 7 天计算，不受成本日期筛选影响；轮询和后台消耗不计入。后台调用和 Token 按所选日期统计，最近时间显示全部历史。</p>
+                            <div class="cost-metrics" id="activity-metrics"></div>
+                            <div class="cost-table-wrap">
+                                <table class="cost-table">
+                                    <thead><tr>
+                                        <th data-i18n="cost.account">账号</th>
+                                        <th data-i18n="activity.lastActive">最近真实活跃</th>
+                                        <th data-i18n="activity.lastMessage">最近用户消息</th>
+                                        <th data-i18n="activity.messages7d">7 天用户消息</th>
+                                        <th data-i18n="activity.automatic">自动生成资格</th>
+                                        <th data-i18n="activity.lastBackground">最近后台消耗</th>
+                                        <th data-i18n="activity.backgroundRequests">区间后台调用</th>
+                                        <th data-i18n="activity.backgroundTokens">区间后台 Token</th>
+                                    </tr></thead>
+                                    <tbody id="activity-account-rows"></tbody>
+                                </table>
+                            </div>
+                        </div>
                         <div class="cost-chart-block">
                             <div class="cost-chart-head">
                                 <h3 data-i18n="cost.trend">Token 趋势</h3>
@@ -142,13 +165,13 @@
                                         <thead>
                                             <tr>
                                                 <th data-i18n="cost.account">账号</th>
-                                                <th data-i18n="cost.activeDays">活跃天</th>
+                                                <th data-i18n="cost.activeDays">有消耗天数</th>
                                                 <th data-i18n="cost.dailyAverage">日均 Token</th>
                                                 <th data-i18n="cost.inputTokens">输入</th>
                                                 <th data-i18n="cost.outputTokens">输出</th>
                                                 <th data-i18n="cost.cacheRead">缓存命中</th>
                                                 <th data-i18n="cost.cacheWrite">缓存写入</th>
-                                                <th data-i18n="cost.requests">请求</th>
+                                                <th data-i18n="cost.requests">模型消耗记录</th>
                                             </tr>
                                         </thead>
                                         <tbody id="cost-daily-user-rows"></tbody>
@@ -162,15 +185,15 @@
                                         <thead>
                                             <tr>
                                                 <th data-i18n="cost.account">账号</th>
-                                                <th data-i18n="cost.requests">请求</th>
+                                                <th data-i18n="cost.requests">模型消耗记录</th>
                                                 <th data-i18n="cost.totalTokens">总 Token</th>
                                                 <th data-i18n="cost.inputTokens">输入</th>
                                                 <th data-i18n="cost.outputTokens">输出</th>
                                                 <th data-i18n="cost.cacheRead">缓存命中</th>
                                                 <th data-i18n="cost.cacheWrite">缓存写入</th>
                                                 <th data-i18n="cost.images">图片</th>
-                                                <th data-i18n="cost.activeDays">活跃天</th>
-                                                <th data-i18n="cost.lastUsed">最近使用</th>
+                                                <th data-i18n="cost.activeDays">有消耗天数</th>
+                                                <th data-i18n="cost.lastUsed">最近模型消耗</th>
                                             </tr>
                                         </thead>
                                         <tbody id="cost-historical-user-rows"></tbody>
@@ -185,10 +208,10 @@
                                             <tr>
                                                 <th data-i18n="cost.module">模块</th>
                                                 <th data-i18n="cost.runtime">运行时</th>
-                                                <th data-i18n="cost.activeUsers">活跃用户</th>
-                                                <th data-i18n="cost.activeDays">活跃天</th>
+                                                <th data-i18n="cost.activeUsers">有模型消耗的账号</th>
+                                                <th data-i18n="cost.activeDays">有消耗天数</th>
                                                 <th data-i18n="cost.dailyAverage">日均 Token</th>
-                                                <th data-i18n="cost.requests">请求</th>
+                                                <th data-i18n="cost.requests">模型消耗记录</th>
                                                 <th data-i18n="cost.totalTokens">总 Token</th>
                                                 <th data-i18n="cost.inputTokens">输入</th>
                                                 <th data-i18n="cost.outputTokens">输出</th>
@@ -286,6 +309,6 @@
     </div>
 
     <script src="/static/js/runtime-config.js?v=2"></script>
-    <script src="/static/js/admin.js?v=19"></script>
+    <script src="/static/js/admin.js?v=20-activity"></script>
 </body>
 </html>

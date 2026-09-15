@@ -43,7 +43,7 @@ test('provider model refresh normalizes the remote list and preserves a valid de
 
 test('refresh models replaces and persists the provider model snapshot', () => {
     assert.match(adminHtml, /admin\.css\?v=13/);
-    assert.match(adminHtml, /admin\.js\?v=19/);
+    assert.match(adminHtml, /admin\.js\?v=20-activity/);
     assert.match(adminSource, /fetchModels: '刷新模型'/);
     assert.match(adminSource, /const refreshedModels = normalizeFetchedModels\(result\.models, currentDefault\)/);
     assert.match(adminSource, /refreshedSettings\[`llm\.\$\{provider\}\.models`\] = JSON\.stringify\(refreshedModels\)/);

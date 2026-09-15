@@ -30,7 +30,7 @@ func (h *AccountHandler) RecordActivity(c *gin.Context) {
 // Existing messages, explicit Pulse actions and session creation preserve known
 // activity from before page-activity tracking was introduced. LastUsedAt and model
 // usage are excluded: polling and automatic generation can refresh them forever.
-func recentAccountActivity(now time.Time) *gorm.DB {
+func accountActivityRecords() *gorm.DB {
 	return database.DB.Table(`(
 		SELECT id AS user_id, last_active_at AS active_at FROM accounts
 		UNION ALL SELECT user_id, created_at AS active_at FROM messages WHERE role = 'user'
@@ -38,7 +38,11 @@ func recentAccountActivity(now time.Time) *gorm.DB {
 		UNION ALL SELECT user_id, created_at AS active_at FROM pulse_events
 			WHERE event_type IN ('open', 'like', 'upvote', 'downvote', 'question_click')
 	) AS activity`).
-		Joins("JOIN accounts ON accounts.id = activity.user_id").
+		Joins("JOIN accounts ON accounts.id = activity.user_id")
+}
+
+func recentAccountActivity(now time.Time) *gorm.DB {
+	return accountActivityRecords().
 		Where("activity.active_at > ? AND activity.active_at <= ?", now.Add(-pulseActiveAccountWindow), now).
 		Group("activity.user_id")
 }

@@ -199,6 +199,14 @@ const I18N = {
             defaultProtected: '默认账号不可删除',
             unavailable: '账号记录不存在',
         },
+        activity: {
+            title: '真实活跃与自动生成',
+            desc: '活跃状态按最近 7 天计算，不受成本日期筛选影响；轮询和后台消耗不计入。后台调用和 Token 按所选日期统计，最近时间显示全部历史。',
+            active: '7 天真实活跃账号', inactive: '暂停预生成账号', messaging: '7 天有用户消息的账号',
+            lastActive: '最近真实活跃', lastMessage: '最近用户消息', messages7d: '7 天用户消息',
+            automatic: '自动生成资格', enabled: '允许生成', paused: '已暂停 · 7 天无活动', unknown: '已暂停 · 无活动记录',
+            lastBackground: '最近后台消耗', backgroundRequests: '区间后台调用', backgroundTokens: '区间后台 Token',
+        },
         cost: {
             title: '成本管理',
             desc: '日均用户、历史用户和模块 token 开销。',
@@ -208,9 +216,9 @@ const I18N = {
             historicalTotal: '历史总 Token',
             dailyUserAverage: '用户日均 Token',
             dailyTotalAverage: '全站日均 Token',
-            activeUsers: '活跃用户',
-            activeDays: '活跃天',
-            accountActiveDays: '用户活跃天',
+            activeUsers: '有模型消耗的账号',
+            activeDays: '有消耗天数',
+            accountActiveDays: '账号消耗天数',
             dailyAverage: '日均 Token',
             fromDate: '开始日期',
             toDate: '结束日期',
@@ -224,7 +232,7 @@ const I18N = {
             outputTokens: '输出',
             cacheRead: '缓存命中',
             cacheWrite: '缓存写入',
-            requests: '请求',
+            requests: '模型消耗记录',
             images: '图片',
             accounts: '账号',
             account: '账号',
@@ -237,7 +245,7 @@ const I18N = {
             runtime: '运行时',
             accountCount: '账号数',
             passwordCount: '可查看密码',
-            lastUsed: '最近使用',
+            lastUsed: '最近模型消耗',
             encrypted: '已加密',
             notSet: '未设置',
             viewPassword: '查看',
@@ -355,6 +363,14 @@ const I18N = {
             defaultProtected: 'The default account cannot be deleted',
             unavailable: 'Account record is unavailable',
         },
+        activity: {
+            title: 'Real activity and automatic generation',
+            desc: 'Activity uses the last 7 days regardless of the cost date filter; polling and background usage do not count. Background calls and tokens follow the selected dates. Last-seen times cover all history.',
+            active: 'Active accounts · 7 days', inactive: 'Accounts with generation paused', messaging: 'Accounts with user messages · 7 days',
+            lastActive: 'Last real activity', lastMessage: 'Last user message', messages7d: 'User messages · 7 days',
+            automatic: 'Automatic generation eligibility', enabled: 'Eligible', paused: 'Paused · inactive for 7 days', unknown: 'Paused · no activity recorded',
+            lastBackground: 'Last background usage', backgroundRequests: 'Background calls in range', backgroundTokens: 'Background tokens in range',
+        },
         cost: {
             title: 'Cost',
             desc: 'Daily user, historical user, and module token usage.',
@@ -364,9 +380,9 @@ const I18N = {
             historicalTotal: 'Historical Tokens',
             dailyUserAverage: 'User Daily Avg',
             dailyTotalAverage: 'Site Daily Avg',
-            activeUsers: 'Active Users',
-            activeDays: 'Active Days',
-            accountActiveDays: 'User Active Days',
+            activeUsers: 'Accounts with model usage',
+            activeDays: 'Days with model usage',
+            accountActiveDays: 'Account usage days',
             dailyAverage: 'Daily Avg',
             fromDate: 'From',
             toDate: 'To',
@@ -380,7 +396,7 @@ const I18N = {
             outputTokens: 'Output',
             cacheRead: 'Cache Read',
             cacheWrite: 'Cache Write',
-            requests: 'Requests',
+            requests: 'Model usage records',
             images: 'Images',
             accounts: 'Accounts',
             account: 'Account',
@@ -393,7 +409,7 @@ const I18N = {
             runtime: 'Runtime',
             accountCount: 'Accounts',
             passwordCount: 'Visible Passwords',
-            lastUsed: 'Last Used',
+            lastUsed: 'Last model usage',
             encrypted: 'Encrypted',
             notSet: 'Not Set',
             viewPassword: 'View',
@@ -812,6 +828,7 @@ function applyCostRange(range) {
 function renderCostReport() {
     syncCostFilterInputs();
     renderCostMetrics(costReport?.summary || {});
+    renderAccountActivity(costReport?.accounts || [], costReport?.activity || {});
     renderCostTrend(costReport?.daily_series || [], costReport?.filter || {});
     renderCostAccuracy(costReport?.summary || {});
     renderMemberAccounts(costReport?.accounts || []);
@@ -828,6 +845,8 @@ function renderCostMetrics(summary) {
     const dailyAverage = summary.daily_average || {};
     const metrics = [
         { label: t('cost.historicalTotal'), value: formatNumber(summary.total_tokens) },
+        { label: t('activity.backgroundTokens'), value: formatNumber(summary.background_cost?.total_tokens) },
+        { label: t('activity.backgroundRequests'), value: formatNumber(summary.background_cost?.request_count) },
         { label: t('cost.dailyUserAverage'), value: formatAverage(dailyUserAverage.total_tokens) },
         { label: t('cost.dailyTotalAverage'), value: formatAverage(dailyAverage.total_tokens) },
         { label: t('cost.activeUsers'), value: formatNumber(summary.active_accounts) },
@@ -844,6 +863,38 @@ function renderCostMetrics(summary) {
             <span>${escapeHtml(metric.label)}</span>
         </div>
     `).join('');
+}
+
+function renderAccountActivity(accounts, summary) {
+    const rows = accounts.filter(account => account.exists !== false);
+    const metrics = document.getElementById('activity-metrics');
+    const asOf = document.getElementById('activity-as-of');
+    if (asOf) asOf.textContent = formatDateTime(summary.as_of);
+    if (metrics) metrics.innerHTML = [
+        { label: t('activity.active'), value: summary.active_accounts },
+        { label: t('activity.inactive'), value: summary.inactive_accounts },
+        { label: t('activity.messaging'), value: summary.messaging_accounts },
+    ].map(metric => `<div class="cost-metric"><strong>${escapeHtml(formatNumber(metric.value))}</strong><span>${escapeHtml(metric.label)}</span></div>`).join('');
+    const tbody = document.getElementById('activity-account-rows');
+    if (!tbody) return;
+    if (!rows.length) {
+        tbody.innerHTML = emptyCostRow(8, t('members.noAccounts'));
+        return;
+    }
+    tbody.innerHTML = rows.map(account => {
+        const eligible = account.automatic_generation_eligible === true;
+        const status = eligible ? t('activity.enabled') : t(account.last_active_at ? 'activity.paused' : 'activity.unknown');
+        return `<tr>
+            <td>${renderAccountCell(account.name, account.id)}</td>
+            <td>${escapeHtml(formatDateTime(account.last_active_at))}</td>
+            <td>${escapeHtml(formatDateTime(account.last_message_at))}</td>
+            <td>${formatNumber(account.user_messages_7d)}</td>
+            <td><span class="provider-badge${eligible ? ' configured' : ''}">${escapeHtml(status)}</span></td>
+            <td>${escapeHtml(formatDateTime(account.last_background_at))}</td>
+            <td>${formatNumber(account.background_cost?.request_count)}</td>
+            <td>${formatNumber(account.background_cost?.total_tokens)}</td>
+        </tr>`;
+    }).join('');
 }
 
 function renderCostAccuracy(summary) {
@@ -1139,6 +1190,12 @@ function renderCostError(message) {
     const historicalRows = document.getElementById('cost-historical-user-rows');
     const moduleRows = document.getElementById('cost-module-rows');
     const chart = document.getElementById('cost-trend-chart');
+    const activityRows = document.getElementById('activity-account-rows');
+    const activityMetrics = document.getElementById('activity-metrics');
+    const activityAsOf = document.getElementById('activity-as-of');
+    if (activityRows) activityRows.innerHTML = emptyCostRow(8, message || t('cost.loadFailed'));
+    if (activityMetrics) activityMetrics.innerHTML = '';
+    if (activityAsOf) activityAsOf.textContent = '-';
     if (accountRows) accountRows.innerHTML = `<tr><td class="cost-empty error" colspan="5">${escapeHtml(message || t('cost.loadFailed'))}</td></tr>`;
     if (dailyRows) dailyRows.innerHTML = `<tr><td class="cost-empty error" colspan="8">${escapeHtml(message || t('cost.loadFailed'))}</td></tr>`;
     if (historicalRows) historicalRows.innerHTML = `<tr><td class="cost-empty error" colspan="10">${escapeHtml(message || t('cost.loadFailed'))}</td></tr>`;
