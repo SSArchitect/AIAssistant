@@ -113,6 +113,7 @@ func main() {
 		api.POST("/accounts", accountHandler.Create)
 		api.POST("/accounts/login", accountHandler.Login)
 		api.POST("/accounts/guest", accountHandler.Guest)
+		api.POST("/accounts/activity", accountHandler.RecordActivity)
 		api.POST("/chat", chatHandler.Chat)
 		api.GET("/agents", chatHandler.ListAgents)
 		api.GET("/roles", chatHandler.ListRoles)

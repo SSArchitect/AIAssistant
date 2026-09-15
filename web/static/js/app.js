@@ -3099,6 +3099,7 @@ async function switchAccount(userId, options = {}) {
     resetConversationCreateState();
     currentUserId = nextUserId;
     currentAccountToken = options.token || loadAccountSessionToken(nextUserId);
+    void recordAccountActivity();
     resetLongTasks();
     if (options.token) saveAccountSessionToken(nextUserId, options.token);
     saveCurrentUserId(currentUserId);
@@ -9663,6 +9664,37 @@ async function loadHealth() {
     renderSettings();
 }
 
+// Only page visits and trusted input events call this; background polling does not.
+const accountActivityRequests = new Map();
+async function recordAccountActivity() {
+    if (!currentUserId || !currentAccountToken || document.hidden || navigator.onLine === false) return;
+    const identity = `${currentUserId}:${currentAccountToken}`;
+    const now = Date.now();
+    const previous = accountActivityRequests.get(identity);
+    if (previous && (previous.pending || now - previous.at < 60000)) return;
+    const attempt = { at: now, pending: true };
+    accountActivityRequests.set(identity, attempt);
+    try {
+        await apiCall('POST', '/api/accounts/activity', {}, { timeoutMs: 10000 });
+    } catch {
+        // A later visit/gesture may retry after the throttle; never start a timer.
+    } finally {
+        attempt.pending = false;
+    }
+}
+
+function bindAccountActivityEvents() {
+    document.addEventListener('visibilitychange', () => {
+        if (!document.hidden) void recordAccountActivity();
+    });
+    window.addEventListener('pageshow', () => { void recordAccountActivity(); });
+    for (const type of ['pointerdown', 'keydown', 'wheel', 'touchstart']) {
+        document.addEventListener(type, event => {
+            if (event.isTrusted) void recordAccountActivity();
+        }, { passive: true, capture: true });
+    }
+}
+
 async function refreshAll() {
     if (!currentUserId) return;
     await Promise.allSettled([
@@ -9724,6 +9756,7 @@ async function bootApp() {
 
     currentUserId = selectedAccount.id;
     currentAccountToken = storedToken;
+    void recordAccountActivity();
     currentConversationId = null;
     saveCurrentConversationId(null);
     currentRoleId = loadCurrentRoleId();
@@ -20990,6 +21023,7 @@ appBootPromise = bootApp().finally(() => {
     appBootstrapping = false;
     updateSendState();
 });
+bindAccountActivityEvents();
 void appBootPromise.then(startLongTaskPolling);
 
 

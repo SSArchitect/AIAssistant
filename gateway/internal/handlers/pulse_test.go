@@ -333,6 +333,9 @@ func TestHealthyPulseGetAndSchedulerBackfillMissingFocusTodayWithSuperChat(t *te
 	date := time.Now().Format("2006-01-02")
 	userID := models.DefaultAccountID
 	now := time.Now()
+	if err := database.DB.Model(&models.Account{}).Where("id = ?", userID).UpdateColumn("last_active_at", now).Error; err != nil {
+		t.Fatalf("seed page visit: %v", err)
+	}
 	detail := pulseItemDetail{
 		ContentVersion:       pulseContentVersion,
 		RecommendationReason: "你近期持续关注 DeepSeek 模型与 API 成本。",
@@ -1038,10 +1041,15 @@ func TestPulseSchedulerTargetsOnlyRecentlyActiveAccounts(t *testing.T) {
 
 	now := time.Now()
 	sessions := []models.AccountSession{
-		{TokenHash: "active-new", UserID: "active-user", CreatedAt: now, LastUsedAt: now.Add(-time.Hour)},
-		{TokenHash: "active-old", UserID: "active-user", CreatedAt: now, LastUsedAt: now.Add(-2 * time.Hour)},
-		{TokenHash: "second-active", UserID: "second-user", CreatedAt: now, LastUsedAt: now.Add(-6 * 24 * time.Hour)},
-		{TokenHash: "inactive", UserID: "inactive-user", CreatedAt: now, LastUsedAt: now.Add(-8 * 24 * time.Hour)},
+		{TokenHash: "active-new", UserID: "active-user", CreatedAt: now.Add(-time.Hour), LastUsedAt: now},
+		{TokenHash: "active-old", UserID: "active-user", CreatedAt: now.Add(-2 * time.Hour), LastUsedAt: now},
+		{TokenHash: "second-active", UserID: "second-user", CreatedAt: now.Add(-6 * 24 * time.Hour), LastUsedAt: now},
+		{TokenHash: "inactive", UserID: "inactive-user", CreatedAt: now.Add(-8 * 24 * time.Hour), LastUsedAt: now},
+	}
+	for _, id := range []string{"active-user", "second-user", "inactive-user"} {
+		if err := database.DB.Create(&models.Account{ID: id, Name: id, NameKey: id}).Error; err != nil {
+			t.Fatalf("seed account: %v", err)
+		}
 	}
 	if err := database.DB.Create(&sessions).Error; err != nil {
 		t.Fatalf("seed sessions: %v", err)

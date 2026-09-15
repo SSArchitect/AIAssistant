@@ -722,6 +722,9 @@ func TestPulseQualityGetSelfHealsEmptyCachedModules(t *testing.T) {
 	}
 	date := "2026-07-27"
 	now := time.Now()
+	if err := database.DB.Model(&models.Account{}).Where("id = ?", models.DefaultAccountID).UpdateColumn("last_active_at", now).Error; err != nil {
+		t.Fatalf("seed page visit: %v", err)
+	}
 	modules := make([]models.PulseModule, 0, len(pulseModuleOrder))
 	for _, key := range pulseModuleOrder {
 		modules = append(modules, models.PulseModule{

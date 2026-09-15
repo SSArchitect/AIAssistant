@@ -366,7 +366,7 @@ journalctl -u agent-assistant-agent.service -u agent-assistant-gateway.service -
 判断要点：
 
 - `POST "/api/pulse/refresh"` 跑几分钟后出现 `broken pipe`，通常是浏览器刷新/超时断开，不等于服务挂了。
-- 自动 Pulse 只为最近 24 小时活跃的帐号运行，正常间隔 6 小时；失败后按 12/24 小时退避，并且同一时间最多运行一个自动任务。
+- 自动 Pulse 和“今日聚焦”只为最近 7 天真实访问或使用过的帐号运行；页面打开/前台恢复、真实操作、用户消息、登录和主动 Pulse 事件计入活跃，session 轮询时间和模型消耗不计入。正常间隔 6 小时；失败后按 12/24 小时退避，并且同一时间最多运行一个自动任务。用户手动刷新仍可立即执行。
 - `DELETE "/api/pulse/topics/<id>"` 表示订阅主题被删除；刷新接口本身不应该删除 topic。
 - `DELETE "/api/conversations/<id>"` 会硬删除会话及消息，所以 assistant 内容会一起消失。
 - 会话和 Pulse 都按 `user_id` 隔离；切换帐号后旧数据可能还在默认帐号 `0` 下，只是当前帐号看不到。

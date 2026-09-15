@@ -587,26 +587,24 @@ func (h *PulseHandler) runScheduledPulse(reason string) {
 }
 
 func (h *PulseHandler) scheduledPulseUserIDs() []string {
-	var sessions []models.AccountSession
-	cutoff := time.Now().Add(-pulseActiveAccountWindow)
-	if err := database.DB.
-		Where("last_used_at >= ?", cutoff).
-		Order("last_used_at desc").
-		Find(&sessions).Error; err != nil {
+	var userIDs []string
+	if err := recentAccountActivity(time.Now()).
+		Order("MAX(activity.active_at) DESC, activity.user_id ASC").
+		Pluck("activity.user_id", &userIDs).Error; err != nil {
 		slog.Warn("Pulse active account load failed", "error", err)
 		return nil
 	}
-	userIDs := make([]string, 0, len(sessions))
-	seen := map[string]bool{}
-	for _, session := range sessions {
-		userID := normalizedUserID(session.UserID)
-		if seen[userID] {
-			continue
-		}
-		seen[userID] = true
-		userIDs = append(userIDs, userID)
-	}
 	return userIDs
+}
+
+func (h *PulseHandler) accountEligibleForAutomaticPulse(userID string, now time.Time) bool {
+	var userIDs []string
+	if err := recentAccountActivity(now).Where("activity.user_id = ?", normalizedUserID(userID)).
+		Pluck("activity.user_id", &userIDs).Error; err != nil {
+		slog.Warn("Pulse activity check failed closed", "user_id", userID, "error", err)
+		return false
+	}
+	return len(userIDs) > 0
 }
 
 func (h *PulseHandler) needsScheduledRefresh(date string, userID string) (bool, error) {
@@ -1412,6 +1410,9 @@ func pulseWelcomeSuggestionLooksUseful(value string) bool {
 
 func (h *PulseHandler) startPulseGeneration(date string, userID string, force bool, reason string) bool {
 	userID = normalizedUserID(userID)
+	if pulseGenerationReasonIsAutomatic(reason) && !h.accountEligibleForAutomaticPulse(userID, time.Now()) {
+		return false
+	}
 	key := pulseGenerationJobKey(date, userID)
 
 	h.jobsMu.Lock()
@@ -1480,6 +1481,9 @@ func (h *PulseHandler) startFocusTodayBackfill(date string, userID string, reaso
 		return false
 	}
 	userID = normalizedUserID(userID)
+	if !h.accountEligibleForAutomaticPulse(userID, time.Now()) {
+		return false
+	}
 	key := pulseGenerationJobKey(date, userID)
 	now := time.Now()
 
