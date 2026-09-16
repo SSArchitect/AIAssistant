@@ -667,9 +667,14 @@ func TestAgentClientListRunsUsesFiltersAndDecodesEvents(t *testing.T) {
 		if got := r.URL.Query().Get("limit"); got != "10" {
 			t.Fatalf("unexpected limit query: %s", got)
 		}
+		if got := r.URL.Query().Get("cursor"); got != "opaque+/cursor=" {
+			t.Fatalf("unexpected cursor query: %s", got)
+		}
 
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{
+			"has_more": true,
+			"next_cursor": "next-page",
 			"runs": [
 				{
 					"run_id": "run_123",
@@ -704,13 +709,16 @@ func TestAgentClientListRunsUsesFiltersAndDecodesEvents(t *testing.T) {
 	defer server.Close()
 
 	client := NewAgentClient(server.URL, time.Second)
-	resp, err := client.ListRuns("conv-1", "0", 10)
+	resp, err := client.ListRuns("conv-1", "0", 10, "opaque+/cursor=")
 	if err != nil {
 		t.Fatalf("ListRuns returned error: %v", err)
 	}
 
 	if len(resp.Runs) != 1 {
 		t.Fatalf("unexpected runs length: %d", len(resp.Runs))
+	}
+	if !resp.HasMore || resp.NextCursor != "next-page" {
+		t.Fatalf("pagination metadata missing: %+v", resp)
 	}
 	run := resp.Runs[0]
 	if run.RunID != "run_123" || run.Status != "completed" {

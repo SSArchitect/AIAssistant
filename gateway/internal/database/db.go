@@ -20,12 +20,20 @@ func Init(dbPath string) error {
 	}
 
 	var err error
-	DB, err = gorm.Open(sqlite.Open(dbPath+"?_busy_timeout=5000"), &gorm.Config{
+	// WAL lets foreground readers continue while background work holds the writer.
+	DB, err = gorm.Open(sqlite.Open(dbPath+"?_busy_timeout=5000&_journal_mode=WAL"), &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Warn),
 	})
 	if err != nil {
 		return err
 	}
+	sqlDB, err := DB.DB()
+	if err != nil {
+		return err
+	}
+	// Keep read concurrency without opening an unbounded set of competing writers.
+	sqlDB.SetMaxOpenConns(8)
+	sqlDB.SetMaxIdleConns(4)
 
 	if err := DB.AutoMigrate(
 		&models.Account{},

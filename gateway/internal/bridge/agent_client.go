@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -409,8 +410,12 @@ type RunRecord struct {
 }
 
 type RunListResponse struct {
-	Runs []RunRecord `json:"runs"`
+	Runs       []RunRecord `json:"runs"`
+	HasMore    bool        `json:"has_more"`
+	NextCursor string      `json:"next_cursor"`
 }
+
+var ErrInvalidRunCursor = errors.New("invalid run cursor")
 
 func NewAgentClient(baseURL string, timeout time.Duration) *AgentClient {
 	return &AgentClient{
@@ -887,7 +892,7 @@ func (c *AgentClient) writeRole(method string, path string, req RoleWriteRequest
 	return &role, nil
 }
 
-func (c *AgentClient) ListRuns(conversationID string, userID string, limit int) (*RunListResponse, error) {
+func (c *AgentClient) ListRuns(conversationID string, userID string, limit int, cursor ...string) (*RunListResponse, error) {
 	params := url.Values{}
 	if conversationID != "" {
 		params.Set("conversation_id", conversationID)
@@ -900,6 +905,9 @@ func (c *AgentClient) ListRuns(conversationID string, userID string, limit int) 
 	}
 
 	endpoint := c.baseURL + "/agent/runs"
+	if len(cursor) > 0 && cursor[0] != "" {
+		params.Set("cursor", cursor[0])
+	}
 	if encoded := params.Encode(); encoded != "" {
 		endpoint += "?" + encoded
 	}
@@ -910,6 +918,9 @@ func (c *AgentClient) ListRuns(conversationID string, userID string, limit int) 
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode == http.StatusBadRequest {
+		return nil, ErrInvalidRunCursor
+	}
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
 		return nil, fmt.Errorf("agent returned status %d: %s", resp.StatusCode, string(respBody))

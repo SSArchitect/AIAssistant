@@ -1250,7 +1250,7 @@ func (h *ChatHandler) ListTasks(c *gin.Context) {
 }
 
 func (h *ChatHandler) ListRuns(c *gin.Context) {
-	limit := 50
+	limit := 10
 	if rawLimit := c.Query("limit"); rawLimit != "" {
 		parsed, err := strconv.Atoi(rawLimit)
 		if err != nil {
@@ -1259,9 +1259,14 @@ func (h *ChatHandler) ListRuns(c *gin.Context) {
 		}
 		limit = parsed
 	}
+	limit = max(1, min(limit, 200))
 
 	userID := requestUserID(c)
-	runs, err := h.agent.ListRuns(c.Query("conversation_id"), userID, limit)
+	runs, err := h.agent.ListRuns(c.Query("conversation_id"), userID, limit, c.Query("cursor"))
+	if errors.Is(err, bridge.ErrInvalidRunCursor) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid run cursor"})
+		return
+	}
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "agent error: " + err.Error()})
 		return

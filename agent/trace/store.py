@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import base64
+import binascii
+import json
 from datetime import datetime, timezone
 from threading import Lock
 from pathlib import Path
@@ -9,7 +12,7 @@ from time import perf_counter
 from typing import Any, Optional
 from uuid import uuid4
 
-from agent.schemas.trace import RunEvent, RunRecord
+from agent.schemas.trace import RunEvent, RunRecord, RunListResponse
 
 
 def _now() -> datetime:
@@ -288,6 +291,7 @@ class TraceStore:
         conversation_id: str | None = None,
         user_id: str | None = None,
         limit: int = 50,
+        before: tuple[datetime, str] | None = None,
     ) -> list[RunRecord]:
         with self._lock:
             runs = list(self._runs.values())
@@ -296,8 +300,41 @@ class TraceStore:
         if user_id is not None:
             normalized_user_id = self._normalize_user_id(user_id)
             runs = [r for r in runs if r.user_id == normalized_user_id]
-        runs.sort(key=lambda r: r.started_at, reverse=True)
+        if before is not None:
+            runs = [r for r in runs if (r.started_at, r.run_id) < before]
+        runs.sort(key=lambda r: (r.started_at, r.run_id), reverse=True)
         return runs[:limit]
+
+    def list_runs_page(self, *, conversation_id: str | None = None,
+                       user_id: str | None = None, limit: int = 10,
+                       cursor: str = "") -> RunListResponse:
+        before = None
+        if cursor:
+            try:
+                if len(cursor) > 1024:
+                    raise ValueError()
+                decoded = json.loads(base64.b64decode(
+                    cursor + "=" * (-len(cursor) % 4), altchars=b"-_", validate=True))
+                if not isinstance(decoded, list) or len(decoded) != 2:
+                    raise ValueError()
+                timestamp, run_id = decoded
+                started_at = datetime.fromisoformat(timestamp)
+                if started_at.tzinfo is None or not isinstance(run_id, str) or not run_id:
+                    raise ValueError()
+                before = (started_at, run_id)
+            except (ValueError, TypeError, binascii.Error, UnicodeDecodeError) as exc:
+                raise ValueError("invalid run cursor") from exc
+        limit = max(1, min(limit, 200))
+        items = self.list_runs(conversation_id=conversation_id, user_id=user_id,
+                               limit=limit + 1, before=before)
+        has_more = len(items) > limit
+        items = items[:limit]
+        next_cursor = ""
+        if has_more:
+            last = items[-1]
+            next_cursor = base64.urlsafe_b64encode(json.dumps(
+                [last.started_at.isoformat(), last.run_id]).encode()).decode().rstrip("=")
+        return RunListResponse(runs=items, has_more=has_more, next_cursor=next_cursor)
 
     def task_runs(self, user_id: str, limit: int = 50) -> list[RunRecord]:
         """Compact root tasks, including every active task regardless of recent history."""

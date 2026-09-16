@@ -9884,6 +9884,10 @@ body.drive-selecting {
     gap: 14px;
 }
 
+.run-pagination { padding: 12px 0; font-size: 12px; }
+.run-pagination nav { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.run-pagination p { margin: 0 0 8px; overflow-wrap: anywhere; }
+
 .run-list {
     min-height: 0;
     overflow-y: auto;

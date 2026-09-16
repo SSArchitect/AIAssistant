@@ -298,10 +298,11 @@ func accountSessionUserID(token string) (string, bool) {
 		return "", false
 	}
 	var session models.AccountSession
-	if err := database.DB.First(&session, "token_hash = ?", accountSessionTokenHash(token)).Error; err != nil {
+	db := database.DB
+	if err := db.First(&session, "token_hash = ?", accountSessionTokenHash(token)).Error; err != nil {
 		return "", false
 	}
-	database.DB.Model(&session).Update("last_used_at", time.Now())
+	touchAccountSessionAsync(db, session, time.Now())
 	return normalizedUserID(session.UserID), true
 }
 

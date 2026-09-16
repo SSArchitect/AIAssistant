@@ -791,6 +791,28 @@ async def test_list_runs_filters_by_conversation(client):
 
 
 @pytest.mark.asyncio
+async def test_run_api_defaults_to_ten_and_exposes_cursor_and_events(client):
+    for index in range(12):
+        run = main_module.trace_store.start_run(
+            conversation_id="pagination-api", user_id="pagination-owner",
+            input_text=str(index), agent_id="super_chat", runtime="self")
+        main_module.trace_store.complete_run(run.run_id, output="done")
+    params = {"conversation_id": "pagination-api", "user_id": "pagination-owner"}
+    first = await client.get("/agent/runs", params=params)
+    assert first.status_code == 200
+    page = first.json()
+    assert len(page["runs"]) == 10 and page["has_more"]
+    assert page["runs"][0]["events"]  # The trace details contract is preserved.
+    second = await client.get("/agent/runs", params={**params, "cursor": page["next_cursor"]})
+    assert second.status_code == 200
+    assert len(second.json()["runs"]) == 2
+    assert not second.json()["has_more"] and not second.json()["next_cursor"]
+    assert not ({r["run_id"] for r in page["runs"]} & {r["run_id"] for r in second.json()["runs"]})
+    invalid = await client.get("/agent/runs", params={**params, "cursor": "invalid!"})
+    assert invalid.status_code == 400
+
+
+@pytest.mark.asyncio
 async def test_chat_missing_fields(client):
     """Chat endpoint should reject missing required fields."""
     resp = await client.post("/agent/chat", json={})

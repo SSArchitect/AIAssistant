@@ -41,3 +41,5 @@ class RunRecord(BaseModel):
 
 class RunListResponse(BaseModel):
     runs: list[RunRecord] = Field(default_factory=list)
+    has_more: bool = False
+    next_cursor: str = ""

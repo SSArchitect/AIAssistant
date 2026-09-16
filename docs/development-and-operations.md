@@ -183,6 +183,10 @@ PUT  /api/admin/settings
 
 会话列表传入 `limit`（1–100）时启用分页，响应包含 `conversations`、`total`、`has_more` 和 `next_cursor`。游标按更新时间和 ID 倒序定位，`q` 按当前账号的标题搜索；不传 `limit` 的旧调用保持全列表契约。侧栏每页 20 条，接近底部自动加载，搜索和账号切换会重置游标。
 
+运行记录 `GET /api/runs` 默认每页 10 条，响应包含 `runs`、`has_more` 和 `next_cursor`；后续页传 `cursor=<next_cursor>`，保留 `conversation_id` 和账号过滤。游标按启动时间和 run ID 倒序定位，避免新任务插入造成翻页重复。调试页提供上一页/下一页，只在翻页时请求对应页面；聊天首屏不渲染隐藏的调试面板。每条记录仍保留完整事件。
+
+Gateway SQLite 使用 WAL 和有界连接池，让后台写事务与前台读取并行。登录校验每次查询真实 session，不缓存鉴权结果；`last_used_at` 最多每 5 分钟后台更新一次，并合并同一 session 的并发更新。写入失败不会拒绝有效登录，后续请求会重试；真实账号活跃时间仍由 `/api/accounts/activity` 独立记录。WAL 在服务启动时启用；运行中备份数据库应使用 SQLite backup API/`.backup`，不能只复制主 `.db` 文件而漏掉 WAL 中未合并的数据。
+
 `POST /api/chat` 会透传 Python Agent 返回的 debug 字段：
 
 ```json

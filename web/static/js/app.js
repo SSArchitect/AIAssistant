@@ -2087,6 +2087,8 @@ let toolSettingsSaving = false;
 let toolSettingsStatus = '';
 let toolSettingsStatusType = 'muted';
 let runs = [];
+let runPager = null;
+let runPageCursor = '';
 let settings = {};
 let health = null;
 let pulse = { date: '', generated_at: '', topics: [], suggested_topics: [], items: [] };
@@ -3134,6 +3136,8 @@ async function switchAccount(userId, options = {}) {
     toolSettingsStatus = '';
     toolSettingsStatusType = 'muted';
     runs = [];
+    runPageCursor = '';
+    runPager?.reset();
     pulse = { date: '', generated_at: '', topics: [], suggested_topics: [], items: [] };
     todoState = {
         scope: 'today',
@@ -8248,19 +8252,33 @@ async function loadTools() {
     updateCounts();
 }
 
+function getRunPager() {
+    if (!runPager) runPager = globalThis.RunPager.create({
+        fetchPage: ({ limit, cursor }) => {
+            const params = new URLSearchParams({ limit: String(limit) });
+            if (cursor) params.set('cursor', cursor);
+            return apiCall('GET', `/api/runs?${params}`, null, { timeoutMs: 15000 });
+        },
+        onChange: state => {
+            runsError = state.error;
+            if (!state.loading && !state.error) {
+                mergeRuns(state.items);
+                if (runPageCursor !== state.cursor || !selectedRunId) {
+                    selectedRunId = state.items[0]?.run_id || '';
+                    selectedTraceNodeId = '';
+                }
+                runPageCursor = state.cursor;
+            }
+            renderRuns();
+            updateCounts();
+        },
+    });
+    return runPager;
+}
+
 async function loadRuns() {
-    runsError = '';
-    try {
-        const data = await apiCall('GET', '/api/runs?limit=50');
-        runs = data.runs || [];
-        if (!selectedRunId && runs.length > 0) selectedRunId = runs[0].run_id;
-    } catch (err) {
-        runs = [];
-        selectedRunId = '';
-        runsError = err.message;
-    }
-    renderRuns();
-    updateCounts();
+    if (!currentUserId) return;
+    await getRunPager().refresh();
 }
 
 function invalidatePulseRequests() {
@@ -12955,18 +12973,25 @@ async function saveMcpSettings() {
 }
 
 function renderRuns() {
-    if (runsError) {
+    // Trace rendering is only needed when its view is visible.
+    if (activeView !== 'trace') return;
+    const page = runPager?.snapshot();
+    const pageRuns = page ? page.items : runs.slice(0, 10);
+    const pagerHtml = renderRunPagination(page);
+    if (runsError && !pageRuns.length) {
         runList.innerHTML = emptyState(t('runs.unavailableTitle'), runsError);
+        runList.innerHTML += pagerHtml;
         runDetail.innerHTML = '';
         return;
     }
-    if (!runs.length) {
+    if (!pageRuns.length && !selectedRunId) {
         runList.innerHTML = emptyState(t('runs.emptyTitle'), t('runs.emptyDetail'));
+        runList.innerHTML += pagerHtml;
         runDetail.innerHTML = '';
         return;
     }
 
-    runList.innerHTML = runs.map((run) => {
+    runList.innerHTML = pageRuns.map((run) => {
         const active = run.run_id === selectedRunId;
         const statusClass = runStatusClass(run.status);
         const queryText = runQueryText(run);
@@ -12992,15 +13017,27 @@ function renderRuns() {
                 </span>
             </button>
         `;
-    }).join('');
+    }).join('') + pagerHtml;
 
-    const selected = runs.find((run) => run.run_id === selectedRunId) || runs[0];
+    const selected = runs.find((run) => run.run_id === selectedRunId) || pageRuns[0];
     if (selected) {
         const runChanged = selectedRunId !== selected.run_id;
         selectedRunId = selected.run_id;
         if (runChanged) selectedTraceNodeId = '';
         renderRunDetail(selected);
     }
+}
+
+function renderRunPagination(page) {
+    if (!page) return '';
+    return `<div class="run-pagination">
+        ${page.error ? `<p role="status">${escapeHtml(page.error)} <button type="button" class="btn-secondary" data-run-page="refresh">${escapeHtml(t('sidebar.retryConversations'))}</button></p>` : ''}
+        <nav aria-label="${escapeAttr(traceCopy('运行记录分页', 'Run history pages'))}">
+            <button type="button" class="btn-secondary" data-run-page="previous" ${page.loading || page.page <= 1 ? 'disabled' : ''}>${traceCopy('上一页', 'Previous')}</button>
+            <span role="status">${page.loading ? traceCopy('加载中…', 'Loading…') : traceCopy(`第 ${page.page} 页`, `Page ${page.page}`)}</span>
+            <button type="button" class="btn-secondary" data-run-page="next" ${page.loading || !page.hasMore ? 'disabled' : ''}>${traceCopy('下一页', 'Next')}</button>
+        </nav>
+    </div>`;
 }
 
 function runStatusClass(status = '') {
@@ -20295,6 +20332,13 @@ document.addEventListener('click', async (event) => {
         selectedTraceNodeId = traceNodeButton.dataset.traceNodeId;
         const selected = runs.find((run) => run.run_id === selectedRunId);
         if (selected) renderRunDetail(selected);
+        return;
+    }
+
+    const runPageButton = event.target.closest('[data-run-page]');
+    if (runPageButton && !runPageButton.disabled) {
+        const action = runPageButton.dataset.runPage;
+        if (['next', 'previous', 'refresh'].includes(action)) await getRunPager()[action]();
         return;
     }
 

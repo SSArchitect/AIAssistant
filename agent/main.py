@@ -758,16 +758,19 @@ async def chat_stream(request: ChatRequest):
 async def list_runs(
     conversation_id: Optional[str] = None,
     user_id: Optional[str] = None,
-    limit: int = 50,
+    limit: int = 10,
+    cursor: str = "",
 ):
     bounded_limit = max(1, min(limit, 200))
-    return RunListResponse(
-        runs=trace_store.list_runs(
+    try:
+        return trace_store.list_runs_page(
             conversation_id=conversation_id,
             user_id=user_id,
             limit=bounded_limit,
+            cursor=cursor,
         )
-    )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="invalid run cursor") from exc
 
 
 @app.get("/agent/tasks")
