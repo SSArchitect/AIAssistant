@@ -73,9 +73,8 @@ def test_acknowledged_task_uses_saved_identity_without_attachment_lookup():
 def test_missing_or_ambiguous_inputs_are_not_silently_replaced():
     store = TraceStore()
     saved_run(store)
-    restored, task_id = recover(store, reference_image_attachment_indices=[2])
-    assert restored['reference_image_attachment_indices'] == [2]
-    assert task_id is None
+    with pytest.raises(ValueError, match='Original video attachments'):
+        recover(store, reference_image_attachment_indices=[2])
     with pytest.raises(ValueError):
         recover(store, reference_image_attachment_indices=[True])
     with pytest.raises(ValueError):
@@ -96,6 +95,7 @@ async def test_engine_followup_recovery_keeps_governance(engine, task_id, denied
     assert result.success is not denied
     if denied:
         generate.assert_not_called()
+        assert engine.trace_store.get_video_request('owner', 'conversation', 'original-key') is None
     elif task_id:
         assert generate.await_args.kwargs == {'resume_task_id': task_id}
     else:
@@ -163,3 +163,122 @@ def test_video_deadlines_leave_governance_cleanup_margin():
     assert GenerateVideoSkill().metadata().timeout_seconds >= client.timeout + 120
     with pytest.raises(ValueError):
         GenerateVideoSkill().metadata().__class__(name='unbounded', description='test', timeout_seconds=3601)
+
+
+def add_legacy_input_record(store, run):
+    store.append_event(run.run_id, type='tool.started', status='running', step_id='original-call', payload={
+        'name': 'generate_video', 'arguments': arguments(prompt='<redacted>', width=480, height=864,
+                                                       duration_seconds=15)})
+    store.append_event(run.run_id, type='tool.governance.allowed', status='completed', step_id='original-call', payload={
+        'tool_name': 'generate_video', 'arguments': {'prompt': '<redacted>', 'mode': 'reference_to_video',
+            'reference_image_data_urls': '<redacted>', 'width': 480, 'height': 864, 'duration_seconds': 15,
+            'fps': 24, 'idempotency_key': 'original-key'}})
+
+
+def test_legacy_replay_restores_original_selectors_and_options_not_new_model_values():
+    store = TraceStore()
+    add_legacy_input_record(store, saved_run(store))
+    # Later failed retries must not become the replay template.
+    later = saved_run(store)
+    store.append_event(later.run_id, type='tool.started', status='running', payload={
+        'name': 'generate_video', 'arguments': arguments(reference_image_attachment_indices=[1, 3])})
+    restored, task_id = recover(store, reference_image_attachment_indices=[1, 3],
+                                width=864, height=480, duration_seconds=5, seed='123')
+    assert restored['reference_image_data_urls'] == DATA[::-1]
+    assert (restored['width'], restored['height'], restored['duration_seconds']) == (480, 864, 15)
+    assert 'seed' not in restored and task_id is None
+    assert restored['prompt'] == 'original scene'
+
+
+@pytest.mark.asyncio
+async def test_legacy_reordered_followup_replays_provider_asset_keys_without_conflict(engine, tmp_path):
+    import base64, json
+    from tests.test_spark_reference_video import IDS
+    add_legacy_input_record(engine.trace_store, saved_run(engine.trace_store))
+    uploads = []
+    def handler(request):
+        if request.url.path == '/v1/assets':
+            slot = len(uploads)
+            uploads.append(request)
+            expected = base64.b64decode(DATA[::-1][slot].split(',', 1)[1])
+            if request.content != expected:
+                return httpx.Response(409, json={'error': {'code': 'idempotency_conflict'}})
+            return httpx.Response(201, json={'id': IDS[slot], 'status': 'ready'})
+        if request.method == 'POST':
+            body = json.loads(request.content)
+            assert body['input']['reference_image_asset_ids'] == IDS
+            assert body['input']['duration_seconds'] == 15
+            return httpx.Response(202, json=task())
+        return httpx.Response(200, content=mp4(), headers={'Content-Type': 'video/mp4'})
+    client = SparkVideoClient('https://spark.test', 'secret', output_dir=tmp_path,
+                              transport=httpx.MockTransport(handler))
+    request = ChatRequest(user_id='owner', conversation_id='conversation', message='继续查原视频', agent_id='super_chat')
+    with patch('agent.aigc.video_service.SparkVideoClient', return_value=client):
+        result = await engine._execute_skill_with_governance(request=request, run_id='replay',
+            skill_name='generate_video', arguments=arguments(reference_image_attachment_indices=[1, 3]))
+    assert result.success, result.error
+    assert len(uploads) == 2
+
+
+@pytest.mark.asyncio
+async def test_full_request_is_frozen_before_failure_and_restored_after_restart(engine, tmp_path):
+    from tests.test_spark_reference_video import attachments
+    from agent.skills.governance import ToolGovernance
+    engine.trace_store = TraceStore(tmp_path / 'trace.db')
+    engine.tool_governance = ToolGovernance(engine.trace_store)
+    request = ChatRequest(user_id='owner', conversation_id='conversation', message='generate',
+                          agent_id='super_chat', attachments=attachments())
+    initial = arguments(reference_image_attachment_indices=[2, 1], duration_seconds=15)
+    with patch('agent.skills.builtin.generate_video.generate_video', new=AsyncMock(
+            side_effect=SparkProviderError('timeout', code='wait_timeout'))) as generate:
+        failed = await engine._execute_skill_with_governance(request=request, run_id='first',
+            skill_name='generate_video', arguments=initial)
+    assert not failed.success
+    original = generate.await_args.args[0].model_dump()
+    engine.trace_store = TraceStore(tmp_path / 'trace.db')
+    engine.tool_governance = ToolGovernance(engine.trace_store)
+    followup = request.model_copy(update={'attachments': []})
+    changed = arguments(prompt='model rewrote prompt', reference_image_attachment_indices=[1, 2],
+                         duration_seconds=5, seed='999')
+    with patch('agent.skills.builtin.generate_video.generate_video', new=AsyncMock(return_value=video_response())) as generate:
+        result = await engine._execute_skill_with_governance(request=followup, run_id='second',
+            skill_name='generate_video', arguments=changed)
+    assert result.success
+    assert generate.await_args.args[0].model_dump() == original
+
+
+@pytest.mark.parametrize('persisted', [False, True])
+def test_private_replay_inputs_are_immutable_scoped_and_purged(tmp_path, persisted):
+    path = tmp_path / 'trace.db' if persisted else None
+    store = TraceStore(path)
+    original = {'idempotency_key': 'key', 'prompt': 'private prompt', 'reference_image_data_urls': DATA}
+    frozen = store.freeze_video_request('owner', 'conversation', original)
+    frozen['prompt'] = 'mutated caller result'
+    assert store.freeze_video_request('owner', 'conversation', {'idempotency_key': 'key', 'prompt': 'changed'}) == original
+    assert store.get_video_request('other', 'conversation', 'key') is None
+    assert store.get_video_request('owner', 'other', 'key') is None
+    store.freeze_video_request('other', 'conversation', original)
+    store.purge_user('owner')
+    if persisted:
+        store = TraceStore(path)
+    assert store.get_video_request('owner', 'conversation', 'key') is None
+    assert store.get_video_request('other', 'conversation', 'key') == original
+    assert 'private prompt' not in store.list_runs_page(user_id='other').model_dump_json()
+
+
+@pytest.mark.asyncio
+async def test_approval_freezes_video_only_after_user_allows(engine):
+    from tests.test_spark_reference_video import attachments
+    request = ChatRequest(user_id='owner', conversation_id='conversation', message='看看状态',
+                          agent_id='super_chat', attachments=attachments(), tool_policies={'generate_video': 'confirm'})
+    with patch('agent.skills.builtin.generate_video.generate_video', new=AsyncMock(return_value=video_response())) as generate:
+        result = await engine._execute_skill_with_governance(request=request, run_id='approval-run',
+            skill_name='generate_video', arguments=arguments(reference_image_attachment_indices=[2, 1]))
+        assert not result.success and result.error_code == 'explicit_confirmation_required'
+        assert engine.trace_store.get_video_request('owner', 'conversation', 'original-key') is None
+        engine.tool_governance.seal_run_approvals('approval-run')
+        resolved = await engine.tool_governance.resolve_approval(result.data['governance']['approval_id'],
+            user_id='owner', decision='allow_once')
+    assert resolved['succeeded_count'] == 1
+    assert generate.await_count == 1
+    assert engine.trace_store.get_video_request('owner', 'conversation', 'original-key')['reference_image_data_urls'] == DATA[::-1]

@@ -25,6 +25,7 @@ class TraceStore:
     def __init__(self, path: Path | None = None):
         self._runs: dict[str, RunRecord] = {}
         self._created_at: dict[str, float] = {}
+        self._video_requests: dict[tuple[str, str, str], str] = {}
         self._lock = Lock()
         self._path = Path(path) if path else None
         if self._path:
@@ -33,6 +34,7 @@ class TraceStore:
                 db.execute("CREATE TABLE IF NOT EXISTS trace_runs (id TEXT PRIMARY KEY, record TEXT NOT NULL)")
                 db.execute("CREATE TABLE IF NOT EXISTS trace_events (id TEXT PRIMARY KEY, run_id TEXT NOT NULL, event TEXT NOT NULL)")
                 db.execute("CREATE INDEX IF NOT EXISTS trace_events_run ON trace_events(run_id)")
+                db.execute("CREATE TABLE IF NOT EXISTS video_requests (user_id TEXT, conversation_id TEXT, request_key TEXT, arguments TEXT NOT NULL, PRIMARY KEY(user_id, conversation_id, request_key))")
                 for row in db.execute("SELECT record FROM trace_runs"):
                     run = RunRecord.model_validate_json(row[0])
                     self._runs[run.run_id] = run
@@ -273,6 +275,32 @@ class TraceStore:
         with self._lock:
             return self._runs.get(run_id)
 
+    def get_video_request(self, user_id, conversation_id, key):
+        """Private replay inputs: never included in run/event API responses."""
+        identity = (self._normalize_user_id(user_id), conversation_id, key)
+        with self._lock:
+            if self._path:
+                with self._db() as db:
+                    row = db.execute("SELECT arguments FROM video_requests WHERE user_id=? AND conversation_id=? AND request_key=?", identity).fetchone()
+                raw = row[0] if row else None
+            else:
+                raw = self._video_requests.get(identity)
+        return json.loads(raw) if raw else None
+
+    def freeze_video_request(self, user_id, conversation_id, arguments):
+        """First authorized request wins, including across retries and restarts."""
+        identity = (self._normalize_user_id(user_id), conversation_id, arguments['idempotency_key'])
+        # Internal execution hints are re-derived from this owner's task history.
+        raw = json.dumps({k: v for k, v in arguments.items() if not k.startswith('_')})
+        with self._lock:
+            if self._path:
+                with self._db() as db:
+                    db.execute("INSERT OR IGNORE INTO video_requests VALUES (?,?,?,?)", (*identity, raw))
+                    raw = db.execute("SELECT arguments FROM video_requests WHERE user_id=? AND conversation_id=? AND request_key=?", identity).fetchone()[0]
+            else:
+                raw = self._video_requests.setdefault(identity, raw)
+        return json.loads(raw)
+
     def record_skill_use(self, run_id: str, skill_name: str) -> None:
         normalized = str(skill_name or "").strip()
         if not normalized:
@@ -377,11 +405,14 @@ class TraceStore:
             ]
             if self._path:
                 with self._db() as db:
+                    db.execute("DELETE FROM video_requests WHERE user_id=?", (normalized_user_id,))
                     db.executemany("DELETE FROM trace_events WHERE run_id=?", [(rid,) for rid in run_ids])
                     db.executemany("DELETE FROM trace_runs WHERE id=?", [(rid,) for rid in run_ids])
             for run_id in run_ids:
                 self._runs.pop(run_id, None)
                 self._created_at.pop(run_id, None)
+            self._video_requests = {key: value for key, value in self._video_requests.items()
+                                    if key[0] != normalized_user_id}
         return len(run_ids)
 
     @staticmethod

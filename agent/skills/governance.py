@@ -219,6 +219,7 @@ class ToolGovernance:
 
         timeout_seconds = tool_timeout(skill.metadata().name, skill.metadata().timeout_seconds)
         try:
+            arguments = self._freeze_video_arguments(skill, request.user_id, request.conversation_id, arguments)
             return await asyncio.wait_for(
                 skill.execute(**arguments),
                 timeout=timeout_seconds,
@@ -247,6 +248,14 @@ class ToolGovernance:
                     }
                 },
             )
+
+    def _freeze_video_arguments(self, skill, user_id, conversation_id, arguments):
+        if skill.metadata().name != 'generate_video' or not arguments.get('idempotency_key'):
+            return arguments
+        frozen = self.trace_store.freeze_video_request(user_id, conversation_id, arguments)
+        if arguments.get('_resume_task_id'):
+            frozen['_resume_task_id'] = arguments['_resume_task_id']
+        return frozen
 
     @staticmethod
     def blocked_result(decision: ToolGovernanceDecision) -> SkillResult:
@@ -619,8 +628,10 @@ class ToolGovernance:
                     self.trace_store.append_event(pending.run_id, type="media.task.progress", status="running",
                         title="Media task progress", payload=payload)
                 with progress_scope(report_progress, background=pending.background):
+                    arguments = self._freeze_video_arguments(item.skill, pending.user_id,
+                        pending.conversation_id, item.arguments)
                     result = await asyncio.wait_for(
-                        item.skill.execute(**item.arguments),
+                        item.skill.execute(**arguments),
                         timeout=tool_timeout(meta.name, meta.timeout_seconds),
                     )
             except (TimeoutError, asyncio.TimeoutError):

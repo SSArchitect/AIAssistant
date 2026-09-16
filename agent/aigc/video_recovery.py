@@ -9,6 +9,9 @@ def recover_video_request(store, *, user_id, conversation_id, arguments):
     key = arguments.get('idempotency_key')
     if not key:
         return arguments, None
+    frozen = store.get_video_request(user_id, conversation_id, key)
+    if frozen is not None:
+        arguments = frozen
     candidates = []
     cursor = ''
     while True:
@@ -28,6 +31,32 @@ def recover_video_request(store, *, user_id, conversation_id, arguments):
         if not page.has_more:
             break
         cursor = page.next_cursor
+
+    if frozen is not None:
+        return arguments, None
+
+    # Legacy traces have redacted prompts but retain the original selectors and
+    # non-sensitive options. The first accepted local invocation defines replay;
+    # later model turns must not reorder images or change duration/seed/mode.
+    candidates.sort(key=lambda run: (run.started_at, run.run_id))
+    replay_prompt = arguments.get('prompt')
+    for run in candidates:
+        started = {}
+        for event in run.events:
+            payload = event.payload
+            if event.type == 'tool.started' and payload.get('name') == 'generate_video':
+                started[event.step_id] = payload.get('arguments', {})
+            if (event.type == 'tool.governance.allowed' and payload.get('tool_name') == 'generate_video'
+                    and payload.get('arguments', {}).get('idempotency_key') == key):
+                original = {**started.get(event.step_id, {}), **payload['arguments']}
+                arguments = {k: v for k, v in original.items()
+                             if not k.startswith('_') and v != '<redacted>'}
+                arguments['prompt'] = original.get('prompt') if original.get('prompt') not in (None, '<redacted>') else replay_prompt
+                candidates = [run]
+                break
+        else:
+            continue
+        break
 
     indices = arguments.get('reference_image_attachment_indices')
     single = arguments.get('image_attachment_index')
@@ -67,4 +96,6 @@ def recover_video_request(store, *, user_id, conversation_id, arguments):
                     arguments.pop('image_attachment_index')
                     arguments['first_frame_data_url'] = images[single]
                 return arguments, None
+    if candidates:
+        raise ValueError('Original video attachments are unavailable; do not replace them under the same idempotency key')
     return arguments, None
