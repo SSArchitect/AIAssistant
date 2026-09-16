@@ -34,7 +34,7 @@ class SkillMetadata(BaseModel):
     access: Literal["read", "write", "destructive", "external"] = "read"
     default_policy: Literal["auto", "confirm", "deny"] = "auto"
     max_calls_per_run: int = Field(default=8, ge=1, le=100)
-    timeout_seconds: float = Field(default=30.0, gt=0, le=600)
+    timeout_seconds: float = Field(default=30.0, gt=0, le=3600)
     sensitive_arguments: list[str] = Field(default_factory=list)
     sensitive_result_fields: list[str] = Field(default_factory=list)
     confirmation_keywords: list[str] = Field(default_factory=list)

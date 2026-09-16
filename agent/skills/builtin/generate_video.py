@@ -24,11 +24,18 @@ class GenerateVideoSkill(Skill):
                          "Never swap dimensions or claim rotation makes a landscape result equivalent to portrait. "
                          "Describe motion, camera and sound in prompt. For image-to-video select an attached image as the first frame "
                          "using image_attachment_index and mode=image_to_video. No negative prompt or model choice. Return the actual video link; use response video metadata "
+                         "For 1-9 reference images use mode=reference_to_video and reference_image_attachment_indices in exact order; "
+                         "assign each image a role with <Picture 1>, <Picture 2>, etc. in prompt. Reference mode supports up to 362 native frames (~15s). "
                          "for resolved duration/frame counts and seed_text for exact 64-bit seed. "
                          "Generation can take several minutes. A wait_timeout does not cancel the task; "
-                         "resume with exactly the original prompt/options and returned idempotency_key, never a new key."),
+                         "resume with exactly the original prompt/options and returned idempotency_key, never a new key. "
+                         "Saved task IDs and original attachments are restored from this conversation. "
+                         "Without a confirmed task ID, report submission status as unknown, not queued or generating."),
             parameters=[
-                SkillParameter(name="mode", type="string", description="text_to_video or image_to_video (animate one first-frame image).", required=False, enum=["text_to_video", "image_to_video"]),
+                SkillParameter(name="mode", type="string", description="text_to_video, image_to_video (one first frame), or reference_to_video (1-9 reference images).", required=False, enum=["text_to_video", "image_to_video", "reference_to_video"]),
+                SkillParameter(name="reference_image_attachment_indices", type="array", items={"type":"integer","minimum":1}, description="Ordered 1-9 distinct image attachment positions, 1-based. In prompt refer to selected images as <Picture 1>, <Picture 2>, etc., assigning identity, scene, clothing or object roles. Exclusive with other reference sources and first-frame inputs.", required=False),
+                SkillParameter(name="reference_image_asset_ids", type="array", items={"type":"string"}, description="Ordered 1-9 previously uploaded Spark image asset IDs.", required=False),
+                SkillParameter(name="reference_image_urls", type="array", items={"type":"string"}, description="Ordered 1-9 image URLs already supplied by the user or found in conversation/search. May use local generated image paths. Do not invent URLs.", required=False),
                 SkillParameter(name="image_attachment_index", type="integer", description="1-based position of the first-frame image in this message's attachments. Select explicitly when multiple images exist. Never copy base64.", required=False, minimum=1),
                 SkillParameter(name="first_frame_asset_id", type="string", description="Previously uploaded Spark asset ID, alternative to an attachment.", required=False),
                 SkillParameter(name="image_fit", type="string", description="Adapt image to output dimensions: center_crop (default) or stretch.", required=False, enum=["center_crop", "stretch"]),
@@ -52,7 +59,7 @@ class GenerateVideoSkill(Skill):
             tags=["video", "generation"], domains=["video"],
             routing_keywords=["生视频", "生成视频", "制作视频", "文生视频", "generate video", "text to video"],
             allowed_agents=["super_chat"], always_on=True, risk_level="medium", access="external",
-            max_calls_per_run=4, timeout_seconds=570, sensitive_arguments=["prompt", "first_frame_data_url"],
+            max_calls_per_run=4, timeout_seconds=1920, sensitive_arguments=["prompt", "first_frame_data_url", "reference_image_data_urls"],
         )
 
     def to_tool_definition(self) -> dict:
@@ -65,6 +72,8 @@ class GenerateVideoSkill(Skill):
         properties["height"]["multipleOf"] = 32
         properties["fps"]["multipleOf"] = .001
         properties["duration_seconds"]["exclusiveMinimum"] = 0
+        for name in ('reference_image_attachment_indices','reference_image_asset_ids','reference_image_urls'):
+            properties[name].update(minItems=1,maxItems=9,uniqueItems=True)
         return definition
 
     async def prepare_arguments(self, **kwargs) -> dict:
@@ -75,8 +84,11 @@ class GenerateVideoSkill(Skill):
 
     async def execute(self, **kwargs) -> SkillResult:
         try:
+            resume_task_id = kwargs.pop('_resume_task_id', None)
             arguments = await self.prepare_arguments(**kwargs)
-            response = await generate_video(VideoGenerationRequest(**arguments))
+            request = VideoGenerationRequest(**arguments)
+            response = (await generate_video(request, resume_task_id=resume_task_id)
+                        if resume_task_id else await generate_video(request))
             return SkillResult(success=True, data=response.model_dump(),
                 display_text="\n".join(f"[AI 生视频 {video.index + 1}]({video.url})" for video in response.videos))
         except SparkProviderError as exc:

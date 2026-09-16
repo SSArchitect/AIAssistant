@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 from pathlib import Path
 import struct
 import uuid
@@ -13,26 +14,57 @@ from agent.aigc.spark_client import OUTPUT_DIR, RETRYABLE, SparkProviderError, S
 from agent.schemas.aigc import GeneratedVideo, VideoGenerationRequest, VideoGenerationResponse
 
 MAX_VIDEO_BYTES = 512 * 1024 * 1024
+VIDEO_SUBMISSION_TIMEOUT = 15 * 60
+VIDEO_WAIT_TIMEOUT = 30 * 60
 
 
 class SparkVideoClient(SparkTaskClient):
     def __init__(self, base_url: str, api_key: str, *, output_dir: Path = OUTPUT_DIR,
-                 timeout: float = 540, poll_interval: float = 5,
+                 timeout: float = VIDEO_WAIT_TIMEOUT, poll_interval: float = 5,
                  transport: httpx.AsyncBaseTransport | None = None):
         super().__init__(base_url, api_key, output_dir=output_dir, timeout=timeout,
                          poll_interval=poll_interval, transport=transport)
 
+    def submission_timeout(self):
+        return VIDEO_SUBMISSION_TIMEOUT
+
     @staticmethod
     def payload(request: VideoGenerationRequest) -> dict:
         # Do not replace duration input with aligned frames: they are distinct idempotent requests.
-        inputs = request.model_dump(exclude={"idempotency_key", "mode", "first_frame_data_url", "image_attachment_index"}, exclude_none=True)
+        inputs = request.model_dump(exclude={"idempotency_key", "mode", "first_frame_data_url", "image_attachment_index",
+            "reference_image_data_urls", "reference_image_attachment_indices", "reference_image_urls"}, exclude_none=True)
         inputs["seed"] = request.seed
-        template = "video.image.v1" if request.mode == "image_to_video" else "video.text.v1"
+        template = {"image_to_video":"video.image.v1", "reference_to_video":"video.reference.v1"}.get(request.mode,"video.text.v1")
         payload = {"type": "video", "template": template, "input": inputs}
         if request.mode == "image_to_video":
             payload["mode"] = request.mode
             inputs["image_fit"] = request.image_fit or "center_crop"
+        elif request.mode == "reference_to_video":
+            payload["mode"] = request.mode
         return payload
+
+    async def _prepare_reference_images(self, client, request, payload, key):
+        if request.mode != 'reference_to_video' or payload['input'].get('reference_image_asset_ids'):
+            return
+        from agent.aigc.image_inputs import decode_image_data_url
+        if not request.reference_image_data_urls:
+            raise ValueError('Reference mode requires asset IDs or resolved reference images')
+        ids = []
+        self._report(payload, key, 'uploading')
+        for index, value in enumerate(request.reference_image_data_urls):
+            content, media_type = decode_image_data_url(value)
+            upload_key = 'reference-' + hashlib.sha256(f'{key}:{index}'.encode()).hexdigest()
+            response = await self._request(client,'POST','/v1/assets',content=content,
+                headers={'Content-Type':media_type,'Idempotency-Key':upload_key})
+            try:
+                asset = response.json()
+                ident = asset['id']
+                if str(uuid.UUID(ident)) != ident or asset.get('status') not in {'ready','expired'}:
+                    raise ValueError()
+            except (ValueError,KeyError,TypeError,AttributeError):
+                raise SparkProviderError('Spark returned an invalid reference asset',code='invalid_response') from None
+            ids.append(ident)
+        payload['input']['reference_image_asset_ids'] = ids
 
     @staticmethod
     def _task(response: httpx.Response) -> dict:
@@ -43,9 +75,11 @@ class SparkVideoClient(SparkTaskClient):
 
     async def _generate(self, request: VideoGenerationRequest, payload: dict, key: str) -> VideoGenerationResponse:
         async with httpx.AsyncClient(base_url=self.base_url, headers={"Authorization": f"Bearer {self.api_key}"},
-                                     timeout=httpx.Timeout(60, connect=10), follow_redirects=False,
+                                     timeout=httpx.Timeout(300, connect=10), follow_redirects=False,
                                      transport=self.transport) as client:
-            await self._prepare_image_input(client, request, payload, key)
+            if not self._task_ids.get(key):
+                await self._prepare_image_input(client, request, payload, key)
+                await self._prepare_reference_images(client, request, payload, key)
             # Replaying POST with the original key also resumes tasks when new video submissions are disabled.
             task = await self._wait_for_task(client, payload, key)
             video = task.get("video")
@@ -77,6 +111,8 @@ class SparkVideoClient(SparkTaskClient):
                              "template": task.get("template") or payload["template"]})
             if payload.get("mode"):
                 metadata.update(mode=task.get("mode") or payload["mode"], source=task.get("source"))
+                if task.get('references') is not None:
+                    metadata['references'] = task['references']
             return VideoGenerationResponse(id=task["id"], prompt=request.prompt,
                 videos=[GeneratedVideo(index=0, url="/static/generated/aigc/" + filename)],
                 seed_text=task.get("seed_text"), video=video, metadata=metadata)

@@ -94,7 +94,8 @@ class ContextBuilder:
         if "generate_video" in normalized_tool_names:
             tool_policy_lines.append(
                 "- 用户要求生成视频时调用 generate_video，将场景、动作、运镜和声音写入 prompt。"
-                "支持文生视频和单首帧图生视频，包含原生音频；默认 864×480、124 原生帧（约 5.17 秒）、输出 24 FPS。"
+                "支持文生视频、单首帧图生视频和1–9张多图参考视频，包含原生音频；默认 864×480、124 原生帧（约 5.17 秒）、输出 24 FPS。"
+                "用户要求多图共同参考时，使用mode=reference_to_video、reference_image_attachment_indices数组，按选择顺序在prompt里用<Picture 1>、<Picture 2>指定各图人物、服装、场景或物品用途；最多362原生帧（约15秒）。已有图片链接可用reference_image_urls数组，不要复制base64或把多图静默缩减成一张。"
                 "让上传图片动起来时使用 mode=image_to_video 和 image_attachment_index（本轮附件序号，从 1 开始），不要复制图片 base64。"
                 "输入画幅不同时默认居中裁剪，可用 image_fit=stretch 显式选择拉伸。"
                 "宽高各 32–4096 且为 32 的倍数，面积不超过 1032192；num_frames（5–3592）与"
@@ -102,7 +103,7 @@ class ContextBuilder:
                 "面积乘对齐后原生帧数不超过 373653504，超限需降低分辨率或时长。"
                 "输出 fps 可为 1–120、最多三位小数，只重复/丢弃帧，保持运动速度与声音时间轴，不增加运动细节。"
                 "用返回的 video 参数说明实际输出帧数和时长；64 位 seed 优先以十进制字符串传入，"
-                "以 seed_text 读取精确值。图生视频只支持一张首帧图；长片段属于实验范围。"
+                "以 seed_text 读取精确值。image_to_video使用一张首帧图，reference_to_video使用多张参考图；长片段属于实验范围。"
                 "严格保留用户明确指定的宽×高，480×864 竖屏必须传 width=480、height=864，不能交换。"
                 "回复中的尺寸和时长必须以工具返回参数为准；若与用户要求不符应如实说明，"
                 "不能声称横屏等同竖屏、会自动旋转或播放器会自动修正。"

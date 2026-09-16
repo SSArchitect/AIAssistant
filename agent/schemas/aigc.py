@@ -31,7 +31,11 @@ class VideoGenerationRequest(BaseModel):
         StrictStr, Field(pattern=r"^[0-9]{1,20}$")
     ] | None = None
     idempotency_key: str | None = Field(default=None, min_length=1, max_length=128)
-    mode: Literal["text_to_video", "image_to_video"] | None = None
+    mode: Literal["text_to_video", "image_to_video", "reference_to_video"] | None = None
+    reference_image_asset_ids: list[Annotated[str, Field(pattern=r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")]] | None = Field(default=None, min_length=1, max_length=9)
+    reference_image_attachment_indices: list[Annotated[StrictInt, Field(ge=1)]] | None = Field(default=None, min_length=1, max_length=9)
+    reference_image_urls: list[Annotated[str, Field(min_length=1, max_length=4096)]] | None = Field(default=None, min_length=1, max_length=9)
+    reference_image_data_urls: list[Annotated[str, Field(max_length=22369700)]] | None = Field(default=None, min_length=1, max_length=9, repr=False)
     first_frame_asset_id: str | None = Field(default=None, pattern=r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
     first_frame_data_url: str | None = Field(default=None, max_length=22369700, repr=False)
     image_attachment_index: int | None = Field(default=None, strict=True, ge=1)
@@ -64,7 +68,22 @@ class VideoGenerationRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_video_options(self) -> "VideoGenerationRequest":
-        validate_image_source(self, "first_frame_asset_id", "first_frame_data_url", "image_to_video")
+        refs = [self.reference_image_asset_ids, self.reference_image_attachment_indices,
+                self.reference_image_urls, self.reference_image_data_urls]
+        if self.mode == "reference_to_video" or any(value is not None for value in refs):
+            if self.mode not in (None, "reference_to_video"):
+                raise ValueError("Reference images require reference_to_video mode")
+            if sum(value is not None for value in refs) != 1:
+                raise ValueError("Choose exactly one reference source: asset IDs, attachment indices, URLs or data URLs")
+            if any(value is not None for value in (self.first_frame_asset_id,self.first_frame_data_url,
+                                                   self.image_attachment_index,self.image_fit)):
+                raise ValueError("Reference mode does not accept single first-frame or image_fit inputs")
+            values = next(value for value in refs if value is not None)
+            if len(set(values)) != len(values):
+                raise ValueError("Reference images must be distinct")
+            self.mode = "reference_to_video"
+        else:
+            validate_image_source(self, "first_frame_asset_id", "first_frame_data_url", "image_to_video")
         if not self.prompt.strip():
             raise ValueError("prompt cannot be blank")
         if (self.num_frames is None) == (self.duration_seconds is None):
@@ -73,6 +92,8 @@ class VideoGenerationRequest(BaseModel):
             raise ValueError(f"width * height must not exceed {VIDEO_MAX_PIXELS}")
         if self.width * self.height * self.resolved_frames() > VIDEO_MAX_PIXEL_FRAMES:
             raise ValueError(f"width * height * aligned native frames must not exceed {VIDEO_MAX_PIXEL_FRAMES}")
+        if self.mode == "reference_to_video" and self.resolved_frames() > 362:
+            raise ValueError("Reference video supports at most 362 native frames (~15.08 seconds)")
         if self.idempotency_key is not None and not self.idempotency_key.strip():
             raise ValueError("idempotency_key cannot be blank")
         return self

@@ -19,6 +19,7 @@ from agent.aigc.image_inputs import decode_image_data_url
 OUTPUT_DIR = Path(__file__).resolve().parents[2] / "web/static/generated/aigc"
 PENDING = {"submitting", "queued", "running", "recovering"}
 RETRYABLE = {429, 502, 503, 504}
+SUBMISSION_TIMEOUT = 60
 # Exact ratios aligned to the Provider v0.2 dimension and pixel limits.
 ASPECT_SIZES = {
     "1:1": (1024, 1024), "16:9": (1536, 864), "4:3": (1152, 864),
@@ -101,29 +102,44 @@ class SparkTaskClient:
         except (ValueError, TypeError):
             raise SparkProviderError("Spark returned an invalid task response", code="invalid_response") from None
 
-    async def generate(self, request):
+    def submission_timeout(self):
+        return SUBMISSION_TIMEOUT
+
+    async def generate(self, request, *, resume_task_id=None):
         payload = self.payload(request)
         key = request.idempotency_key or str(uuid.uuid4())
+        if resume_task_id:
+            self._task_ids[key] = resume_task_id
         background = background_enabled()
         deadline = asyncio.get_running_loop().time() + (BACKGROUND_TIMEOUT if background else self.timeout)
-        self._report(payload, key, "submitting")
+        self._report(payload, key, "reconnecting" if resume_task_id else "submitting")
         try:
             while True:
                 remaining = deadline - asyncio.get_running_loop().time()
+                attempt_timeout = min(self.timeout, max(0, remaining))
+                # The long background budget belongs to acknowledged provider tasks.
+                # A dead endpoint must not keep replaying an unacknowledged submission.
+                if background and not self._task_ids.get(key):
+                    attempt_timeout = min(attempt_timeout, self.submission_timeout())
                 try:
-                    result = await asyncio.wait_for(self._generate(request, payload, key), min(self.timeout, max(0, remaining)))
+                    result = await asyncio.wait_for(self._generate(request, payload, key), attempt_timeout)
                     self._report(payload, key, "completed")
                     return result
                 except asyncio.TimeoutError:
-                    if background and asyncio.get_running_loop().time() < deadline:
+                    if (background and self._task_ids.get(key)
+                            and asyncio.get_running_loop().time() < deadline):
                         self._report(payload, key, "reconnecting")
                         continue
                     raise SparkProviderError(
-                        "Spark wait timed out; the task may still be running. Retry the original input and idempotency key.",
+                        ("Spark wait timed out; the accepted task may still be running. Resume with the original idempotency key."
+                         if self._task_ids.get(key) else
+                         "Spark submission timed out before a task ID was confirmed. Generation status is unknown; "
+                         "do not claim it is queued or generating. Retry the original input and idempotency key."),
                         code="wait_timeout", task_id=self._task_ids.get(key), idempotency_key=key,
                     ) from None
                 except SparkProviderError as exc:
-                    if (background and exc.code in {"connection_failed", "download_failed"}
+                    if (background and self._task_ids.get(key)
+                            and exc.code in {"connection_failed", "download_failed"}
                             and asyncio.get_running_loop().time() + 5 < deadline):
                         self._report(payload, key, "reconnecting")
                         await asyncio.sleep(5)

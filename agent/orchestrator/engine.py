@@ -567,7 +567,7 @@ class AgentEngine:
             return ""
         sections: list[str] = []
         remaining = 24000
-        for index, attachment in enumerate(attachments[:8], start=1):
+        for index, attachment in enumerate(attachments[:9], start=1):
             if remaining <= 0:
                 break
             content = str(attachment.content or "").strip()
@@ -2843,7 +2843,16 @@ class AgentEngine:
         if skill is None:
             return SkillResult(success=False, error=f"Unknown skill: {skill_name}")
         try:
-            if skill_name == "generate_video" and (arguments.get("mode") == "image_to_video" or arguments.get("image_attachment_index") is not None):
+            resume_task_id = None
+            if skill_name == "generate_video":
+                from agent.aigc.video_recovery import recover_video_request
+                arguments, resume_task_id = recover_video_request(self.trace_store,
+                    user_id=self._user_id(request), conversation_id=request.conversation_id,
+                    arguments=arguments)
+            if skill_name == "generate_video" and not resume_task_id and arguments.get("reference_image_attachment_indices") is not None:
+                from agent.aigc.image_inputs import reference_video_options
+                arguments = reference_video_options(arguments, request.attachments)
+            if skill_name == "generate_video" and not resume_task_id and (arguments.get("mode") == "image_to_video" or arguments.get("image_attachment_index") is not None):
                 from agent.aigc.image_inputs import attachment_image
                 arguments = dict(arguments)
                 index = arguments.get("image_attachment_index")
@@ -2877,6 +2886,8 @@ class AgentEngine:
                 error_code="invalid_tool_arguments",
                 retryable=False,
             )
+        if resume_task_id:
+            prepared_arguments['_resume_task_id'] = resume_task_id
         return await self.tool_governance.execute(
             skill=skill,
             request=request,
@@ -11737,7 +11748,12 @@ class AgentEngine:
             )
         ]
         messages.extend(history)
-        messages.append(LLMMessage(role="user", content=request.message))
+        user_content = [{"type": "text", "text": request.message}]
+        for index, attachment in enumerate(request.attachments[:9], 1):
+            if attachment.kind == "image" and attachment.data_url.startswith("data:image/"):
+                user_content.append({"type": "text", "text": f"Attachment {index}: {attachment.name}"})
+                user_content.append({"type": "image_url", "image_url": {"url": attachment.data_url}})
+        messages.append(LLMMessage(role="user", content=user_content if len(user_content) > 1 else request.message))
         self.trace_store.append_event(
             run.run_id,
             type="memory.loaded",
