@@ -82,6 +82,11 @@ func main() {
 	)
 	todoHandler := handlers.NewTodoHandler()
 	driveHandler := handlers.NewDriveHandler(agentClient)
+	creationHandler := handlers.NewCreationHandler(agentClient)
+	if err := creationHandler.Recover(); err != nil {
+		slog.Error("Creation recovery failed", "error", err)
+		os.Exit(1)
+	}
 	evalHandler := handlers.NewEvalHandler(projectRoot, dbPath, cfg.Agent.URL)
 	connectKey, err := connect.LoadKey(filepath.Join(filepath.Dir(dbPath), "connect.key"))
 	if err != nil {
@@ -105,6 +110,7 @@ func main() {
 	// API routes
 	api := r.Group("/api")
 	connectHandler.Register(api)
+	creationHandler.Register(api)
 	{
 		api.GET("/health", healthHandler.Health)
 		api.GET("/app/version", appVersionHandler.Version)

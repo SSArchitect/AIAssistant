@@ -19,7 +19,7 @@ export function verifyWebBundle(directory) {
   const app = readFileSync(resolve(root, scripts[appIndex]), 'utf8');
   const context = vm.createContext({ URL });
   const methods = [];
-  for (const [name, file] of [['VideoMedia', 'video-media.js'], ['ThinkingProcess', 'thinking-process.js']]) {
+  for (const [name, file] of [['VideoMedia', 'video-media.js'], ['ThinkingProcess', 'thinking-process.js'], ['CreationUI', 'creation.js']]) {
     const index = scripts.findIndex(script => basename(script) === file);
     assert.ok(index >= 0 && index < appIndex, `${file} must load before app.js`);
     vm.runInContext(readFileSync(resolve(root, scripts[index]), 'utf8'), context, { filename: file });

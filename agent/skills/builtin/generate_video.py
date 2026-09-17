@@ -4,6 +4,7 @@ import uuid
 
 from agent.aigc.spark_client import SparkProviderError
 from agent.aigc.video_service import generate_video
+from agent.aigc.video_prompting import VideoStoryboard, compile_storyboard, storyboard_schema
 from agent.schemas.aigc import VIDEO_MAX_FRAMES, VIDEO_NATIVE_FPS, VideoGenerationRequest
 from agent.skills.base import Skill, SkillMetadata, SkillParameter, SkillResult
 
@@ -22,11 +23,17 @@ class GenerateVideoSkill(Skill):
                          "or audio timing; it does not interpolate motion. "
                          "Preserve explicit user width×height exactly: portrait 480×864 means width=480, height=864. "
                          "Never swap dimensions or claim rotation makes a landscape result equivalent to portrait. "
-                         "Describe motion, camera and sound in prompt. For image-to-video select an attached image as the first frame "
-                         "using image_attachment_index and mode=image_to_video. No negative prompt or model choice. Return the actual video link; use response video metadata "
+                         "Prefer storyboard for a directed audiovisual timeline: logical shots with optional timed semantic panels, reference roles, continuity locks, sound and delivery constraints. "
+                         "Multiple panels or logical shots still produce one clip in this call; never equate them with separate video files. "
+                         "Use exactly one of storyboard or prompt; prompt preserves an already-written prompt verbatim. "
+                         "Write visual prose in English while keeping dialogue/lyrics/visible text in their original language. "
+                         "Plan concrete action progression, consistent identity, camera movement and sound within the duration; "
+                         "do not invent dialogue, captions or unsupported video/audio reference assets. "
+                         "For image-to-video select an attached image as the first frame "
+                         "using image_attachment_index and mode=image_to_video. No negative prompt or model choice. Return the actual video link. "
                          "For 1-9 reference images use mode=reference_to_video and reference_image_attachment_indices in exact order; "
                          "assign each image a role with <Picture 1>, <Picture 2>, etc. in prompt. Reference mode supports up to 362 native frames (~15s). "
-                         "for resolved duration/frame counts and seed_text for exact 64-bit seed. "
+                         "Use response video metadata for resolved duration/frame counts and seed_text for exact 64-bit seed. "
                          "Generation can take several minutes. A wait_timeout does not cancel the task; "
                          "resume with exactly the original prompt/options and returned idempotency_key, never a new key. "
                          "Saved task IDs and original attachments are restored from this conversation. "
@@ -39,8 +46,9 @@ class GenerateVideoSkill(Skill):
                 SkillParameter(name="image_attachment_index", type="integer", description="1-based position of the first-frame image in this message's attachments. Select explicitly when multiple images exist. Never copy base64.", required=False, minimum=1),
                 SkillParameter(name="first_frame_asset_id", type="string", description="Previously uploaded Spark asset ID, alternative to an attachment.", required=False),
                 SkillParameter(name="image_fit", type="string", description="Adapt image to output dimensions: center_crop (default) or stretch.", required=False, enum=["center_crop", "stretch"]),
-                SkillParameter(name="prompt", type="string", description="Exact scene, motion, camera and sound prompt.",
-                               min_length=1, max_length=4000),
+                SkillParameter(name="prompt", type="string", description="Already-written prompt, passed verbatim. Exclusive with storyboard. Prefer storyboard when developing a short brief into a shot plan.",
+                               required=False, min_length=1, max_length=4000),
+                SkillParameter(name="storyboard", type="object", description="Structured audiovisual plan: logical shots, optional gap-free semantic panels, reference/continuity/execution locks. Compiles to one H3 three-section (text/first frame) or six-section (references) prompt. Exclusive with prompt; final prompt must fit 4000 characters.", required=False),
                 SkillParameter(name="num_frames", type="integer", description="Native frames at 24 FPS, 5–3592, rounded up to 17k+5. Exclusive with duration_seconds; omit both for 124.",
                                required=False, minimum=5, maximum=VIDEO_MAX_FRAMES),
                 SkillParameter(name="duration_seconds", type="number", description="Requested seconds >0, rounded up to native frame grid (5 seconds becomes 124 frames). Exclusive with num_frames; do not send null alone.",
@@ -59,12 +67,14 @@ class GenerateVideoSkill(Skill):
             tags=["video", "generation"], domains=["video"],
             routing_keywords=["生视频", "生成视频", "制作视频", "文生视频", "generate video", "text to video"],
             allowed_agents=["super_chat"], always_on=True, risk_level="medium", access="external",
-            max_calls_per_run=4, timeout_seconds=1920, sensitive_arguments=["prompt", "first_frame_data_url", "reference_image_data_urls"],
+            max_calls_per_run=4, timeout_seconds=1920, sensitive_arguments=["prompt", "storyboard", "first_frame_data_url", "reference_image_data_urls"],
         )
 
     def to_tool_definition(self) -> dict:
         definition = super().to_tool_definition()
         properties = definition["parameters"]["properties"]
+        properties["storyboard"].update(storyboard_schema())
+        definition["parameters"]["oneOf"] = [{"required": ["prompt"]}, {"required": ["storyboard"]}]
         # The generic metadata has one display type; the callable schema accepts both seed forms.
         properties["seed"]["anyOf"] = VideoGenerationRequest.model_json_schema()["properties"]["seed"]["anyOf"]
         properties["seed"].pop("type")
@@ -77,6 +87,14 @@ class GenerateVideoSkill(Skill):
         return definition
 
     async def prepare_arguments(self, **kwargs) -> dict:
+        if "storyboard" in kwargs:
+            if "prompt" in kwargs:
+                raise ValueError("Choose exactly one of prompt and storyboard")
+            plan = VideoStoryboard.model_validate(kwargs.pop("storyboard"))
+            # Resolve mode, frame grid and selected assets before compiling; only the
+            # resulting prompt enters the provider request and frozen replay record.
+            options = VideoGenerationRequest(prompt="storyboard", **kwargs)
+            kwargs["prompt"] = compile_storyboard(plan, options)
         request = VideoGenerationRequest(**kwargs)
         arguments = request.model_dump(exclude_none=True)
         arguments["idempotency_key"] = request.idempotency_key or str(uuid.uuid4())

@@ -23,6 +23,7 @@ test('shipped entrypoint and actual browser module exports can render a message 
     assert.equal(result.smokeRender, true);
     assert.ok(result.methods.includes('VideoMedia.normalizeMarkdownLines'));
     assert.ok(result.methods.includes('ThinkingProcess.summarize'));
+    assert.ok(result.methods.includes('CreationUI.createController'));
 });
 
 test('bundle check rejects the missing normalizer that broke the released OTA', async t => {

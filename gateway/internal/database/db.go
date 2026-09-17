@@ -60,6 +60,11 @@ func Init(dbPath string) error {
 		&models.TodoCompletion{},
 		&models.TodoSuggestion{},
 		&models.DriveItem{},
+		&models.CreationDefinition{},
+		&models.CreationRun{},
+		&models.CreationAsset{},
+		&models.CreationProject{},
+		&models.CreationProjectVersion{},
 	); err != nil {
 		return err
 	}

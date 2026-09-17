@@ -7,6 +7,7 @@
     <title>阿安的工作台</title>
     <link rel="stylesheet" href="/static/css/style.css?v=run-pagination-106">
     <link rel="stylesheet" href="/static/css/connect.css?v=3">
+    <link rel="stylesheet" href="/static/css/creation.css?v=8">
 </head>
 <body>
     <div class="app">
@@ -29,6 +30,10 @@
                         <path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4Z"/>
                     </svg>
                     <span data-i18n="nav.chat">Super Chat</span>
+                </button>
+                <button class="nav-item" type="button" data-view="creation">
+                    <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2"><path d="m12 3 2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5Z"/></svg>
+                    <span data-i18n="nav.creation">创作</span>
                 </button>
                 <button class="nav-item" type="button" data-view="pulse">
                     <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2">
@@ -258,6 +263,8 @@
                     </div>
                 </div>
             </section>
+
+            <section class="view" id="view-creation" data-view-panel="creation"></section>
 
             <section class="view" id="view-pulse" data-view-panel="pulse">
                 <div class="pulse-workbench">
@@ -780,7 +787,9 @@
     <script src="/static/js/conversation-pager.js?v=1"></script>
     <script src="/static/js/run-pager.js?v=1"></script>
     <script src="/static/js/thinking-process.js?v=3"></script>
-    <script src="/static/js/app.js?v=169-run-pagination"></script>
+    <script src="/static/js/creation-projects.js?v=7"></script>
+    <script src="/static/js/creation.js?v=4"></script>
+    <script src="/static/js/app.js?v=170-creation"></script>
     <script src="/static/js/android-bridge.js?v=4"></script>
 </body>
 </html>

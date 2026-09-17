@@ -441,6 +441,11 @@ func TestAdminDeleteAccountPurgesRelatedDataAndProtectsDefault(t *testing.T) {
 		&models.TodoItem{ID: "delete-todo", UserID: accountID, Title: "private", CreatedAt: now, UpdatedAt: now},
 		&models.TodoCompletion{ID: "delete-completion", TodoID: "delete-todo", UserID: accountID, OccurrenceDate: "2026-08-24", CompletedAt: now, CreatedAt: now, UpdatedAt: now},
 		&models.TodoSuggestion{ID: "delete-suggestion", UserID: accountID, Title: "private", CreatedAt: now, UpdatedAt: now},
+		&models.CreationDefinition{ID: "delete-flow", UserID: accountID},
+		&models.CreationRun{ID: "delete-creation-run", UserID: accountID},
+		&models.CreationAsset{ID: "delete-asset", UserID: accountID, DriveItemID: "delete-drive-item"},
+		&models.CreationProject{ID: "delete-creative-project", UserID: accountID},
+		&models.CreationProjectVersion{ID: "delete-creative-version", ProjectID: "delete-creative-project", UserID: accountID},
 		&models.DriveItem{ID: "delete-drive-item", UserID: accountID, Type: "file", Name: "private.txt", CreatedAt: now, UpdatedAt: now},
 	}
 	for _, record := range records {
@@ -499,6 +504,8 @@ func TestAdminDeleteAccountPurgesRelatedDataAndProtectsDefault(t *testing.T) {
 		&models.TodoSuggestion{},
 		&models.TodoItem{},
 		&models.DriveItem{},
+		&models.CreationDefinition{}, &models.CreationRun{}, &models.CreationAsset{},
+		&models.CreationProject{}, &models.CreationProjectVersion{},
 	}
 	for _, model := range userModels {
 		var count int64

@@ -32,6 +32,8 @@ Web UI / Browser
 - Memory 只保存会话摘要、用户偏好、长期事实和角色习惯；可阅读、可检索的知识内容统一存入 Drive。
 - Drive 是当前唯一的知识内容存储，工具可以按 agent/runtime 独立适配，但工具调用必须进入 trace。
 
+「创作」工作区的工作流、模板、网盘资产与媒体节点执行约定见 [创作工作区](creation-workspace.md)。
+
 ## 2. 端口与入口
 
 默认端口：

@@ -40,6 +40,7 @@ const EVAL_LLM_MODELS = [
 ];
 
 const VIEW_COPY = {
+    creation: ['views.creation.title', 'views.creation.subtitle'],
     management: ['views.management.title', 'views.management.subtitle'],
     connect: ['views.connect.title', 'views.connect.subtitle'],
     chat: ['views.chat.title', 'views.chat.subtitle'],
@@ -59,6 +60,7 @@ const I18N = {
         app: { name: '阿安的工作台' },
         nav: {
             chat: 'Super Chat',
+            creation: '创作',
             pulse: 'Pulse',
             todos: 'Todo',
             projects: '网盘',
@@ -214,6 +216,7 @@ const I18N = {
             chat: { title: 'Super Chat', subtitle: '意图识别、Agent 调用与汇总回答入口' },
             pulse: { title: 'Pulse', subtitle: 'Topic 推荐、信息簇阅读与下一跳学习入口' },
             todos: { title: 'Todo', subtitle: '今日、逾期、待排期、月视图和高置信建议' },
+            creation: { title: '创作', subtitle: '对话、画布与创作资产' },
             projects: { title: '网盘', subtitle: '每个帐号独立的文件树、上传下载与 Super Chat 上下文' },
             role: { title: 'Role', subtitle: '创建和管理当前帐号自己的角色人设、指令与偏好' },
             agents: { title: 'Agents', subtitle: 'Agent 功能入口、实现版本和能力状态' },
@@ -992,6 +995,7 @@ const I18N = {
         app: { name: '阿安的工作台' },
         nav: {
             chat: 'Super Chat',
+            creation: 'Create',
             pulse: 'Pulse',
             todos: 'Todo',
             projects: 'Drive',
@@ -1147,6 +1151,7 @@ const I18N = {
             chat: { title: 'Super Chat', subtitle: 'Intent routing, agent calls, and final answers' },
             pulse: { title: 'Pulse', subtitle: 'Topic seeds, information clusters, and next-step reading' },
             todos: { title: 'Todo', subtitle: 'Today, overdue, unscheduled items, month view, and high-confidence suggestions' },
+            creation: { title: 'Create', subtitle: 'Conversations, canvas and creative assets' },
             projects: { title: 'Drive', subtitle: 'Per-account file tree, uploads, downloads, and Super Chat context' },
             role: { title: 'Role', subtitle: 'Create and manage personas, instructions, and preferences for this account' },
             agents: { title: 'Agents', subtitle: 'Agent entry points, runtimes, and capability status' },
@@ -2585,7 +2590,7 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = 0) {
 async function apiCall(method, path, body = null, options = {}) {
     // Connect requires header authentication, including Android's cross-origin transport.
     // Keep session tokens out of its URLs; resource URLs retain their existing transport.
-    const requireSessionHeader = /^\/api\/connect\/v1(?:\/|\?|$)/.test(path);
+    const requireSessionHeader = /^\/api\/(?:connect\/v1|creation)(?:\/|\?|$)/.test(path);
     const opts = {
         method,
         headers: apiHeaders(body, requireSessionHeader),
@@ -3089,6 +3094,7 @@ function dismissAccountLogin() {
 
 async function switchAccount(userId, options = {}) {
     connectController?.reset();
+    creationController?.reset();
     const nextUserId = String(userId || '').trim();
     if (!nextUserId) {
         showAccountLogin();
@@ -3222,6 +3228,7 @@ async function switchAccount(userId, options = {}) {
         await restoreInitialConversation();
     }
     hideAccountLogin();
+    if (activeView === 'creation') getCreationController()?.setVisible(true);
 }
 
 function displayConversationTitle(conv) {
@@ -9786,6 +9793,17 @@ async function bootApp() {
     void refreshAll();
 }
 
+let creationController = null;
+function getCreationController() {
+    if (!creationController && globalThis.CreationUI) creationController = globalThis.CreationUI.createController({
+        element: document.getElementById('view-creation'), api: apiCall,
+        user: () => currentUserId && currentAccountToken ? currentUserId : '',
+        mediaURL: id => `${API_BASE}/api/creation/assets/${encodeURIComponent(id)}/content?account_session=${encodeURIComponent(currentAccountToken || '')}`,
+        openDrive: async id => { await loadProjects(); await selectProject(id); },
+        confirm: message => confirmAction(message),
+    });
+    return creationController;
+}
 let connectController = null;
 function getConnectController() {
     if (!connectController && globalThis.ConnectUI) connectController = globalThis.ConnectUI.createController({
@@ -9818,6 +9836,8 @@ function updateNavigationSelection(view) {
 function setView(view, options = {}) {
     if (!VIEW_COPY[view]) return;
     activeView = view;
+    if (view === 'creation') getCreationController()?.setVisible(true);
+    else creationController?.setVisible(false);
     if (view === 'connect') getConnectController()?.setVisible(true);
     else connectController?.setVisible(false);
 
@@ -15057,6 +15077,7 @@ function normalizeFollowUpQuestions(questions = []) {
 
     return result.slice(0, FOLLOW_UP_QUESTION_COUNT);
 }
+
 
 function renderConversationMessageListHtml(messages = []) {
     const savedRuns = [];

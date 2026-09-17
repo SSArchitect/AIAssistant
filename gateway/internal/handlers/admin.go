@@ -487,6 +487,8 @@ func (h *AdminHandler) DeleteAccount(c *gin.Context) {
 			&models.TodoSuggestion{},
 			&models.TodoItem{},
 			&models.DriveItem{},
+			&models.CreationDefinition{}, &models.CreationRun{}, &models.CreationAsset{},
+			&models.CreationProject{}, &models.CreationProjectVersion{},
 		}
 		for _, model := range userModels {
 			if err := tx.Where("user_id = ?", accountID).Delete(model).Error; err != nil {

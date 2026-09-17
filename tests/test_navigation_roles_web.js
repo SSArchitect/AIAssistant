@@ -58,10 +58,10 @@ function extractFunctionDeclaration(name) {
     assert.fail(`unterminated ${name}`);
 }
 
-test('sidebar keeps four primary destinations and moves management into a dedicated view', () => {
+test('sidebar keeps five primary destinations and moves management into a dedicated view', () => {
     const sidebarSource = indexSource.slice(indexSource.indexOf('<aside class="sidebar"'), indexSource.indexOf('</aside>'));
     const navSource = sidebarSource.slice(sidebarSource.indexOf('<nav'), sidebarSource.indexOf('</nav>'));
-    assert.deepEqual(Array.from(navSource.matchAll(/data-view="([^"]+)"/g), match => match[1]), ['chat', 'pulse', 'todos', 'projects']);
+    assert.deepEqual(Array.from(navSource.matchAll(/data-view="([^"]+)"/g), match => match[1]), ['chat', 'creation', 'pulse', 'todos', 'projects']);
     assert.doesNotMatch(sidebarSource, /data-nav-group|data-view="connect"|id="model-select"/);
     assert.match(sidebarSource, /data-view="management"/);
     const managementSource = indexSource.slice(indexSource.indexOf('id="view-management"'), indexSource.indexOf('id="view-connect"'));
@@ -90,7 +90,7 @@ test('management destinations share a highlighted parent while main destinations
     for (const view of ['management', 'connect', 'role', 'developer', 'tools', 'agents', 'trace', 'eval']) {
         assert.equal(resolve(view), 'management');
     }
-    for (const view of ['chat', 'pulse', 'todos', 'projects', 'unknown']) assert.equal(resolve(view), view);
+    for (const view of ['chat', 'creation', 'pulse', 'todos', 'projects', 'unknown']) assert.equal(resolve(view), view);
 });
 
 test('navigation updates parent highlight and the management return button without expanding a sidebar menu', () => {
@@ -123,7 +123,7 @@ test('entering management closes the mobile drawer, preserves desktop state, and
     const sidebarCalls = [];
     const panel = { dataset: { viewPanel: 'management' }, classList: { toggle: (_key, value) => { panel.active = value; } } };
     const context = vm.createContext({
-        VIEW_COPY: { management: [] }, activeView: 'chat', connectController: null,
+        VIEW_COPY: { management: [] }, activeView: 'chat', connectController: null, creationController: null,
         document: { querySelectorAll: () => [panel] },
         updateNavigationSelection() {}, updateTopbar() {}, updateChatHistoryControls() {},
         isMobileLayout: () => mobile, setSidebarOpen: open => sidebarCalls.push(open),

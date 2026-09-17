@@ -195,6 +195,7 @@ class OpenAIProvider(LLMProvider):
             tool_calls=tool_calls,
             model=response.model,
             usage=self._usage_payload(response.usage),
+            finish_reason=getattr(choice, "finish_reason", None) or "",
         )
 
     async def chat_stream(
@@ -245,6 +246,7 @@ class OpenAIProvider(LLMProvider):
         tool_call_parts: dict[int, dict[str, str]] = {}
         response_model = self.model
         usage: dict[str, int] = {}
+        finish_reason = ""
         async for chunk in stream:
             response_model = getattr(chunk, "model", None) or response_model
             chunk_usage = getattr(chunk, "usage", None)
@@ -252,6 +254,7 @@ class OpenAIProvider(LLMProvider):
                 usage = self._usage_payload(chunk_usage)
             if not chunk.choices:
                 continue
+            finish_reason = getattr(chunk.choices[0], "finish_reason", None) or finish_reason
             delta = chunk.choices[0].delta
             reasoning = self._extract_reasoning(delta)
             if reasoning:
@@ -296,5 +299,6 @@ class OpenAIProvider(LLMProvider):
                 tool_calls=tool_calls,
                 model=response_model,
                 usage=usage,
+                finish_reason=finish_reason,
             )
         )

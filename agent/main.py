@@ -16,6 +16,8 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from agent.aigc import MiniMaxAIGCClient
+from agent.aigc.creation import router as creation_router
+from agent.aigc.creation_planning import router as creation_planning_router
 from agent.aigc.image_service import generate_image as generate_image_with_provider
 from agent.aigc.spark_client import SparkProviderError
 from agent.config import settings, runtime_config
@@ -106,6 +108,7 @@ def _memory_storage_path() -> Path:
 async def lifespan(app: FastAPI):
     global engine, connect_runs, trace_store
     trace_store = TraceStore(Path(os.environ.get("AGENT_TRACE_STORAGE_PATH", str(Path(__file__).resolve().parent.parent / "data" / "agent_traces.db"))))
+    app.state.trace_store = trace_store
     connect_runs = ConnectRuns(Path(os.environ.get("AGENT_CONNECT_RUNS_PATH", str(Path(__file__).resolve().parent.parent / "data" / "connect_runs.db"))))
     # Startup: discover and register skills
     skill_registry.auto_discover(
@@ -128,6 +131,8 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Agent Engine", version="0.1.0", lifespan=lifespan)
+app.include_router(creation_router)
+app.include_router(creation_planning_router)
 
 app.add_middleware(
     CORSMiddleware,

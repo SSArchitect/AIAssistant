@@ -17,6 +17,7 @@ PLAN_URL = "https://ark.cn-beijing.volces.com/api/plan/v3"
 @pytest.fixture
 def plan_config(monkeypatch):
     monkeypatch.setattr(runtime_config, "_data", {
+        "llm.default_provider": "doubao",
         "llm.doubao.api_key": "test-key",
         "llm.doubao.base_url": PLAN_URL,
         "llm.doubao.model": "doubao-seed-2.1-turbo",
@@ -129,6 +130,71 @@ def test_provider_rejects_blank_key():
         DoubaoProvider(api_key=" ")
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize("status", [200, 400])
+async def test_plan_reference_images_and_tools_preserved_on_wire(plan_config, streaming, status):
+    provider = create_provider()
+    parts = [
+        {"type": "text", "text": "Compare both reference images, then call report_visual."},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,aW1hZ2Ux"}},
+        {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,aW1hZ2Uy"}},
+    ]
+    tool = ToolDefinition(name="report_visual", description="Report the comparison.",
+                          parameters={"type": "object", "properties": {}})
+    calls = []
+
+    def handler(request):
+        payload = json.loads(request.content)
+        calls.append(payload)
+        assert payload["model"] == "doubao-seed-2.1-turbo"
+        assert payload["messages"] == [{"role": "user", "content": parts}]
+        assert payload["tools"][0]["function"]["name"] == "report_visual"
+        if status == 400:
+            return httpx.Response(400, json={"error": {
+                "code": "InvalidParameter", "message": "Model only support text input",
+                "type": "BadRequest",
+            }})
+        tool_call = {"id": "visual-1", "type": "function", "function": {
+            "name": "report_visual", "arguments": "{}",
+        }}
+        if streaming:
+            chunk = {"model": provider.model, "choices": [{"delta": {
+                "tool_calls": [{"index": 0, **tool_call}],
+            }}]}
+            return httpx.Response(200, text="data: " + json.dumps(chunk) + "\n\ndata: [DONE]\n\n",
+                                  headers={"content-type": "text/event-stream"})
+        return httpx.Response(200, json={"model": provider.model, "choices": [{"message": {
+            "role": "assistant", "content": "", "tool_calls": [tool_call],
+        }}]})
+
+    await provider.client.close()
+    provider.client = openai.AsyncOpenAI(
+        api_key="test-key", base_url=PLAN_URL, max_retries=0,
+        http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+
+    async def invoke():
+        messages = [LLMMessage(role="user", content=parts)]
+        if streaming:
+            chunks = [chunk async for chunk in provider.chat_stream_response(messages, tools=[tool])]
+            return chunks[-1].response
+        return await provider.chat(messages, tools=[tool])
+
+    try:
+        if status == 400:
+            with pytest.raises(openai.BadRequestError, match="Model only support text input"):
+                await invoke()
+        else:
+            response = await invoke()
+            assert response.tool_calls[0].name == "report_visual"
+            assert response.tool_calls[0].arguments == {}
+        # A rejected image request must not silently retry after discarding the images.
+        assert len(calls) == 1
+    finally:
+        await provider.client.close()
+
+
 @pytest.mark.parametrize("url,expected", [
     (PLAN_URL, True), (PLAN_URL + "/", True),
     ("https://example.com/api/plan/v3", False),
@@ -160,5 +226,35 @@ async def test_plan_stream_preserves_reasoning_and_answer(plan_config):
         assert "".join(chunk.text for chunk in chunks) == "OK"
         assert chunks[-1].response.reasoning == "plan"
         assert chunks[-1].response.content == "OK"
+    finally:
+        await provider.client.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('streaming', [False, True])
+@pytest.mark.parametrize('finish_reason', ['stop', 'length', 'content_filter'])
+async def test_plan_response_preserves_finish_reason(plan_config, streaming, finish_reason):
+    """A capped JSON plan must not look like a completed model response."""
+    provider = create_provider()
+    def handler(request):
+        if streaming:
+            chunks = [dict(choices=[dict(delta=dict(content='{\"plan\":'), finish_reason=None)]),
+                      dict(choices=[dict(delta={}, finish_reason=finish_reason)])]
+            return httpx.Response(200, text=''.join('data: '+json.dumps(c)+'\n\n' for c in chunks)+'data: [DONE]\n\n',
+                                  headers={'content-type':'text/event-stream'})
+        return httpx.Response(200, json=dict(model=provider.model, choices=[dict(
+            message=dict(role='assistant', content='{\"plan\":'), finish_reason=finish_reason)]))
+    await provider.client.close()
+    provider.client = openai.AsyncOpenAI(api_key='test-key', base_url=PLAN_URL,
+        http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+    try:
+        messages = [LLMMessage(role='user',content='六个镜头的完整方案')]
+        if streaming:
+            chunks = [c async for c in provider.chat_stream_response(messages)]
+            response = chunks[-1].response
+        else:
+            response = await provider.chat(messages)
+        assert response.finish_reason == finish_reason
+        assert response.content == '{\"plan\":'
     finally:
         await provider.client.close()

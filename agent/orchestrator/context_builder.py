@@ -92,10 +92,12 @@ class ContextBuilder:
                 "禁止编造图片 URL 或使用占位图网站冒充本次生成结果；只有成功的生图工具结果才是交付依据。"
             )
         if "generate_video" in normalized_tool_names:
+            from agent.aigc.video_prompting import VIDEO_PROMPT_GUIDANCE
+
             tool_policy_lines.append(
-                "- 用户要求生成视频时调用 generate_video，将场景、动作、运镜和声音写入 prompt。"
+                "- 用户要求生成视频时调用 generate_video，用 storyboard 规划场景、动作、运镜和声音，或用 prompt 传入完整提示词。"
                 "支持文生视频、单首帧图生视频和1–9张多图参考视频，包含原生音频；默认 864×480、124 原生帧（约 5.17 秒）、输出 24 FPS。"
-                "用户要求多图共同参考时，使用mode=reference_to_video、reference_image_attachment_indices数组，按选择顺序在prompt里用<Picture 1>、<Picture 2>指定各图人物、服装、场景或物品用途；最多362原生帧（约15秒）。已有图片链接可用reference_image_urls数组，不要复制base64或把多图静默缩减成一张。"
+                "用户要求多图共同参考时，使用mode=reference_to_video、reference_image_attachment_indices数组，按选择顺序用<Picture 1>、<Picture 2>指定各图人物、服装、场景或物品用途；最多362原生帧（约15秒）。已有图片链接可用reference_image_urls数组，不要复制base64或把多图静默缩减成一张。"
                 "让上传图片动起来时使用 mode=image_to_video 和 image_attachment_index（本轮附件序号，从 1 开始），不要复制图片 base64。"
                 "输入画幅不同时默认居中裁剪，可用 image_fit=stretch 显式选择拉伸。"
                 "宽高各 32–4096 且为 32 的倍数，面积不超过 1032192；num_frames（5–3592）与"
@@ -110,6 +112,7 @@ class ContextBuilder:
                 "成功后用 Markdown 链接返回工具提供的实际 MP4 URL，不得用图片语法或编造地址。"
                 "wait_timeout 只表示停止等待，原任务可能仍在运行；重试必须复用原始参数和返回的"
                 " idempotency_key，不能重复创建新任务。失败时如实说明。"
+                + VIDEO_PROMPT_GUIDANCE
             )
         if "tool_search" in normalized_tool_names:
             tool_policy_lines.extend(

@@ -40,6 +40,7 @@ class LLMResponse(BaseModel):
     tool_calls: list[ToolCall] = []
     model: str = ""
     usage: dict[str, int] = {}
+    finish_reason: str = ""
 
 
 class LLMStreamChunk(BaseModel):
