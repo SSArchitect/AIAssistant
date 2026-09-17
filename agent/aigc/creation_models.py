@@ -13,6 +13,10 @@ VISION_PLAN_MODEL = 'doubao-seed-2.1-turbo'
 CREATION_OUTPUT_TOKENS = 16384
 
 
+class PlanningConstraintError(ValueError):
+    pass
+
+
 class PlanningOutputTruncated(RuntimeError):
     pass
 
@@ -52,6 +56,8 @@ def unsupported_image_input(exc) -> bool:
 
 
 def planning_error(exc):
+    if isinstance(exc, PlanningConstraintError):
+        return "plan_constraint_failed", str(exc)
     if isinstance(exc, PlanningOutputTruncated):
         return 'planning_output_truncated', '模型未完整返回创作方案，原有内容已保留；请分段规划后继续'
     if unsupported_image_input(exc):

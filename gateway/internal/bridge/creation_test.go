@@ -43,6 +43,41 @@ func TestCreationBridgeFailureAndCancellation(t *testing.T) {
 	}
 }
 
+func TestCreationReviewBridgeContractAndSafeFailure(t *testing.T) {
+	var got CreationReviewRequest
+	status := 200
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/agent/creation/review" || r.Method != "POST" {
+			t.Error("wrong review route")
+		}
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Error(err)
+		}
+		w.WriteHeader(status)
+		if status != 200 {
+			w.Write([]byte("secret-provider-error"))
+			return
+		}
+		w.Write([]byte(`{"decision":"select","asset_id":"candidate","reason":"符合构图","model_used":"model","tokens_used":{"input_tokens":2}}`))
+	}))
+	defer server.Close()
+	client := NewAgentClient(server.URL, time.Second)
+	req := CreationReviewRequest{CreationPlanningRequest: CreationPlanningRequest{UserID: "alice", AutomaticMode: true, LockedNodeIDs: []string{"script"}}, NodeID: "visual", CandidateIDs: []string{"candidate"}}
+	result, err := client.ReviewCreation(context.Background(), req)
+	if err != nil || result.AssetID != "candidate" || got.UserID != "alice" || !got.AutomaticMode || got.LockedNodeIDs[0] != "script" || result.TokensUsed["input_tokens"] != 2 {
+		t.Fatalf("bad review boundary: %+v %v", got, err)
+	}
+	status = 502
+	if _, err = client.ReviewCreation(context.Background(), req); err == nil || strings.Contains(err.Error(), "secret") {
+		t.Fatal("unsafe error", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err = client.ReviewCreation(ctx, req); err == nil {
+		t.Fatal("cancelled review continued")
+	}
+}
+
 func TestCreationPlanningBridgePassesOwnerContextAndUsesBoundedResponse(t *testing.T) {
 	var got CreationPlanningRequest
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

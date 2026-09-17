@@ -149,6 +149,7 @@ class OpenAIProvider(LLMProvider):
         temperature: float = 0.7,
         cache: PromptCacheOptions | None = None,
         thinking_enabled: bool | None = None,
+        response_format: dict | None = None,
     ) -> LLMResponse:
         converted = self._convert_messages(messages)
         kwargs = {
@@ -159,6 +160,8 @@ class OpenAIProvider(LLMProvider):
         if self.max_tokens is not None:
             kwargs["max_tokens"] = self.max_tokens
         kwargs.update(self._extra_chat_kwargs(thinking_enabled=thinking_enabled))
+        if response_format is not None:
+            kwargs["response_format"] = response_format
         openai_tools = self._convert_tools(tools)
         if openai_tools:
             kwargs["tools"] = openai_tools
@@ -205,6 +208,7 @@ class OpenAIProvider(LLMProvider):
         temperature: float = 0.7,
         cache: PromptCacheOptions | None = None,
         thinking_enabled: bool | None = None,
+        response_format: dict | None = None,
     ) -> AsyncIterator[str]:
         async for chunk in self.chat_stream_response(
             messages,
@@ -212,6 +216,7 @@ class OpenAIProvider(LLMProvider):
             temperature=temperature,
             cache=cache,
             thinking_enabled=thinking_enabled,
+            response_format=response_format,
         ):
             if chunk.text:
                 yield chunk.text
@@ -223,6 +228,7 @@ class OpenAIProvider(LLMProvider):
         temperature: float = 0.7,
         cache: PromptCacheOptions | None = None,
         thinking_enabled: bool | None = None,
+        response_format: dict | None = None,
     ) -> AsyncIterator[LLMStreamChunk]:
         """Stream text while retaining OpenAI tool-call deltas for the final response."""
         converted = self._convert_messages(messages)
@@ -235,6 +241,8 @@ class OpenAIProvider(LLMProvider):
         if self.max_tokens is not None:
             kwargs["max_tokens"] = self.max_tokens
         kwargs.update(self._extra_chat_kwargs(thinking_enabled=thinking_enabled))
+        if response_format is not None:
+            kwargs["response_format"] = response_format
         openai_tools = self._convert_tools(tools)
         if openai_tools:
             kwargs["tools"] = openai_tools

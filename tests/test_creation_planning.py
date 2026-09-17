@@ -386,7 +386,6 @@ def test_revision_patch_merges_changed_fields_and_keeps_references_and_other_nod
     [dict(id='script', depends_on=['video'])],
     [dict(id='video', references=[dict(asset_id='foreign', role='identity')])],
     [dict(id='unknown', content='缺少节点类型')],
-    [dict(id='script', content=None)],
 ])
 def test_revision_patch_cannot_bypass_whole_graph_validation(nodes):
     original = plan('identity'); before = copy.deepcopy(original)

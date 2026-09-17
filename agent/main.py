@@ -18,6 +18,7 @@ from pydantic import BaseModel
 from agent.aigc import MiniMaxAIGCClient
 from agent.aigc.creation import router as creation_router
 from agent.aigc.creation_planning import router as creation_planning_router
+from agent.aigc.creation_review import router as creation_review_router
 from agent.aigc.image_service import generate_image as generate_image_with_provider
 from agent.aigc.spark_client import SparkProviderError
 from agent.config import settings, runtime_config
@@ -133,6 +134,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Agent Engine", version="0.1.0", lifespan=lifespan)
 app.include_router(creation_router)
 app.include_router(creation_planning_router)
+app.include_router(creation_review_router)
 
 app.add_middleware(
     CORSMiddleware,

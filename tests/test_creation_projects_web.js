@@ -397,3 +397,35 @@ test('a recovered project poll clears transient connection errors', async () => 
     fail=false;await h.controller.refresh();h.click('select','video');await tick();
     assert.doesNotMatch(h.root.innerHTML,/Failed to fetch/);h.controller.reset();
 });
+
+test('one-click generation is visible, preserves retry idempotency, and stops independently', async () => {
+    const p=project(),calls=[];let fail=true;
+    const h=harness(async(method,path,body)=>{
+        calls.push({method,path,body});
+        if(path.endsWith('/automatic')) {if(fail)throw new Error('connection lost');return {project:{...p,automatic_status:'running',document:JSON.stringify({...document(),automation:{id:'auto',status:'running',steps:[{message:'审阅<script>',elapsed_ms:2}]}})}};}
+        if(path.endsWith('/automatic/stop'))return {project:{...p,automatic_status:'stopping'}};
+        return {project:p,projects:[p],assets:[],runs:[]};
+    });
+    await h.controller.newProject();assert.match(h.root.innerHTML,/一键生成/);
+    h.click('automatic-start');await tick();fail=false;h.click('automatic-start');await tick();
+    const starts=calls.filter(c=>c.path.endsWith('/automatic'));
+    assert.equal(starts.length,2);assert.equal(starts[0].body.request_id,starts[1].body.request_id);
+    assert.equal(starts[0].body.revision,p.revision);assert.deepEqual(Object.keys(starts[0].body).sort(),['request_id','revision']);
+    assert.match(h.root.innerHTML,/停止一键生成/);assert.match(h.root.innerHTML,/审阅&lt;script&gt;/);
+    assert.doesNotMatch(h.root.innerHTML,/<script>/);
+    const stop=h.root.innerHTML.match(/<button[^>]*data-cp-action="automatic-stop"[^>]*>/)[0];assert.doesNotMatch(stop,/disabled/);
+    h.click('automatic-stop');await tick();assert.ok(calls.some(c=>c.path.endsWith('/automatic/stop')));h.controller.reset();
+});
+test('automatic generation leaves unsent instructions intact and ignores late account replies', async () => {
+    const p=project(),calls=[];let finish;
+    const h=harness(async(method,path,body)=>{calls.push({path,body});if(path.endsWith('/automatic'))return new Promise(resolve=>{finish=resolve;});return {project:p};});
+    await h.controller.newProject();h.input('保留这个待发送要求');h.click('automatic-start');await tick();
+    assert.equal(calls.filter(c=>c.path.endsWith('/automatic')).length,0);assert.match(h.root.innerHTML,/先发送输入框/);
+    h.input('');h.click('automatic-start');await tick();h.controller.reset();finish({project:{...p,automatic_status:'running'}});await tick();assert.equal(h.root.innerHTML,'');
+});
+test('automatic busy and missing-plan gates remain distinct from manual approval', () => {
+    assert.match(C.automaticBlock(project({plan:{nodes:[]},states:{}})),/画布/);
+    const p={...project(),automatic_status:'running'};assert.ok(C.automaticBlock(p));assert.ok(C.generationBlock(p,document().plan.nodes[2]));
+    assert.equal(C.automaticBlock({...project(),automatic_status:'failed'}),'');
+    const doc=document();doc.states.script.approved_by='agent';assert.equal(C.nodeStatus(doc,doc.plan.nodes[0],[]),'AI 已确认');
+});

@@ -10,10 +10,24 @@
     const statusNames = { queued: '等待生成', running: '生成中', stopping: '正在停止', completed: '已完成', failed: '生成失败', cancelled: '已停止', interrupted: '已中断' };
     const roleNames = { identity: '人物身份', style: '画面风格', first_frame: '视频首帧', reference: '视觉参考' };
     function documentOf(project) { return parse(project?.document, { plan: { nodes: [], questions: [] }, states: {}, messages: [], asset_ids: [] }); }
+    const automaticActive = project => ['running', 'stopping'].includes(project?.automatic_status);
+    function automaticBlock(project, runs = []) {
+        if (!documentOf(project).plan.nodes.length) return '先形成创作画布';
+        if (project?.planning) return '正在规划';
+        if (automaticActive(project)) return '一键生成正在进行';
+        if (runs.some(r => ['queued','running','stopping'].includes(r.status))) return '等待当前生成完成';
+        return '';
+    }
+    function renderAutomatic(project, open = true) {
+        const activity = documentOf(project).automation;
+        if (!activity || !automaticActive(project)) return '';
+        return `<details class="cp-planning cp-automatic is-running" data-cp-planning="auto:${esc(activity.id)}" ${open ? 'open' : ''}><summary><strong>${project.automatic_status === 'stopping' ? '正在停止一键生成' : '一键生成中'}</strong><span>已确认内容保持不变</span></summary><div class="cp-planning-body"><ol>${planningSteps(activity)}</ol><p>可以离开此页，创作助手会继续按依赖完成后续节点。</p></div></details>`;
+    }
     function approved(state) { return !!state?.revision && state.approved_revision === state.revision; }
     function dependenciesReady(doc, node) { return (node.depends_on || []).every(id => approved(doc.states[id])); }
     function generationBlock(project, node, runs = []) {
         const doc = documentOf(project);
+        if (automaticActive(project)) return '创作助手正在一键生成，可先停止再手动调整';
         if (project?.planning) return '创作助手正在整理方案';
         if (doc.plan.questions?.length) return '先确定创作方向';
         if (!dependenciesReady(doc, node)) return '先确认上游内容';
@@ -93,7 +107,7 @@
         const state = doc.states[node.id] || {}, run = runs.find(r => r.id === state.run_id);
         if (run && ['queued', 'running', 'stopping'].includes(run.status)) return statusNames[run.status];
         if (run?.status === 'completed' && node.kind === 'video') return '已完成';
-        if (approved(state)) return '已确认';
+        if (approved(state)) return state.approved_by === 'agent' ? 'AI 已确认' : '已确认';
         if (run && ['failed', 'interrupted', 'cancelled'].includes(run.status)) return statusNames[run.status];
         if (node.kind === 'image' && !state.selected_asset_id && !state.candidates?.length) return '待生成';
         return '待审阅';
@@ -214,14 +228,14 @@
             if (label) label.textContent = state.pending ? '正在保存位置…' : state.failed ? '位置未保存，请重试' : '拖动节点排布 · 拖动空白处浏览';
             const retry = element?.querySelector('[data-cp-action="retry-layout"]'); if (retry) retry.hidden = !state.failed;
         }
-        const button = (action, label, { id = '', primary = false, disabled = false, asset = '' } = {}) => `<button type="button" class="${primary ? 'btn-primary' : 'btn-secondary'}" data-cp-action="${action}" data-id="${esc(id)}" data-asset="${esc(asset)}" ${disabled || busy || project?.planning ? 'disabled' : ''}>${esc(label)}</button>`;
+        const button = (action, label, { id = '', primary = false, disabled = false, asset = '' } = {}) => `<button type="button" class="${primary ? 'btn-primary' : 'btn-secondary'}" data-cp-action="${action}" data-id="${esc(id)}" data-asset="${esc(asset)}" ${disabled || busy || project?.planning || (automaticActive(project) && !['automatic-stop','versions','new','select','assets','close-versions'].includes(action)) ? 'disabled' : ''}>${esc(label)}</button>`;
         function mount(target) { element = target; if (target) { bind(); render(); } }
         function reset() { epoch++; viewEpoch++; visible = false; clearTimeout(timer); timer = null; project = null; projects = []; assets = []; runs = []; selected = ''; draft = ''; attachments = []; feedback = ''; picker = false; busy = false; versions = null; requestKeys.clear(); planningOpen.clear(); roundsOpen.clear(); canvasStates.clear(); refinementDrafts.clear(); dragging = null; pan = null; renderPending = false; suppressClick = null; pendingMessage = null; followMessages = false; pollError = '';  if (element) element.innerHTML = ''; }
         function setVisible(value) { visible = value; viewEpoch++; clearTimeout(timer); if (value) { render(); void poll(viewEpoch); } }
         async function poll(version) {
             if (!visible || version !== viewEpoch) return;
             try { await refresh(); } catch (error) { if (version === viewEpoch) { pollError = error.message; showMessage(pollError); } }
-            if (visible && version === viewEpoch) timer = setTimeout(() => poll(version), project?.planning || runs.some(r => ['queued', 'running'].includes(r.status)) ? 2200 : 6000);
+            if (visible && version === viewEpoch) timer = setTimeout(() => poll(version), project?.planning || automaticActive(project) || runs.some(r => ['queued', 'running'].includes(r.status)) ? 2200 : 6000);
         }
         async function refresh() {
             if (!user()) return;
@@ -271,10 +285,10 @@
             const viewport = element.querySelector('[data-cp-viewport]'), scroll = viewport ? { x: viewport.scrollLeft, y: viewport.scrollTop } : null;
             const reading = captureReadingPosition(element);
             element.querySelectorAll?.('[data-cp-planning]').forEach(details => planningOpen.set(details.dataset.cpPlanning, details.open));
-            element.innerHTML = `<section class="cp-project"><header class="cp-project-head"><div><label class="cp-project-label">创作项目<select data-cp-project aria-label="选择创作项目"><option value="">新的创作</option>${projects.map(p => `<option value="${esc(p.id)}" ${p.id === project?.id ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select></label>${project ? `<span class="cp-version">v${project.revision} · ${project.planning ? '正在规划' : '自动保存'}</span>` : ''}</div><div>${project ? button('versions', '历史方案') + button('save-template', '存为模板', { disabled: !doc.plan.nodes.length }) : ''}${button('new', '＋ 新创作')}</div></header>
-            <div class="cp-workspace ${doc.plan.nodes.length ? '' : 'cp-start'}"><aside class="cp-dialogue"><header><strong>创作对话</strong><span>${project?.planning ? '正在整理方案…' : '想法与画布同步'}</span></header><div class="cp-messages" aria-live="polite">${renderConversation(doc)}</div>
-            ${doc.plan.questions?.length ? `<div class="cp-questions">${doc.plan.questions.map((q, i) => `<fieldset><legend>${esc(q.question)}</legend>${q.options.map((option, j) => `<button type="button" data-cp-action="answer" data-id="${i}:${j}" ${busy || project?.planning ? 'disabled' : ''}>${esc(option)}${j === 0 ? '<small>推荐</small>' : ''}</button>`).join('')}</fieldset><span>也可以直接输入你的想法。</span>`).join('')}</div>` : ''}
-            <form class="cp-compose" data-cp-form><label for="cp-draft">${selected && !selected.startsWith('asset:') ? `针对：${esc(doc.plan.nodes.find(n => n.id === selected)?.title || '整个项目')}` : '描述你的创作想法'}</label>${attachments.length ? `<div class="cp-attachments">${attachments.map(id => `<button type="button" data-cp-action="detach" data-id="${esc(id)}">${esc(assets.find(a => a.id === id)?.name || '素材')} ×</button>`).join('')}</div>` : ''}<textarea id="cp-draft" data-cp-draft rows="4" maxlength="8000" placeholder="例如：用这几个人设做一支水墨武侠短片，最后有一点反转…" ${project?.planning ? 'disabled' : ''}>${esc(draft)}</textarea><footer><div>${button('upload', '＋ 上传')}${button('pick', '引用资产')}</div><button type="submit" class="btn-primary" ${busy || project?.planning ? 'disabled' : ''}>${pendingMessage ? '发送中…' : project?.planning ? '规划中…' : '发送'}</button></footer><input type="file" data-cp-upload multiple accept="image/png,image/jpeg,image/webp,video/mp4,video/webm" hidden></form><p class="cp-feedback" role="status" data-cp-feedback>${esc(feedback || '')}</p></aside>
+            element.innerHTML = `<section class="cp-project"><header class="cp-project-head"><div><label class="cp-project-label">创作项目<select data-cp-project aria-label="选择创作项目"><option value="">新的创作</option>${projects.map(p => `<option value="${esc(p.id)}" ${p.id === project?.id ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select></label>${project ? `<span class="cp-version">v${project.revision} · ${automaticActive(project) ? '一键生成中' : project.planning ? '正在规划' : '自动保存'}</span>` : ''}</div><div>${project ? `<div class="cp-auto-controls">${automaticActive(project) ? button('automatic-stop', project.automatic_status === 'stopping' ? '正在停止…' : '停止一键生成', { disabled: project.automatic_status === 'stopping' }) : button('automatic-start', ['failed','interrupted','cancelled'].includes(project.automatic_status) ? '继续一键生成' : '一键生成', { primary: true, disabled: !!automaticBlock(project, runs) })}<small>保留已确认内容，AI 确定其余节点并生成</small></div>` + button('versions', '历史方案') + button('save-template', '存为模板', { disabled: !doc.plan.nodes.length }) : ''}${button('new', '＋ 新创作')}</div></header>
+            <div class="cp-workspace ${doc.plan.nodes.length ? '' : 'cp-start'}"><aside class="cp-dialogue"><header><strong>创作对话</strong><span>${project?.planning ? '正在整理方案…' : '想法与画布同步'}</span></header><div class="cp-messages" aria-live="polite">${renderConversation(doc)}${renderAutomatic(project, planningOpen.get(`auto:${doc.automation?.id}`) ?? true)}</div>
+            ${doc.plan.questions?.length ? `<div class="cp-questions">${doc.plan.questions.map((q, i) => `<fieldset><legend>${esc(q.question)}</legend>${q.options.map((option, j) => `<button type="button" data-cp-action="answer" data-id="${i}:${j}" ${busy || project?.planning || automaticActive(project) ? 'disabled' : ''}>${esc(option)}${j === 0 ? '<small>推荐</small>' : ''}</button>`).join('')}</fieldset><span>也可以直接输入你的想法。</span>`).join('')}</div>` : ''}
+            <form class="cp-compose" data-cp-form><label for="cp-draft">${selected && !selected.startsWith('asset:') ? `针对：${esc(doc.plan.nodes.find(n => n.id === selected)?.title || '整个项目')}` : '描述你的创作想法'}</label>${attachments.length ? `<div class="cp-attachments">${attachments.map(id => `<button type="button" data-cp-action="detach" data-id="${esc(id)}">${esc(assets.find(a => a.id === id)?.name || '素材')} ×</button>`).join('')}</div>` : ''}<textarea id="cp-draft" data-cp-draft rows="4" maxlength="8000" placeholder="例如：用这几个人设做一支水墨武侠短片，最后有一点反转…" ${project?.planning || automaticActive(project) ? 'disabled' : ''}>${esc(draft)}</textarea><footer><div>${button('upload', '＋ 上传')}${button('pick', '引用资产')}</div><button type="submit" class="btn-primary" ${busy || project?.planning || automaticActive(project) ? 'disabled' : ''}>${pendingMessage ? '发送中…' : project?.planning ? '规划中…' : '发送'}</button></footer><input type="file" data-cp-upload multiple accept="image/png,image/jpeg,image/webp,video/mp4,video/webm" hidden></form><p class="cp-feedback" role="status" data-cp-feedback>${esc(feedback || '')}</p></aside>
             <main class="cp-main">${doc.plan.nodes.length ? `<div class="cp-canvas-head"><div><strong>创作画布</strong><span>${doc.plan.nodes.filter(n => !approved(doc.states[n.id])).length} 项待审阅</span></div><div><button data-cp-action="zoom-out" aria-label="缩小画布">−</button><span data-cp-zoom>${Math.round(zoom * 100)}%</span><button data-cp-action="zoom-in" aria-label="放大画布">＋</button><button data-cp-action="fit">适应画布</button><button data-cp-action="arrange">自动排列</button></div></div><div class="cp-canvas-help"><span data-cp-layout-status role="status"></span><button type="button" class="creation-text-button" data-cp-action="retry-layout" hidden>重试保存位置</button></div><div class="cp-viewport" data-cp-viewport aria-label="创作画布，可拖动节点调整位置，拖动空白区域或滚动查看"><div class="cp-canvas-space" data-cp-space><div class="cp-graph" data-cp-graph></div></div></div><section class="cp-review" aria-label="节点审阅">${renderReview(doc)}</section>` : `<div class="cp-empty-canvas"><span>素材 → 方案 → 作品</span><h3>你的创作，会在这里展开</h3><p>对话后，人物参考、主视觉、脚本和作品会成为可查看、可修改的节点。</p><p>图片与视频生成都由你明确提交，确认前可以继续调整。</p></div>`}<div class="cp-project-extras">${picker ? renderPicker() : ''}${versions ? renderVersions() : ''}${renderHistory()}</div></main></div></section>`;
             drawCanvas(); updateLayoutStatus();
             if (scroll && !autoFit) { const v = element.querySelector('[data-cp-viewport]'); if (v) { v.scrollLeft = scroll.x; v.scrollTop = scroll.y; } }
@@ -387,6 +401,7 @@
             return project;
         }
         async function send(text = draft, nodeID = selected.startsWith('asset:') ? '' : selected) {
+            if (automaticActive(project)) throw new Error('先停止一键生成，再修改创作要求');
             const message = text.trim(); if (!message) throw new Error('先说说你的创作想法');
             const savedAttachments = [...attachments], owner = epoch;
             pendingMessage = message; followMessages = true; render();
@@ -442,6 +457,20 @@
             if (name === 'answer') { const [i, j] = id.split(':').map(Number), question = currentDoc().plan.questions[i]; await send(`关于“${question.question}”，我选择：${question.options[j]}`, ''); return; }
             if (name === 'versions') { const response = await api('GET', `/api/creation/projects/${encodeURIComponent(projectID)}/versions`); if (version === epoch && projectID === project?.id) { versions = response.versions || []; render(); } return; }
             if (name === 'save-template') { await api('POST', `/api/creation/projects/${encodeURIComponent(projectID)}/template`, {}); if (version === epoch) { showMessage('已保存创作模板，复用时会重新匹配素材'); onTemplates(false); } return; }
+            if (name === 'automatic-start' || name === 'automatic-stop') {
+                if (name === 'automatic-start' && (draft.trim() || attachments.length)) throw new Error('先发送输入框里的想法或素材，再一键生成，避免遗漏你的要求');
+                const key = `automatic:${projectID}`;
+                if (!requestKeys.has(key)) requestKeys.set(key, uid());
+                let response;
+                try { response = await api('POST', `/api/creation/projects/${encodeURIComponent(projectID)}/automatic${name === 'automatic-stop' ? '/stop' : ''}`, name === 'automatic-stop' ? {} : { revision: project.revision, request_id: requestKeys.get(key) }); }
+                catch (error) { if ([400,404,409].includes(error.httpStatus)) requestKeys.delete(key); throw error; }
+                if (version === epoch && projectID === project?.id) {
+                    requestKeys.delete(key); project = response.project; feedback = name === 'automatic-stop' ? '正在停止；当前提交会先保存，不再生成后续节点。' : '已启动一键生成。已确认内容和已有产物会保留。';
+                    if (visible) { clearTimeout(timer); timer = setTimeout(() => poll(viewEpoch), 1000); }
+                    render();
+                }
+                return;
+            }
             if (name === 'stop') { await api('POST', `/api/creation/runs/${encodeURIComponent(id)}/cancel`, {}); if (version === epoch) await refresh(); return; }
             let response;
             if (name === 'approve' || name === 'choose') response = await api('POST', `/api/creation/projects/${encodeURIComponent(projectID)}/review`, { revision: project.revision, node_id: id, asset_id: assetID || '' });
@@ -545,5 +574,5 @@
         }
         return { mount, reset, setVisible, newProject: template => perform(() => newProject(template)), refresh };
     }
-    return { conversationRounds, captureReadingPosition, restoreReadingPosition, renderPlanning, renderMediaProgress, documentOf, approved, dependenciesReady, generationBlock, layoutGraph, movedPosition, revisionSuggestions, refinementMessage, renderReferences, nodeStatus, createController };
+    return { automaticActive, automaticBlock, renderAutomatic, conversationRounds, captureReadingPosition, restoreReadingPosition, renderPlanning, renderMediaProgress, documentOf, approved, dependenciesReady, generationBlock, layoutGraph, movedPosition, revisionSuggestions, refinementMessage, renderReferences, nodeStatus, createController };
 });

@@ -17,6 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field, create_model, model_validator
 from agent.aigc.image_inputs import decode_image_data_url
 from agent.aigc.video_prompting import VIDEO_PROMPT_GUIDANCE, VideoStoryboard, compile_storyboard
 from agent.llm.base import LLMMessage
+from agent.aigc.creation_output import structured_options, unsupported_schema, omit_null_fields, validation_details
 from agent.aigc.creation_tools import director_tools, execute_director_tool, tool_definitions
 from agent.aigc.creation_models import (can_use_plan_vision, use_plan_vision, unsupported_image_input,
     planning_error, configure_planning_output, PlanningOutputTruncated)
@@ -112,7 +113,10 @@ class CreativePlan(StrictModel):
                     raise ValueError('视频需要结构化分镜，产出一个视频')
                 if not any(seen[dep].purpose == 'script' and seen[dep].kind == 'text' for dep in node.depends_on):
                     raise ValueError('视频必须依赖可审阅的分镜脚本')
-                compile_creative_video(node)
+                try:
+                    compile_creative_video(node)
+                except ValueError as exc:
+                    raise ValueError(f"视频节点「{node.title}」: {exc}") from exc
             seen[node.id] = node
         return self
 
@@ -137,6 +141,8 @@ class PlanningAsset(StrictModel):
 
 
 class PlanningRequest(StrictModel):
+    automatic_mode: bool = False
+    locked_node_ids: list[str] = Field(default_factory=list, max_length=20)
     project_id: str
     user_id: str
     messages: list[dict] = Field(max_length=80)
@@ -147,9 +153,12 @@ class PlanningRequest(StrictModel):
     node_context: dict[str, dict] = Field(default_factory=dict)
 
 
-class PlanningResponse(StrictModel):
+class PlanProposal(StrictModel):
     reply: str = Field(min_length=1, max_length=4000)
     plan: CreativePlan
+
+
+class PlanningResponse(PlanProposal):
     model_used: str = ''
     tokens_used: dict[str, int] = Field(default_factory=dict)
     run_id: str = ''
@@ -176,9 +185,9 @@ class RevisionResponse(StrictModel):
 
 REVISION_PROMPT = '''本轮在已有画布上修改。返回 reply 和 patch，不返回完整 plan。
 patch.nodes 只包含有变化的节点，每项包含 id 和变更字段；未变更字段和节点由系统保留。禁止为了复述上下文重写整个画布。
-修改 content 时返回该字段的完整新内容；修改 storyboard 时返回该节点完整 storyboard；数组字段整体替换，不能返回数组的一小段。不要返回 null 或生成批准状态。
+修改 content 时返回该字段的完整新内容；修改 storyboard 时返回该节点完整 storyboard；数组字段整体替换，不能返回数组的一小段。严格输出结构中未修改的可选字段填 null；null 表示保留原值，不是删除。禁止生成批准状态。
 针对节点的修改只调整它及确实受影响的下游，原有资产、引用、时长、交付数量和其他要求保持不变。即使有六段视频，也不要重写未受影响的视频。
-如有重大歧义，用 reply 和 patch.questions 提问；不需要修改的字段全部省略。需要新增节点时提供完整新节点，按依赖顺序追加；删除或重排节点不在本轮局部修改范围，先询问用户。
+如有重大歧义，用 reply 和 patch.questions 提问；不需要修改的字段在严格结构中填 null。需要新增节点时提供完整新节点，按依赖顺序追加；删除或重排节点不在本轮局部修改范围，先询问用户。
 '''
 
 
@@ -207,7 +216,7 @@ depends_on 包含所有内容依据和 reference.node_id；文本脚本依赖故
 视频按给出的 skill 规划，实际图片数组顺序与 references 顺序相同。用户没有要求原样提示词时，必须使用 storyboard，不填写视频 prompt。
 复杂视频的storyboard.shots对应Logical Shot，shots[].panels对应组内Panel，使用全片绝对秒数与明确结束秒数。reference_rules、continuity_locks、execution_constraints中的执行约束要与中文审阅稿一致，不能只写在给用户看的文字里。不要将创作示例当作固定题材、角色、镜头数量或时长规则。
 提取用户要求的图片创作同样支持 image→image 或多个图片节点；不要把所有需求都改成视频。
-保持输出紧凑：省略没有用途的默认字段，视频节点不重复填写 prompt；每个视频只描述本段的动作，不重复整部脚本。JSON 字符串内的换行和引号必须正确转义，不要输出未完成的 JSON。
+保持输出紧凑：没有用途的可选字段填 null，视频节点不重复填写 prompt；每个视频只描述本段的动作，不重复整部脚本。JSON 字符串内的换行和引号必须正确转义，不要输出未完成的 JSON。
 ''' + VIDEO_PROMPT_GUIDANCE.replace('普通短片无需额外确认。', '创作项目必须经过画布审阅与明确提交。')
 
 
@@ -232,6 +241,7 @@ def parse_proposal(content: str, request: PlanningRequest) -> PlanningResponse:
     trailing = text[end:].strip()
     if trailing and (not isinstance(value, dict) or len(trailing) > 3 or set(trailing) != {'}'}):
         raise json.JSONDecodeError('Extra data', text, end)
+    value = omit_null_fields(value)
     if 'patch' in value:
         revision = RevisionResponse.model_validate(value)
         if not request.current_plan.get('nodes'):
@@ -270,6 +280,12 @@ def parse_proposal(content: str, request: PlanningRequest) -> PlanningResponse:
                 raise ValueError('引用了未提供的图片资产')
         if node.kind == 'video':
             node.prompt = compile_creative_video(node)
+    if request.automatic_mode:
+        prior = {n.id: n for n in CreativePlan.model_validate(omit_null_fields(request.current_plan)).nodes}
+        current = {n.id: n for n in proposal.plan.nodes}
+        for ident in request.locked_node_ids:
+            if ident not in prior or ident not in current or prior[ident].model_dump(exclude={'prompt'}) != current[ident].model_dump(exclude={'prompt'}):
+                raise ValueError('一键生成不能修改已确认节点及其依赖：' + ident)
     return proposal
 
 
@@ -284,6 +300,7 @@ async def propose_creation(request: PlanningRequest, trace_store=None, on_progre
     model = ''
     skills = director_tools()
     used_tools, tool_count, repairs = [], 0, 0
+    json_only = False
     try:
         provider = create_provider()
         has_images = any(asset.data_url and asset.mime_type.startswith('image/') for asset in request.assets)
@@ -292,7 +309,7 @@ async def propose_creation(request: PlanningRequest, trace_store=None, on_progre
             await report('model_selection', '本轮含图片素材，已自动选用支持图片理解的创作模型')
         await report('context', f'已读取 {len(request.messages)} 条对话、{len(request.assets)} 份素材，正在整理创作上下文')
         revising = bool(request.current_plan.get('nodes'))
-        schema = (RevisionResponse if revising else PlanningResponse).model_json_schema()
+        schema = (RevisionResponse if revising else PlanProposal).model_json_schema()
         payload = request.model_dump(exclude={'assets'})
         # Video prompts are deterministic compilations; resending them alongside
         # storyboards wastes context and invites unrelated rewrites.
@@ -305,14 +322,15 @@ async def propose_creation(request: PlanningRequest, trace_store=None, on_progre
             if asset.data_url and asset.mime_type.startswith('image/'):
                 parts.extend([{'type': 'text', 'text': f'资产 {asset.id}: {asset.name}'},
                               {'type': 'image_url', 'image_url': {'url': image_preview(asset.data_url)}}])
-        messages = [LLMMessage(role='system', content=DIRECTOR_PROMPT + (REVISION_PROMPT if revising else '') + '\nJSON schema:\n' + json.dumps(schema, ensure_ascii=False)),
+        auto_prompt = ('\n用户已授权一键生成：未确认的常规选项由你判断并确定，清空已解决的 questions；不得改变 locked_node_ids 中任何节点及其依赖。不要生成审批字段或直接生成媒体。必需信息缺失或能力不支持时保留具体问题。' if request.automatic_mode else '')
+        messages = [LLMMessage(role='system', content=DIRECTOR_PROMPT + auto_prompt + (REVISION_PROMPT if revising else '') + '\nJSON schema:\n' + json.dumps(schema, ensure_ascii=False)),
                     LLMMessage(role='user', content=parts)]
         for step in range(8):
             configure_planning_output(provider)
             available = tool_definitions(skills) if step < 6 and tool_count < 8 else None
             await report('model', '正在理解创作意图、匹配工作流与模板' if not step else '结合当前进度与资料，继续推进创作方案')
             try:
-                options = dict(tools=available, temperature=.4)
+                options = dict(tools=available, temperature=.4, **structured_options(provider, schema, "creation_revision" if revising else "creation_plan", json_only=json_only))
                 if revising:
                     options['thinking_enabled'] = False
                 if on_progress and callable(getattr(provider, 'chat_stream_response', None)):
@@ -336,6 +354,10 @@ async def propose_creation(request: PlanningRequest, trace_store=None, on_progre
                 else:
                     response = await provider.chat(messages, **options)
             except Exception as exc:
+                if not json_only and unsupported_schema(exc):
+                    json_only = True
+                    await report('format', '当前模型使用 JSON 输出约束，继续执行完整结构校验')
+                    continue
                 if has_images and unsupported_image_input(exc) and can_use_plan_vision(provider):
                     provider = await use_plan_vision(provider, create_provider)
                     await report('model_selection', '当前模型无法读取图片，已自动切换到同一服务的图片理解模型')
@@ -368,16 +390,21 @@ async def propose_creation(request: PlanningRequest, trace_store=None, on_progre
                 if isinstance(exc, json.JSONDecodeError):
                     details = dict(type='JSONDecodeError', message=exc.msg, position=exc.pos, chars=len(response.content))
                 elif hasattr(exc, 'errors'):
-                    details = [{'type': e['type'], 'loc': e['loc'], 'msg': e['msg']} for e in exc.errors(include_input=False, include_context=False)]
+                    details = validation_details(exc)
                 else:
-                    details = type(exc).__name__
+                    details = validation_details(exc)
                 logger.warning('Creation plan validation failed (attempt %s): %s', repairs + 1, details)
                 if repairs:
+                    from agent.aigc.creation_models import PlanningConstraintError
+                    if 'Panels must cover' in str(exc):
+                        raise PlanningConstraintError('分镜时间存在空档、重叠或越界，方案未提交；原有内容保留，请调整该节点的时间分配') from exc
+                    if '4000' in str(exc) and 'prompt' in str(exc).lower():
+                        raise PlanningConstraintError('视频执行提示词超过模型长度限制，方案未提交；原有内容保留，请精简该节点的描述') from exc
                     raise ValueError('创作方案格式校验失败，请重试或补充要求') from exc
                 repairs += 1
                 await report('repair', '方案格式需要调整，正在自动修正')
                 messages.extend([LLMMessage(role='assistant', content=response.content),
-                                 LLMMessage(role='user', content=f'方案校验失败：{str(exc)[:2000]}。请修正并返回完整 JSON。')])
+                                 LLMMessage(role='user', content='方案校验失败：' + json.dumps(details, ensure_ascii=False)[:2000] + ('。仅返回 reply 和 patch，修正有问题的字段，保留其余内容。' if revising else '。仅返回 reply 和 plan，修正有问题的字段。'))])
         else:
             raise ValueError('本轮创作规划达到上限，请补充要求后继续')
         proposal.model_used, proposal.tokens_used = model, usage

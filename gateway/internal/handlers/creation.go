@@ -51,9 +51,10 @@ type creationGenerator interface {
 	CreateMedia(context.Context, bridge.CreationNodeRequest) (*bridge.CreationNodeResponse, error)
 }
 type CreationHandler struct {
-	generator creationGenerator
-	db        *gorm.DB
-	mu        sync.Mutex
+	generator        creationGenerator
+	db               *gorm.DB
+	mu               sync.Mutex
+	automaticCancels map[string]context.CancelFunc
 }
 
 func NewCreationHandler(generator creationGenerator) *CreationHandler {
@@ -62,6 +63,13 @@ func NewCreationHandler(generator creationGenerator) *CreationHandler {
 
 // Call once at process startup. Interrupted submissions are never automatically replayed.
 func (h *CreationHandler) Recover() error {
+	var automaticProjects []models.CreationProject
+	if err := h.db.Where("automatic_status IN ?", []string{"running", "stopping"}).Find(&automaticProjects).Error; err != nil {
+		return err
+	}
+	for _, row := range automaticProjects {
+		h.finishAutomatic(row.ID, row.AutomaticRequestID, "interrupted", "服务已重启，一键生成已中断；已完成结果保留，请点击继续，不会自动重复提交。")
+	}
 	var planningProjects []models.CreationProject
 	if err := h.db.Where("planning = ?", true).Find(&planningProjects).Error; err != nil {
 		return err
@@ -520,7 +528,7 @@ func (h *CreationHandler) StartRun(c *gin.Context) {
 		creationError(c, 500, "无法检查运行状态")
 		return
 	}
-	if active > 0 {
+	if active > 0 || h.automaticBusy(user, "") {
 		creationError(c, 409, "已有工作流正在运行，请完成或停止后再试")
 		return
 	}

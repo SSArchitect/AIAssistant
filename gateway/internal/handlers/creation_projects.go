@@ -26,6 +26,7 @@ type creationProgressPlanner interface {
 	PlanCreationWithProgress(context.Context, bridge.CreationPlanningRequest, func(bridge.CreationPlanningProgress)) (*bridge.CreationPlanningResponse, error)
 }
 type creativeNodeState struct {
+	ApprovedBy       string            `json:"approved_by,omitempty"`
 	Revision         int               `json:"revision"`
 	ApprovedRevision int               `json:"approved_revision"`
 	Candidates       []string          `json:"candidates"`
@@ -34,6 +35,7 @@ type creativeNodeState struct {
 	ApprovedInputs   map[string]string `json:"approved_inputs"`
 }
 type creativeDocument struct {
+	Automation *creativeAutomation              `json:"automation,omitempty"`
 	Planning   *bridge.CreativePlanningActivity `json:"planning,omitempty"`
 	Plan       bridge.CreativePlan              `json:"plan"`
 	States     map[string]creativeNodeState     `json:"states"`
@@ -207,6 +209,8 @@ func (h *CreationHandler) registerProjects(group *gin.RouterGroup) {
 	group.POST("/projects/:id/generate", h.GenerateProjectNode)
 	group.POST("/projects/:id/template", h.ProjectTemplate)
 	group.GET("/projects/:id/versions", h.ProjectVersions)
+	group.POST("/projects/:id/automatic", h.StartAutomaticCreation)
+	group.POST("/projects/:id/automatic/stop", h.StopAutomaticCreation)
 }
 func (h *CreationHandler) loadProject(c *gin.Context) (models.CreationProject, creativeDocument, bool) {
 	var row models.CreationProject
@@ -227,7 +231,7 @@ func (h *CreationHandler) updateProject(row *models.CreationProject, doc creativ
 	row.Document = creationJSON(doc)
 	row.UpdatedAt = time.Now()
 	return h.db.Transaction(func(tx *gorm.DB) error {
-		result := tx.Model(&models.CreationProject{}).Where("id = ? AND user_id = ? AND revision = ?", row.ID, row.UserID, expected).Updates(map[string]interface{}{"name": row.Name, "revision": row.Revision, "document": row.Document, "planning": row.Planning, "planning_request_id": row.PlanningRequestID, "error": row.Error, "updated_at": row.UpdatedAt})
+		result := tx.Model(&models.CreationProject{}).Where("id = ? AND user_id = ? AND revision = ?", row.ID, row.UserID, expected).Updates(map[string]interface{}{"name": row.Name, "revision": row.Revision, "document": row.Document, "planning": row.Planning, "planning_request_id": row.PlanningRequestID, "error": row.Error, "automatic_status": row.AutomaticStatus, "automatic_request_id": row.AutomaticRequestID, "updated_at": row.UpdatedAt})
 		if result.Error != nil {
 			return result.Error
 		}
@@ -241,8 +245,8 @@ func (h *CreationHandler) updateProject(row *models.CreationProject, doc creativ
 	})
 }
 func checkProjectRevision(c *gin.Context, row models.CreationProject, revision int) bool {
-	if row.Planning {
-		creationError(c, 409, "创作助手正在整理方案，请稍候")
+	if row.Planning || automaticActive(row.AutomaticStatus) {
+		creationError(c, 409, "创作助手正在处理，请稍候或先停止一键生成")
 		return false
 	}
 	if row.Revision != revision {
@@ -253,7 +257,7 @@ func checkProjectRevision(c *gin.Context, row models.CreationProject, revision i
 }
 func (h *CreationHandler) Projects(c *gin.Context) {
 	var rows []models.CreationProject
-	if err := h.db.Select("id", "name", "revision", "planning", "error", "created_at", "updated_at").Where("user_id = ?", c.GetString("creation_user_id")).Order("updated_at DESC").Find(&rows).Error; err != nil {
+	if err := h.db.Select("id", "name", "revision", "planning", "automatic_status", "error", "created_at", "updated_at").Where("user_id = ?", c.GetString("creation_user_id")).Order("updated_at DESC").Find(&rows).Error; err != nil {
 		creationError(c, 500, "无法读取项目")
 		return
 	}
@@ -580,6 +584,7 @@ func (h *CreationHandler) ReviewProject(c *gin.Context) {
 		invalidateCreativeChildren(&doc, node.ID)
 	}
 	state.ApprovedRevision = state.Revision
+	state.ApprovedBy = "user"
 	state.ApprovedInputs = hashes
 	doc.States[node.ID] = state
 	if err = h.updateProject(&row, doc, true); err != nil {
@@ -617,22 +622,45 @@ func (h *CreationHandler) GenerateProjectNode(c *gin.Context) {
 	if !checkProjectRevision(c, row, req.Revision) {
 		return
 	}
-	node, ok := creativeNode(doc, req.NodeID)
-	if !ok || node.Kind == "text" || node.AssetID != "" {
-		creationError(c, 400, "此节点不能生成媒体")
+	submission, err := h.prepareProjectRun(row, doc, req.NodeID, req.RequestID)
+	if err != nil {
+		failure := err.(*creationSubmissionError)
+		creationError(c, failure.status, failure.message)
 		return
+	}
+	go h.execute(submission.run, submission.graph, submission.progress)
+	c.JSON(202, gin.H{"project": submission.project, "run": submission.run})
+}
+
+type creationSubmissionError struct {
+	status  int
+	message string
+}
+
+func (e *creationSubmissionError) Error() string { return e.message }
+
+type creationSubmission struct {
+	project  models.CreationProject
+	run      models.CreationRun
+	graph    creationGraph
+	progress []creationProgress
+}
+
+// Caller holds h.mu. Manual and automatic generation share every review, input-hash,
+// concurrency, frozen-snapshot and transactional submission check.
+func (h *CreationHandler) prepareProjectRun(row models.CreationProject, doc creativeDocument, nodeID, requestID string) (*creationSubmission, error) {
+	node, ok := creativeNode(doc, nodeID)
+	if !ok || node.Kind == "text" || node.AssetID != "" {
+		return nil, &creationSubmissionError{400, fmt.Sprint("此节点不能生成媒体")}
 	}
 	if len(doc.Plan.Questions) > 0 {
-		creationError(c, 409, "请先回答创作助手的问题，确定方案后再生成")
-		return
+		return nil, &creationSubmissionError{409, fmt.Sprint("请先回答创作助手的问题，确定方案后再生成")}
 	}
 	if err := creativeDependenciesReady(doc, node); err != nil {
-		creationError(c, 409, err)
-		return
+		return nil, &creationSubmissionError{409, fmt.Sprint(err)}
 	}
 	if node.Kind == "video" && !creativeApproved(doc.States[node.ID]) {
-		creationError(c, 409, "请先确认脚本与参考关系，再提交视频")
-		return
+		return nil, &creationSubmissionError{409, fmt.Sprint("请先确认脚本与参考关系，再提交视频")}
 	}
 	// Check only this node and its ancestors; independent branches do not block it.
 	required := map[string]bool{node.ID: true}
@@ -650,8 +678,7 @@ func (h *CreationHandler) GenerateProjectNode(c *gin.Context) {
 		}
 		_, hashes, err := h.creativeInputs(row.UserID, doc, check)
 		if err != nil || !reflect.DeepEqual(hashes, doc.States[check.ID].ApprovedInputs) {
-			creationError(c, 409, "参考资产已变更或删除，请重新审阅确认")
-			return
+			return nil, &creationSubmissionError{409, fmt.Sprint("参考资产已变更或删除，请重新审阅确认")}
 		}
 	}
 	// Generate uses references, not the previously selected output when regenerating an image.
@@ -665,17 +692,14 @@ func (h *CreationHandler) GenerateProjectNode(c *gin.Context) {
 	inputDoc.States[node.ID] = sourceState
 	ids, hashes, err := h.creativeInputs(row.UserID, inputDoc, node)
 	if err != nil {
-		creationError(c, 400, err)
-		return
+		return nil, &creationSubmissionError{400, fmt.Sprint(err)}
 	}
 	var active int64
 	if err = h.db.Model(&models.CreationRun{}).Where("user_id = ? AND status IN ?", row.UserID, []string{"queued", "running", "stopping"}).Count(&active).Error; err != nil {
-		creationError(c, 500, "无法检查生成任务")
-		return
+		return nil, &creationSubmissionError{500, fmt.Sprint("无法检查生成任务")}
 	}
-	if active > 0 {
-		creationError(c, 409, "已有生成任务在运行，请等待完成或停止")
-		return
+	if active > 0 || h.automaticBusy(row.UserID, row.ID) {
+		return nil, &creationSubmissionError{409, fmt.Sprint("已有生成任务在运行，请等待完成或停止")}
 	}
 	mode := ""
 	if node.Kind == "video" {
@@ -689,11 +713,10 @@ func (h *CreationHandler) GenerateProjectNode(c *gin.Context) {
 	}
 	graph := creationGraph{Nodes: []creationNode{{ID: node.ID, Kind: node.Kind, Name: node.Title, Prompt: node.Prompt, Count: node.Count, AspectRatio: node.AspectRatio, DurationSeconds: node.DurationSeconds, CharacterStyle: node.CharacterStyle, Inputs: []string{}, AssetIDs: ids, InputHashes: hashes, VideoMode: mode, Storyboard: node.Storyboard}}}
 	if err = validateCreationGraph(graph, true); err != nil {
-		creationError(c, 400, err)
-		return
+		return nil, &creationSubmissionError{400, fmt.Sprint(err)}
 	}
 	state := doc.States[node.ID]
-	run := models.CreationRun{ID: uuid.NewString(), UserID: row.UserID, Name: row.Name + " · " + node.Title, Status: "queued", Definition: creationJSON(graph), ProjectID: row.ID, ProjectRevision: row.Revision, ProjectNodeID: node.ID, NodeRevision: state.Revision, RequestID: req.RequestID, Snapshot: creationJSON(doc)}
+	run := models.CreationRun{ID: uuid.NewString(), UserID: row.UserID, Name: row.Name + " · " + node.Title, Status: "queued", Definition: creationJSON(graph), ProjectID: row.ID, ProjectRevision: row.Revision, ProjectNodeID: node.ID, NodeRevision: state.Revision, RequestID: requestID, Snapshot: creationJSON(doc)}
 	progress := []creationProgress{{NodeID: node.ID, Status: "pending", AssetIDs: []string{}}}
 	run.Progress = creationJSON(progress)
 	state.RunID = run.ID
@@ -712,14 +735,13 @@ func (h *CreationHandler) GenerateProjectNode(c *gin.Context) {
 		return nil
 	})
 	if err != nil {
-		creationError(c, 500, "提交生成失败")
-		return
+		return nil, &creationSubmissionError{500, fmt.Sprint("提交生成失败")}
 	}
 	row.Revision++
 	row.Document = creationJSON(doc)
-	go h.execute(run, graph, progress)
-	c.JSON(202, gin.H{"project": row, "run": run})
+	return &creationSubmission{row, run, graph, progress}, nil
 }
+
 func (h *CreationHandler) finishProjectRun(run models.CreationRun, progress []creationProgress) {
 	if run.ProjectID == "" {
 		return
@@ -749,8 +771,11 @@ func (h *CreationHandler) finishProjectRun(run models.CreationRun, progress []cr
 		return
 	}
 	state.SelectedAssetID = ""
-	state.ApprovedRevision = 0
-	state.ApprovedInputs = nil
+	if node, _ := creativeNode(doc, run.ProjectNodeID); node.Kind != "video" {
+		state.ApprovedRevision = 0
+		state.ApprovedInputs = nil
+		state.ApprovedBy = ""
+	}
 	if len(state.Candidates) == 1 {
 		state.SelectedAssetID = state.Candidates[0]
 	}

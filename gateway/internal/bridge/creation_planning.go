@@ -63,6 +63,8 @@ type PlanningAsset struct {
 	DataURL  string `json:"data_url,omitempty"`
 }
 type CreationPlanningRequest struct {
+	AutomaticMode       bool                              `json:"automatic_mode,omitempty"`
+	LockedNodeIDs       []string                          `json:"locked_node_ids,omitempty"`
 	ProjectID           string                            `json:"project_id"`
 	UserID              string                            `json:"user_id"`
 	Messages            []CreativeMessage                 `json:"messages"`
@@ -165,6 +167,7 @@ func (c *AgentClient) PlanCreationWithProgress(ctx context.Context, req Creation
 				"planning_timeout":          "创作规划等待超时，原有内容已保留，请重试",
 				"planning_output_truncated": "模型未完整返回创作方案，原有内容已保留；请分段规划后继续",
 				"invalid_plan":              "创作方案格式校验失败，原有内容已保留，请补充要求或重试",
+				"plan_constraint_failed": "分镜时间或执行提示词不符合生成要求，原有内容已保留，请调整相应节点",
 			}
 			if safe, ok := safeMessages[event.Code]; ok {
 				message = safe

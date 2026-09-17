@@ -292,3 +292,9 @@
     .is-projects .cp-questions { flex-shrink: 0; max-height: 130px; overflow: auto; }
     .is-projects .cp-viewport { height: clamp(260px, 48dvh, 540px); }
 }
+
+.cp-auto-controls { display: flex; flex-direction: column; gap: 4px; align-items: flex-end; }
+.cp-auto-controls small { color: var(--text-secondary, #737b8c); font-size: 11px; }
+.cp-automatic summary { flex-wrap: wrap; }
+.cp-automatic summary > span { font-size: 11px; color: var(--text-secondary, #737b8c); }
+@media (max-width: 760px) { .cp-auto-controls { align-items: flex-start; } .cp-auto-controls small { max-width: 220px; } }

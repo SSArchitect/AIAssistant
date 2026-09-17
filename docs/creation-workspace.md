@@ -15,6 +15,16 @@
 
 已有画布的修改使用字段级 `patch`，只返回变更节点的变更字段；服务端合并后仍执行完整图、素材和分镜校验，再原子保存并重新进入审核。未变更字段／节点保留；视频执行 prompt 由 storyboard 编译，不重复占用模型上下文。修改轮次关闭模型额外深度思考，保持资料工具循环和正常活动进度。规划使用300秒无活动超时，实际模型输出／工具进展续期，绝对上限15分钟；Gateway留出15秒收尾时间。超时取消底层请求，保留原方案，Trace记录超时原因。
 
+OpenAI 兼容规划请求在 API 层携带严格 JSON Schema：对象关闭额外字段，所有字段必填，可省略字段在传输时允许 null。仅当模型明确拒绝支持 Schema 时，改用 `json_object`，不会退回无格式约束的输出。服务端去掉表示未修改的 null，再合并和校验；空字符串／空数组仍表示显式修改。普通聊天不受此约束影响。语法、字段类型之外，分镜时间覆盖、依赖、引用与编译长度仍由本地验证器检查，最多自动修正一次；持续的时间线冲突单独报告，不笼统显示为 JSON 格式错误。
+
+### 一键生成
+
+已有画布后点击「一键生成」，即授权创作 Agent 确定剩余常规选项、审阅节点、从真实候选图中选择并依次提交媒体生成。已确认的内容与上游依赖锁定，用户已选图片继续沿用，已完成的节点不会重复生成。AI 确认结果标记为「AI 已确认」，每步简短决策依据和结果保存在可折叠活动中。
+
+Gateway 持有执行循环和当前账号的运行预约，复用手动生成的依赖、版本、输入摘要和幂等检查。内部 `/agent/creation/review` 只返回 approve/select/blocked 决策，没有修改方案或执行媒体的能力；选图提供实际预览，不能选择候选集合外的资产。方案尚有选项时，规划工具只允许处理未锁定部分。审阅期间图片变化、必需信息缺失或能力限制会停止循环并保留内容。
+
+运行期间可浏览、整理画布，内容修改等待停止后进行。「停止一键生成」取消待定审阅；已提交的媒体完成并归档后停止，不再启动下一节点。失败／停止后可点击「继续一键生成」，复用已有确认与部分产物；服务重启标记为中断，不自动重复付费请求。循环在服务端运行，离开页面不影响执行。
+
 导演接口 `/agent/creation/plan` 只提出结构化方案，没有媒体执行工具和审核权限。视频复用 `video_prompting.py` 的分镜 skill 与确定性编译器。中文审阅脚本和适配模型的结构化分镜一起保存；生成时再次编译并核对提示词，避免提交内容偏离已冻结方案。当前媒体能力仍使用配置中的 Spark 服务，由导演在实际支持的模式中选择，不虚构其他可用模型。
 
 先确定交付意图，再决定节点数量：Panel 是语义动作段，Logical Shot 是连续镜头组，视频节点是一次生成/一个文件。要求完整 15 秒单片时，多 Panel/多镜头组仍放在一个视频节点里。较长故事或明确需要多个片段时可拆成独立节点；超过单片能力且用户要求一个文件时先给出精简或分段选项，不能自动改变交付数量，也不承诺当前尚未提供的自动拼接。
@@ -47,6 +57,8 @@ GET      /api/creation/projects/:id
 POST     /api/creation/projects/:id/messages
 POST     /api/creation/projects/:id/review
 POST     /api/creation/projects/:id/generate
+POST     /api/creation/projects/:id/automatic
+POST     /api/creation/projects/:id/automatic/stop
 GET      /api/creation/projects/:id/versions
 POST     /api/creation/projects/:id/template
 ```
@@ -92,6 +104,8 @@ Gateway 使用内部 `POST /agent/creation/plan/stream`（NDJSON）接收真实�
 
 - `tests/test_creation.py`：生图／视频服务契约，0/1/多图输入，风格校验，非法路径与失败响应。
 - `tests/test_creation_planning.py`：真实 LLM 适配器边界（模拟响应）、一次格式修复、素材预览、模板／资产校验、分镜编译、参考用途与安全失败。
+- `tests/test_creation_output.py`、`tests/test_creation_review.py`：严格 Schema 与 JSON 兼容模式、普通聊天隔离、null 补丁、已确认节点保护、时间线错误分类、实际候选预览与越权候选拒绝。
+- `gateway/internal/handlers/creation_automatic_test.go`：保留人工审批与选图、自动候选选择、重复请求去重、部分产物续跑、停止与迟到响应、账号隔离、图片变更、待定选项及重启中断。Web 测试同时覆盖一键生成、网络重试、停止入口和进度转义；bridge 测试覆盖审阅协议与取消。
 - `gateway/internal/handlers/creation_projects_test.go`：项目隔离、异步规划、审核门槛、候选选择、依赖失效、不可变快照、幂等、素材变化、模板清理与重启恢复。
 - `tests/test_creation_projects_web.js`：画布布局与语义边、审核状态、项目发送重试、草稿保留、账号切换及旧编辑器与新审核按钮的隔离。
 - `gateway/internal/handlers/creation_layout_test.go`：布局持久化、增量合并、重置、坐标与账号校验、与规划/审批/版本隔离；仅更新修改建议不使审批失效。前端测试同时覆盖缩放拖动、取消、点击阈值、误点抑制、保存重试、多选与自定义修改消息、草稿保留和候选转义。

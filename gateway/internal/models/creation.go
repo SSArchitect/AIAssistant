@@ -34,18 +34,20 @@ type CreationRun struct {
 // The project owns dialogue, review decisions and versioned artifact definitions.
 // Media contents continue to live solely in DriveItem.
 type CreationProject struct {
-	ID                string    `json:"id" gorm:"primaryKey"`
-	UserID            string    `json:"-" gorm:"index;not null"`
-	Name              string    `json:"name"`
-	Revision          int       `json:"revision"`
-	Document          string    `json:"document" gorm:"type:text"`
-	CanvasLayout      string    `json:"canvas_layout" gorm:"type:text"`
-	LayoutRevision    int       `json:"layout_revision"`
-	Planning          bool      `json:"planning"`
-	PlanningRequestID string    `json:"-"`
-	Error             string    `json:"error,omitempty"`
-	CreatedAt         time.Time `json:"created_at"`
-	UpdatedAt         time.Time `json:"updated_at"`
+	AutomaticStatus    string    `json:"automatic_status,omitempty" gorm:"index"`
+	AutomaticRequestID string    `json:"-"`
+	ID                 string    `json:"id" gorm:"primaryKey"`
+	UserID             string    `json:"-" gorm:"index;not null"`
+	Name               string    `json:"name"`
+	Revision           int       `json:"revision"`
+	Document           string    `json:"document" gorm:"type:text"`
+	CanvasLayout       string    `json:"canvas_layout" gorm:"type:text"`
+	LayoutRevision     int       `json:"layout_revision"`
+	Planning           bool      `json:"planning"`
+	PlanningRequestID  string    `json:"-"`
+	Error              string    `json:"error,omitempty"`
+	CreatedAt          time.Time `json:"created_at"`
+	UpdatedAt          time.Time `json:"updated_at"`
 }
 type CreationProjectVersion struct {
 	ID        string    `json:"id" gorm:"primaryKey"`
