@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock
 import httpx
 import openai
 import pytest
-from agent.aigc.creation_output import strict_schema, omit_null_fields, structured_options
+from agent.aigc.creation_output import strict_schema, omit_null_fields, structured_options, thinking_options
 from agent.aigc.creation_planning import PlanProposal, RevisionResponse, parse_proposal
 from agent.llm.base import LLMMessage
 from agent.llm.base import LLMResponse
@@ -69,6 +69,20 @@ def test_automatic_replanning_cannot_modify_user_locked_nodes():
         parse_proposal(json.dumps(value),req)
     value['patch']['nodes']=[];value['patch']['questions']=[]
     assert parse_proposal(json.dumps(value),req).plan.nodes[0].content==original['nodes'][0]['content']
+
+
+@pytest.mark.asyncio
+async def test_reasoning_only_model_and_providers_without_thinking_switch_are_supported():
+    glm=DoubaoProvider(api_key='test',model='glm-5.3')
+    seed=DoubaoProvider(api_key='test',model='doubao-seed-2.1-turbo')
+    class OtherProvider:
+        async def chat(self,messages,tools=None,temperature=.7):pass
+    try:
+        assert thinking_options(glm)=={}
+        assert thinking_options(seed)=={'thinking_enabled':False}
+        assert thinking_options(OtherProvider())=={}
+    finally:
+        await glm.client.close();await seed.client.close()
 
 
 @pytest.mark.asyncio

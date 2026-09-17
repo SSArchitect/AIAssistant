@@ -2,9 +2,20 @@
 from __future__ import annotations
 
 import copy
+import inspect
 
 import openai
 from agent.llm.openai_provider import OpenAIProvider
+
+
+def thinking_options(provider):
+    # Ark GLM-5.3 is a reasoning-only model and rejects thinking.type=disabled.
+    if getattr(provider, 'provider_name', '') == 'doubao' and getattr(provider, 'model', '') == 'glm-5.3':
+        return {}
+    params = inspect.signature(provider.chat).parameters
+    if 'thinking_enabled' in params or any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()):
+        return {'thinking_enabled': False}
+    return {}
 
 
 def strict_schema(schema):

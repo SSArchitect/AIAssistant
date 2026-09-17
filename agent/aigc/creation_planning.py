@@ -17,7 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field, create_model, model_validator
 from agent.aigc.image_inputs import decode_image_data_url
 from agent.aigc.video_prompting import VIDEO_PROMPT_GUIDANCE, VideoStoryboard, compile_storyboard
 from agent.llm.base import LLMMessage
-from agent.aigc.creation_output import structured_options, unsupported_schema, omit_null_fields, validation_details
+from agent.aigc.creation_output import structured_options, unsupported_schema, omit_null_fields, validation_details, thinking_options
 from agent.aigc.creation_tools import director_tools, execute_director_tool, tool_definitions
 from agent.aigc.creation_models import (can_use_plan_vision, use_plan_vision, unsupported_image_input,
     planning_error, configure_planning_output, PlanningOutputTruncated)
@@ -332,7 +332,7 @@ async def propose_creation(request: PlanningRequest, trace_store=None, on_progre
             try:
                 options = dict(tools=available, temperature=.4, **structured_options(provider, schema, "creation_revision" if revising else "creation_plan", json_only=json_only))
                 if revising:
-                    options['thinking_enabled'] = False
+                    options.update(thinking_options(provider))
                 if on_progress and callable(getattr(provider, 'chat_stream_response', None)):
                     response = None
                     parts, chars, last_report, last_stage = [], 0, 0., ''

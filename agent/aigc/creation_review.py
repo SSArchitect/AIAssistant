@@ -6,7 +6,7 @@ from typing import Literal
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import Field
 from agent.aigc.creation_planning import PlanningRequest, StrictModel, CreativePlan, image_preview
-from agent.aigc.creation_output import structured_options, unsupported_schema, omit_null_fields
+from agent.aigc.creation_output import structured_options, unsupported_schema, omit_null_fields, thinking_options
 from agent.aigc.creation_models import can_use_plan_vision, use_plan_vision
 from agent.llm.base import LLMMessage
 from agent.llm.factory import create_provider
@@ -52,7 +52,8 @@ async def review_creation(request: ReviewRequest, trace_store=None):
     provider = create_provider()
     if request.assets and getattr(provider, 'model', '') == 'glm-5.3' and can_use_plan_vision(provider):
         provider = await use_plan_vision(provider, create_provider)
-    if hasattr(provider, 'max_tokens'): provider.max_tokens = 2048
+    if hasattr(provider, 'max_tokens'):
+        provider.max_tokens = 8192 if getattr(provider, 'model', '') == 'glm-5.3' else 2048
     run = trace_store.start_run(conversation_id=request.project_id, user_id=request.user_id,
         input_text='一键生成：审阅 ' + node.title, agent_id='creation_director', runtime='self') if trace_store else None
     usage = {}
@@ -70,7 +71,7 @@ async def review_creation(request: ReviewRequest, trace_store=None):
         json_only = False
         for attempt in range(3):
             try:
-                response = await provider.chat(messages, tools=None, temperature=.2, thinking_enabled=False,
+                response = await provider.chat(messages, tools=None, temperature=.2, **thinking_options(provider),
                     **structured_options(provider,schema,'creation_review',json_only=json_only))
             except Exception as exc:
                 if not json_only and unsupported_schema(exc): json_only=True;continue

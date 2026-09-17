@@ -50,3 +50,13 @@ async def test_failed_review_closes_trace_without_leaking_provider_secret(monkey
     monkeypatch.setattr(review,'create_provider',lambda:provider);trace=TraceStore()
     with pytest.raises(RuntimeError):await review.review_creation(request(),trace)
     assert all(r.status=='failed' and 'SECRET' not in r.error_message for r in trace._runs.values())
+
+
+@pytest.mark.asyncio
+async def test_reasoning_only_reviewer_omits_unsupported_switch_and_budgets_reasoning(monkeypatch):
+    provider=SimpleNamespace(provider_name='doubao',model='glm-5.3',max_tokens=None,
+        chat=AsyncMock(return_value=LLMResponse(content=json.dumps({'decision':'approve','reason':'符合要求','asset_id':''}))))
+    monkeypatch.setattr(review,'create_provider',lambda:provider)
+    result=await review.review_creation(request())
+    assert result.decision=='approve' and 'thinking_enabled' not in provider.chat.call_args.kwargs
+    assert provider.max_tokens==8192
