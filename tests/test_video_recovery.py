@@ -191,6 +191,66 @@ def test_legacy_replay_restores_original_selectors_and_options_not_new_model_val
 
 
 @pytest.mark.asyncio
+async def test_new_video_revision_reuses_conversation_images_with_new_prompt(engine):
+    saved_run(engine.trace_store)
+    request = ChatRequest(user_id='owner', conversation_id='conversation', message='补上切菜镜头',
+                          agent_id='super_chat')
+    with patch('agent.skills.builtin.generate_video.generate_video',
+               new=AsyncMock(return_value=video_response())) as generate:
+        result = await engine._execute_skill_with_governance(request=request, run_id='revision',
+            skill_name='generate_video', arguments=arguments(idempotency_key='new-key', prompt='include chopping scene'))
+    assert result.success, result.error
+    actual = generate.await_args.args[0]
+    assert actual.reference_image_data_urls == DATA[::-1]
+    assert actual.prompt == 'include chopping scene'
+    assert actual.idempotency_key == 'new-key'
+
+
+@pytest.mark.asyncio
+async def test_new_uploads_take_precedence_over_historical_video_images(engine):
+    from tests.test_spark_reference_video import attachments
+    saved_run(engine.trace_store)
+    request = ChatRequest(user_id='owner', conversation_id='conversation', message='use new images',
+                          agent_id='super_chat', attachments=attachments())
+    with patch('agent.skills.builtin.generate_video.generate_video',
+               new=AsyncMock(return_value=video_response())) as generate:
+        result = await engine._execute_skill_with_governance(request=request, run_id='revision',
+            skill_name='generate_video', arguments=arguments(idempotency_key='new-key',
+                                                           reference_image_attachment_indices=[1, 2]))
+    assert result.success, result.error
+    assert generate.await_args.args[0].reference_image_data_urls == DATA
+
+
+def test_conversation_image_recovery_uses_latest_set_and_never_mixes_sets(tmp_path):
+    store = TraceStore(tmp_path / 'trace.db')
+    saved_run(store)
+    latest = store.start_run(user_id='owner', conversation_id='conversation', input_text='new reference',
+                             agent_id='super_chat', runtime='self')
+    store.append_event(latest.run_id, type='context.built', status='completed', payload={
+        'final_model_request': {'messages': [{'role': 'user', 'content': [
+            {'type': 'text', 'text': 'Attachment 1: new.png'},
+            {'type': 'image_url', 'image_url': {'url': DATA[1]}},
+        ]}]}})
+    restored_store = TraceStore(tmp_path / 'trace.db')
+    opts = dict(user_id='owner', conversation_id='conversation', allow_conversation_images=True)
+    result, task_id = recover_video_request(restored_store, **opts,
+        arguments=arguments(idempotency_key='new-key', reference_image_attachment_indices=[1]))
+    assert result['reference_image_data_urls'] == [DATA[1]] and task_id is None
+    with pytest.raises(ValueError, match='latest'):
+        recover_video_request(restored_store, **opts, arguments=arguments(idempotency_key='new-key'))
+
+
+@pytest.mark.parametrize('user,conversation', [('other', 'conversation'), ('owner', 'other')])
+def test_conversation_image_recovery_is_owner_and_conversation_scoped(user, conversation):
+    store = TraceStore()
+    saved_run(store, user=user, conversation=conversation)
+    source = arguments(idempotency_key='new-key')
+    result, task_id = recover_video_request(store, user_id='owner', conversation_id='conversation',
+        arguments=source, allow_conversation_images=True)
+    assert result == source and task_id is None
+
+
+@pytest.mark.asyncio
 async def test_legacy_reordered_followup_replays_provider_asset_keys_without_conflict(engine, tmp_path):
     import base64, json
     from tests.test_spark_reference_video import IDS

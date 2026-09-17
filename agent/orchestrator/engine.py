@@ -2848,7 +2848,7 @@ class AgentEngine:
                 from agent.aigc.video_recovery import recover_video_request
                 arguments, resume_task_id = recover_video_request(self.trace_store,
                     user_id=self._user_id(request), conversation_id=request.conversation_id,
-                    arguments=arguments)
+                    arguments=arguments, allow_conversation_images=not request.attachments)
             if skill_name == "generate_video" and not resume_task_id and arguments.get("reference_image_attachment_indices") is not None:
                 from agent.aigc.image_inputs import reference_video_options
                 arguments = reference_video_options(arguments, request.attachments)

@@ -2,26 +2,29 @@
 import re
 
 
-def recover_video_request(store, *, user_id, conversation_id, arguments):
+def recover_video_request(store, *, user_id, conversation_id, arguments, allow_conversation_images=False):
     arguments = dict(arguments)
     # This value is internal; a model must never choose another provider task.
     arguments.pop('_resume_task_id', None)
     key = arguments.get('idempotency_key')
-    if not key:
+    if not key and not allow_conversation_images:
         return arguments, None
-    frozen = store.get_video_request(user_id, conversation_id, key)
+    frozen = store.get_video_request(user_id, conversation_id, key) if key else None
     if frozen is not None:
         arguments = frozen
     candidates = []
+    history = []
     cursor = ''
     while True:
         page = store.list_runs_page(user_id=user_id, conversation_id=conversation_id,
                                     limit=100, cursor=cursor)
         for run in page.runs:
+            if allow_conversation_images:
+                history.append(run)
             progress = [event.payload for event in run.events
                         if event.type == 'media.task.progress'
                         and event.payload.get('kind') == 'video'
-                        and event.payload.get('idempotency_key') == key]
+                        and key and event.payload.get('idempotency_key') == key]
             if not progress:
                 continue
             for item in reversed(progress):
@@ -38,6 +41,7 @@ def recover_video_request(store, *, user_id, conversation_id, arguments):
     # Legacy traces have redacted prompts but retain the original selectors and
     # non-sensitive options. The first accepted local invocation defines replay;
     # later model turns must not reorder images or change duration/seed/mode.
+    use_history = not candidates and allow_conversation_images
     candidates.sort(key=lambda run: (run.started_at, run.run_id))
     replay_prompt = arguments.get('prompt')
     for run in candidates:
@@ -57,6 +61,12 @@ def recover_video_request(store, *, user_id, conversation_id, arguments):
         else:
             continue
         break
+
+    # A new revision has a new key and prompt, but can explicitly select images
+    # from the latest image-bearing turn in this conversation. Current uploads
+    # disable this fallback; never mix separate historical attachment sets.
+    if use_history:
+        candidates = history
 
     indices = arguments.get('reference_image_attachment_indices')
     single = arguments.get('image_attachment_index')
@@ -83,6 +93,8 @@ def recover_video_request(store, *, user_id, conversation_id, arguments):
                 url = part.get('image_url', {}).get('url', '')
                 if match and part.get('type') == 'image_url' and url.startswith('data:image/'):
                     images[int(match[1])] = url
+            if use_history and images and not all(i in images for i in selected):
+                raise ValueError('Selected image is not in the latest conversation attachment set')
             if all(i in images for i in selected):
                 if indices is not None:
                     if any(arguments.get(k) is not None for k in
@@ -96,6 +108,6 @@ def recover_video_request(store, *, user_id, conversation_id, arguments):
                     arguments.pop('image_attachment_index')
                     arguments['first_frame_data_url'] = images[single]
                 return arguments, None
-    if candidates:
+    if candidates and not use_history:
         raise ValueError('Original video attachments are unavailable; do not replace them under the same idempotency key')
     return arguments, None
