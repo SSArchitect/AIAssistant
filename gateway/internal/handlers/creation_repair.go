@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
@@ -43,6 +44,34 @@ func validateAutomaticRepair(doc creativeDocument, plan bridge.CreativePlan, req
 	activity := *doc.Automation
 	activity.LockedNodeIDs = req.LockedNodeIDs
 	protected.Automation = &activity
+	// Python emits literal '<' in JSON while persisted Go JSON escapes it.
+	// Compare storyboard values, then retain the exact original locked node so
+	// transport formatting cannot invalidate its state during plan application.
+	for _, id := range req.LockedNodeIDs {
+		before, exists := creativeNode(doc, id)
+		if !exists {
+			continue
+		}
+		for i, after := range plan.Nodes {
+			if after.ID != id {
+				continue
+			}
+			var oldBoard, newBoard interface{}
+			var oldErr, newErr error
+			if len(before.Storyboard) > 0 {
+				oldErr = json.Unmarshal(before.Storyboard, &oldBoard)
+			}
+			if len(after.Storyboard) > 0 {
+				newErr = json.Unmarshal(after.Storyboard, &newBoard)
+			}
+			if oldErr == nil && newErr == nil && reflect.DeepEqual(oldBoard, newBoard) {
+				after.Storyboard = before.Storyboard
+				if reflect.DeepEqual(before, after) {
+					plan.Nodes[i] = before
+				}
+			}
+		}
+	}
 	if err := protectAutomaticPlan(protected, plan); err != nil {
 		return err
 	}

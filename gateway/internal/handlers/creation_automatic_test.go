@@ -353,6 +353,29 @@ func copyAutomaticPlan(plan bridge.CreativePlan) bridge.CreativePlan {
 	_ = json.Unmarshal([]byte(creationJSON(plan)), &result)
 	return result
 }
+
+func TestAutomaticRepairPreservesLockedStoryboardAcrossJSONEncodings(t *testing.T) {
+	plan := creativeTestPlan()
+	plan.Nodes[3].Storyboard = json.RawMessage(`{"summary":"\u003cSubject 1\u003e","duration":5}`)
+	doc := creativeDocument{Plan: plan, Automation: &creativeAutomation{}}
+	repaired := copyAutomaticPlan(plan)
+	repaired.Nodes[3].Storyboard = json.RawMessage("{\n\"duration\":5.0,\"summary\":\"<Subject 1>\"}")
+	repaired.Nodes[2].Storyboard = json.RawMessage("null")
+	req := bridge.CreationPlanningRequest{LockedNodeIDs: []string{"video", "script"}, Repair: &bridge.CreationRepairFeedback{NodeID: "visual"}}
+	if err := validateAutomaticRepair(doc, repaired, req); err != nil {
+		t.Fatal("unchanged storyboard rejected", err)
+	}
+	if !reflect.DeepEqual(repaired.Nodes[3], plan.Nodes[3]) {
+		t.Fatal("locked node not preserved byte-for-byte")
+	}
+	if !reflect.DeepEqual(repaired.Nodes[2], plan.Nodes[2]) {
+		t.Fatal("absent storyboard differs from null")
+	}
+	repaired.Nodes[3].Prompt = "changed execution prompt"
+	if validateAutomaticRepair(doc, repaired, req) == nil {
+		t.Fatal("real locked-node edit accepted")
+	}
+}
 func TestAutomaticCreationRevisesRejectedImagesUntilAcceptedThenGeneratesVideo(t *testing.T) {
 	r, h, f, token, row := setupAutomatic(t)
 	row = reviewTestNode(t, r, h, token, row.ID, "brief", "")
