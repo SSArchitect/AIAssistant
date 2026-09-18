@@ -20,9 +20,91 @@ function harness(api, user = () => 'alice') {
         click: (action, id = '', asset = '') => handlers.click({ target: { closest: () => ({ dataset: { cpAction: action, id, asset }, disabled: false }) } }),
         input: text => handlers.input({ target: { hasAttribute: key => key === 'data-cp-draft', value: text } }),
         send: () => handlers.submit({ target: { hasAttribute: () => true }, preventDefault() {} }),
+        preference: (key, value) => handlers.change({ target: { hasAttribute: name => name === 'data-cp-preference', dataset: { cpPreference: key }, value } }),
     };
 }
 const tick = () => new Promise(resolve => setImmediate(resolve));
+
+test('human decisions appear at the end of the creation conversation and submit in project context', async () => {
+    const doc=document(); doc.messages=[{role:'user',content:'做一支动画'},{role:'assistant',content:'先确定交付形式'}];
+    doc.plan.questions=[{question:'视频交付形式？',options:['拆成三段独立短片','精选开场15秒']},{question:'画幅比例？',options:['16:9','9:16']}];
+    const p=project(doc),calls=[],h=harness(async(method,path,body)=>{calls.push({method,path,body});return {project:path.endsWith('/messages')?{...p,planning:true}:p};});
+    await h.controller.newProject();
+    assert.match(h.root.innerHTML,/<strong>创作进程<\/strong>/);
+    const conversation=h.root.innerHTML.split('<div class="cp-messages"')[1].split('<form class="cp-compose"')[0];
+    assert.ok(conversation.indexOf('cp-decisions')>conversation.indexOf('先确定交付形式'));
+    assert.match(conversation,/视频交付形式？/); assert.match(conversation,/画幅比例？/);
+    assert.doesNotMatch(h.root.innerHTML,/class="cp-questions"/);
+    h.click('answer','0:1'); await tick();
+    assert.equal(calls.at(-1).body.message,'关于“视频交付形式？”，我选择：精选开场15秒');
+    assert.equal(calls.at(-1).body.node_id,'');
+    assert.doesNotMatch(h.root.innerHTML,/class="cp-decisions"/,'old choices should disappear while planning');
+    h.controller.reset();
+});
+
+test('decision cards escape model content and hide during automatic execution', () => {
+    const doc=document(); doc.plan.questions=[{question:'<script>bad</script>',options:['<img src=x>','自行选择（推荐）']}];
+    const p=project(doc),html=C.renderDecisions(p,true);
+    assert.match(html,/&lt;script&gt;/); assert.match(html,/&lt;img src=x&gt;/);
+    assert.doesNotMatch(html,/<script>|<img /); assert.match(html,/disabled/);
+    assert.equal(C.renderDecisions({...p,automatic_status:'running'}),'');
+    assert.equal(C.renderDecisions(project()),'');
+});
+
+test('free-form decision replies address the project even with a canvas node selected', async () => {
+    const doc=document();doc.plan.questions=[{question:'怎么交付？',options:['短片','系列']}];
+    const calls=[],h=harness(async(method,path,body)=>{calls.push({path,body});return {project:project(doc)};});
+    await h.controller.newProject();h.click('select','script');await tick();
+    assert.match(h.root.innerHTML,/>回复创作助手<\/label>/);
+    h.input('先完成追蝶坠落的部分，做成一条短片');h.send();await tick();
+    assert.equal(calls.at(-1).body.node_id,'');
+    assert.match(calls.at(-1).body.message,/先完成追蝶/);h.controller.reset();
+});
+
+test('composer preferences are compact, persist with messages, and survive failed sends with idempotency', async () => {
+    const calls=[]; let p=project(),fail=true;
+    const h=harness(async(method,path,body)=>{
+        calls.push({method,path,body});
+        if(path.endsWith('/messages')) { if(fail)throw new Error('offline'); const doc=C.documentOf(p);doc.preferences=body.preferences;p=project(doc); }
+        return {project:p};
+    });
+    await h.controller.newProject();
+    assert.match(h.root.innerHTML,/<details class="cp-composer-settings" data-cp-options >/);
+    const count=calls.length; h.preference('output_kind','video');h.preference('aspect_ratio','9:16');
+    assert.equal(calls.length,count,'selecting preferences must not mutate the project or call a model');
+    assert.match(h.root.innerHTML,/视频 · 9:16/);
+    h.send(); await tick();
+    const first=calls.at(-1).body;
+    assert.equal(first.node_id,'','preference-only update applies to the whole project');
+    assert.match(first.message,/所选创作目标和画面比例/);
+    assert.deepEqual(first.preferences,{output_kind:'video',aspect_ratio:'9:16'});
+    assert.match(h.root.innerHTML,/视频 · 9:16/); assert.match(h.root.innerHTML,/offline/);
+    h.send();await tick(); assert.equal(calls.at(-1).body.request_id,first.request_id);
+    h.preference('aspect_ratio','16:9');fail=false;h.send();await tick();
+    assert.notEqual(calls.at(-1).body.request_id,first.request_id);
+    assert.deepEqual(C.documentOf(p).preferences,{output_kind:'video',aspect_ratio:'16:9'});
+    h.controller.reset();
+});
+
+test('unsent preferences block generation, while new projects and account resets do not inherit old selections', async () => {
+    const calls=[],h=harness(async(method,path,body)=>{calls.push({method,path,body});return {project:project()};});
+    await h.controller.newProject();h.preference('output_kind','image');
+    h.click('automatic-start');await tick();h.click('generate','video');await tick();
+    assert.equal(calls.length,1);assert.match(h.root.innerHTML,/创作选项尚未应用/);
+    h.click('new');await tick(); assert.doesNotMatch(h.root.innerHTML,/创作选项：图片/);
+    h.preference('aspect_ratio','1:1');h.input('做一张海报');h.send();await tick();
+    assert.deepEqual(calls.at(-1).body.preferences,{output_kind:'',aspect_ratio:'1:1'});
+    h.controller.reset(); await h.controller.newProject(); assert.doesNotMatch(h.root.innerHTML,/创作选项：1:1/);
+    h.controller.reset();
+});
+
+test('saved preferences restore and invalid values do not enter requests', async () => {
+    const doc=document(); doc.preferences={output_kind:'image',aspect_ratio:'1:1'};
+    const h=harness(async()=>({project:project(doc)}));await h.controller.newProject();
+    assert.match(h.root.innerHTML,/图片 · 1:1/);
+    assert.deepEqual(C.normalizePreferences({output_kind:'audio',aspect_ratio:'<script>'}),{output_kind:'',aspect_ratio:''});
+    assert.equal(C.preferenceSummary(null),'创作选项');h.controller.reset();
+});
 
 test('saved positions override automatic layout without changing dependencies or content', () => {
     const doc = document(), before = JSON.stringify(doc), assets = [{id:'role',name:'角色'}];

@@ -35,13 +35,14 @@ type creativeNodeState struct {
 	ApprovedInputs   map[string]string `json:"approved_inputs"`
 }
 type creativeDocument struct {
-	Automation *creativeAutomation              `json:"automation,omitempty"`
-	Planning   *bridge.CreativePlanningActivity `json:"planning,omitempty"`
-	Plan       bridge.CreativePlan              `json:"plan"`
-	States     map[string]creativeNodeState     `json:"states"`
-	Messages   []bridge.CreativeMessage         `json:"messages"`
-	AssetIDs   []string                         `json:"asset_ids"`
-	TemplateID string                           `json:"template_id"`
+	Preferences *bridge.CreativePreferences      `json:"preferences,omitempty"`
+	Automation  *creativeAutomation              `json:"automation,omitempty"`
+	Planning    *bridge.CreativePlanningActivity `json:"planning,omitempty"`
+	Plan        bridge.CreativePlan              `json:"plan"`
+	States      map[string]creativeNodeState     `json:"states"`
+	Messages    []bridge.CreativeMessage         `json:"messages"`
+	AssetIDs    []string                         `json:"asset_ids"`
+	TemplateID  string                           `json:"template_id"`
 }
 
 func projectDocument(row models.CreationProject) (creativeDocument, error) {
@@ -342,16 +343,23 @@ func (h *CreationHandler) planningTemplates(user string) ([]map[string]interface
 
 func (h *CreationHandler) ProjectMessage(c *gin.Context) {
 	var req struct {
-		Revision  int      `json:"revision"`
-		Message   string   `json:"message"`
-		NodeID    string   `json:"node_id"`
-		AssetIDs  []string `json:"asset_ids"`
-		RequestID string   `json:"request_id"`
+		Preferences *bridge.CreativePreferences `json:"preferences"`
+		Revision    int                         `json:"revision"`
+		Message     string                      `json:"message"`
+		NodeID      string                      `json:"node_id"`
+		AssetIDs    []string                    `json:"asset_ids"`
+		RequestID   string                      `json:"request_id"`
 	}
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 32<<10)
 	if c.ShouldBindJSON(&req) != nil || strings.TrimSpace(req.Message) == "" || len([]rune(req.Message)) > 8000 || req.RequestID == "" || len(req.RequestID) > 100 {
 		creationError(c, 400, "请输入不超过8000字的创作想法")
 		return
+	}
+	if p := req.Preferences; p != nil {
+		if (p.OutputKind != "" && p.OutputKind != "image" && p.OutputKind != "video") || (p.AspectRatio != "" && p.AspectRatio != "1:1" && p.AspectRatio != "16:9" && p.AspectRatio != "9:16") {
+			creationError(c, 400, "请选择支持的创作目标和画面比例")
+			return
+		}
 	}
 	planner, ok := h.generator.(creationPlanner)
 	if !ok {
@@ -410,7 +418,10 @@ func (h *CreationHandler) ProjectMessage(c *gin.Context) {
 		return
 	}
 	doc.AssetIDs = merged
-	doc.Messages = append(doc.Messages, bridge.CreativeMessage{Role: "user", Content: strings.TrimSpace(req.Message), NodeID: req.NodeID, AssetIDs: req.AssetIDs})
+	if req.Preferences != nil {
+		doc.Preferences = req.Preferences
+	}
+	doc.Messages = append(doc.Messages, bridge.CreativeMessage{Role: "user", Content: strings.TrimSpace(req.Message), NodeID: req.NodeID, AssetIDs: req.AssetIDs, Preferences: doc.Preferences})
 	if len(doc.Messages) > 80 {
 		doc.Messages = append(doc.Messages[:2:2], doc.Messages[len(doc.Messages)-78:]...)
 	}
@@ -422,7 +433,7 @@ func (h *CreationHandler) ProjectMessage(c *gin.Context) {
 		creationError(c, 409, err)
 		return
 	}
-	planningReq := bridge.CreationPlanningRequest{ProjectID: row.ID, UserID: row.UserID, Messages: append([]bridge.CreativeMessage{}, doc.Messages...), CurrentPlan: doc.Plan, Assets: assets, Templates: templates, PreferredTemplateID: doc.TemplateID}
+	planningReq := bridge.CreationPlanningRequest{Preferences: doc.Preferences, ProjectID: row.ID, UserID: row.UserID, Messages: append([]bridge.CreativeMessage{}, doc.Messages...), CurrentPlan: doc.Plan, Assets: assets, Templates: templates, PreferredTemplateID: doc.TemplateID}
 	for i := range planningReq.Messages {
 		planningReq.Messages[i].Planning = nil
 	}

@@ -179,14 +179,34 @@
         }
         return rounds;
     }
+    function normalizePreferences(value = {}) {
+        return { output_kind: ['image', 'video'].includes(value?.output_kind) ? value.output_kind : '', aspect_ratio: ['1:1', '16:9', '9:16'].includes(value?.aspect_ratio) ? value.aspect_ratio : '' };
+    }
+    function preferenceSummary(value) {
+        const p = normalizePreferences(value);
+        return [p.output_kind === 'image' ? '图片' : p.output_kind === 'video' ? '视频' : '', p.aspect_ratio].filter(Boolean).join(' · ') || '创作选项';
+    }
+    function renderDecisions(project, busy = false) {
+        const questions = documentOf(project).plan.questions || [];
+        if (!questions.length || project?.planning || automaticActive(project)) return '';
+        return `<section class="cp-decisions" aria-label="等待你的判断"><header><span>下一步</span><strong>需要你来定</strong></header>${questions.map((q, i) => `<fieldset><legend>${esc(q.question)}</legend><div>${q.options.map((option, j) => `<button type="button" data-cp-action="answer" data-id="${i}:${j}" ${busy ? 'disabled' : ''}><span>${esc(option)}</span>${j === 0 && !option.includes('推荐') ? '<small>推荐</small>' : ''}</button>`).join('')}</div></fieldset>`).join('')}<p>选择一个方向，或在下方输入你的想法。</p></section>`;
+    }
     function createController({ api, user, mediaURL, onAssets = () => {}, onTemplates = () => {} }) {
         let element = null, visible = false, timer = null, epoch = 0, viewEpoch = 0, busy = false;
         let projects = [], project = null, assets = [], runs = [], selected = '', draft = '', attachments = [], feedback = '', picker = false, versions = null, editing = false, editText = '';
         let zoom = 1, autoFit = true, pan = null, dragging = null, renderPending = false, suppressClick = null;
         const canvasStates = new Map(), refinementDrafts = new Map();
+        const preferenceDrafts = new Map();
+        let optionsOpen = false;
         const requestKeys = new Map(), planningOpen = new Map(), roundsOpen = new Map();
         let pendingMessage = null, followMessages = false, pollError = '';
         const currentDoc = () => documentOf(project);
+        const currentPreferences = () => preferenceDrafts.get(project?.id || '') || normalizePreferences(currentDoc().preferences);
+        const preferencesChanged = () => JSON.stringify(currentPreferences()) !== JSON.stringify(normalizePreferences(currentDoc().preferences));
+        function renderComposerOptions() {
+            const p = currentPreferences(), disabled = busy || project?.planning || automaticActive(project);
+            return `<details class="cp-composer-settings" data-cp-options ${optionsOpen ? 'open' : ''}><summary aria-label="创作选项：${esc(preferenceSummary(p))}">${esc(preferenceSummary(p))}<span aria-hidden="true">⌄</span></summary><div class="cp-composer-panel"><label>创作目标<select data-cp-preference="output_kind" aria-label="创作目标" ${disabled ? 'disabled' : ''}>${[['', '交给 AI 判断'], ['image', '图片'], ['video', '视频']].map(([value, title]) => `<option value="${value}" ${p.output_kind === value ? 'selected' : ''}>${title}</option>`).join('')}</select></label><label>画面比例<select data-cp-preference="aspect_ratio" aria-label="画面比例" ${disabled ? 'disabled' : ''}>${[['', '交给 AI 判断'], ['16:9', '16:9 · 横屏'], ['9:16', '9:16 · 竖屏'], ['1:1', '1:1 · 方形']].map(([value, title]) => `<option value="${value}" ${p.aspect_ratio === value ? 'selected' : ''}>${title}</option>`).join('')}</select></label><p>随下一条消息应用，其他细节交给 AI。</p></div></details>`;
+        }
         function canvasState() {
             const id = project?.id || '';
             if (!canvasStates.has(id)) canvasStates.set(id, { positions: parse(project?.canvas_layout, {}), revision: project?.layout_revision || 0, change: 0, pending: 0, failed: false, queue: Promise.resolve() });
@@ -230,7 +250,7 @@
         }
         const button = (action, label, { id = '', primary = false, disabled = false, asset = '' } = {}) => `<button type="button" class="${primary ? 'btn-primary' : 'btn-secondary'}" data-cp-action="${action}" data-id="${esc(id)}" data-asset="${esc(asset)}" ${disabled || busy || project?.planning || (automaticActive(project) && !['automatic-stop','versions','new','select','assets','close-versions'].includes(action)) ? 'disabled' : ''}>${esc(label)}</button>`;
         function mount(target) { element = target; if (target) { bind(); render(); } }
-        function reset() { epoch++; viewEpoch++; visible = false; clearTimeout(timer); timer = null; project = null; projects = []; assets = []; runs = []; selected = ''; draft = ''; attachments = []; feedback = ''; picker = false; busy = false; versions = null; requestKeys.clear(); planningOpen.clear(); roundsOpen.clear(); canvasStates.clear(); refinementDrafts.clear(); dragging = null; pan = null; renderPending = false; suppressClick = null; pendingMessage = null; followMessages = false; pollError = '';  if (element) element.innerHTML = ''; }
+        function reset() { epoch++; viewEpoch++; visible = false; clearTimeout(timer); timer = null; project = null; projects = []; assets = []; runs = []; selected = ''; draft = ''; attachments = []; feedback = ''; picker = false; busy = false; versions = null; requestKeys.clear(); planningOpen.clear(); roundsOpen.clear(); preferenceDrafts.clear(); optionsOpen = false; canvasStates.clear(); refinementDrafts.clear(); dragging = null; pan = null; renderPending = false; suppressClick = null; pendingMessage = null; followMessages = false; pollError = '';  if (element) element.innerHTML = ''; }
         function setVisible(value) { visible = value; viewEpoch++; clearTimeout(timer); if (value) { render(); void poll(viewEpoch); } }
         async function poll(version) {
             if (!visible || version !== viewEpoch) return;
@@ -280,19 +300,20 @@
             renderPending = false;
             selectDefault();
             const doc = currentDoc(), focused = typeof document !== 'undefined' && element.contains?.(document.activeElement) ? document.activeElement : null;
+            const preferenceFocus = focused?.dataset?.cpPreference;
             const focusKind = focused?.hasAttribute('data-cp-draft') ? 'draft' : focused?.hasAttribute('data-cp-edit') ? 'edit' : focused?.hasAttribute('data-cp-refine') ? 'refine' : '';
             const start = focused?.selectionStart, end = focused?.selectionEnd;
             const viewport = element.querySelector('[data-cp-viewport]'), scroll = viewport ? { x: viewport.scrollLeft, y: viewport.scrollTop } : null;
             const reading = captureReadingPosition(element);
             element.querySelectorAll?.('[data-cp-planning]').forEach(details => planningOpen.set(details.dataset.cpPlanning, details.open));
             element.innerHTML = `<section class="cp-project"><header class="cp-project-head"><div><label class="cp-project-label">创作项目<select data-cp-project aria-label="选择创作项目"><option value="">新的创作</option>${projects.map(p => `<option value="${esc(p.id)}" ${p.id === project?.id ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select></label>${project ? `<span class="cp-version">v${project.revision} · ${automaticActive(project) ? '一键生成中' : project.planning ? '正在规划' : '自动保存'}</span>` : ''}</div><div>${project ? `<div class="cp-auto-controls">${automaticActive(project) ? button('automatic-stop', project.automatic_status === 'stopping' ? '正在停止…' : '停止一键生成', { disabled: project.automatic_status === 'stopping' }) : button('automatic-start', ['failed','interrupted','cancelled'].includes(project.automatic_status) ? '继续一键生成' : '一键生成', { primary: true, disabled: !!automaticBlock(project, runs) })}<small>保留已确认内容，AI 确定其余节点并生成</small></div>` + button('versions', '历史方案') + button('save-template', '存为模板', { disabled: !doc.plan.nodes.length }) : ''}${button('new', '＋ 新创作')}</div></header>
-            <div class="cp-workspace ${doc.plan.nodes.length ? '' : 'cp-start'}"><aside class="cp-dialogue"><header><strong>创作对话</strong><span>${project?.planning ? '正在整理方案…' : '想法与画布同步'}</span></header><div class="cp-messages" aria-live="polite">${renderConversation(doc)}${renderAutomatic(project, planningOpen.get(`auto:${doc.automation?.id}`) ?? true)}</div>
-            ${doc.plan.questions?.length ? `<div class="cp-questions">${doc.plan.questions.map((q, i) => `<fieldset><legend>${esc(q.question)}</legend>${q.options.map((option, j) => `<button type="button" data-cp-action="answer" data-id="${i}:${j}" ${busy || project?.planning || automaticActive(project) ? 'disabled' : ''}>${esc(option)}${j === 0 ? '<small>推荐</small>' : ''}</button>`).join('')}</fieldset><span>也可以直接输入你的想法。</span>`).join('')}</div>` : ''}
-            <form class="cp-compose" data-cp-form><label for="cp-draft">${selected && !selected.startsWith('asset:') ? `针对：${esc(doc.plan.nodes.find(n => n.id === selected)?.title || '整个项目')}` : '描述你的创作想法'}</label>${attachments.length ? `<div class="cp-attachments">${attachments.map(id => `<button type="button" data-cp-action="detach" data-id="${esc(id)}">${esc(assets.find(a => a.id === id)?.name || '素材')} ×</button>`).join('')}</div>` : ''}<textarea id="cp-draft" data-cp-draft rows="4" maxlength="8000" placeholder="例如：用这几个人设做一支水墨武侠短片，最后有一点反转…" ${project?.planning || automaticActive(project) ? 'disabled' : ''}>${esc(draft)}</textarea><footer><div>${button('upload', '＋ 上传')}${button('pick', '引用资产')}</div><button type="submit" class="btn-primary" ${busy || project?.planning || automaticActive(project) ? 'disabled' : ''}>${pendingMessage ? '发送中…' : project?.planning ? '规划中…' : '发送'}</button></footer><input type="file" data-cp-upload multiple accept="image/png,image/jpeg,image/webp,video/mp4,video/webm" hidden></form><p class="cp-feedback" role="status" data-cp-feedback>${esc(feedback || '')}</p></aside>
+            <div class="cp-workspace ${doc.plan.nodes.length ? '' : 'cp-start'}"><aside class="cp-dialogue"><header><strong>创作进程</strong><span>${project?.planning ? '正在整理方案…' : '想法与画布同步'}</span></header><div class="cp-messages" aria-live="polite">${renderConversation(doc)}${renderAutomatic(project, planningOpen.get(`auto:${doc.automation?.id}`) ?? true)}${renderDecisions(project, busy)}</div>
+            <form class="cp-compose" data-cp-form><label for="cp-draft">${doc.plan.questions?.length ? '回复创作助手' : selected && !selected.startsWith('asset:') ? `针对：${esc(doc.plan.nodes.find(n => n.id === selected)?.title || '整个项目')}` : '描述你的创作想法'}</label>${attachments.length ? `<div class="cp-attachments">${attachments.map(id => `<button type="button" data-cp-action="detach" data-id="${esc(id)}">${esc(assets.find(a => a.id === id)?.name || '素材')} ×</button>`).join('')}</div>` : ''}<textarea id="cp-draft" data-cp-draft rows="4" maxlength="8000" placeholder="例如：用这几个人设做一支水墨武侠短片，最后有一点反转…" ${project?.planning || automaticActive(project) ? 'disabled' : ''}>${esc(draft)}</textarea><footer><div>${renderComposerOptions()}${button('upload', '＋ 上传')}${button('pick', '引用资产')}</div><button type="submit" class="btn-primary" ${busy || project?.planning || automaticActive(project) ? 'disabled' : ''}>${pendingMessage ? '发送中…' : project?.planning ? '规划中…' : '发送'}</button></footer><input type="file" data-cp-upload multiple accept="image/png,image/jpeg,image/webp,video/mp4,video/webm" hidden></form><p class="cp-feedback" role="status" data-cp-feedback>${esc(feedback || '')}</p></aside>
             <main class="cp-main">${doc.plan.nodes.length ? `<div class="cp-canvas-head"><div><strong>创作画布</strong><span>${doc.plan.nodes.filter(n => !approved(doc.states[n.id])).length} 项待审阅</span></div><div><button data-cp-action="zoom-out" aria-label="缩小画布">−</button><span data-cp-zoom>${Math.round(zoom * 100)}%</span><button data-cp-action="zoom-in" aria-label="放大画布">＋</button><button data-cp-action="fit">适应画布</button><button data-cp-action="arrange">自动排列</button></div></div><div class="cp-canvas-help"><span data-cp-layout-status role="status"></span><button type="button" class="creation-text-button" data-cp-action="retry-layout" hidden>重试保存位置</button></div><div class="cp-viewport" data-cp-viewport aria-label="创作画布，可拖动节点调整位置，拖动空白区域或滚动查看"><div class="cp-canvas-space" data-cp-space><div class="cp-graph" data-cp-graph></div></div></div><section class="cp-review" aria-label="节点审阅">${renderReview(doc)}</section>` : `<div class="cp-empty-canvas"><span>素材 → 方案 → 作品</span><h3>你的创作，会在这里展开</h3><p>对话后，人物参考、主视觉、脚本和作品会成为可查看、可修改的节点。</p><p>图片与视频生成都由你明确提交，确认前可以继续调整。</p></div>`}<div class="cp-project-extras">${picker ? renderPicker() : ''}${versions ? renderVersions() : ''}${renderHistory()}</div></main></div></section>`;
             drawCanvas(); updateLayoutStatus();
             if (scroll && !autoFit) { const v = element.querySelector('[data-cp-viewport]'); if (v) { v.scrollLeft = scroll.x; v.scrollTop = scroll.y; } }
             if (focusKind) { const target = element.querySelector(`[data-cp-${focusKind}]`); target?.focus({ preventScroll: true }); target?.setSelectionRange(start, end); }
+            if (preferenceFocus) element.querySelector(`[data-cp-preference="${preferenceFocus}"]`)?.focus({ preventScroll: true });
             restoreReadingPosition(element, reading, followMessages);
             followMessages = false;
         }
@@ -393,16 +414,20 @@
             const space = element.querySelector('[data-cp-space]'); if (space) { space.style.width = `${layout.width * zoom}px`; space.style.height = `${layout.height * zoom}px`; }
         }
         async function newProject(templateID = '') {
-            const version = epoch;
+            const version = epoch, initialPreferences = project ? null : currentPreferences();
             const response = await api('POST', '/api/creation/projects', { template_id: templateID });
             if (version !== epoch) return null;
             project = response.project; projects = [project, ...projects.filter(p => p.id !== project.id)];
+            if (initialPreferences && (initialPreferences.output_kind || initialPreferences.aspect_ratio)) preferenceDrafts.set(project.id, initialPreferences);
+            optionsOpen = false;
             selected = ''; draft = ''; attachments = []; editing = false; versions = null; feedback = ''; autoFit = true; render();
             return project;
         }
-        async function send(text = draft, nodeID = selected.startsWith('asset:') ? '' : selected) {
+        async function send(text = draft, nodeID = currentDoc().plan.questions?.length || selected.startsWith('asset:') ? '' : selected) {
             if (automaticActive(project)) throw new Error('先停止一键生成，再修改创作要求');
-            const message = text.trim(); if (!message) throw new Error('先说说你的创作想法');
+            const preferences = { ...currentPreferences() };
+            if (!text.trim() && preferencesChanged()) nodeID = '';
+            const message = text.trim() || (currentDoc().plan.nodes.length && preferencesChanged() ? '请按所选创作目标和画面比例调整方案，保留未受影响的已确认内容。' : ''); if (!message) throw new Error('先说说你的创作想法');
             const savedAttachments = [...attachments], owner = epoch;
             pendingMessage = message; followMessages = true; render();
             try {
@@ -411,11 +436,11 @@
                     draft = message; attachments = savedAttachments;
                 }
                 if (owner !== epoch) return;
-                const id = project.id, key = JSON.stringify([id, message, nodeID, savedAttachments]);
+                const id = project.id, key = JSON.stringify([id, message, nodeID, savedAttachments, preferences]);
                 if (!requestKeys.has(key)) requestKeys.set(key, uid());
-                const response = await api('POST', `/api/creation/projects/${encodeURIComponent(id)}/messages`, { revision: project.revision, message, node_id: nodeID, asset_ids: savedAttachments, request_id: requestKeys.get(key) });
+                const response = await api('POST', `/api/creation/projects/${encodeURIComponent(id)}/messages`, { revision: project.revision, message, preferences, node_id: nodeID, asset_ids: savedAttachments, request_id: requestKeys.get(key) });
                 if (owner !== epoch || id !== project?.id) return;
-                project = response.project; requestKeys.delete(key); draft = ''; attachments = []; editing = false; feedback = '';
+                project = response.project; preferenceDrafts.set(id, preferences); optionsOpen = false; requestKeys.delete(key); draft = ''; attachments = []; editing = false; feedback = '';
                 if (visible) { clearTimeout(timer); timer = setTimeout(() => poll(viewEpoch), 1000); }
             } finally {
                 if (owner === epoch) { pendingMessage = null; render(); }
@@ -424,8 +449,9 @@
 
         async function action(name, id, assetID) {
             const version = epoch, projectID = project?.id;
+            if (['automatic-start', 'generate'].includes(name) && preferencesChanged()) throw new Error('创作选项尚未应用，请先发送，让助手更新方案');
             if (name === 'retry-plan') { const message = [...currentDoc().messages].reverse().find(m => m.role === 'user'); if (message) await send(message.content, message.node_id || ''); return; }
-            if (name === 'new') { project = null; selected = ''; draft = ''; attachments = []; versions = null; feedback = ''; editing = false; render(); return; }
+            if (name === 'new') { preferenceDrafts.delete(''); optionsOpen = false; project = null; selected = ''; draft = ''; attachments = []; versions = null; feedback = ''; editing = false; render(); return; }
             if (name === 'select') { selected = id; editing = false; render(); return; }
             if (name === 'arrange') { saveLayout({}, true); autoFit = true; drawCanvas(); return; }
             if (name === 'retry-layout') { const positions = canvasState().positions; saveLayout(positions, !Object.keys(positions).length); return; }
@@ -491,8 +517,11 @@
             finally { if (version === epoch) { busy = false; render(); } }
         }
         function bind() {
+            element.addEventListener('toggle', event => { if (event.target.hasAttribute?.('data-cp-options') && element.contains?.(event.target)) optionsOpen = event.target.open; }, true);
             element.addEventListener('click', event => {
+                if (!event.target.closest('[data-cp-options]')) { const options = element.querySelector('[data-cp-options]'); if (options) options.open = false; optionsOpen = false; }
                 const summary = event.target.closest('summary'), round = summary?.parentElement;
+                if (round?.hasAttribute?.('data-cp-options')) optionsOpen = !round.open;
                 if (round?.hasAttribute?.('data-cp-turn')) roundsOpen.set(round.dataset.cpTurn, !round.open);
                 const target = event.target.closest('[data-cp-action]');
                 if (suppressClick) { const suppressed = suppressClick; suppressClick = null; if (target?.dataset.cpAction === 'select' && target.dataset.id === suppressed.id && Date.now() < suppressed.until) { event.preventDefault?.(); return; } }
@@ -509,11 +538,17 @@
             });
             element.addEventListener('change', event => {
                 const el = event.target;
+                if (el.hasAttribute('data-cp-preference') && !busy && !project?.planning && !automaticActive(project)) {
+                    const key = el.dataset.cpPreference;
+                    if (!['output_kind', 'aspect_ratio'].includes(key)) return;
+                    preferenceDrafts.set(project?.id || '', normalizePreferences({ ...currentPreferences(), [key]: el.value }));
+                    render();
+                }
                 if (el.hasAttribute('data-cp-project')) void perform(async () => {
                     if (!el.value) return action('new');
                     const version = epoch, response = await api('GET', `/api/creation/projects/${encodeURIComponent(el.value)}`);
                     if (version !== epoch) return;
-                    project = response.project; selected = ''; draft = ''; attachments = []; editing = false; versions = null; feedback = ''; autoFit = true; render();
+                    project = response.project; optionsOpen = false; selected = ''; draft = ''; attachments = []; editing = false; versions = null; feedback = ''; autoFit = true; render();
                 });
                 if (el.hasAttribute('data-cp-upload')) void perform(async () => {
                     const version = epoch;
@@ -565,6 +600,8 @@
             element.addEventListener('pointercancel', event => endPointer(event, true));
             element.addEventListener('lostpointercapture', event => endPointer(event, true));
             element.addEventListener('keydown', event => {
+                if (event.key === 'Escape' && optionsOpen) { const options = element.querySelector('[data-cp-options]'); if (options) { options.open = false; options.querySelector('summary')?.focus({ preventScroll: true }); } optionsOpen = false; }
+
                 const offsets = { ArrowLeft: [-20, 0], ArrowRight: [20, 0], ArrowUp: [0, -20], ArrowDown: [0, 20] };
                 const card = event.target.closest('[data-cp-action="select"]');
                 if (!card || !event.altKey || !offsets[event.key]) return;
@@ -574,5 +611,5 @@
         }
         return { mount, reset, setVisible, newProject: template => perform(() => newProject(template)), refresh };
     }
-    return { automaticActive, automaticBlock, renderAutomatic, conversationRounds, captureReadingPosition, restoreReadingPosition, renderPlanning, renderMediaProgress, documentOf, approved, dependenciesReady, generationBlock, layoutGraph, movedPosition, revisionSuggestions, refinementMessage, renderReferences, nodeStatus, createController };
+    return { normalizePreferences, preferenceSummary, renderDecisions, automaticActive, automaticBlock, renderAutomatic, conversationRounds, captureReadingPosition, restoreReadingPosition, renderPlanning, renderMediaProgress, documentOf, approved, dependenciesReady, generationBlock, layoutGraph, movedPosition, revisionSuggestions, refinementMessage, renderReferences, nodeStatus, createController };
 });

@@ -36,6 +36,26 @@ def request(**kwargs):
         assets=[planning.PlanningAsset(id='rabbit', name='人设.png', mime_type='image/png')], **kwargs)
 
 
+@pytest.mark.parametrize('preferences', [dict(output_kind='audio'), dict(aspect_ratio='4:3'), dict(aspect_ratio=None), dict(approved=True)])
+def test_composer_preferences_reject_unsupported_or_forged_fields(preferences):
+    with pytest.raises(ValidationError):
+        request(preferences=preferences)
+
+
+@pytest.mark.asyncio
+async def test_composer_preferences_reach_director_and_legacy_requests_remain_valid(monkeypatch):
+    assert request().preferences.model_dump() == dict(output_kind='', aspect_ratio='')
+    provider = SimpleNamespace(chat=AsyncMock(return_value=LLMResponse(content=json.dumps(dict(reply='请审阅', plan=plan())))))
+    monkeypatch.setattr(planning, 'create_provider', lambda: provider)
+    preferences = dict(output_kind='video', aspect_ratio='9:16')
+    await planning.propose_creation(request(preferences=preferences))
+    system, user = provider.chat.call_args.args[0]
+    payload = json.loads(user.content[0]['text'])
+    assert payload['preferences'] == preferences
+    assert '不重复询问已选选项' in system.content
+    assert '模板默认值不能覆盖' in system.content
+
+
 @pytest.mark.parametrize('role,marker', [(None, 'integrated_multimodal_description'), ('first_frame', 'at 0.00 seconds'), ('identity', 'subject_definitions'), ('style', 'subject_definitions')])
 def test_director_compiles_video_using_semantic_reference_role(role, marker):
     proposal = planning.parse_proposal(json.dumps(dict(reply='请审阅分镜', plan=plan(role))), request())

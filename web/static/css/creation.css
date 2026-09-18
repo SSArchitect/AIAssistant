@@ -91,6 +91,25 @@
 .creation-heading > button { white-space: nowrap; }
 
 /* Conversation-driven projects. Generation and reviews are server-owned. */
+.cp-composer-settings { position: relative; font-size: 12px; flex: 0 1 auto; }
+.cp-composer-settings > summary { display: flex; align-items: center; gap: 7px; padding: 7px 9px; border: 1px solid var(--line, #dedee5); border-radius: 8px; cursor: pointer; list-style: none; white-space: nowrap; background: var(--surface, white); }
+.cp-composer-settings > summary::-webkit-details-marker { display: none; }
+.cp-composer-settings[open] > summary { color: var(--accent, #8065c9); border-color: var(--accent, #8065c9); }
+.cp-composer-settings > summary:focus-visible { outline: 2px solid var(--accent, #8065c9); outline-offset: 2px; }
+.cp-composer-panel { position: absolute; left: 0; bottom: calc(100% + 10px); z-index: 20; width: 256px; max-width: calc(100vw - 64px); padding: 14px; box-sizing: border-box; background: var(--surface, white); border: 1px solid var(--line, #dedee5); border-radius: 12px; box-shadow: 0 8px 30px #25203520; }
+.cp-compose .cp-composer-panel label { display: grid; gap: 7px; font-size: 12px; margin-bottom: 12px; color: var(--text-primary, #282333); }
+.cp-composer-panel p { margin: 0; font-size: 11px; line-height: 1.6; color: var(--text-muted, #8a8593); }
+.cp-decisions { margin: 16px 0 6px; padding: 14px; border: 1px solid var(--line, #e3dfee); border-radius: 12px; background: var(--surface, white); }
+.cp-decisions > header { display: flex; align-items: center; gap: 8px; margin-bottom: 14px; font-size: 13px; }
+.cp-decisions > header > span { color: var(--accent, #8065c9); font-size: 10px; padding: 3px 6px; border-radius: 5px; background: #9c82dd12; }
+.cp-decisions fieldset { min-width: 0; border: 0; padding: 0; margin: 0 0 16px; }
+.cp-decisions fieldset:last-of-type { margin-bottom: 0; }
+.cp-decisions legend { padding: 0; margin-bottom: 10px; font-size: 12px; line-height: 1.7; font-weight: 600; }
+.cp-decisions fieldset > div { display: grid; gap: 7px; }
+.cp-decisions button { display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%; padding: 10px; border: 1px solid var(--line, #e3dfee); border-radius: 8px; color: inherit; background: transparent; font: inherit; font-size: 12px; line-height: 1.65; text-align: left; cursor: pointer; }
+.cp-decisions button:hover:not(:disabled), .cp-decisions button:focus-visible { border-color: var(--accent, #8065c9); background: #9c82dd0a; }
+.cp-decisions button small { color: var(--accent, #8065c9); font-size: 10px; flex-shrink: 0; }
+.cp-decisions > p { margin: 12px 0 0; color: var(--text-muted, #8a8593); font-size: 11px; line-height: 1.6; }
 .creation-project-host { min-width: 0; }
 .cp-project { --cp-accent: var(--violet); --cp-muted: var(--text-muted); min-width: 0; font-size: 13px; }
 .cp-project button { cursor: pointer; font: inherit; }
@@ -122,7 +141,8 @@
 .cp-compose > label { font-size: 11px; color: var(--cp-accent); display: block; margin-bottom: 8px; }
 .creation-page .cp-compose textarea { border: 0; padding: 6px 0; background: transparent; min-height: 100px; }
 .cp-compose footer { display: flex; align-items: center; justify-content: space-between; gap: 6px; margin-top: 8px; }
-.cp-compose footer > div { display: flex; gap: 8px; }
+.cp-compose footer > div { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; min-width: 0; }
+.cp-compose footer > button { flex-shrink: 0; }
 .cp-compose footer .btn-secondary { background: transparent; border: 0; padding: 4px 0; font-size: 11px; }
 .cp-compose footer .btn-primary { padding: 8px 12px; }
 .cp-attachments { display: flex; flex-wrap: wrap; gap: 4px; }

@@ -50,11 +50,16 @@ type CreativePlan struct {
 	Questions          []CreativeQuestion `json:"questions"`
 }
 type CreativeMessage struct {
-	Planning *CreativePlanningActivity `json:"planning,omitempty"`
-	Role     string                    `json:"role"`
-	Content  string                    `json:"content"`
-	NodeID   string                    `json:"node_id,omitempty"`
-	AssetIDs []string                  `json:"asset_ids,omitempty"`
+	Preferences *CreativePreferences      `json:"preferences,omitempty"`
+	Planning    *CreativePlanningActivity `json:"planning,omitempty"`
+	Role        string                    `json:"role"`
+	Content     string                    `json:"content"`
+	NodeID      string                    `json:"node_id,omitempty"`
+	AssetIDs    []string                  `json:"asset_ids,omitempty"`
+}
+type CreativePreferences struct {
+	OutputKind  string `json:"output_kind"`
+	AspectRatio string `json:"aspect_ratio"`
 }
 type PlanningAsset struct {
 	ID       string `json:"id"`
@@ -63,6 +68,7 @@ type PlanningAsset struct {
 	DataURL  string `json:"data_url,omitempty"`
 }
 type CreationPlanningRequest struct {
+	Preferences         *CreativePreferences              `json:"preferences,omitempty"`
 	AutomaticMode       bool                              `json:"automatic_mode,omitempty"`
 	LockedNodeIDs       []string                          `json:"locked_node_ids,omitempty"`
 	ProjectID           string                            `json:"project_id"`
