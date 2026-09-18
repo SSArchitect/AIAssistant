@@ -19,11 +19,30 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+TASK_EVENT_PREFIXES = ("media.", "research.", "aigc.", "run.", "approval.")
+TASK_EVENT_TYPES = ("tool.started", "tool.completed", "tool.failed", "agent.tool.delegated")
+TASK_PAYLOAD_KEYS = {"kind", "stage", "task_id", "code", "name", "target_agent_id", "child_run_id",
+                     "citation_count", "total", "query_index", "query_count", "chunk_index",
+                     "chunk_count", "chunk", "queue_position", "progress_percent"}
+
+
+def _task_event(event: RunEvent) -> RunEvent | None:
+    if (event.type.startswith(TASK_EVENT_PREFIXES) or event.type in TASK_EVENT_TYPES
+            or event.payload.get("child_run_id")):
+        return event.model_copy(update={"payload": {
+            key: value for key, value in event.payload.items() if key in TASK_PAYLOAD_KEYS}})
+    return None
+
+
 class TraceStore:
     """Run/event store with optional SQLite persistence; one runtime owns the database."""
 
     def __init__(self, path: Path | None = None):
         self._runs: dict[str, RunRecord] = {}
+        # Persistent stores retain full events only while a run is executing.
+        # Historical metadata includes the small task projection; get/list load
+        # complete events from SQLite without putting them back in this cache.
+        self._resident_runs: set[str] = set()
         self._created_at: dict[str, float] = {}
         self._video_requests: dict[tuple[str, str, str], str] = {}
         self._lock = Lock()
@@ -38,9 +57,16 @@ class TraceStore:
                 for row in db.execute("SELECT record FROM trace_runs"):
                     run = RunRecord.model_validate_json(row[0])
                     self._runs[run.run_id] = run
-                for run_id, value in db.execute("SELECT run_id,event FROM trace_events ORDER BY rowid"):
+                clauses = ["json_extract(event, '$.type') LIKE ?" for _ in TASK_EVENT_PREFIXES]
+                clauses += ["json_extract(event, '$.type') = ?" for _ in TASK_EVENT_TYPES]
+                clauses += ["json_extract(event, '$.payload.child_run_id') IS NOT NULL"]
+                projection_query = "SELECT run_id,event FROM trace_events WHERE " + " OR ".join(clauses) + " ORDER BY rowid"
+                for run_id, value in db.execute(projection_query,
+                        (*[prefix + '%' for prefix in TASK_EVENT_PREFIXES], *TASK_EVENT_TYPES)):
                     if run_id in self._runs:
-                        self._runs[run_id].events.append(RunEvent.model_validate_json(value))
+                        compact = _task_event(RunEvent.model_validate_json(value))
+                        if compact is not None:
+                            self._runs[run_id].events.append(compact)
             for run in list(self._runs.values()):
                 if run.status == "running":
                     run.status = "interrupted"
@@ -62,6 +88,26 @@ class TraceStore:
     def _persist_run(self, db, run):
         db.execute("INSERT OR REPLACE INTO trace_runs VALUES (?,?)",
             (run.run_id, run.model_dump_json(exclude={"events"})))
+
+    def _full_run_locked(self, run: RunRecord | None) -> RunRecord | None:
+        if run is None or not self._path or run.run_id in self._resident_runs:
+            return run
+        with self._db() as db:
+            events = [RunEvent.model_validate_json(row[0]) for row in db.execute(
+                "SELECT event FROM trace_events WHERE run_id=? ORDER BY rowid", (run.run_id,))]
+        return run.model_copy(update={"events": events})
+
+    def _release_run(self, run_id: str) -> RunRecord | None:
+        with self._lock:
+            run = self._full_run_locked(self._runs.get(run_id))
+            if run is None:
+                return None
+            if self._path:
+                events = [compact for event in run.events if (compact := _task_event(event)) is not None]
+                self._runs[run_id] = run.model_copy(update={"events": events})
+                self._resident_runs.discard(run_id)
+            self._created_at.pop(run_id, None)
+            return run
 
     def start_run(
         self,
@@ -86,6 +132,8 @@ class TraceStore:
         )
         with self._lock:
             self._runs[run_id] = run
+            if self._path:
+                self._resident_runs.add(run_id)
             self._created_at[run_id] = perf_counter()
         self.append_event(
             run_id,
@@ -125,7 +173,10 @@ class TraceStore:
         with self._lock:
             run = self._runs.get(run_id)
             if run is not None:
-                run.events.append(event)
+                if not self._path or run_id in self._resident_runs:
+                    run.events.append(event)
+                elif (compact := _task_event(event)) is not None:
+                    run.events.append(compact)
                 if self._path:
                     with self._db() as db:
                         self._persist_run(db, run)
@@ -168,7 +219,7 @@ class TraceStore:
             },
             duration_ms=run.duration_ms,
         )
-        return run
+        return self._release_run(run_id)
 
     def partial_run(
         self,
@@ -212,7 +263,7 @@ class TraceStore:
             },
             duration_ms=run.duration_ms,
         )
-        return run
+        return self._release_run(run_id)
 
     def fail_run(
         self,
@@ -240,7 +291,7 @@ class TraceStore:
             payload={"error_type": error_type, "error_message": error_message},
             duration_ms=run.duration_ms,
         )
-        return run
+        return self._release_run(run_id)
 
     def cancel_run(
         self,
@@ -254,7 +305,7 @@ class TraceStore:
             if run is None:
                 return None
             if run.status == "cancelled":
-                return run
+                return self._full_run_locked(run)
             run.status = "cancelled"
             run.output = output
             run.error_type = "cancelled"
@@ -269,11 +320,11 @@ class TraceStore:
             payload={"error_type": "cancelled", "error_message": reason},
             duration_ms=run.duration_ms,
         )
-        return run
+        return self._release_run(run_id)
 
     def get_run(self, run_id: str) -> RunRecord | None:
         with self._lock:
-            return self._runs.get(run_id)
+            return self._full_run_locked(self._runs.get(run_id))
 
     def get_video_request(self, user_id, conversation_id, key):
         """Private replay inputs: never included in run/event API responses."""
@@ -331,7 +382,8 @@ class TraceStore:
         if before is not None:
             runs = [r for r in runs if (r.started_at, r.run_id) < before]
         runs.sort(key=lambda r: (r.started_at, r.run_id), reverse=True)
-        return runs[:limit]
+        with self._lock:
+            return [self._full_run_locked(run) for run in runs[:limit]]
 
     def list_runs_page(self, *, conversation_id: str | None = None,
                        user_id: str | None = None, limit: int = 10,
@@ -385,13 +437,9 @@ class TraceStore:
                             related.append(child)
                             seen.add(child.run_id)
                 events = sorted((e for node in related for e in node.events
-                    if e.type.startswith(("media.", "research.", "aigc.", "run.", "approval."))
-                    or e.type in {"tool.started", "tool.completed", "tool.failed", "agent.tool.delegated"}),
+                    if e.type.startswith(TASK_EVENT_PREFIXES) or e.type in TASK_EVENT_TYPES),
                     key=lambda e: e.created_at)
-                safe_keys = {"kind", "stage", "task_id", "code", "name", "target_agent_id", "child_run_id",
-                             "citation_count", "total", "query_index", "query_count", "chunk_index", "chunk_count", "chunk", "queue_position", "progress_percent"}
-                compact_events = [e.model_copy(update={"payload": {k: v for k, v in e.payload.items() if k in safe_keys}})
-                                  for e in events[-80:]]
+                compact_events = [_task_event(e) for e in events[-80:]]
                 result.append(run.model_copy(update={"input": run.input[:160], "output": "", "events": compact_events}))
             return result
 
@@ -410,6 +458,7 @@ class TraceStore:
                     db.executemany("DELETE FROM trace_runs WHERE id=?", [(rid,) for rid in run_ids])
             for run_id in run_ids:
                 self._runs.pop(run_id, None)
+                self._resident_runs.discard(run_id)
                 self._created_at.pop(run_id, None)
             self._video_requests = {key: value for key, value in self._video_requests.items()
                                     if key[0] != normalized_user_id}
