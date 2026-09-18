@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import base64
+import logging
+import re
 from pathlib import Path
 from typing import Literal
 
@@ -11,7 +13,10 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from agent.aigc.image_inputs import decode_image_data_url, load_image_url
 from agent.aigc.image_service import generate_image
 from agent.aigc.creation_image_context import ImageReferenceContext, style_only_prompt, composition_only_prompt
-from agent.aigc.video_service import generate_video
+from agent.aigc.video_service import generate_video, video_task_status
+from agent.aigc.spark_client import SparkProviderError, SparkTaskClient
+from agent.aigc.creation_media_state import CreationMediaState
+from agent.aigc.progress import progress_scope
 from agent.aigc.video_prompting import VideoStoryboard, compile_storyboard
 from agent.schemas.aigc import ImageGenerationRequest, VideoGenerationRequest
 
@@ -59,7 +64,36 @@ class CreationNodeRequest(BaseModel):
         return self
 
 
+def prepare_video_request(request: CreationNodeRequest):
+    width, height = {'1:1': (704, 704), '16:9': (864, 480), '9:16': (480, 864)}[request.aspect_ratio]
+    options = dict(prompt=request.prompt, width=width, height=height,
+                   duration_seconds=float(request.duration_seconds), idempotency_key=request.idempotency_key)
+    if request.video_mode == 'reference_to_video':
+        options['reference_image_data_urls'] = request.input_images
+    elif len(request.input_images) == 1:
+        options['first_frame_data_url'] = request.input_images[0]
+    elif request.input_images:
+        options['reference_image_data_urls'] = request.input_images
+    video_request = VideoGenerationRequest(**options)
+    if request.storyboard:
+        compiled = compile_storyboard(request.storyboard, video_request)
+        if compiled != request.prompt:
+            raise ValueError('分镜与已确认提示词不一致，请重新规划和审阅')
+    return video_request
+
+
 async def execute_node(request: CreationNodeRequest):
+    if request.kind == 'video':
+        prepared_video = prepare_video_request(request)
+        state = CreationMediaState(request)
+        # Acknowledged media tasks have the same background budget as Super Chat.
+        # Persist the provider ID before polling so a retry can GET the same task.
+        with progress_scope(state.progress, background=True):
+            return await _execute_node(request, resume_task_id=state.task_id, prepared_video=prepared_video)
+    return await _execute_node(request)
+
+
+async def _execute_node(request: CreationNodeRequest, *, resume_task_id=None, prepared_video=None):
     if request.kind == 'image':
         options = dict(provider='spark', prompt=request.prompt, aspect_ratio=request.aspect_ratio,
                        idempotency_key=request.idempotency_key)
@@ -88,21 +122,8 @@ async def execute_node(request: CreationNodeRequest):
         data = f'data:{item.mime_type};base64,{item.base64}' if item.base64 else await load_image_url(item.url or '')
         content, mime = decode_image_data_url(data)
     else:
-        width, height = {'1:1': (704, 704), '16:9': (864, 480), '9:16': (480, 864)}[request.aspect_ratio]
-        options = dict(prompt=request.prompt, width=width, height=height,
-                       duration_seconds=float(request.duration_seconds), idempotency_key=request.idempotency_key)
-        if request.video_mode == 'reference_to_video':
-            options['reference_image_data_urls'] = request.input_images
-        elif len(request.input_images) == 1:
-            options['first_frame_data_url'] = request.input_images[0]
-        elif request.input_images:
-            options['reference_image_data_urls'] = request.input_images
-        video_request = VideoGenerationRequest(**options)
-        if request.storyboard:
-            compiled = compile_storyboard(request.storyboard, video_request)
-            if compiled != request.prompt:
-                raise ValueError('分镜与已确认提示词不一致，请重新规划和审阅')
-        result = await generate_video(video_request)
+        video_request = prepared_video or prepare_video_request(request)
+        result = await generate_video(video_request, **({'resume_task_id': resume_task_id} if resume_task_id else {}))
         if len(result.videos) != 1:
             raise ValueError('生视频服务未返回一个视频')
         url = result.videos[0].url
@@ -123,8 +144,29 @@ async def execute_node(request: CreationNodeRequest):
 async def creation_node(request: CreationNodeRequest):
     try:
         return await execute_node(request)
+    except SparkProviderError as exc:
+        # Codes and task identities cross the boundary; provider text never does.
+        known = {'wait_timeout', 'connection_failed', 'download_failed', 'artifact_expired',
+                 'generation_failed', 'unauthorized', 'idempotency_conflict', 'unsupported_task_type',
+                 'invalid_output', 'storage_failed', 'provider_busy'}
+        code = exc.code if exc.code in known else 'provider_error'
+        logging.getLogger(__name__).warning('Creation media error: code=%s task=%s', code, exc.task_id or '')
+        raise HTTPException(status_code=504 if code == 'wait_timeout' else 502,
+            detail={'code': 'media_' + code, 'provider_task_id': exc.task_id or ''}) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
         # Provider exceptions may contain credentials or internal URLs.
         raise HTTPException(status_code=502, detail='媒体生成失败，请检查生成服务配置后重试') from exc
+
+
+@router.get('/agent/creation/video-task/{task_id}')
+async def inspect_creation_video_task(task_id: str):
+    """Internal operational lookup. GET only: never submits or restarts generation."""
+    if not re.fullmatch(r'[A-Za-z0-9_-]{1,128}', task_id):
+        raise HTTPException(status_code=400, detail='无效的任务标识')
+    try:
+        task = await video_task_status(task_id)
+        return {'id': task['id'], 'status': task['status'], **SparkTaskClient.task_metrics(task)}
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail='暂时无法查询原视频任务，请稍后重试') from exc

@@ -740,11 +740,33 @@ func (h *CreationHandler) prepareProjectRun(row models.CreationProject, doc crea
 	state := doc.States[node.ID]
 	run := models.CreationRun{ID: uuid.NewString(), UserID: row.UserID, Name: row.Name + " · " + node.Title, Status: "queued", Definition: creationJSON(graph), ProjectID: row.ID, ProjectRevision: row.Revision, ProjectNodeID: node.ID, NodeRevision: state.Revision, RequestID: requestID, Snapshot: creationJSON(doc)}
 	progress := []creationProgress{{NodeID: node.ID, Status: "pending", AssetIDs: []string{}}}
+	resuming := false
+	if node.Kind == "video" && state.RunID != "" {
+		var previous models.CreationRun
+		if h.db.Where("id = ? AND user_id = ? AND project_id = ? AND project_node_id = ?", state.RunID, row.UserID, row.ID, node.ID).First(&previous).Error == nil && previous.NodeRevision == state.Revision && (previous.Status == "failed" || previous.Status == "interrupted") {
+			var frozen creationGraph
+			var prior []creationProgress
+			if json.Unmarshal([]byte(previous.Definition), &frozen) == nil && creationJSON(frozen) == creationJSON(graph) && json.Unmarshal([]byte(previous.Progress), &prior) == nil && len(prior) == 1 && len(prior[0].AssetIDs) == 0 && (prior[0].Retryable || previous.Status == "interrupted") {
+				run = previous // Preserve the original run ID, snapshot and provider idempotency key.
+				run.Status, run.Error, run.RequestID = "queued", "", requestID
+				progress[0].ProviderTaskID = prior[0].ProviderTaskID
+				resuming = true
+			}
+		}
+	}
 	run.Progress = creationJSON(progress)
 	state.RunID = run.ID
 	doc.States[node.ID] = state
 	err = h.db.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Create(&run).Error; err != nil {
+		if resuming {
+			result := tx.Model(&models.CreationRun{}).Where("id = ? AND status IN ?", run.ID, []string{"failed", "interrupted"}).Updates(map[string]interface{}{"status": run.Status, "error": "", "request_id": requestID, "progress": run.Progress, "updated_at": time.Now()})
+			if result.Error != nil {
+				return result.Error
+			}
+			if result.RowsAffected != 1 {
+				return errors.New("原任务已更新")
+			}
+		} else if err := tx.Create(&run).Error; err != nil {
 			return err
 		}
 		result := tx.Model(&models.CreationProject{}).Where("id = ? AND revision = ?", row.ID, row.Revision).Updates(map[string]interface{}{"revision": row.Revision + 1, "document": creationJSON(doc), "updated_at": time.Now()})

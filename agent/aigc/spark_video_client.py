@@ -73,6 +73,15 @@ class SparkVideoClient(SparkTaskClient):
             raise SparkProviderError("Spark returned a non-video task", code="invalid_response")
         return task
 
+    async def inspect_task(self, task_id: str) -> dict:
+        async with httpx.AsyncClient(base_url=self.base_url, headers={"Authorization": f"Bearer {self.api_key}"},
+                                     timeout=httpx.Timeout(30, connect=10), follow_redirects=False,
+                                     transport=self.transport) as client:
+            task = self._task(await self._request(client, "GET", "/v1/tasks/" + quote(task_id, safe="")))
+            if task['id'] != task_id:
+                raise SparkProviderError("Spark returned a different task id", code="invalid_response")
+            return task
+
     async def _generate(self, request: VideoGenerationRequest, payload: dict, key: str) -> VideoGenerationResponse:
         async with httpx.AsyncClient(base_url=self.base_url, headers={"Authorization": f"Bearer {self.api_key}"},
                                      timeout=httpx.Timeout(300, connect=10), follow_redirects=False,

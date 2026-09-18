@@ -4,9 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 )
 
 type ImageReferenceContext struct {
@@ -46,13 +46,62 @@ func (c *AgentClient) CreateMedia(ctx context.Context, req CreationNodeRequest) 
 	client := &http.Client{Transport: c.httpClient.Transport}
 	resp, err := client.Do(request)
 	if err != nil {
-		return nil, err
+		return nil, newCreationMediaError("media_connection_failed", "")
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("媒体生成服务返回 %d", resp.StatusCode)
+		var envelope struct {
+			Detail struct {
+				Code   string `json:"code"`
+				TaskID string `json:"provider_task_id"`
+			} `json:"detail"`
+		}
+		_ = json.NewDecoder(io.LimitReader(resp.Body, 4096)).Decode(&envelope)
+		if envelope.Detail.Code == "" && resp.StatusCode >= 500 {
+			envelope.Detail.Code = "media_status_unknown"
+		}
+		return nil, newCreationMediaError(envelope.Detail.Code, envelope.Detail.TaskID)
 	}
 	var result CreationNodeResponse
 	err = json.NewDecoder(io.LimitReader(resp.Body, 90<<20)).Decode(&result)
-	return &result, err
+	if err != nil {
+		return nil, newCreationMediaError("media_status_unknown", "")
+	}
+	return &result, nil
+}
+
+// Fixed public diagnostics only; upstream bodies may contain credentials or HTML.
+type CreationMediaError struct {
+	Code           string
+	Message        string
+	ProviderTaskID string
+	Retryable      bool
+}
+
+func (e *CreationMediaError) Error() string { return e.Message }
+func newCreationMediaError(code, taskID string) *CreationMediaError {
+	messages := map[string]string{
+		"media_status_unknown":        "生成服务响应中断，原任务状态尚未确认；继续时会先查询原任务",
+		"media_wait_timeout":          "等待生成结果超时，原任务可能仍在运行；继续时会接回原任务，不重复提交",
+		"media_connection_failed":     "生成服务连接中断，原任务状态尚未确认；继续时会先查询原任务",
+		"media_download_failed":       "生成结果下载中断，继续时会重取原任务结果",
+		"media_artifact_expired":      "原任务产物已过期，需重新生成",
+		"media_generation_failed":     "生成服务明确返回任务失败，请调整该节点后重新生成",
+		"media_unauthorized":          "生成服务鉴权失败，请检查服务配置",
+		"media_idempotency_conflict":  "生成请求与原任务不一致，已停止提交，请重新审阅该节点",
+		"media_unsupported_task_type": "生成服务暂不支持此任务类型",
+		"media_provider_busy":         "生成服务繁忙，请稍后继续原任务",
+		"media_invalid_output":        "生成服务返回的媒体文件无效，请检查该节点",
+		"media_storage_failed":        "视频已生成但保存失败，请检查存储后继续原任务",
+	}
+	message, ok := messages[code]
+	if !ok {
+		code = "media_provider_error"
+		message = "媒体生成未完成，已有资产保留，请检查生成服务后重试"
+	}
+	if !regexp.MustCompile(`^[a-zA-Z0-9_-]{1,128}$`).MatchString(taskID) {
+		taskID = ""
+	}
+	retryable := code == "media_status_unknown" || code == "media_wait_timeout" || code == "media_connection_failed" || code == "media_download_failed" || code == "media_storage_failed" || code == "media_provider_busy"
+	return &CreationMediaError{Code: code, Message: message, ProviderTaskID: taskID, Retryable: retryable}
 }

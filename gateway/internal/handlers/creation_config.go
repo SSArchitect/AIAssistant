@@ -64,5 +64,9 @@ func creationFailureMessage(err error, fallback string) string {
 	if errors.As(err, &safe) {
 		return safe.Message
 	}
+	var media *bridge.CreationMediaError
+	if errors.As(err, &media) {
+		return media.Message
+	}
 	return fallback
 }

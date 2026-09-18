@@ -44,10 +44,13 @@ type creationGraph struct {
 	Nodes []creationNode `json:"nodes"`
 }
 type creationProgress struct {
-	NodeID   string   `json:"node_id"`
-	Status   string   `json:"status"`
-	AssetIDs []string `json:"asset_ids"`
-	Error    string   `json:"error,omitempty"`
+	ErrorCode      string   `json:"error_code,omitempty"`
+	ProviderTaskID string   `json:"provider_task_id,omitempty"`
+	Retryable      bool     `json:"retryable,omitempty"`
+	NodeID         string   `json:"node_id"`
+	Status         string   `json:"status"`
+	AssetIDs       []string `json:"asset_ids"`
+	Error          string   `json:"error,omitempty"`
 }
 type creationGenerator interface {
 	CreateMedia(context.Context, bridge.CreationNodeRequest) (*bridge.CreationNodeResponse, error)
@@ -655,12 +658,16 @@ func (h *CreationHandler) execute(run models.CreationRun, graph creationGraph, p
 				status = "cancelled"
 				return
 			}
-			ctx, cancel := context.WithTimeout(context.Background(), 50*time.Minute)
+			ctx, cancel := context.WithTimeout(context.Background(), 6*time.Hour+2*time.Minute)
 			media, err := h.generator.CreateMedia(ctx, bridge.CreationNodeRequest{ImagePurpose: node.ImagePurpose, Kind: node.Kind, Prompt: node.Prompt, AspectRatio: node.AspectRatio, DurationSeconds: node.DurationSeconds, CharacterStyle: node.CharacterStyle, InputImages: inputs, ImageReferences: node.ImageReferences, IdempotencyKey: fmt.Sprintf("creation-%s-%d-%d", run.ID, i, j), VideoMode: node.VideoMode, Storyboard: node.Storyboard})
 			cancel()
 			if err != nil {
 				status = "failed"
-				errorText = creationFailureMessage(err, fmt.Sprintf("节点 %d 生成失败，已完成的资产保留，请检查生成服务后重试", i+1))
+				var detail *bridge.CreationMediaError
+				if errors.As(err, &detail) {
+					progress[i].ErrorCode, progress[i].ProviderTaskID, progress[i].Retryable = detail.Code, detail.ProviderTaskID, detail.Retryable
+				}
+				errorText = fmt.Sprintf("「%s」%s", node.Name, creationFailureMessage(err, "生成失败，已完成的资产保留，请检查生成服务后重试"))
 				return
 			}
 			if media == nil || (node.Kind == "image" && !strings.HasPrefix(media.MimeType, "image/")) || (node.Kind == "video" && !strings.HasPrefix(media.MimeType, "video/")) {

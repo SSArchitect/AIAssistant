@@ -16,3 +16,8 @@ async def generate_video(request: VideoGenerationRequest, *, resume_task_id=None
         data['reference_image_data_urls'] = values
         request = VideoGenerationRequest.model_validate(data)
     return await client.generate(request)
+
+
+async def video_task_status(task_id: str) -> dict:
+    client = SparkVideoClient(runtime_config.get("aigc.spark.base_url"), runtime_config.get("aigc.spark.api_key"))
+    return await client.inspect_task(task_id)

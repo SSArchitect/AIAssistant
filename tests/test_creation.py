@@ -10,6 +10,12 @@ from agent.aigc import creation
 
 PNG = 'data:image/png;base64,' + base64.b64encode(b'png-test').decode()
 
+@pytest.fixture(autouse=True)
+def isolated_media_state(monkeypatch, tmp_path):
+    from agent.aigc import creation_media_state
+    monkeypatch.setattr(creation_media_state, 'STATE_DIR', tmp_path / 'media-state')
+
+
 def request(**kw):
     return creation.CreationNodeRequest(kind='image', prompt='test', idempotency_key='run-node', **kw)
 
