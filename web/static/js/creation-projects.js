@@ -188,7 +188,7 @@
     }
     function renderDecisions(project, busy = false) {
         const questions = documentOf(project).plan.questions || [];
-        if (!questions.length || project?.planning || automaticActive(project)) return '';
+        if (!questions.length || project?.planning || project?.error || automaticActive(project)) return '';
         return `<section class="cp-decisions" aria-label="等待你的判断"><header><span>下一步</span><strong>需要你来定</strong></header>${questions.map((q, i) => `<fieldset><legend>${esc(q.question)}</legend><div>${q.options.map((option, j) => `<button type="button" data-cp-action="answer" data-id="${i}:${j}" ${busy ? 'disabled' : ''}><span>${esc(option)}</span>${j === 0 && !option.includes('推荐') ? '<small>推荐</small>' : ''}</button>`).join('')}</div></fieldset>`).join('')}<p>选择一个方向，或在下方输入你的想法。</p></section>`;
     }
     function createController({ api, user, mediaURL, onAssets = () => {}, onTemplates = () => {} }) {

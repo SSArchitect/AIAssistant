@@ -23,6 +23,7 @@ from agent.aigc.creation_tools import director_tools, execute_director_tool, too
 from agent.aigc.creation_models import (can_use_plan_vision, use_plan_vision, unsupported_image_input,
     planning_error, configure_planning_output, PlanningOutputTruncated, create_creation_provider, PlanningConstraintError)
 from agent.aigc.creation_compaction import compact_storyboard
+from agent.aigc.creation_references import reference_error, repair_reference_storyboard
 from agent.llm.factory import create_provider
 from agent.schemas.aigc import VideoGenerationRequest
 
@@ -231,6 +232,7 @@ patch.nodes 只包含有变化的节点，每项包含 id 和变更字段；未�
 修改 content 时返回该字段的完整新内容；修改 storyboard 时返回该节点完整 storyboard；数组字段整体替换，不能返回数组的一小段。严格输出结构中未修改的可选字段填 null；null 表示保留原值，不是删除。禁止生成批准状态。
 针对节点的修改只调整它及确实受影响的下游，原有资产、引用、时长、交付数量和其他要求保持不变。即使有六段视频，也不要重写未受影响的视频。
 如有重大歧义，用 reply 和 patch.questions 提问；不需要修改的字段在严格结构中填 null。需要新增节点时提供完整新节点，按依赖顺序追加；删除或重排节点不在本轮局部修改范围，先询问用户。
+resolved_choices 是已从用户明确选项回复提取的决定，以每题最新回复为准；当前画布可能因上一轮失败仍保留旧问题，不要重复询问。全部解决时 questions 返回 []，只有仍需判断的新问题才放入该数组。
 '''
 
 
@@ -368,6 +370,21 @@ def merge_revision_repair(previous: str, correction: str) -> str:
     return json.dumps({**draft, **repaired, 'patch': patch}, ensure_ascii=False)
 
 
+def resolved_choices(request: PlanningRequest):
+    """Recognize exact option replies; never infer arbitrary free-text approvals."""
+    result = {}
+    for question in request.current_plan.get('questions', []):
+        title = question.get('question', '')
+        prefix = f'关于“{title}”，我选择：'
+        for message in request.messages:
+            text = message.get('content', '')
+            if message.get('role') == 'user' and isinstance(text, str) and text.startswith(prefix):
+                answer = text[len(prefix):].strip()
+                if answer in question.get('options', []):
+                    result[title] = answer
+    return result
+
+
 def assemble_proposal(content: str, request: PlanningRequest):
     value = decode_proposal(content)
     if 'patch' in value:
@@ -389,6 +406,9 @@ def assemble_proposal(content: str, request: PlanningRequest):
         for field in ('title', 'summary', 'questions'):
             if field in revision.patch.model_fields_set:
                 merged[field] = getattr(revision.patch, field)
+        if 'questions' not in revision.patch.model_fields_set:
+            answered = resolved_choices(request)
+            merged['questions'] = [q for q in merged.get('questions', []) if q.get('question') not in answered]
         value = dict(reply=revision.reply, plan=merged)
     return value
 
@@ -408,8 +428,26 @@ async def compact_proposal(content, request, provider, report):
             continue
         try:
             node = CreativeNode.model_validate(data)
+        except ValueError:
+            continue
+        try:
             compile_creative_video(node)
         except ValueError as exc:
+            if reference_error(exc):
+                await report('references', '正在核对当前视频的参考图编号与职责：' + node.title)
+                names = {item['id']: item.get('title', '') for item in value['plan']['nodes'] if isinstance(item, dict) and 'id' in item}
+                names.update({asset.id: asset.name for asset in request.assets})
+                images = [dict(picture=i, source=ref.node_id or ref.asset_id, name=names.get(ref.node_id or ref.asset_id, ''), role=ref.role, note=ref.note) for i, ref in enumerate(node.references, 1)]
+                node.storyboard, consumed = await repair_reference_storyboard(node.storyboard, creative_video_request(node), images, provider)
+                changes[node.id]['storyboard'] = node.storyboard.model_dump()
+                for key, count in consumed.items():
+                    usage[key] = usage.get(key, 0) + count
+                try:
+                    compile_creative_video(node)
+                except ValueError as remaining:
+                    exc = remaining
+                else:
+                    continue
             if 'Compiled storyboard is' not in str(exc):
                 continue  # Structural/reference errors go through normal repair first.
         else:
@@ -474,6 +512,7 @@ async def propose_creation(request: PlanningRequest, trace_store=None, on_progre
         revising = bool(request.current_plan.get('nodes'))
         schema = (RevisionResponse if revising else PlanProposal).model_json_schema()
         payload = request.model_dump(exclude={'assets'})
+        payload['resolved_choices'] = resolved_choices(request)
         # Video prompts are deterministic compilations; resending them alongside
         # storyboards wastes context and invites unrelated rewrites.
         for node in payload['current_plan'].get('nodes', []):

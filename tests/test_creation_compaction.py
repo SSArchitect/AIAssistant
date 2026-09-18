@@ -29,6 +29,8 @@ def editor(break_dialogue=False):
             values[key] = '兔子行走后拱手，微笑，固定机位。' if 'shots' in item['path'] else '水墨暖光，微风。'
             if '<d>' in item['text'] and not break_dialogue:
                 values[key] += '<d>[Chinese]你好。</d>'
+            if break_dialogue:
+                values[key] += '<d>[Chinese]改掉原话。</d>'
         return LLMResponse(content=json.dumps(values), usage={'output_tokens': 10})
     return SimpleNamespace(chat=AsyncMock(side_effect=respond), max_tokens=16000)
 
@@ -71,4 +73,41 @@ async def test_compaction_keeps_review_script_and_never_edits_locked_nodes():
     assert len(parsed.plan.nodes[1].prompt) <= 3900
     provider.chat.reset_mock()
     await compact_proposal(wire, request.model_copy(update={'locked_node_ids': ['video']}), provider, AsyncMock())
+    provider.chat.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_long_reference_rules_can_be_compacted_without_rewriting_protocol_or_dialogue():
+    original = VideoStoryboard(style='Ink.',
+        shots=[dict(start_seconds=0., description='<Subject 1> moves. ' * 30 + '<d>[Chinese]这是我的原话。</d>')],
+        subject_definitions='<Subject 1> is a rabbit from <Picture 1>.',
+        summary='[reference generation] A rabbit walks.',
+        retention_analysis='<Subject 1> (appears in [Shot 1]): fully_preserved - identity.',
+        reference_rules=['Keep the ink texture and exclude sheet layout. ' * 60],
+        continuity_locks=['Keep the red cape and carrot sword. ' * 60],
+        execution_constraints=['No added narration or subtitles.'], overall_soundscape='Wind.')
+    before=original.model_dump()
+    provider=editor()
+    req=VideoGenerationRequest(prompt='placeholder',duration_seconds=5,reference_image_data_urls=['data:image/png;base64,eA=='])
+    compacted,_=await compact_storyboard(original,req,provider)
+    prompt=compile_storyboard(compacted,req)
+    assert len(prompt)<=3900 and '<d>[Chinese]这是我的原话。</d>' in prompt
+    assert '<Subject 1>' in compacted.subject_definitions and '<Picture 1>' in compacted.subject_definitions
+    assert compacted.summary.startswith('[reference generation]')
+    assert 'fully_preserved -' in compacted.retention_analysis
+    assert original.model_dump()==before
+    # Model rewrites prose only; literal speech and protocol are restored by code.
+    payload=json.loads(provider.chat.call_args.args[0][1].content)
+    assert all('<d>' not in item['text'] and '<Picture' not in item['text'] for item in payload.values())
+
+
+@pytest.mark.asyncio
+async def test_uncompressible_literal_text_reports_capacity_without_spending_repair_calls():
+    original=VideoStoryboard(style='Ink.',overall_soundscape='Speech.',shots=[
+        dict(start_seconds=0.,description='<d>[Chinese]'+('甲'*2100)+'</d>'),
+        dict(start_seconds=2.,description='<d>[Chinese]'+('乙'*2100)+'</d>')])
+    provider=editor()
+    with pytest.raises(PlanningConstraintError) as caught:
+        await compact_storyboard(original,VideoGenerationRequest(prompt='placeholder',duration_seconds=5),provider)
+    assert caught.value.code=='execution_capacity_exceeded'
     provider.chat.assert_not_awaited()

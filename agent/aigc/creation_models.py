@@ -14,7 +14,9 @@ CREATION_OUTPUT_TOKENS = 16384
 
 
 class PlanningConstraintError(ValueError):
-    pass
+    def __init__(self, message, *, code='plan_constraint_failed'):
+        super().__init__(message)
+        self.code = code
 
 
 class PlanningOutputTruncated(RuntimeError):
@@ -70,7 +72,7 @@ def planning_error(exc):
     if isinstance(exc, PlanningConfigurationError):
         return 'provider_config_missing', '创作模型配置未就绪，请检查模型配置或稍后重试；原有内容已保留'
     if isinstance(exc, PlanningConstraintError):
-        return "plan_constraint_failed", str(exc)
+        return exc.code, str(exc)
     if isinstance(exc, PlanningOutputTruncated):
         return 'planning_output_truncated', '模型未完整返回创作方案，原有内容已保留；请分段规划后继续'
     if unsupported_image_input(exc):

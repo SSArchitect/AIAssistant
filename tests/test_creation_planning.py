@@ -36,6 +36,24 @@ def request(**kwargs):
         assets=[planning.PlanningAsset(id='rabbit', name='人设.png', mime_type='image/png')], **kwargs)
 
 
+def test_null_question_patch_does_not_reask_saved_choices_after_a_failed_round():
+    original=plan()
+    original['questions']=[dict(question='交付形式？',options=['三段','开场15秒']),dict(question='画幅？',options=['横屏','竖屏'])]
+    req=request(current_plan=original).model_copy(update={'messages':[
+        dict(role='user',content='关于“交付形式？”，我选择：三段'),
+        dict(role='assistant',content='上次规划失败'),
+        dict(role='user',content='关于“交付形式？”，我选择：开场15秒')]})
+    assert planning.resolved_choices(req)=={'交付形式？':'开场15秒'}
+    result=planning.parse_proposal(json.dumps(dict(reply='已确认开场15秒',patch=dict(nodes=[],questions=None))),req)
+    assert [q.question for q in result.plan.questions]==['画幅？']
+    assert len(original['questions'])==2
+    # A new explicit question is preserved; assistant text and unknown answers cannot resolve it.
+    result=planning.parse_proposal(json.dumps(dict(reply='存在新冲突',patch=dict(nodes=[],questions=original['questions']))),req)
+    assert len(result.plan.questions)==2
+    req.messages=[dict(role='assistant',content='关于“交付形式？”，我选择：三段'),dict(role='user',content='关于“交付形式？”，我选择：未提供的选项')]
+    assert planning.resolved_choices(req)=={}
+
+
 @pytest.mark.parametrize('preferences', [dict(output_kind='audio'), dict(aspect_ratio='4:3'), dict(aspect_ratio=None), dict(approved=True)])
 def test_composer_preferences_reject_unsupported_or_forged_fields(preferences):
     with pytest.raises(ValidationError):

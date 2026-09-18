@@ -49,6 +49,7 @@ test('decision cards escape model content and hide during automatic execution', 
     assert.doesNotMatch(html,/<script>|<img /); assert.match(html,/disabled/);
     assert.equal(C.renderDecisions({...p,automatic_status:'running'}),'');
     assert.equal(C.renderDecisions(project()),'');
+    assert.equal(C.renderDecisions({...p,error:'视频执行稿自动整理未完成'}),'','failed drafts must not re-ask the old questions');
 });
 
 test('free-form decision replies address the project even with a canvas node selected', async () => {
