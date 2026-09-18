@@ -16,7 +16,7 @@ from PIL import Image, ImageOps
 from pydantic import BaseModel, ConfigDict, Field, create_model, model_validator
 
 from agent.aigc.image_inputs import decode_image_data_url
-from agent.aigc.video_prompting import VIDEO_PROMPT_GUIDANCE, VideoStoryboard, compile_storyboard
+from agent.aigc.video_prompting import VIDEO_PROMPT_GUIDANCE, VideoStoryboard, compile_storyboard, render_storyboard
 from agent.llm.base import LLMMessage
 from agent.aigc.creation_output import structured_options, unsupported_schema, omit_null_fields, validation_details, thinking_options
 from agent.aigc.creation_tools import director_tools, execute_director_tool, tool_definitions
@@ -104,6 +104,7 @@ class CreativePlan(StrictModel):
     @model_validator(mode='after')
     def validate_graph(self):
         seen = {}
+        video_errors = []
         for node in self.nodes:
             if node.id in seen or len(node.depends_on) != len(set(node.depends_on)):
                 raise ValueError('节点或依赖重复')
@@ -131,12 +132,19 @@ class CreativePlan(StrictModel):
                 try:
                     compile_creative_video(node)
                 except ValueError as exc:
-                    raise ValueError(f"视频节点「{node.title}」: {exc}") from exc
+                    detail = str(exc)
+                    size = len(render_storyboard(node.storyboard, creative_video_request(node).mode))
+                    if size > 4000 and 'limit is 4000' not in detail:
+                        detail += f'; Compiled storyboard is {size} characters; limit is 4000'
+                    mapping = ', '.join(f'<Picture {i}>={ref.node_id or ref.asset_id}' for i, ref in enumerate(node.references, 1))
+                    video_errors.append(f'视频节点 {node.id}: {detail}; 本节点独立图片编号: {mapping or "无参考图"}')
             seen[node.id] = node
+        if video_errors:
+            raise ValueError('\n'.join(video_errors))
         return self
 
 
-def compile_creative_video(node: CreativeNode) -> str:
+def creative_video_request(node: CreativeNode) -> VideoGenerationRequest:
     """Role, not image count, decides first-frame vs reference generation."""
     options = dict(prompt='storyboard', duration_seconds=float(node.duration_seconds))
     if any(ref.role == 'first_frame' for ref in node.references):
@@ -145,7 +153,11 @@ def compile_creative_video(node: CreativeNode) -> str:
         options['first_frame_data_url'] = 'data:image/png;base64,cGxhY2Vob2xkZXI='
     elif node.references:
         options['reference_image_data_urls'] = [f'data:image/png;base64,{base64.b64encode(str(i).encode()).decode()}' for i in range(len(node.references))]
-    return compile_storyboard(node.storyboard, VideoGenerationRequest(**options))
+    return VideoGenerationRequest(**options)
+
+
+def compile_creative_video(node: CreativeNode) -> str:
+    return compile_storyboard(node.storyboard, creative_video_request(node))
 
 
 class PlanningAsset(StrictModel):
@@ -241,6 +253,7 @@ depends_on 包含所有内容依据和 reference.node_id；文本脚本依赖故
 复杂视频的storyboard.shots对应Logical Shot，shots[].panels对应组内Panel，使用全片绝对秒数与明确结束秒数。reference_rules、continuity_locks、execution_constraints中的执行约束要与中文审阅稿一致，不能只写在给用户看的文字里。不要将创作示例当作固定题材、角色、镜头数量或时长规则。
 提取用户要求的图片创作同样支持 image→image 或多个图片节点；不要把所有需求都改成视频。
 保持输出紧凑：没有用途的可选字段填 null，视频节点不重复填写 prompt；每个视频只描述本段的动作，不重复整部脚本。JSON 字符串内的换行和引号必须正确转义，不要输出未完成的 JSON。
+每个视频的图片编号都从<Picture 1>重新开始，只按该节点references的顺序编号，不能沿用项目的全局资产编号。每个视频storyboard所有文本与编译标签合计必须小于4000字符：英文执行文本建议控制在3000字符内，为结构标签留余量；完整细节保留在中文脚本，执行稿用全局规则避免逐Panel重复，不删改用户对白、关键动作或参考职责。
 ''' + VIDEO_PROMPT_GUIDANCE.replace('普通短片无需额外确认。', '创作项目必须经过画布审阅与明确提交。')
 
 
@@ -459,14 +472,14 @@ async def propose_creation(request: PlanningRequest, trace_store=None, on_progre
                     from agent.aigc.creation_models import PlanningConstraintError
                     if 'Panels must cover' in str(exc):
                         raise PlanningConstraintError('分镜时间存在空档、重叠或越界，方案未提交；原有内容保留，请调整该节点的时间分配') from exc
-                    if '4000' in str(exc) and 'prompt' in str(exc).lower():
+                    if '4000' in str(exc) and any(word in str(exc).lower() for word in ('prompt', 'compiled storyboard')):
                         raise PlanningConstraintError('视频执行提示词超过模型长度限制，方案未提交；原有内容保留，请精简该节点的描述') from exc
                     raise ValueError('创作方案格式校验失败，请重试或补充要求') from exc
                 repairs += 1
                 repair_draft = candidate
                 await report('repair', '方案格式需要调整，正在自动修正')
                 messages.extend([LLMMessage(role='assistant', content=response.content),
-                                 LLMMessage(role='user', content='方案校验失败：' + json.dumps(details, ensure_ascii=False)[:2000] + ('。仅返回 reply 和 patch，修正上一份待提交草案中有问题的字段；系统会合并到该草案并重新校验完整画布，保留其中已确定的选择、新增节点及其他修改。' if revising else '。仅返回 reply 和 plan，修正有问题的字段。'))])
+                                 LLMMessage(role='user', content='方案校验失败：' + json.dumps(details, ensure_ascii=False)[:6000] + ('。仅返回 reply 和 patch，一次修正以上所有节点的问题；仅修改有问题的字段，不重写无关节点和中文审阅稿。执行文本控制在每视频3000字符内，保留完整对白、关键动作、图片角色和时间线，逐节点重新检查Picture编号。系统会合并到待提交草案并重新校验完整画布，保留其中已确定的选择、新增节点及其他修改。' if revising else '。仅返回 reply 和 plan，修正有问题的字段。'))])
         else:
             raise ValueError('本轮创作规划达到上限，请补充要求后继续')
         proposal.model_used, proposal.tokens_used = model, usage

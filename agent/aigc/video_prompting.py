@@ -209,6 +209,14 @@ def compile_storyboard(plan: VideoStoryboard, request: VideoGenerationRequest) -
     elif any(field is not None for field in reference_fields) or any(kind == "Subject" for kind, _ in labels):
         raise ValueError("Reference definitions and <Subject N> labels require reference_to_video mode")
 
+    prompt = render_storyboard(plan, request.mode)
+    if len(prompt) > 4000:
+        raise ValueError(f"Compiled storyboard is {len(prompt)} characters; limit is 4000. Shorten repeated descriptions without truncating dialogue or reference roles")
+    return prompt
+
+
+def render_storyboard(plan: VideoStoryboard, mode: str) -> str:
+    """Render for length diagnostics; callers must still validate before execution."""
     direction = [plan.style]
     for title, rules in [('Reference rules', plan.reference_rules), ('Continuity locks', plan.continuity_locks),
                          ('Execution constraints', plan.execution_constraints)]:
@@ -220,7 +228,7 @@ def compile_storyboard(plan: VideoStoryboard, request: VideoGenerationRequest) -
         prefix = f"[Shot {index}]"
         if index > 1:
             prefix += f" At {_timestamp(shot.start_seconds)},"
-        elif request.mode != "reference_to_video":
+        elif mode != "reference_to_video":
             prefix += " " + style
         description = shot.description
         if shot.panels:
@@ -229,18 +237,15 @@ def compile_storyboard(plan: VideoStoryboard, request: VideoGenerationRequest) -
                 for panel in shot.panels)
         shots.append(prefix + " " + description)
     timeline = "\n".join(shots)
-    if request.mode == "reference_to_video":
+    if mode == "reference_to_video":
         sections = [f"subject_definitions: {plan.subject_definitions}", f"summary: {plan.summary}",
                     f"retention_analysis: {plan.retention_analysis}", f"detailed_description: {style}\n{timeline}"]
     else:
         sections = [f"integrated_multimodal_description: {timeline}"]
-        if request.mode == "image_to_video":
+        if mode == "image_to_video":
             sections.insert(0, "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.")
     sections.extend([f"overall_soundscape: {plan.overall_soundscape}", f"non_diegetic_music: {plan.non_diegetic_music}"])
-    prompt = "\n\n".join(sections)
-    if len(prompt) > 4000:
-        raise ValueError(f"Compiled storyboard is {len(prompt)} characters; limit is 4000. Shorten repeated descriptions without truncating dialogue or reference roles")
-    return prompt
+    return "\n\n".join(sections)
 
 
 def _timestamp(value: float) -> str:

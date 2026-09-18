@@ -83,6 +83,21 @@ def test_revision_schema_retains_node_constraints_and_field_guidance():
     assert '视频' in schema['character_style']['description']
 
 
+def test_graph_reports_reference_and_length_errors_for_all_video_nodes_together():
+    value = plan('identity')
+    node = value['nodes'][-1]
+    node['storyboard']['style'] = 'Ink style. ' * 330
+    node['storyboard']['reference_rules'] = ['Use <Picture 3> only as style.']
+    value['nodes'].append(copy.deepcopy(dict(node, id='second_video')))
+    with pytest.raises(ValidationError) as error:
+        planning.CreativePlan.model_validate(value)
+    message = planning.validation_details(error.value)[0]['msg']
+    assert '视频节点 video:' in message and '视频节点 second_video:' in message
+    assert message.count('<Picture 3> has no selected input image') == 2
+    assert message.count('limit is 4000') == 2
+    assert message.count('<Picture 1>=rabbit') == 2
+
+
 def test_image_workflows_and_clarifying_questions_are_supported():
     value = dict(title='二次创作', summary='先画原图，再调整风格', nodes=[
         dict(id='a', kind='image', title='原图', prompt='白色陶瓷杯'),
