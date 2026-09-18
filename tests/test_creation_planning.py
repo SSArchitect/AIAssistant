@@ -79,6 +79,23 @@ def test_image_preview_is_resized_and_strips_large_original():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('streaming', [False, True])
+async def test_cold_provider_config_failure_is_not_reported_as_invalid_plan(monkeypatch, streaming):
+    def missing_provider():
+        raise ValueError('API key not configured SECRET-UPSTREAM')
+    monkeypatch.setattr(planning, 'create_provider', missing_provider)
+    from agent.main import app
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://test') as client:
+        response = await client.post('/agent/creation/plan' + ('/stream' if streaming else ''), json=request().model_dump())
+    error = json.loads(response.text.splitlines()[-1]) if streaming else response.json()['detail']
+    assert error['code'] == 'provider_config_missing'
+    assert '配置' in error['message'] and '格式' not in error['message']
+    assert 'SECRET' not in response.text
+    if not streaming:
+        assert response.status_code == 502
+
+
+@pytest.mark.asyncio
 async def test_real_provider_boundary_repairs_once_tracks_usage_and_cannot_generate(monkeypatch):
     provider = SimpleNamespace(chat=AsyncMock(side_effect=[
         LLMResponse(content='not json', model='configured-model', usage={'input_tokens': 10}),
@@ -378,6 +395,45 @@ def test_revision_patch_merges_changed_fields_and_keeps_references_and_other_nod
     assert result.plan.nodes[1].references[0].asset_id == 'rabbit'
     assert result.plan.nodes[1].storyboard.model_dump() == planning.CreativeNode.model_validate(original['nodes'][1]).storyboard.model_dump()
     assert result.plan.title == original['title'] and original == before
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('locked', [False, True])
+async def test_revision_repair_preserves_draft_decisions_and_checks_original_locks(monkeypatch, locked):
+    original = plan()
+    original['questions'] = [dict(question='画幅？', options=['横屏', '竖屏'])]
+    before = copy.deepcopy(original)
+    draft = dict(reply='已采用竖屏并确定后续节点', patch=dict(questions=[], nodes=[
+        dict(id='script', content='已按用户选择优化的脚本'),
+        dict(id='video', aspect_ratio='9:16'),
+        dict(id='visual', kind='image', title='主视觉', purpose='scene', prompt='ink forest')]))
+    correction = dict(reply='修正主视觉用途', patch=dict(nodes=[dict(id='visual', purpose='key_visual')]))
+    provider = SimpleNamespace(chat=AsyncMock(side_effect=[LLMResponse(content=json.dumps(draft)), LLMResponse(content=json.dumps(correction))]))
+    monkeypatch.setattr(planning, 'create_provider', lambda: provider)
+    req = request(current_plan=original, automatic_mode=True, locked_node_ids=['script'] if locked else [])
+    if locked:
+        with pytest.raises(ValueError):
+            await planning.propose_creation(req)
+    else:
+        result = await planning.propose_creation(req)
+        assert not result.plan.questions
+        assert result.plan.nodes[0].content == '已按用户选择优化的脚本'
+        assert result.plan.nodes[1].aspect_ratio == '9:16'
+        assert result.plan.nodes[2].purpose == 'key_visual'
+    assert provider.chat.await_count == 2
+    assert original == before
+
+
+@pytest.mark.asyncio
+async def test_revision_repair_does_not_drop_invalid_foreign_asset_from_prior_draft(monkeypatch):
+    original = plan()
+    draft = dict(reply='修改', patch=dict(nodes=[dict(id='visual', kind='image', title='参考', purpose='scene', asset_id='foreign')]))
+    correction = dict(reply='修正', patch=dict(nodes=[dict(id='visual', purpose='key_visual')]))
+    provider = SimpleNamespace(chat=AsyncMock(side_effect=[LLMResponse(content=json.dumps(draft)), LLMResponse(content=json.dumps(correction))]))
+    monkeypatch.setattr(planning, 'create_provider', lambda: provider)
+    with pytest.raises(ValueError):
+        await planning.propose_creation(request(current_plan=original))
+    assert all(n['id'] != 'visual' for n in original['nodes'])
 
 
 @pytest.mark.parametrize('nodes', [

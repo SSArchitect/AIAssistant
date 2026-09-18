@@ -1016,16 +1016,21 @@ func (c *AgentClient) ResolveToolApproval(
 }
 
 func (c *AgentClient) UpdateConfig(config map[string]string) error {
+	return c.UpdateConfigContext(context.Background(), config)
+}
+
+func (c *AgentClient) UpdateConfigContext(ctx context.Context, config map[string]string) error {
 	body, err := json.Marshal(map[string]interface{}{"settings": config})
 	if err != nil {
 		return fmt.Errorf("marshal config: %w", err)
 	}
 
-	resp, err := c.httpClient.Post(
-		c.baseURL+"/agent/config",
-		"application/json",
-		bytes.NewReader(body),
-	)
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/agent/config", bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("config update request failed: %w", err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	resp, err := c.httpClient.Do(request)
 	if err != nil {
 		return fmt.Errorf("config update request failed: %w", err)
 	}

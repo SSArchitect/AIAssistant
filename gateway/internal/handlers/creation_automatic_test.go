@@ -204,6 +204,30 @@ func TestAutomaticCreationProtectsConfirmedNodesFromDirectionReplanning(t *testi
 		t.Fatal("confirmed content overwritten")
 	}
 }
+
+func TestAutomaticCreationShowsConfigurationFailureAndCanContinue(t *testing.T) {
+	r, h, f, token, row := setupAutomatic(t)
+	row = reviewTestNode(t, r, h, token, row.ID, "brief", "")
+	doc, _ := projectDocument(row)
+	doc.Plan.Questions = []bridge.CreativeQuestion{{Question: "选择氛围", Options: []string{"温暖", "冷峻"}}}
+	if err := h.updateProject(&row, doc, false); err != nil {
+		t.Fatal(err)
+	}
+	f.err = &bridge.CreationPlanningError{Message: "创作服务配置同步失败，原有内容已保留，请稍后重试"}
+	startAutomatic(t, r, h, token, row.ID, "missing-config")
+	row = waitAutomatic(t, h, row.ID)
+	after, _ := projectDocument(row)
+	if row.AutomaticStatus != "failed" || !strings.Contains(after.Messages[len(after.Messages)-1].Content, "配置同步失败") || !reflect.DeepEqual(after.States["brief"], doc.States["brief"]) || len(f.requests) != 0 {
+		t.Fatal("configuration error hidden or existing work changed")
+	}
+	f.err = nil
+	f.response = &bridge.CreationPlanningResponse{Plan: creativeTestPlan(), Reply: "方向已确定"}
+	startAutomatic(t, r, h, token, row.ID, "restored-config")
+	row = waitAutomatic(t, h, row.ID)
+	if row.AutomaticStatus != "completed" || len(f.requests) != 3 {
+		t.Fatal("resume failed", row.AutomaticStatus)
+	}
+}
 func TestAutomaticCreationRecoverMarksInterruptedWithoutResubmitting(t *testing.T) {
 	_, h, f, _, row := setupAutomatic(t)
 	doc, _ := projectDocument(row)

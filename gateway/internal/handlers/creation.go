@@ -58,6 +58,9 @@ type CreationHandler struct {
 }
 
 func NewCreationHandler(generator creationGenerator) *CreationHandler {
+	if client, ok := generator.(*bridge.AgentClient); ok {
+		generator = &configuredCreationAgent{AgentClient: client, syncer: NewConfigSyncer(client)}
+	}
 	return &CreationHandler{generator: generator, db: database.DB}
 }
 
@@ -642,7 +645,7 @@ func (h *CreationHandler) execute(run models.CreationRun, graph creationGraph, p
 			cancel()
 			if err != nil {
 				status = "failed"
-				errorText = fmt.Sprintf("节点 %d 生成失败，已完成的资产保留，请检查生成服务后重试", i+1)
+				errorText = creationFailureMessage(err, fmt.Sprintf("节点 %d 生成失败，已完成的资产保留，请检查生成服务后重试", i+1))
 				return
 			}
 			if media == nil || (node.Kind == "image" && !strings.HasPrefix(media.MimeType, "image/")) || (node.Kind == "video" && !strings.HasPrefix(media.MimeType, "video/")) {

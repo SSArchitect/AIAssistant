@@ -99,7 +99,7 @@ func (c *AgentClient) PlanCreation(ctx context.Context, req CreationPlanningRequ
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("创作规划服务返回 %d", response.StatusCode)
+		return nil, creationResponseError(response.Body, "创作助手暂时无法完成规划，原有内容已保留，请重试")
 	}
 	var result CreationPlanningResponse
 	err = json.NewDecoder(io.LimitReader(response.Body, 512<<10)).Decode(&result)
@@ -153,28 +153,44 @@ func (c *AgentClient) PlanCreationWithProgress(ctx context.Context, req Creation
 			}
 			return event.Result, nil
 		case "error":
-			// The agent route emits safe errors; still constrain the public surface.
-			message := "创作助手暂时无法完成规划，原有内容已保留，请重试"
-			if event.Message == "创作方案格式校验失败，原有内容已保留，请补充要求或重试" || event.Message == "创作规划等待超时，原有内容已保留，请重试" {
-				message = event.Message
-			}
-			safeMessages := map[string]string{
-				"model_image_unsupported":   "当前规划模型不支持图片输入，请配置支持图片理解的模型后重试；素材已保留",
-				"provider_auth_failed":      "规划模型鉴权或访问权限异常，请检查模型服务配置；原有内容已保留",
-				"provider_rate_limited":     "规划模型调用额度不足或请求过于频繁，请检查额度或稍后重试；原有内容已保留",
-				"provider_request_rejected": "规划模型拒绝了本次请求，请检查所选模型的输入能力与配置；原有内容已保留",
-				"provider_unavailable":      "暂时无法连接规划模型服务，请稍后重试；原有内容已保留",
-				"planning_timeout":          "创作规划等待超时，原有内容已保留，请重试",
-				"planning_output_truncated": "模型未完整返回创作方案，原有内容已保留；请分段规划后继续",
-				"invalid_plan":              "创作方案格式校验失败，原有内容已保留，请补充要求或重试",
-				"plan_constraint_failed": "分镜时间或执行提示词不符合生成要求，原有内容已保留，请调整相应节点",
-			}
-			if safe, ok := safeMessages[event.Code]; ok {
-				message = safe
-			}
-			return nil, &CreationPlanningError{Message: message}
+			return nil, &CreationPlanningError{Message: creationSafeMessage(event.Code, event.Message, "创作助手暂时无法完成规划，原有内容已保留，请重试")}
 		}
 	}
+}
+
+func creationSafeMessage(code, legacy, fallback string) string {
+	// Codes select fixed public text; upstream payloads never become UI errors.
+	safeMessages := map[string]string{
+		"provider_config_missing":   "创作模型配置未就绪，请检查模型配置或稍后重试；原有内容已保留",
+		"model_image_unsupported":   "当前规划模型不支持图片输入，请配置支持图片理解的模型后重试；素材已保留",
+		"provider_auth_failed":      "规划模型鉴权或访问权限异常，请检查模型服务配置；原有内容已保留",
+		"provider_rate_limited":     "规划模型调用额度不足或请求过于频繁，请检查额度或稍后重试；原有内容已保留",
+		"provider_request_rejected": "规划模型拒绝了本次请求，请检查所选模型的输入能力与配置；原有内容已保留",
+		"provider_unavailable":      "暂时无法连接规划模型服务，请稍后重试；原有内容已保留",
+		"planning_timeout":          "创作规划等待超时，原有内容已保留，请重试",
+		"planning_output_truncated": "模型未完整返回创作方案，原有内容已保留；请分段规划后继续",
+		"invalid_plan":              "创作方案格式校验失败，原有内容已保留，请补充要求或重试",
+		"plan_constraint_failed":    "分镜时间或执行提示词不符合生成要求，原有内容已保留，请调整相应节点",
+	}
+	if message, ok := safeMessages[code]; ok {
+		return message
+	}
+	if legacy == safeMessages["invalid_plan"] || legacy == safeMessages["planning_timeout"] {
+		return legacy
+	}
+	return fallback
+}
+
+func creationResponseError(body io.Reader, fallback string) error {
+	var response struct {
+		Detail struct {
+			Code string `json:"code"`
+		} `json:"detail"`
+	}
+	if json.NewDecoder(io.LimitReader(body, 64<<10)).Decode(&response) != nil {
+		return &CreationPlanningError{Message: fallback}
+	}
+	return &CreationPlanningError{Message: creationSafeMessage(response.Detail.Code, "", fallback)}
 }
 
 type CreationPlanningError struct{ Message string }

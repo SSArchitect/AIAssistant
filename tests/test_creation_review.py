@@ -4,6 +4,7 @@ from io import BytesIO
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+import httpx
 import pytest
 from PIL import Image
 from agent.aigc import creation_review as review
@@ -60,3 +61,16 @@ async def test_reasoning_only_reviewer_omits_unsupported_switch_and_budgets_reas
     result=await review.review_creation(request())
     assert result.decision=='approve' and 'thinking_enabled' not in provider.chat.call_args.kwargs
     assert provider.max_tokens==8192
+
+
+@pytest.mark.asyncio
+async def test_review_reports_missing_configuration_without_format_error_or_secret(monkeypatch):
+    def missing_provider():
+        raise ValueError('missing key SECRET-UPSTREAM')
+    monkeypatch.setattr(review, 'create_provider', missing_provider)
+    from agent.main import app
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://test') as client:
+        response = await client.post('/agent/creation/review', json=request().model_dump())
+    assert response.status_code == 502
+    assert response.json()['detail']['code'] == 'provider_config_missing'
+    assert '配置' in response.text and 'SECRET' not in response.text and '格式' not in response.text

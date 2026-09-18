@@ -21,6 +21,17 @@ class PlanningOutputTruncated(RuntimeError):
     pass
 
 
+class PlanningConfigurationError(RuntimeError):
+    pass
+
+
+def create_creation_provider(factory, name=None):
+    try:
+        return factory(name) if name else factory()
+    except ValueError as exc:
+        raise PlanningConfigurationError('创作模型配置未就绪，请检查模型配置或稍后重试；原有内容已保留') from exc
+
+
 def configure_planning_output(provider):
     """Size this director instance for a graph, without changing chat settings."""
     if (getattr(provider, 'provider_name', '') == 'doubao'
@@ -37,7 +48,7 @@ def can_use_plan_vision(provider) -> bool:
 
 async def use_plan_vision(provider, factory):
     # Retain the configured provider, credentials and endpoint; do not alter the default model.
-    replacement = factory('doubao:' + VISION_PLAN_MODEL)
+    replacement = create_creation_provider(factory, 'doubao:' + VISION_PLAN_MODEL)
     client = getattr(provider, 'client', None)
     if client is not None:
         await client.close()
@@ -56,6 +67,8 @@ def unsupported_image_input(exc) -> bool:
 
 
 def planning_error(exc):
+    if isinstance(exc, PlanningConfigurationError):
+        return 'provider_config_missing', '创作模型配置未就绪，请检查模型配置或稍后重试；原有内容已保留'
     if isinstance(exc, PlanningConstraintError):
         return "plan_constraint_failed", str(exc)
     if isinstance(exc, PlanningOutputTruncated):

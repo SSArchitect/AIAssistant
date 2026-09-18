@@ -300,7 +300,7 @@ func (h *CreationHandler) advanceAutomatic(ctx context.Context, id, request stri
 		}
 		doc, _ = projectDocument(row)
 		if err != nil || response == nil {
-			return false, errors.New("未能确定剩余方向，原有内容保留，可稍后继续")
+			return false, errors.New(creationFailureMessage(err, "未能确定剩余方向，原有内容保留，可稍后继续"))
 		}
 		allowed := map[string]bool{}
 		for _, a := range req.Assets {
@@ -402,7 +402,7 @@ func (h *CreationHandler) advanceAutomatic(ctx context.Context, id, request stri
 	}
 	if err != nil || response == nil {
 		h.mu.Unlock()
-		return false, errors.New("自动审阅未完成，已确认内容与生成结果保留，可稍后继续")
+		return false, errors.New(creationFailureMessage(err, "自动审阅未完成，已确认内容与生成结果保留，可稍后继续"))
 	}
 	if response.Decision == "blocked" {
 		h.mu.Unlock()

@@ -145,7 +145,7 @@ func TestCreationPlanningStreamRejectsTruncationAndSanitizesErrors(t *testing.T)
 }
 
 func TestCreationPlanningStreamKeepsActionableSafeErrorCode(t *testing.T) {
-	for code, expected := range map[string]string{"model_image_unsupported": "不支持图片", "provider_auth_failed": "鉴权", "provider_rate_limited": "额度", "provider_unavailable": "连接", "invalid_plan": "格式校验", "planning_output_truncated": "未完整返回", "unknown": "暂时无法"} {
+	for code, expected := range map[string]string{"provider_config_missing": "配置未就绪", "model_image_unsupported": "不支持图片", "provider_auth_failed": "鉴权", "provider_rate_limited": "额度", "provider_unavailable": "连接", "invalid_plan": "格式校验", "planning_output_truncated": "未完整返回", "unknown": "暂时无法"} {
 		t.Run(code, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				json.NewEncoder(w).Encode(map[string]string{"type": "error", "code": code, "message": "SECRET-KEY"})
@@ -156,5 +156,21 @@ func TestCreationPlanningStreamKeepsActionableSafeErrorCode(t *testing.T) {
 				t.Fatalf("unsafe or unhelpful error: %v", err)
 			}
 		})
+	}
+}
+
+func TestAutomaticPlanningAndReviewKeepSafeConfigurationError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(502)
+		w.Write([]byte(`{"detail":{"code":"provider_config_missing","message":"SECRET-UPSTREAM"}}`))
+	}))
+	defer server.Close()
+	client := NewAgentClient(server.URL, time.Second)
+	_, planningErr := client.PlanCreation(context.Background(), CreationPlanningRequest{})
+	_, reviewErr := client.ReviewCreation(context.Background(), CreationReviewRequest{})
+	for _, err := range []error{planningErr, reviewErr} {
+		if err == nil || !strings.Contains(err.Error(), "配置未就绪") || strings.Contains(err.Error(), "SECRET") {
+			t.Fatal(err)
+		}
 	}
 }

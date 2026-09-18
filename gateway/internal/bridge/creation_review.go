@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 )
@@ -39,7 +38,7 @@ func (c *AgentClient) ReviewCreation(ctx context.Context, req CreationReviewRequ
 	}
 	defer response.Body.Close()
 	if response.StatusCode != 200 {
-		return nil, fmt.Errorf("自动审阅未完成，请稍后继续；已确认内容与生成结果保留")
+		return nil, creationResponseError(response.Body, "自动审阅未完成，请稍后继续；已确认内容与生成结果保留")
 	}
 	var result CreationReviewResponse
 	err = json.NewDecoder(io.LimitReader(response.Body, 64<<10)).Decode(&result)

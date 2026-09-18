@@ -7,7 +7,8 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import Field
 from agent.aigc.creation_planning import PlanningRequest, StrictModel, CreativePlan, image_preview
 from agent.aigc.creation_output import structured_options, unsupported_schema, omit_null_fields, thinking_options
-from agent.aigc.creation_models import can_use_plan_vision, use_plan_vision
+from agent.aigc.creation_models import (can_use_plan_vision, use_plan_vision,
+    create_creation_provider, PlanningConfigurationError, planning_error)
 from agent.llm.base import LLMMessage
 from agent.llm.factory import create_provider
 
@@ -49,7 +50,7 @@ async def review_creation(request: ReviewRequest, trace_store=None):
     assets = {a.id: a for a in request.assets}
     if any(a not in assets or not assets[a].data_url for a in request.candidate_ids):
         raise ValueError('候选图片预览缺失')
-    provider = create_provider()
+    provider = create_creation_provider(create_provider)
     if request.assets and getattr(provider, 'model', '') == 'glm-5.3' and can_use_plan_vision(provider):
         provider = await use_plan_vision(provider, create_provider)
     if hasattr(provider, 'max_tokens'):
@@ -102,5 +103,8 @@ async def review_creation(request: ReviewRequest, trace_store=None):
 async def creation_review(request: ReviewRequest, http_request: Request):
     try:
         return await asyncio.wait_for(review_creation(request,getattr(http_request.app.state,'trace_store',None)),timeout=180)
+    except PlanningConfigurationError as exc:
+        code, message = planning_error(exc)
+        raise HTTPException(status_code=502, detail={'code': code, 'message': message}) from exc
     except Exception as exc:
         raise HTTPException(status_code=502,detail='自动审阅未完成，已保留原有内容；可继续一键生成或手动审阅') from exc

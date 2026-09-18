@@ -20,7 +20,7 @@ from agent.llm.base import LLMMessage
 from agent.aigc.creation_output import structured_options, unsupported_schema, omit_null_fields, validation_details, thinking_options
 from agent.aigc.creation_tools import director_tools, execute_director_tool, tool_definitions
 from agent.aigc.creation_models import (can_use_plan_vision, use_plan_vision, unsupported_image_input,
-    planning_error, configure_planning_output, PlanningOutputTruncated)
+    planning_error, configure_planning_output, PlanningOutputTruncated, create_creation_provider)
 from agent.llm.factory import create_provider
 from agent.schemas.aigc import VideoGenerationRequest
 
@@ -230,7 +230,7 @@ def image_preview(data_url: str) -> str:
     return 'data:image/jpeg;base64,' + base64.b64encode(output.getvalue()).decode()
 
 
-def parse_proposal(content: str, request: PlanningRequest) -> PlanningResponse:
+def decode_proposal(content: str):
     text = content.strip()
     if text.startswith('```'):
         text = text.split('\n', 1)[1].rsplit('```', 1)[0].strip()
@@ -241,7 +241,42 @@ def parse_proposal(content: str, request: PlanningRequest) -> PlanningResponse:
     trailing = text[end:].strip()
     if trailing and (not isinstance(value, dict) or len(trailing) > 3 or set(trailing) != {'}'}):
         raise json.JSONDecodeError('Extra data', text, end)
-    value = omit_null_fields(value)
+    return omit_null_fields(value)
+
+
+def merge_revision_repair(previous: str, correction: str) -> str:
+    """A repair edits the pending draft, never discards its unrelated changes.
+
+    Both are untrusted proposals: only the final combined graph can be validated
+    and committed. Null still means no change; array fields still replace whole.
+    """
+    try:
+        draft, repaired = decode_proposal(previous), decode_proposal(correction)
+    except (ValueError, TypeError, IndexError):
+        return correction  # An undecodable draft needs a complete replacement.
+    if not isinstance(draft, dict) or not isinstance(repaired, dict):
+        return correction
+    before, after = draft.get('patch'), repaired.get('patch')
+    if not isinstance(before, dict) or not isinstance(after, dict):
+        return correction
+    old_nodes, new_nodes = before.get('nodes', []), after.get('nodes', [])
+    for nodes in (old_nodes, new_nodes):
+        if (not isinstance(nodes, list) or any(not isinstance(n, dict) or not isinstance(n.get('id'), str) for n in nodes)
+                or len({n['id'] for n in nodes}) != len(nodes)):
+            return correction  # Never guess how to match malformed/duplicate IDs.
+    by_id = {node['id']: node for node in old_nodes}
+    for change in new_nodes:
+        if change['id'] in by_id:
+            by_id[change['id']].update(change)
+        else:
+            old_nodes.append(change)
+            by_id[change['id']] = change
+    patch = {**before, **after, 'nodes': old_nodes}
+    return json.dumps({**draft, **repaired, 'patch': patch}, ensure_ascii=False)
+
+
+def parse_proposal(content: str, request: PlanningRequest) -> PlanningResponse:
+    value = decode_proposal(content)
     if 'patch' in value:
         revision = RevisionResponse.model_validate(value)
         if not request.current_plan.get('nodes'):
@@ -300,9 +335,10 @@ async def propose_creation(request: PlanningRequest, trace_store=None, on_progre
     model = ''
     skills = director_tools()
     used_tools, tool_count, repairs = [], 0, 0
+    repair_draft = ''
     json_only = False
     try:
-        provider = create_provider()
+        provider = create_creation_provider(create_provider)
         has_images = any(asset.data_url and asset.mime_type.startswith('image/') for asset in request.assets)
         if has_images and getattr(provider, 'model', '') == 'glm-5.3' and can_use_plan_vision(provider):
             provider = await use_plan_vision(provider, create_provider)
@@ -383,8 +419,9 @@ async def propose_creation(request: PlanningRequest, trace_store=None, on_progre
                     messages.append(LLMMessage(role='user', content='本轮资料检索结束，请根据已有信息返回最终方案；若仍有缺口，在 questions 中向用户提出具体问题。'))
                 continue
             await report('validate', '方案已返回，正在校验节点依赖、参考素材与分镜')
+            candidate = merge_revision_repair(repair_draft, response.content) if revising and repair_draft else response.content
             try:
-                proposal = parse_proposal(response.content, request)
+                proposal = parse_proposal(candidate, request)
                 break
             except (ValueError, TypeError) as exc:
                 if isinstance(exc, json.JSONDecodeError):
@@ -402,9 +439,10 @@ async def propose_creation(request: PlanningRequest, trace_store=None, on_progre
                         raise PlanningConstraintError('视频执行提示词超过模型长度限制，方案未提交；原有内容保留，请精简该节点的描述') from exc
                     raise ValueError('创作方案格式校验失败，请重试或补充要求') from exc
                 repairs += 1
+                repair_draft = candidate
                 await report('repair', '方案格式需要调整，正在自动修正')
                 messages.extend([LLMMessage(role='assistant', content=response.content),
-                                 LLMMessage(role='user', content='方案校验失败：' + json.dumps(details, ensure_ascii=False)[:2000] + ('。仅返回 reply 和 patch，修正有问题的字段，保留其余内容。' if revising else '。仅返回 reply 和 plan，修正有问题的字段。'))])
+                                 LLMMessage(role='user', content='方案校验失败：' + json.dumps(details, ensure_ascii=False)[:2000] + ('。仅返回 reply 和 patch，修正上一份待提交草案中有问题的字段；系统会合并到该草案并重新校验完整画布，保留其中已确定的选择、新增节点及其他修改。' if revising else '。仅返回 reply 和 plan，修正有问题的字段。'))])
         else:
             raise ValueError('本轮创作规划达到上限，请补充要求后继续')
         proposal.model_used, proposal.tokens_used = model, usage
@@ -452,10 +490,10 @@ async def run_planning(request, trace_store=None, on_progress=None):
 async def creation_plan(request: PlanningRequest, http_request: Request):
     try:
         return await run_planning(request, getattr(http_request.app.state, 'trace_store', None))
-    except ValueError as exc:
-        raise HTTPException(400, '创作方案无法校验，请调整要求后重试') from exc
     except Exception as exc:
-        raise HTTPException(502, planning_error(exc)[1]) from exc
+        code, message = planning_error(exc)
+        raise HTTPException(400 if isinstance(exc, ValueError) else 502,
+                            detail={'code': code, 'message': message}) from exc
 
 
 @router.post('/agent/creation/plan/stream')
