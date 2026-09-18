@@ -98,6 +98,41 @@ def test_graph_reports_reference_and_length_errors_for_all_video_nodes_together(
     assert message.count('<Picture 1>=rabbit') == 2
 
 
+def test_known_storyboard_serialization_mistakes_preserve_values_and_still_validate():
+    original = plan('identity')
+    value = copy.deepcopy(original)
+    node = value['nodes'][-1]
+    node['content'] = 'Keep literal braces } and escaped quote " unchanged.'
+    for key in list(node['storyboard']):
+        if key not in ('style', 'shots'):
+            node[key] = node['storyboard'].pop(key)
+    payload = json.dumps(dict(reply='ready', plan=value))
+    # An extra object closer immediately before the node-array end.
+    payload = payload.replace('}], "questions"', '}}], "questions"')
+    with pytest.raises(json.JSONDecodeError):
+        json.loads(payload)
+    result = planning.parse_proposal(payload, request())
+    assert result.plan.nodes[-1].storyboard.model_dump(exclude_unset=True) == original['nodes'][-1]['storyboard']
+    assert result.plan.nodes[-1].content == node['content']
+    value['nodes'][-1]['references'][0]['asset_id'] = 'foreign'
+    with pytest.raises(ValueError):
+        planning.parse_proposal(json.dumps(dict(reply='ready', plan=value)), request())
+
+
+def test_storyboard_normalization_rejects_conflicts_unknown_fields_and_truncation():
+    value = plan()
+    value['nodes'][-1]['overall_soundscape'] = 'different audio'
+    with pytest.raises(ValueError, match='重复'):
+        planning.parse_proposal(json.dumps(dict(reply='ready', plan=value)), request())
+    value['nodes'][-1].pop('overall_soundscape')
+    value['nodes'][-1]['approved'] = True
+    with pytest.raises(ValueError):
+        planning.parse_proposal(json.dumps(dict(reply='ready', plan=value)), request())
+    for content in ['{"reply":"unfinished', '{"patch":{"nodes":[{}]']:
+        with pytest.raises(json.JSONDecodeError):
+            planning.decode_proposal(content)
+
+
 def test_image_workflows_and_clarifying_questions_are_supported():
     value = dict(title='二次创作', summary='先画原图，再调整风格', nodes=[
         dict(id='a', kind='image', title='原图', prompt='白色陶瓷杯'),

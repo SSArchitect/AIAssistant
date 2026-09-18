@@ -21,7 +21,8 @@ from agent.llm.base import LLMMessage
 from agent.aigc.creation_output import structured_options, unsupported_schema, omit_null_fields, validation_details, thinking_options
 from agent.aigc.creation_tools import director_tools, execute_director_tool, tool_definitions
 from agent.aigc.creation_models import (can_use_plan_vision, use_plan_vision, unsupported_image_input,
-    planning_error, configure_planning_output, PlanningOutputTruncated, create_creation_provider)
+    planning_error, configure_planning_output, PlanningOutputTruncated, create_creation_provider, PlanningConstraintError)
+from agent.aigc.creation_compaction import compact_storyboard
 from agent.llm.factory import create_provider
 from agent.schemas.aigc import VideoGenerationRequest
 
@@ -274,11 +275,59 @@ def decode_proposal(content: str):
     # Some providers emit one extra closing brace after a complete root object.
     # Accept only that unambiguous framing typo, never incomplete JSON, prose or
     # another object. The decoded proposal still undergoes full validation below.
-    value, end = json.JSONDecoder().raw_decode(text)
+    try:
+        value, end = json.JSONDecoder().raw_decode(text)
+    except json.JSONDecodeError:
+        # Some structured-output providers close a storyboard twice. Only remove
+        # provably unmatched object closers outside strings; never infer quotes,
+        # missing values, array closers or incomplete data.
+        stack, output = [], []
+        quoted = escaped = False
+        removed = 0
+        for char in text:
+            if quoted:
+                if escaped:
+                    escaped = False
+                elif char == '\\':
+                    escaped = True
+                elif char == '"':
+                    quoted = False
+            elif char == '"':
+                quoted = True
+            elif char in '{[':
+                stack.append(char)
+            elif char == '}' and (not stack or stack[-1] != '{'):
+                removed += 1
+                if removed > 3:
+                    raise
+                continue
+            elif char in '}]':
+                if not stack or stack[-1] != ('{' if char == '}' else '['):
+                    raise
+                stack.pop()
+            output.append(char)
+        if quoted or stack or not removed:
+            raise
+        text = ''.join(output)
+        value, end = json.JSONDecoder().raw_decode(text)
     trailing = text[end:].strip()
     if trailing and (not isinstance(value, dict) or len(trailing) > 3 or set(trailing) != {'}'}):
         raise json.JSONDecodeError('Extra data', text, end)
-    return omit_null_fields(value)
+    value = omit_null_fields(value)
+    if isinstance(value, dict):
+        container = value.get('patch', value.get('plan', {}))
+        nodes = container.get('nodes', []) if isinstance(container, dict) else []
+        # These keys have exactly one legal destination in a node. Preserve every
+        # value, reject collisions, then run the same complete schema/graph checks.
+        storyboard_only = VideoStoryboard.model_fields.keys() - CreativeNode.model_fields.keys()
+        for node in nodes if isinstance(nodes, list) else []:
+            if not isinstance(node, dict) or not isinstance(node.get('storyboard'), dict):
+                continue
+            for key in storyboard_only & node.keys():
+                if key in node['storyboard']:
+                    raise ValueError('分镜字段在节点与storyboard中重复，不能自动判断：' + key)
+                node['storyboard'][key] = node.pop(key)
+    return value
 
 
 def merge_revision_repair(previous: str, correction: str) -> str:
@@ -312,7 +361,7 @@ def merge_revision_repair(previous: str, correction: str) -> str:
     return json.dumps({**draft, **repaired, 'patch': patch}, ensure_ascii=False)
 
 
-def parse_proposal(content: str, request: PlanningRequest) -> PlanningResponse:
+def assemble_proposal(content: str, request: PlanningRequest):
     value = decode_proposal(content)
     if 'patch' in value:
         revision = RevisionResponse.model_validate(value)
@@ -334,6 +383,40 @@ def parse_proposal(content: str, request: PlanningRequest) -> PlanningResponse:
             if field in revision.patch.model_fields_set:
                 merged[field] = getattr(revision.patch, field)
         value = dict(reply=revision.reply, plan=merged)
+    return value
+
+
+async def compact_proposal(content, request, provider, report):
+    value = assemble_proposal(content, request)
+    wire = decode_proposal(content)
+    if not isinstance(value, dict) or not isinstance(value.get('plan'), dict):
+        return content, {}
+    container = wire.get('patch', wire.get('plan', {}))
+    if not isinstance(container, dict) or not isinstance(container.get('nodes', []), list) or not isinstance(value['plan'].get('nodes', []), list):
+        return content, {}
+    changes = {n.get('id'): n for n in container.get('nodes', []) if isinstance(n, dict)}
+    usage = {}
+    for data in value.get('plan', {}).get('nodes', []):
+        if not isinstance(data, dict) or data.get('kind') != 'video' or data.get('id') in request.locked_node_ids or data.get('id') not in changes:
+            continue
+        try:
+            node = CreativeNode.model_validate(data)
+            compile_creative_video(node)
+        except ValueError as exc:
+            if 'Compiled storyboard is' not in str(exc):
+                continue  # Structural/reference errors go through normal repair first.
+        else:
+            continue
+        await report('compact', '正在精简视频执行描述，保留审阅稿、时间线与对白：' + node.title)
+        compacted, consumed = await compact_storyboard(node.storyboard, creative_video_request(node), provider)
+        changes[node.id]['storyboard'] = compacted.model_dump()
+        for key, count in consumed.items():
+            usage[key] = usage.get(key, 0) + count
+    return json.dumps(wire, ensure_ascii=False), usage
+
+
+def parse_proposal(content: str, request: PlanningRequest) -> PlanningResponse:
+    value = assemble_proposal(content, request)
     proposal = PlanningResponse.model_validate(value)
     # Conversational replies/clarifications must not erase an existing canvas.
     if not proposal.plan.nodes and request.current_plan.get('nodes'):
@@ -458,9 +541,14 @@ async def propose_creation(request: PlanningRequest, trace_store=None, on_progre
             await report('validate', '方案已返回，正在校验节点依赖、参考素材与分镜')
             candidate = merge_revision_repair(repair_draft, response.content) if revising and repair_draft else response.content
             try:
+                candidate, consumed = await compact_proposal(candidate, request, provider, report)
+                for key, count in consumed.items():
+                    usage[key] = usage.get(key, 0) + count
                 proposal = parse_proposal(candidate, request)
                 break
             except (ValueError, TypeError) as exc:
+                if isinstance(exc, PlanningConstraintError):
+                    raise
                 if isinstance(exc, json.JSONDecodeError):
                     details = dict(type='JSONDecodeError', message=exc.msg, position=exc.pos, chars=len(response.content))
                 elif hasattr(exc, 'errors'):
@@ -469,7 +557,6 @@ async def propose_creation(request: PlanningRequest, trace_store=None, on_progre
                     details = validation_details(exc)
                 logger.warning('Creation plan validation failed (attempt %s): %s', repairs + 1, details)
                 if repairs:
-                    from agent.aigc.creation_models import PlanningConstraintError
                     if 'Panels must cover' in str(exc):
                         raise PlanningConstraintError('分镜时间存在空档、重叠或越界，方案未提交；原有内容保留，请调整该节点的时间分配') from exc
                     if '4000' in str(exc) and any(word in str(exc).lower() for word in ('prompt', 'compiled storyboard')):
