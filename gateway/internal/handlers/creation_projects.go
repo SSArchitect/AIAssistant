@@ -433,7 +433,7 @@ func (h *CreationHandler) ProjectMessage(c *gin.Context) {
 		creationError(c, 409, err)
 		return
 	}
-	planningReq := bridge.CreationPlanningRequest{Preferences: doc.Preferences, ProjectID: row.ID, UserID: row.UserID, Messages: append([]bridge.CreativeMessage{}, doc.Messages...), CurrentPlan: doc.Plan, Assets: assets, Templates: templates, PreferredTemplateID: doc.TemplateID}
+	planningReq := bridge.CreationPlanningRequest{RequireVideoScenes: true, LockedNodeIDs: lockedCreativeNodes(doc), Preferences: doc.Preferences, ProjectID: row.ID, UserID: row.UserID, Messages: append([]bridge.CreativeMessage{}, doc.Messages...), CurrentPlan: doc.Plan, Assets: assets, Templates: templates, PreferredTemplateID: doc.TemplateID}
 	for i := range planningReq.Messages {
 		planningReq.Messages[i].Planning = nil
 	}
@@ -474,6 +474,9 @@ func (h *CreationHandler) planProject(planner creationPlanner, submitted models.
 	}
 	if err == nil && response != nil {
 		err = validateCreativePlan(response.Plan, allowed)
+		if err == nil && request.RequireVideoScenes {
+			err = validateVideoScenes(response.Plan, request.LockedNodeIDs)
+		}
 	}
 	if err != nil || response == nil {
 		row.Error = "创作助手未能完成方案。原有内容已保留，请重试；也可检查默认对话模型配置。"
@@ -723,12 +726,14 @@ func (h *CreationHandler) prepareProjectRun(row models.CreationProject, doc crea
 		}
 	}
 	imageReferences := []bridge.ImageReferenceContext{}
+	imagePurpose := ""
 	if node.Kind == "image" {
+		imagePurpose = node.Purpose
 		for _, ref := range node.References {
 			imageReferences = append(imageReferences, bridge.ImageReferenceContext{Role: ref.Role, Note: ref.Note})
 		}
 	}
-	graph := creationGraph{Nodes: []creationNode{{ID: node.ID, Kind: node.Kind, Name: node.Title, Prompt: node.Prompt, Count: node.Count, AspectRatio: node.AspectRatio, DurationSeconds: node.DurationSeconds, CharacterStyle: node.CharacterStyle, Inputs: []string{}, AssetIDs: ids, ImageReferences: imageReferences, InputHashes: hashes, VideoMode: mode, Storyboard: node.Storyboard}}}
+	graph := creationGraph{Nodes: []creationNode{{ImagePurpose: imagePurpose, ID: node.ID, Kind: node.Kind, Name: node.Title, Prompt: node.Prompt, Count: node.Count, AspectRatio: node.AspectRatio, DurationSeconds: node.DurationSeconds, CharacterStyle: node.CharacterStyle, Inputs: []string{}, AssetIDs: ids, ImageReferences: imageReferences, InputHashes: hashes, VideoMode: mode, Storyboard: node.Storyboard}}}
 	if err = validateCreationGraph(graph, true); err != nil {
 		return nil, &creationSubmissionError{400, fmt.Sprint(err)}
 	}

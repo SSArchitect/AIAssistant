@@ -75,6 +75,7 @@ type CreationRepairFeedback struct {
 	PreviousFeedback []string `json:"previous_feedback"`
 }
 type CreationPlanningRequest struct {
+	RequireVideoScenes  bool                              `json:"require_video_scenes,omitempty"`
 	Repair              *CreationRepairFeedback           `json:"repair,omitempty"`
 	Preferences         *CreativePreferences              `json:"preferences,omitempty"`
 	AutomaticMode       bool                              `json:"automatic_mode,omitempty"`

@@ -59,7 +59,7 @@ class CreativeNode(StrictModel):
     id: str = Field(min_length=1, max_length=80, pattern=r'^[a-zA-Z0-9_-]+$')
     kind: Literal['text', 'image', 'video']
     title: str = Field(min_length=1, max_length=100)
-    purpose: Literal['brief', 'script', 'key_visual', 'shot_reference', 'output'] = 'output'
+    purpose: Literal['brief', 'script', 'key_visual', 'scene', 'shot_reference', 'output'] = 'output'
     content: str = Field(default='', max_length=8000, description='用户可直接审阅的中文内容；复杂脚本包含制作简报、素材职责、连续性锁、Panel、Logical Shot分组、主时间线及执行锁。与storyboard的时间/动作/台词一致，避免重复大段描述。')
     prompt: str = Field(default='', max_length=4000)
     storyboard: VideoStoryboard | None = None
@@ -114,7 +114,7 @@ class CreativePlan(StrictModel):
                 raise ValueError('依赖必须指向前面的节点')
             for ref in node.references:
                 if ref.node_id and (ref.node_id not in node.depends_on or seen[ref.node_id].kind != 'image'):
-                    raise ValueError('图片参考必须是已声明依赖的图片节点')
+                    raise ValueError(f'节点 {node.id} 的图片参考 {ref.node_id} 必须是已声明依赖的图片节点')
             sources = [ref.node_id or ref.asset_id for ref in node.references]
             if len(sources) != len(set(sources)):
                 raise ValueError('不能重复引用同一图片')
@@ -183,6 +183,7 @@ class RepairFeedback(StrictModel):
 
 
 class PlanningRequest(StrictModel):
+    require_video_scenes: bool = False
     repair: Optional[RepairFeedback] = None
     preferences: CreativePreferences = Field(default_factory=CreativePreferences)
     automatic_mode: bool = False
@@ -256,7 +257,7 @@ preferences 是用户在对话框选择的创作目标与画面比例。非空 o
 为新建或实质修改的创作简报、分镜脚本提供6–8个简洁的revision_suggestions，结合本节点具体内容，方向要互有区别，如人物动机、情绪、叙事节奏、运镜、视觉一致性、台词与声音等；不要只写“优化一下”。其他产物节点按需提供，不修改的节点保留原字段，前端会补充常用候选。这些是可选修改方向，不是阻塞生成的questions，也不是多个付费生成任务。用户可以多选并补充自由输入；只有收到选择/修改消息后才改内容，只同步受影响下游，不改无关节点，不自动批准或执行媒体生成。
 若存在未解决的问题，系统会等待用户回复后才开放生成；在后续回答解决问题后清空 questions。单纯修改或询问时保留不受影响节点的所有字段与 id。
 节点用稳定的英文 id，拓扑排序。文本节点保存可读创意简报、分镜脚本；图片节点保存主视觉/必要镜头参考/图片产物；视频节点保存结构化 storyboard。
-已有图片直接用 asset_id 复用；不要假装已经生成图片。缺少主视觉时，先计划一个 key_visual 图片节点，默认2个候选。没有必要时不要补过多参考图。
+已有图片直接用 asset_id 复用；不要假装已经生成图片。缺少主视觉时，先计划一个 key_visual 图片节点，默认2个候选。主视觉负责世界观和整体气氛，scene负责每条视频的具体地点与空间；人设图不是场景。主视觉与场景属于重新构图，即使借用人物identity，也只保留身份特征、不继承三视图或人设构图。场景应由环境主导，默认无人；人物需要出现的主视觉中明确人物占比、景别、前中后景。character_style始终为空，不使用人物转换模板。
 每个视频必须依赖 purpose=script 的中文分镜文本节点；storyboard 和中文分镜的剧情、时间、人物、动作、运镜、台词必须一致。脚本是面向用户的审阅稿，不是仅有一句剧情摘要，也不是直接贴英文执行prompt。
 复杂叙事脚本按制作简报、素材贡献与统一规则、角色与连续性锁、Panel语义分镜、Logical Shot分组、无空档主时间线、执行锁组织。用紧凑段落呈现；时间线使用完整的「时间｜画面与动作｜摄影机｜声音」表格，不生成只有空单元格的伪表格。
 制作简报明确最终文件数量、总时长/单片时长、画幅、叙事重点、出场/不出场角色、视觉权威和声音方案。Panel交代时段、景别与空间、动作/表演、摄影机、对白/音效、连续状态和转场；Logical Shot交代叙事职责、所含Panel、起止状态与轴线。不要让用户填写这些常规参数，由你先提出可审阅方案。
@@ -413,6 +414,39 @@ def assemble_proposal(content: str, request: PlanningRequest):
                 by_id[change.id].update(fields)
             else:
                 merged['nodes'].append(fields)
+        # Referencing an image already declares an execution dependency. When
+        # adding scenes, preserve that edge even if a partial patch omitted it
+        # from depends_on; never infer a source, reorder old nodes or touch locks.
+        if request.require_video_scenes:
+            image_ids = {n['id'] for n in merged['nodes'] if n.get('kind') == 'image'}
+            for node in merged['nodes']:
+                if node['id'] not in seen or node['id'] in request.locked_node_ids:
+                    continue
+                dependencies = node.setdefault('depends_on', [])
+                for ref in node.get('references', []):
+                    source = ref.get('node_id')
+                    if source in image_ids and source not in dependencies:
+                        dependencies.append(source)
+        # A new prerequisite must precede the existing video that consumes it.
+        # Only move newly added nodes; never silently repair old-node cycles/order.
+        original_ids = {n['id'] for n in request.current_plan['nodes']}
+        added = {n['id']: n for n in merged['nodes'] if n['id'] not in original_ids}
+        ordered, visiting, emitted = [], set(), set()
+        def insert(node):
+            if node['id'] in emitted:
+                return
+            if node['id'] in visiting:
+                raise ValueError('新增场景依赖形成循环')
+            visiting.add(node['id'])
+            for dep in node.get('depends_on', []):
+                if dep in added:
+                    insert(added[dep])
+            visiting.remove(node['id'])
+            ordered.append(node)
+            emitted.add(node['id'])
+        for node in merged['nodes']:
+            insert(node)
+        merged['nodes'] = ordered
         for field in ('title', 'summary', 'questions'):
             if field in revision.patch.model_fields_set:
                 merged[field] = getattr(revision.patch, field)
@@ -470,9 +504,37 @@ async def compact_proposal(content, request, provider, report):
     return json.dumps(wire, ensure_ascii=False), usage
 
 
+def validate_video_scenes(plan: CreativePlan, request: PlanningRequest):
+    if not request.require_video_scenes:
+        return
+    nodes = {n.id:n for n in plan.nodes}
+    owners = {}
+    errors = []
+    locked = set(request.locked_node_ids)
+    for node in plan.nodes:
+        if node.purpose == 'scene' and node.id not in locked:
+            if node.kind != 'image' or node.character_style or any(r.role != 'style' for r in node.references):
+                errors.append('场景节点只承载环境，不能套用人设身份或人物转换模板；用文字描述场景，可只借用统一画风：' + node.id)
+        if node.kind != 'video' or node.id in locked:
+            continue
+        scenes = [nodes[r.node_id] for r in node.references if r.node_id in nodes and nodes[r.node_id].purpose == 'scene' and r.role in {'reference','first_frame'}]
+        if not scenes:
+            errors.append('视频需要独立的场景图片节点（purpose=scene），加入 depends_on 并以 reference 引用；人设和仅画风参考不能替代场景：' + node.id)
+        for scene in scenes:
+            if scene.aspect_ratio != node.aspect_ratio:
+                errors.append('场景与对应视频的画幅比例必须一致：' + node.id)
+            if scene.id in owners:
+                errors.append('每个视频需要自己的场景节点；相同地点可复用已确认场景资产，但不能共用同一节点：' + node.id)
+            owners[scene.id] = node.id
+
+    if errors:
+        raise ValueError('\n'.join(errors))
+
+
 def parse_proposal(content: str, request: PlanningRequest) -> PlanningResponse:
     value = assemble_proposal(content, request)
     proposal = PlanningResponse.model_validate(value)
+    validate_video_scenes(proposal.plan, request)
     # Conversational replies/clarifications must not erase an existing canvas.
     if not proposal.plan.nodes and request.current_plan.get('nodes'):
         previous = CreativePlan.model_validate(request.current_plan)
@@ -545,6 +607,8 @@ async def propose_creation(request: PlanningRequest, trace_store=None, on_progre
                 parts.extend([{'type': 'text', 'text': f'资产 {asset.id}: {asset.name}'},
                               {'type': 'image_url', 'image_url': {'url': image_preview(asset.data_url)}}])
         auto_prompt = ('\n用户已授权一键生成：未确认的常规选项由你判断并确定，清空已解决的 questions；不得改变 locked_node_ids 中任何节点及其依赖。不要生成审批字段或直接生成媒体。必需信息缺失或能力不支持时保留具体问题。' if request.automatic_mode else '')
+        if request.require_video_scenes:
+            auto_prompt += '\n场景准备是本轮必需工作：每个未锁定视频必须有自己的 purpose=scene 图片节点，依赖对应脚本，以相同画幅生成一个具体地点的环境建立镜头，count=1，明确空间结构、前中后景、光线、色彩与关键环境物件，默认无人；禁止把人设图、角色特写、三视图作为场景。场景节点 character_style 为空，可引用已确认主视觉的 style，但不能引用角色 identity。视频依赖并以 reference 引用自己的场景节点，保留其余角色 identity 与画风 style 的职责和编号；场景不自动成为精确首帧。每段发生换场时按需要增加场景。相同地点要延续建筑、地形、光线规则，可复用已确认环境资产但为每视频建立独立场景节点。现有视频补场景时 patch.nodes 可新增节点并更新对应 depends_on/references/storyboard，系统按新增依赖插入；不要仅因补场景改动无关的已确认内容或原台词；非自动模式仍执行用户本轮明确要求的修改。不要仅在文字里说已有场景，必须创建真实图片节点并连线。'
         if request.repair:
             auto_prompt += '\n当前是自动返工：repair 是自动审阅工具对指定节点的反馈，非用户新增要求。只修改 repair.node_id 和受影响的未确认下游；保持节点ID、顺序、类型、交付目标，其他节点及 locked_node_ids 保持完全不变。结合失败候选的真实预览、reason 和 previous_feedback 找根因，调整提示词、参考图职责或模板，避免重复同一种失败。候选图是反例，严禁用它们作节点asset_id或生成参考。角色串形时，检查是否错误使用了人物动漫化/chibi身份保留模板；新角色借鉴另一个角色的画风，不等于转换原角色，必要时清空character_style、移除会污染身份的参考，直接文字描述统一画风。清除字段必须明确返回character_style=""、template_id=""、references=[]，不能用null（null表示保持原值）。修正图像生成节点时保持asset_id为空，后续由执行器重新生图。常规修正由你决定，不再问用户选方向；只有确实缺少不可替代的外部条件才提问。不要宣称已经生成或审阅通过。'
 

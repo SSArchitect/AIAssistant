@@ -92,8 +92,8 @@ func TestCreationPlanningBridgePassesOwnerContextAndUsesBoundedResponse(t *testi
 	}))
 	defer server.Close()
 	client := NewAgentClient(server.URL, time.Second)
-	result, err := client.PlanCreation(context.Background(), CreationPlanningRequest{ProjectID: "project", UserID: "alice", Messages: []CreativeMessage{{Role: "user", Content: "短片"}}, NodeContext: map[string]map[string]interface{}{"visual": {"selected_asset_id": "chosen"}}})
-	if err != nil || result.Reply != "请审阅" || result.TokensUsed["input_tokens"] != 2 || got.UserID != "alice" || got.NodeContext["visual"]["selected_asset_id"] != "chosen" {
+	result, err := client.PlanCreation(context.Background(), CreationPlanningRequest{RequireVideoScenes: true, ProjectID: "project", UserID: "alice", Messages: []CreativeMessage{{Role: "user", Content: "短片"}}, NodeContext: map[string]map[string]interface{}{"visual": {"selected_asset_id": "chosen"}}})
+	if err != nil || result.Reply != "请审阅" || result.TokensUsed["input_tokens"] != 2 || !got.RequireVideoScenes || got.UserID != "alice" || got.NodeContext["visual"]["selected_asset_id"] != "chosen" {
 		t.Fatalf("bad bridge: %+v %+v %v", result, got, err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())

@@ -18,6 +18,40 @@ def profile():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('purpose', ['key_visual', 'scene'])
+async def test_atmosphere_recomposes_instead_of_editing_character_sheet(monkeypatch, tmp_path, purpose):
+    monkeypatch.setattr(context, 'CONTEXT_DIR', tmp_path)
+    traits = context.CompositionTraits(subject_role='scale_figure', subject='white rabbit swordsman', appearance='long ears',
+        materials_or_clothing='brown clothes and red cape', distinctive_details='carrot sword')
+    extract = AsyncMock(return_value=traits)
+    monkeypatch.setattr(context, 'extract_composition_traits', extract)
+    generate = AsyncMock(return_value=SimpleNamespace(id='p', images=[SimpleNamespace(base64=PNG.split(',')[1], mime_type='image/png')]))
+    monkeypatch.setattr(creation, 'generate_image', generate)
+    req = request(image_purpose=purpose, input_images=[PNG], image_references=[dict(role='identity', note='tiny silhouette only')])
+    req.prompt = 'Vast mushroom kingdom panorama. A tiny rabbit silhouette in the lower foreground.'
+    await creation.execute_node(req)
+    sent = generate.call_args.args[0]
+    assert SparkImageClient.payload(sent)['template'] == 'image.text.v1'
+    assert sent.image_data_url is None and sent.character_style is None
+    assert req.prompt in sent.prompt and 'at most 5%' in sent.prompt
+    assert 'carrot sword' not in sent.prompt and 'brown clothes' not in sent.prompt
+    assert extract.call_args.args == (PNG, 'tiny silhouette only', req.prompt)
+    await creation.execute_node(req)
+    assert extract.await_count == 1 and generate.call_args_list[0].args[0] == generate.call_args_list[1].args[0]
+    assert PNG not in next(tmp_path.glob('*.json')).read_text()
+
+
+@pytest.mark.asyncio
+async def test_composition_analysis_failure_does_not_edit_source(monkeypatch, tmp_path):
+    monkeypatch.setattr(context, 'CONTEXT_DIR', tmp_path)
+    monkeypatch.setattr(context, 'extract_composition_traits', AsyncMock(side_effect=RuntimeError('failed')))
+    generate = AsyncMock(); monkeypatch.setattr(creation, 'generate_image', generate)
+    with pytest.raises(RuntimeError):
+        await creation.execute_node(request(image_purpose='key_visual', input_images=[PNG], image_references=[dict(role='identity')]))
+    assert generate.await_count == 0
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('character_style', ['', 'chibi'])
 async def test_style_reference_is_abstracted_and_never_uploaded_as_source_pixels(monkeypatch,tmp_path,character_style):
     monkeypatch.setattr(context,'CONTEXT_DIR',tmp_path)
@@ -87,3 +121,31 @@ async def test_visual_analysis_gets_only_reference_and_closed_style_contract(mon
     payload=json.loads(user.content[0]['text'])
     assert payload=={'reference_role':'style','reference_note':'参考上色'}
     assert user.content[1]['image_url']['url']==PNG
+
+
+def test_composition_role_limits_reference_detail_and_preserves_target():
+    facts = dict(subject='white rabbit', appearance='long ears', materials_or_clothing='old red cape', distinctive_details='ordinary sword')
+    target = 'A vast valley, tiny rabbit with a carrot sword.'
+    small = context.render_composition_prompt(target, context.CompositionTraits(subject_role='scale_figure', **facts))
+    assert target in small and 'at most 5%' in small
+    assert 'ordinary sword' not in small and 'old red cape' not in small
+    empty = context.render_composition_prompt('Empty valley', context.CompositionTraits(subject_role='absent', **facts))
+    assert 'white rabbit' not in empty and 'unpopulated' in empty
+    featured = context.render_composition_prompt('Portrait in a valley', context.CompositionTraits(subject_role='featured', **facts))
+    assert 'long ears' in featured and 'old red cape' in featured
+    assert context.render_composition_prompt('x'*4000, context.CompositionTraits(subject_role='featured', **facts)) == 'x'*4000
+
+
+@pytest.mark.asyncio
+async def test_composition_extractor_uses_target_scale_and_explicit_changes(monkeypatch):
+    from agent.aigc import creation_planning
+    monkeypatch.setattr(creation_planning, 'image_preview', lambda value:value)
+    traits = context.CompositionTraits(subject_role='scale_figure', subject='white rabbit', appearance='', materials_or_clothing='', distinctive_details='')
+    provider = SimpleNamespace(chat=AsyncMock(return_value=LLMResponse(content=traits.model_dump_json())))
+    monkeypatch.setattr(context, 'create_provider', lambda:provider)
+    target = 'Huge canyon, distant tiny silhouette. Replace the ordinary sword with a carrot sword.'
+    assert await context.extract_composition_traits(PNG, 'Character identity', target) == traits
+    system, user = provider.chat.call_args.args[0]
+    assert '禁止按参考图中的大小判断' in system.content and '冲突的道具' in system.content
+    assert json.loads(user.content[0]['text']) == dict(target_brief=target, reference_note='Character identity')
+    assert user.content[1]['image_url']['url'] == PNG

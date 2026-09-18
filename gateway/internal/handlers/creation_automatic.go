@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -59,8 +60,26 @@ func protectAutomaticPlan(doc creativeDocument, plan bridge.CreativePlan) error 
 	for _, id := range doc.Automation.LockedNodeIDs {
 		before, _ := creativeNode(doc, id)
 		after, ok := creativeNode(proposed, id)
+		// Adding scenes crosses Python JSON serialization. Preserve a confirmed
+		// storyboard byte-for-byte when only JSON escaping/spacing changed.
+		var oldBoard, newBoard interface{}
+		oldErr, newErr := error(nil), error(nil)
+		if len(before.Storyboard) > 0 {
+			oldErr = json.Unmarshal(before.Storyboard, &oldBoard)
+		}
+		if len(after.Storyboard) > 0 {
+			newErr = json.Unmarshal(after.Storyboard, &newBoard)
+		}
+		if oldErr == nil && newErr == nil && reflect.DeepEqual(oldBoard, newBoard) {
+			after.Storyboard = before.Storyboard
+		}
 		if !ok || !reflect.DeepEqual(before, after) {
 			return errors.New("自动方案试图改动已确认内容，已停止并保留原方案")
+		}
+		for i := range plan.Nodes {
+			if plan.Nodes[i].ID == id {
+				plan.Nodes[i] = before
+			}
 		}
 	}
 	return nil
@@ -280,7 +299,7 @@ func (h *CreationHandler) advanceAutomatic(ctx context.Context, id, request stri
 		h.mu.Unlock()
 		return false, errors.New("无法读取创作方案")
 	}
-	if len(doc.Plan.Questions) > 0 {
+	if len(doc.Plan.Questions) > 0 || validateVideoScenes(doc.Plan, doc.Automation.LockedNodeIDs) != nil {
 		planner, ok := h.generator.(creationPlanner)
 		if !ok {
 			h.mu.Unlock()
@@ -291,6 +310,7 @@ func (h *CreationHandler) advanceAutomatic(ctx context.Context, id, request stri
 			h.mu.Unlock()
 			return false, err
 		}
+		req.RequireVideoScenes = true
 		automaticStep(&doc, "decide", "正在结合原始要求确定剩余创作方向", "")
 		err = h.updateProject(&row, doc, false)
 		h.mu.Unlock()
@@ -316,6 +336,9 @@ func (h *CreationHandler) advanceAutomatic(ctx context.Context, id, request stri
 			}
 		}
 		if err = validateCreativePlan(response.Plan, allowed); err != nil {
+			return false, err
+		}
+		if err = validateVideoScenes(response.Plan, req.LockedNodeIDs); err != nil {
 			return false, err
 		}
 		if err = protectAutomaticPlan(doc, response.Plan); err != nil {

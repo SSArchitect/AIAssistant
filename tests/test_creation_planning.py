@@ -540,7 +540,7 @@ async def test_revision_repair_preserves_draft_decisions_and_checks_original_loc
     draft = dict(reply='已采用竖屏并确定后续节点', patch=dict(questions=[], nodes=[
         dict(id='script', content='已按用户选择优化的脚本'),
         dict(id='video', aspect_ratio='9:16'),
-        dict(id='visual', kind='image', title='主视觉', purpose='scene', prompt='ink forest')]))
+        dict(id='visual', kind='image', title='主视觉', purpose='unknown_purpose', prompt='ink forest')]))
     correction = dict(reply='修正主视觉用途', patch=dict(nodes=[dict(id='visual', purpose='key_visual')]))
     provider = SimpleNamespace(chat=AsyncMock(side_effect=[LLMResponse(content=json.dumps(draft)), LLMResponse(content=json.dumps(correction))]))
     monkeypatch.setattr(planning, 'create_provider', lambda: provider)

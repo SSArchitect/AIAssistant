@@ -35,14 +35,14 @@ func (f *fakeCreativePlanner) PlanCreation(ctx context.Context, req bridge.Creat
 }
 func creativeTestPlan() bridge.CreativePlan {
 	brief := bridge.CreativeNode{ID: "brief", Kind: "text", Purpose: "brief", Title: "创意简报", Content: "竹林里的相逢", Count: 1, AspectRatio: "16:9", DurationSeconds: 5, DependsOn: []string{}, References: []bridge.CreativeReference{}}
-	image := bridge.CreativeNode{ID: "visual", Kind: "image", Purpose: "key_visual", Title: "主视觉", Content: "留白竹林", Prompt: "ink bamboo forest", Count: 2, AspectRatio: "16:9", DurationSeconds: 5, DependsOn: []string{"brief"}, References: []bridge.CreativeReference{}}
+	image := bridge.CreativeNode{ID: "visual", Kind: "image", Purpose: "scene", Title: "主视觉", Content: "留白竹林", Prompt: "ink bamboo forest", Count: 2, AspectRatio: "16:9", DurationSeconds: 5, DependsOn: []string{"brief"}, References: []bridge.CreativeReference{}}
 	script := brief
 	script.ID = "script"
 	script.Purpose = "script"
 	script.Title = "分镜"
 	script.Content = "0–5秒，缓慢推近竹林。"
 	script.DependsOn = []string{"brief"}
-	video := bridge.CreativeNode{ID: "video", Kind: "video", Purpose: "output", Title: "短片", Prompt: "compiled storyboard", Content: "竹林短片", Count: 1, AspectRatio: "16:9", DurationSeconds: 5, DependsOn: []string{"visual", "script"}, References: []bridge.CreativeReference{{NodeID: "visual", Role: "style", Note: "只参考场景画风"}}, Storyboard: json.RawMessage(`{"style":"ink","shots":[{"start_seconds":0,"description":"Wind in bamboo"}],"overall_soundscape":"wind","non_diegetic_music":"N/A"}`)}
+	video := bridge.CreativeNode{ID: "video", Kind: "video", Purpose: "output", Title: "短片", Prompt: "compiled storyboard", Content: "竹林短片", Count: 1, AspectRatio: "16:9", DurationSeconds: 5, DependsOn: []string{"visual", "script"}, References: []bridge.CreativeReference{{NodeID: "visual", Role: "reference", Note: "只参考场景画风"}}, Storyboard: json.RawMessage(`{"style":"ink","shots":[{"start_seconds":0,"description":"Wind in bamboo"}],"overall_soundscape":"wind","non_diegetic_music":"N/A"}`)}
 	return bridge.CreativePlan{Title: "竹林相逢", Summary: "先确定场景与分镜，再生成短片", Nodes: []bridge.CreativeNode{brief, image, script, video}, Questions: []bridge.CreativeQuestion{}}
 }
 func createTestProject(t *testing.T, r *gin.Engine, token string) models.CreationProject {
@@ -173,6 +173,9 @@ func TestCreativePlanningIsAsyncIdempotentAndNeverGeneratesMedia(t *testing.T) {
 		t.Fatal(response.Code, response.Body.String())
 	}
 	request := <-fake.called
+	if !request.RequireVideoScenes {
+		t.Fatal("new planning omitted scene preparation")
+	}
 	if remaining := time.Until(fake.deadline); remaining < 900*time.Second || remaining > 915*time.Second {
 		t.Fatalf("gateway must allow the agent's active-stream budget: %s", remaining)
 	}

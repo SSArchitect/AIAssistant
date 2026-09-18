@@ -21,9 +21,10 @@ import (
 const creationPNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aH9sAAAAASUVORK5CYII="
 
 type fakeCreationGenerator struct {
-	requests []bridge.CreationNodeRequest
-	failAt   int
-	hook     func()
+	requests     []bridge.CreationNodeRequest
+	failAt       int
+	hook         func()
+	imageContent func(bridge.CreationNodeRequest) string
 }
 
 func (f *fakeCreationGenerator) CreateMedia(_ context.Context, req bridge.CreationNodeRequest) (*bridge.CreationNodeResponse, error) {
@@ -36,6 +37,9 @@ func (f *fakeCreationGenerator) CreateMedia(_ context.Context, req bridge.Creati
 	}
 	content := creationPNG
 	mime := "image/png"
+	if req.Kind == "image" && f.imageContent != nil {
+		content = f.imageContent(req)
+	}
 	if req.Kind == "video" {
 		content = base64.StdEncoding.EncodeToString([]byte{0, 0, 0, 24, 'f', 't', 'y', 'p', 'i', 's', 'o', 'm', 0, 0, 0, 0, 'i', 's', 'o', 'm', 'm', 'p', '4', '2'})
 		mime = "video/mp4"

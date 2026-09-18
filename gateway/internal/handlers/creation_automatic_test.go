@@ -601,6 +601,8 @@ func TestAutomaticImageFreezesReferenceRoleAndNoteThroughExecution(t *testing.T)
 	doc.AssetIDs = []string{asset.ID}
 	doc.Plan.Nodes[1].References = []bridge.CreativeReference{{AssetID: asset.ID, Role: "style", Note: "只借用线条和上色，不保留兔子或森林构图"}}
 	doc.Plan.Nodes[1].CharacterStyle = "chibi" // Legacy plans are routed by the stronger style-only role.
+	doc.Plan.Nodes[1].Purpose = "key_visual"
+	doc.Plan.Nodes = doc.Plan.Nodes[:3] // This regression exercises an image-only legacy canvas.
 	if err = h.updateProject(&row, doc, false); err != nil {
 		t.Fatal(err)
 	}
@@ -611,7 +613,7 @@ func TestAutomaticImageFreezesReferenceRoleAndNoteThroughExecution(t *testing.T)
 	}
 	expected := []bridge.ImageReferenceContext{{Role: "style", Note: doc.Plan.Nodes[1].References[0].Note}}
 	for _, req := range f.requests {
-		if req.Kind == "image" && !reflect.DeepEqual(req.ImageReferences, expected) {
+		if req.Kind == "image" && (!reflect.DeepEqual(req.ImageReferences, expected) || req.ImagePurpose != "key_visual") {
 			t.Fatal("reference semantics lost", req)
 		}
 	}
@@ -619,7 +621,7 @@ func TestAutomaticImageFreezesReferenceRoleAndNoteThroughExecution(t *testing.T)
 	h.db.Where("project_id = ? AND project_node_id = ?", row.ID, "visual").First(&run)
 	var graph creationGraph
 	_ = json.Unmarshal([]byte(run.Definition), &graph)
-	if !reflect.DeepEqual(graph.Nodes[0].ImageReferences, expected) {
+	if !reflect.DeepEqual(graph.Nodes[0].ImageReferences, expected) || graph.Nodes[0].ImagePurpose != "key_visual" {
 		t.Fatal("reference context not frozen")
 	}
 }

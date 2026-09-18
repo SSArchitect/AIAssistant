@@ -14,6 +14,7 @@ type ImageReferenceContext struct {
 	Note string `json:"note"`
 }
 type CreationNodeRequest struct {
+	ImagePurpose    string                  `json:"image_purpose,omitempty"`
 	ImageReferences []ImageReferenceContext `json:"image_references,omitempty"`
 	Kind            string                  `json:"kind"`
 	Prompt          string                  `json:"prompt"`

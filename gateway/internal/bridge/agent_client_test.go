@@ -26,6 +26,9 @@ func TestAgentClientCreationPreservesImageReferenceResponsibility(t *testing.T) 
 					w.WriteHeader(http.StatusBadRequest)
 					return
 				}
+				if string(payload["image_purpose"]) != `"key_visual"` {
+					t.Error("image composition purpose lost")
+				}
 				if role == "" {
 					if _, ok := payload["image_references"]; ok {
 						t.Error("legacy requests must omit reference metadata")
@@ -42,7 +45,7 @@ func TestAgentClientCreationPreservesImageReferenceResponsibility(t *testing.T) 
 				_, _ = io.WriteString(w, `{"content":"image-data","mime_type":"image/png","provider_task_id":"generated"}`)
 			}))
 			defer server.Close()
-			req := CreationNodeRequest{Kind: "image", Prompt: "小伞人设图", InputImages: []string{"data:image/png;base64,test"}, IdempotencyKey: "test-context"}
+			req := CreationNodeRequest{ImagePurpose: "key_visual", Kind: "image", Prompt: "小伞人设图", InputImages: []string{"data:image/png;base64,test"}, IdempotencyKey: "test-context"}
 			if role != "" {
 				req.ImageReferences = []ImageReferenceContext{{Role: role, Note: note}}
 			}
