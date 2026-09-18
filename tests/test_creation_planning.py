@@ -59,6 +59,30 @@ def test_invalid_plans_and_forged_approvals_cannot_cross_boundary(change):
         planning.parse_proposal(json.dumps(dict(reply='review', plan=value)), request())
 
 
+def test_video_validation_identifies_every_bad_node_and_field_for_repair():
+    value = plan()
+    value['nodes'][-1].update(asset_id='rabbit', count=3, character_style='anime', storyboard=None)
+    value['nodes'].append(dict(value['nodes'][-1], id='video_two', count=2))
+    with pytest.raises(ValidationError) as error:
+        planning.CreativePlan.model_validate(value)
+    details = planning.validation_details(error.value)
+    assert [entry['loc'] for entry in details] == [('nodes', 1), ('nodes', 2)]
+    for ident, entry in zip(['video', 'video_two'], details):
+        assert ident in entry['msg']
+        assert all(field in entry['msg'] for field in ['asset_id', 'count=1', 'character_style', 'storyboard'])
+
+
+def test_revision_schema_retains_node_constraints_and_field_guidance():
+    patch = planning.RevisionResponse.model_json_schema()['$defs']['CreativeNodePatch']
+    assert patch['required'] == ['id']
+    schema = patch['properties']
+    assert schema['duration_seconds']['minimum'] == 1 and schema['duration_seconds']['maximum'] == 15
+    assert schema['count']['maximum'] == 3 and '视频' in schema['count']['description']
+    assert schema['id']['maxLength'] == 80
+    assert schema['content']['maxLength'] == 8000
+    assert '视频' in schema['character_style']['description']
+
+
 def test_image_workflows_and_clarifying_questions_are_supported():
     value = dict(title='二次创作', summary='先画原图，再调整风格', nodes=[
         dict(id='a', kind='image', title='原图', prompt='白色陶瓷杯'),
