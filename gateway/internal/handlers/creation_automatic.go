@@ -18,8 +18,10 @@ type creationReviewer interface {
 }
 type creativeAutomation struct {
 	bridge.CreativePlanningActivity
-	NodeID        string   `json:"node_id,omitempty"`
-	LockedNodeIDs []string `json:"locked_node_ids"`
+	NodeID        string                          `json:"node_id,omitempty"`
+	LockedNodeIDs []string                        `json:"locked_node_ids"`
+	RepairCounts  map[string]int                  `json:"repair_counts,omitempty"`
+	Repairs       []bridge.CreationRepairFeedback `json:"repairs,omitempty"`
 }
 
 func automaticActive(status string) bool { return status == "running" || status == "stopping" }
@@ -131,9 +133,11 @@ func automaticStep(doc *creativeDocument, stage, message, node string) {
 	a := doc.Automation
 	a.NodeID = node
 	a.ElapsedMS = time.Since(a.StartedAt).Milliseconds()
-	if len(a.Steps) < 100 {
-		a.Steps = append(a.Steps, bridge.CreativePlanningStep{Stage: stage, Message: message, ElapsedMS: a.ElapsedMS})
+	// Keep recent progress visible even during a long creation loop.
+	if len(a.Steps) >= 100 {
+		a.Steps = append(a.Steps[:1:1], a.Steps[len(a.Steps)-98:]...)
 	}
+	a.Steps = append(a.Steps, bridge.CreativePlanningStep{Stage: stage, Message: message, ElapsedMS: a.ElapsedMS})
 }
 func (h *CreationHandler) StopAutomaticCreation(c *gin.Context) {
 	h.mu.Lock()
@@ -196,7 +200,7 @@ func (h *CreationHandler) executeAutomatic(ctx context.Context, id, request stri
 		}
 		h.mu.Unlock()
 	}()
-	for step := 0; step < 80; step++ {
+	for {
 		done, err := h.advanceAutomatic(ctx, id, request)
 		if err != nil {
 			h.finishAutomatic(id, request, "failed", err.Error())
@@ -207,7 +211,6 @@ func (h *CreationHandler) executeAutomatic(ctx context.Context, id, request stri
 			return
 		}
 	}
-	h.finishAutomatic(id, request, "failed", "自动创作达到本轮步骤上限，已完成内容保留，请检查画布后继续。")
 }
 func (h *CreationHandler) automaticRequest(row models.CreationProject, doc creativeDocument, node bridge.CreativeNode, candidates []string) (bridge.CreationPlanningRequest, error) {
 	ids := []string{}
@@ -224,6 +227,10 @@ func (h *CreationHandler) automaticRequest(row models.CreationProject, doc creat
 		}
 		for _, n := range doc.Plan.Nodes {
 			add(doc.States[n.ID].SelectedAssetID)
+			add(n.AssetID)
+			for _, ref := range n.References {
+				add(ref.AssetID)
+			}
 		}
 	}
 	for _, ref := range node.References {
@@ -404,6 +411,10 @@ func (h *CreationHandler) advanceAutomatic(ctx context.Context, id, request stri
 		h.mu.Unlock()
 		return false, errors.New(creationFailureMessage(err, "自动审阅未完成，已确认内容与生成结果保留，可稍后继续"))
 	}
+	_ = persistTokenUsageRecordDB(h.db, row.ID, row.UserID, 0, "creation_director", time.Now(), &bridge.ChatResponse{ModelUsed: response.ModelUsed, TokensUsed: response.TokensUsed, RunID: response.RunID, Runtime: "self"})
+	if response.Decision == "revise" && response.Reason != "" && response.AssetID == "" {
+		return h.repairAutomatic(ctx, row, doc, node, candidates, response.Reason, request)
+	}
 	if response.Decision == "blocked" {
 		h.mu.Unlock()
 		return false, fmt.Errorf("「%s」需要处理：%s", node.Title, response.Reason)
@@ -425,7 +436,6 @@ func (h *CreationHandler) advanceAutomatic(ctx context.Context, id, request stri
 		h.mu.Unlock()
 		return false, errors.New("自动审阅不能引用其他资产")
 	}
-	_ = persistTokenUsageRecordDB(h.db, row.ID, row.UserID, 0, "creation_director", time.Now(), &bridge.ChatResponse{ModelUsed: response.ModelUsed, TokensUsed: response.TokensUsed, RunID: response.RunID, Runtime: "self"})
 	automaticStep(&doc, "decision", "「"+node.Title+"」："+response.Reason, node.ID)
 	if node.Kind == "image" && len(candidates) == 0 {
 		submission, err := h.prepareAutomaticRun(row, doc, node, request)

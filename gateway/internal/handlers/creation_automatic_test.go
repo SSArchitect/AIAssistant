@@ -2,6 +2,8 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -14,15 +16,22 @@ import (
 
 type fakeAutomaticDirector struct {
 	fakeCreativePlanner
-	reviews    []bridge.CreationReviewRequest
-	reviewHook func(bridge.CreationReviewRequest)
-	badChoice  bool
+	reviews        []bridge.CreationReviewRequest
+	reviewHook     func(bridge.CreationReviewRequest)
+	badChoice      bool
+	reviewDecision func(bridge.CreationReviewRequest) *bridge.CreationReviewResponse
+	planHook       func(context.Context, bridge.CreationPlanningRequest) (*bridge.CreationPlanningResponse, error)
 }
 
 func (f *fakeAutomaticDirector) ReviewCreation(ctx context.Context, req bridge.CreationReviewRequest) (*bridge.CreationReviewResponse, error) {
 	f.reviews = append(f.reviews, req)
 	if f.reviewHook != nil {
 		f.reviewHook(req)
+	}
+	if f.reviewDecision != nil {
+		if result := f.reviewDecision(req); result != nil {
+			return result, nil
+		}
 	}
 	result := &bridge.CreationReviewResponse{Decision: "approve", Reason: "内容符合已确认的创作要求"}
 	if len(req.CandidateIDs) > 0 {
@@ -330,5 +339,214 @@ func TestAutomaticCreationResolvesQuestionsWithExistingSelectionsAndKeepsApprova
 	req := <-f.called
 	if row.AutomaticStatus != "completed" || len(req.Assets) != 1 || req.Assets[0].ID != asset.ID || !reflect.DeepEqual(doc.States["brief"], after.States["brief"]) {
 		t.Fatal("lost approved context", after.Automation.Steps)
+	}
+}
+
+func (f *fakeAutomaticDirector) PlanCreation(ctx context.Context, req bridge.CreationPlanningRequest) (*bridge.CreationPlanningResponse, error) {
+	if f.planHook != nil {
+		return f.planHook(ctx, req)
+	}
+	return f.fakeCreativePlanner.PlanCreation(ctx, req)
+}
+func copyAutomaticPlan(plan bridge.CreativePlan) bridge.CreativePlan {
+	var result bridge.CreativePlan
+	_ = json.Unmarshal([]byte(creationJSON(plan)), &result)
+	return result
+}
+func TestAutomaticCreationRevisesRejectedImagesUntilAcceptedThenGeneratesVideo(t *testing.T) {
+	r, h, f, token, row := setupAutomatic(t)
+	row = reviewTestNode(t, r, h, token, row.ID, "brief", "")
+	row = reviewTestNode(t, r, h, token, row.ID, "script", "")
+	before, _ := projectDocument(row)
+	rejected := [][]string{}
+	repairs := []bridge.CreationPlanningRequest{}
+	f.reviewDecision = func(req bridge.CreationReviewRequest) *bridge.CreationReviewResponse {
+		if req.NodeID == "visual" && len(req.CandidateIDs) > 0 && len(rejected) < 2 {
+			rejected = append(rejected, append([]string{}, req.CandidateIDs...))
+			return &bridge.CreationReviewResponse{Decision: "revise", Reason: "小伞错误继承兔大侠服饰，应为圆滚滚蘑菇生物"}
+		}
+		return nil
+	}
+	f.planHook = func(_ context.Context, req bridge.CreationPlanningRequest) (*bridge.CreationPlanningResponse, error) {
+		repairs = append(repairs, req)
+		p := copyAutomaticPlan(req.CurrentPlan)
+		p.Nodes[1].Prompt = fmt.Sprintf("圆滚滚红白蘑菇生物，无兔耳无人类身体，第%d次修正", len(repairs))
+		return &bridge.CreationPlanningResponse{Plan: p, Reply: "已强化蘑菇身份"}, nil
+	}
+	startAutomatic(t, r, h, token, row.ID, "repair-images")
+	row = waitAutomatic(t, h, row.ID)
+	doc, _ := projectDocument(row)
+	if row.AutomaticStatus != "completed" || len(repairs) != 2 || len(f.requests) != 7 || f.requests[6].Kind != "video" {
+		t.Fatal(row.AutomaticStatus, doc.Automation.Steps, len(f.requests))
+	}
+	for i, req := range repairs {
+		if req.Repair == nil || req.Repair.NodeID != "visual" || req.Repair.Attempt != i+1 || !reflect.DeepEqual(req.Repair.CandidateIDs, rejected[i]) || len(req.Repair.PreviousFeedback) != i {
+			t.Fatal("missing repair feedback", req.Repair)
+		}
+		for _, id := range rejected[i] {
+			found := false
+			for _, a := range req.Assets {
+				found = found || a.ID == id && a.DataURL != ""
+			}
+			if !found {
+				t.Fatal("rejected previews missing")
+			}
+		}
+	}
+	for _, id := range []string{"brief", "script"} {
+		if !reflect.DeepEqual(before.States[id], doc.States[id]) {
+			t.Fatal("confirmed node overwritten", id)
+		}
+	}
+	for _, batch := range rejected {
+		for _, id := range batch {
+			if doc.States["visual"].SelectedAssetID == id {
+				t.Fatal("reselected rejected output")
+			}
+			if _, err := h.assetItem(row.UserID, id); err != nil {
+				t.Fatal("rejected asset lost")
+			}
+		}
+	}
+	if len(doc.States["visual"].Candidates) != 2 || doc.States["visual"].ApprovedBy != "agent" {
+		t.Fatal(doc.States["visual"])
+	}
+}
+func TestAutomaticCreationRepairStopDiscardsLatePlan(t *testing.T) {
+	r, h, f, token, row := setupAutomatic(t)
+	before, _ := projectDocument(row)
+	entered := make(chan struct{}, 1)
+	release := make(chan struct{})
+	f.reviewDecision = func(req bridge.CreationReviewRequest) *bridge.CreationReviewResponse {
+		return &bridge.CreationReviewResponse{Decision: "revise", Reason: "简报需要完善"}
+	}
+	f.planHook = func(_ context.Context, req bridge.CreationPlanningRequest) (*bridge.CreationPlanningResponse, error) {
+		entered <- struct{}{}
+		<-release
+		p := copyAutomaticPlan(req.CurrentPlan)
+		p.Nodes[0].Content = "迟到修改"
+		return &bridge.CreationPlanningResponse{Plan: p}, nil
+	}
+	startAutomatic(t, r, h, token, row.ID, "stop-repair")
+	<-entered
+	res := creationRequest(t, r, token, "POST", "/api/creation/projects/"+row.ID+"/automatic/stop", map[string]interface{}{})
+	if res.Code != 200 {
+		t.Fatal(res.Code)
+	}
+	close(release)
+	row = waitAutomatic(t, h, row.ID)
+	doc, _ := projectDocument(row)
+	if row.AutomaticStatus != "cancelled" || !reflect.DeepEqual(before.Plan, doc.Plan) || len(f.requests) > 0 {
+		t.Fatal("late repair applied")
+	}
+}
+func TestAutomaticCreationRepairCannotChangeLockedNodesOrAdoptRejectedImage(t *testing.T) {
+	for _, bad := range []string{"locked", "candidate"} {
+		t.Run(bad, func(t *testing.T) {
+			r, h, f, token, row := setupAutomatic(t)
+			row = reviewTestNode(t, r, h, token, row.ID, "brief", "")
+			before, _ := projectDocument(row)
+			f.reviewDecision = func(req bridge.CreationReviewRequest) *bridge.CreationReviewResponse {
+				if len(req.CandidateIDs) > 0 {
+					return &bridge.CreationReviewResponse{Decision: "revise", Reason: "角色身份错误"}
+				}
+				return nil
+			}
+			f.planHook = func(_ context.Context, req bridge.CreationPlanningRequest) (*bridge.CreationPlanningResponse, error) {
+				p := copyAutomaticPlan(req.CurrentPlan)
+				if bad == "locked" {
+					p.Nodes[0].Content = "覆盖用户确认"
+				} else {
+					p.Nodes[1].AssetID = req.Repair.CandidateIDs[0]
+				}
+				return &bridge.CreationPlanningResponse{Plan: p}, nil
+			}
+			startAutomatic(t, r, h, token, row.ID, "unsafe-repair")
+			row = waitAutomatic(t, h, row.ID)
+			doc, _ := projectDocument(row)
+			if row.AutomaticStatus != "failed" || !reflect.DeepEqual(before.Plan, doc.Plan) || len(doc.States["visual"].Candidates) != 2 || len(f.requests) != 2 {
+				t.Fatal("invalid repair changed project", doc.Automation.Steps)
+			}
+		})
+	}
+}
+func TestAutomaticCreationKeepsWorkingPastFormerStepLimit(t *testing.T) {
+	r, h, f, token, row := setupAutomatic(t)
+	round := 0
+	f.reviewDecision = func(req bridge.CreationReviewRequest) *bridge.CreationReviewResponse {
+		if req.NodeID == "brief" && round < 85 {
+			return &bridge.CreationReviewResponse{Decision: "revise", Reason: "继续优化未确认的简报"}
+		}
+		return nil
+	}
+	f.planHook = func(_ context.Context, req bridge.CreationPlanningRequest) (*bridge.CreationPlanningResponse, error) {
+		round++
+		p := copyAutomaticPlan(req.CurrentPlan)
+		p.Nodes[0].Content = fmt.Sprintf("完善简报%d", round)
+		return &bridge.CreationPlanningResponse{Plan: p}, nil
+	}
+	startAutomatic(t, r, h, token, row.ID, "long-creation")
+	row = waitAutomatic(t, h, row.ID)
+	doc, _ := projectDocument(row)
+	if row.AutomaticStatus != "completed" || round != 85 || doc.Automation.Steps[len(doc.Automation.Steps)-1].Stage != "completed" {
+		t.Fatal("stopped at arbitrary step limit", round, doc.Automation.Steps)
+	}
+}
+func TestAutomaticCreationOnlyBlocksForMissingRequiredInput(t *testing.T) {
+	r, h, f, token, row := setupAutomatic(t)
+	f.reviewDecision = func(req bridge.CreationReviewRequest) *bridge.CreationReviewResponse {
+		return &bridge.CreationReviewResponse{Decision: "blocked", Reason: "用户要求严格复刻的商标原图尚未提供，无法代替"}
+	}
+	startAutomatic(t, r, h, token, row.ID, "missing-required-input")
+	row = waitAutomatic(t, h, row.ID)
+	if row.AutomaticStatus != "failed" || len(f.requests) > 0 {
+		t.Fatal("invented missing input")
+	}
+}
+
+func TestAutomaticCreationUnchangedRepairStillGeneratesFreshCandidates(t *testing.T) {
+	r, h, f, token, row := setupAutomatic(t)
+	rejected := false
+	f.reviewDecision = func(req bridge.CreationReviewRequest) *bridge.CreationReviewResponse {
+		if len(req.CandidateIDs) > 0 && !rejected {
+			rejected = true
+			return &bridge.CreationReviewResponse{Decision: "revise", Reason: "本批画面失真，需要重新生成"}
+		}
+		return nil
+	}
+	f.planHook = func(_ context.Context, req bridge.CreationPlanningRequest) (*bridge.CreationPlanningResponse, error) {
+		return &bridge.CreationPlanningResponse{Plan: copyAutomaticPlan(req.CurrentPlan)}, nil
+	}
+	startAutomatic(t, r, h, token, row.ID, "retry-render")
+	row = waitAutomatic(t, h, row.ID)
+	doc, _ := projectDocument(row)
+	if row.AutomaticStatus != "completed" || len(f.requests) != 5 || f.requests[4].Kind != "video" || len(doc.States["visual"].Candidates) != 2 {
+		t.Fatal("reused rejected candidates", doc.Automation.Steps, len(f.requests))
+	}
+	var runs []models.CreationRun
+	h.db.Where("project_id = ? AND project_node_id = ?", row.ID, "visual").Order("node_revision").Find(&runs)
+	if len(runs) != 2 || runs[0].NodeRevision == runs[1].NodeRevision || runs[0].RequestID == runs[1].RequestID {
+		t.Fatal("regeneration did not receive fresh submission identity", runs)
+	}
+}
+func TestAutomaticCreationRejectsAssetChangedDuringRepair(t *testing.T) {
+	r, h, f, token, row := setupAutomatic(t)
+	f.reviewDecision = func(req bridge.CreationReviewRequest) *bridge.CreationReviewResponse {
+		if len(req.CandidateIDs) > 0 {
+			return &bridge.CreationReviewResponse{Decision: "revise", Reason: "需修正角色"}
+		}
+		return nil
+	}
+	f.planHook = func(_ context.Context, req bridge.CreationPlanningRequest) (*bridge.CreationPlanningResponse, error) {
+		var asset models.CreationAsset
+		h.db.First(&asset, "id = ?", req.Repair.CandidateIDs[0])
+		h.db.Model(&models.DriveItem{}).Where("id = ?", asset.DriveItemID).Update("content", "changed")
+		return &bridge.CreationPlanningResponse{Plan: copyAutomaticPlan(req.CurrentPlan)}, nil
+	}
+	startAutomatic(t, r, h, token, row.ID, "changed-repair-asset")
+	row = waitAutomatic(t, h, row.ID)
+	doc, _ := projectDocument(row)
+	if row.AutomaticStatus != "failed" || len(f.requests) != 2 || !strings.Contains(doc.Automation.Steps[len(doc.Automation.Steps)-1].Message, "图片发生变化") {
+		t.Fatal("changed asset used for repair")
 	}
 }

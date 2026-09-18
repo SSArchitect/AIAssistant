@@ -36,6 +36,28 @@ def request(**kwargs):
         assets=[planning.PlanningAsset(id='rabbit', name='人设.png', mime_type='image/png')], **kwargs)
 
 
+@pytest.mark.asyncio
+async def test_automatic_repair_feedback_and_locked_scope_reach_planner(monkeypatch):
+    value=plan();value['nodes'].insert(1,dict(id='mushroom',kind='image',title='小伞',prompt='mushroom',depends_on=['script']))
+    feedback=dict(node_id='mushroom',reason='候选错误继承兔大侠服饰',candidate_ids=[],attempt=2,previous_feedback=['角色串形'])
+    provider=SimpleNamespace(chat=AsyncMock(return_value=LLMResponse(content=json.dumps(dict(reply='修正角色身份',patch=dict(nodes=[dict(id='mushroom',prompt='round red mushroom creature without human clothes')],questions=[]))))))
+    monkeypatch.setattr(planning,'create_provider',lambda:provider)
+    result=await planning.propose_creation(request(current_plan=value,automatic_mode=True,locked_node_ids=['script','video'],repair=feedback))
+    system,user=provider.chat.call_args.args[0]
+    payload=json.loads(user.content[0]['text'])
+    assert payload['repair']==feedback and '身份保留模板' in system.content
+    assert result.plan.nodes[1].prompt.startswith('round red')
+
+
+def test_automatic_repair_rejects_adopting_failed_candidates_or_changing_locked_image_prompt():
+    value=plan();value['nodes'].insert(1,dict(id='image',kind='image',title='主视觉',prompt='confirmed forest'))
+    value['nodes'].insert(2,dict(id='mushroom',kind='image',title='小伞',prompt='mushroom'))
+    req=request(current_plan=value,automatic_mode=True,locked_node_ids=['image'],repair=dict(node_id='mushroom',reason='身份错误',candidate_ids=['rabbit'],attempt=1))
+    for change,match in [(dict(id='mushroom',asset_id='rabbit'),'已拒绝'),(dict(id='image',prompt='overwrite'),'已确认')]:
+        with pytest.raises(ValueError,match=match):
+            planning.parse_proposal(json.dumps(dict(reply='修正',patch=dict(nodes=[change]))),req)
+
+
 def test_null_question_patch_does_not_reask_saved_choices_after_a_failed_round():
     original=plan()
     original['questions']=[dict(question='交付形式？',options=['三段','开场15秒']),dict(question='画幅？',options=['横屏','竖屏'])]

@@ -74,3 +74,24 @@ async def test_review_reports_missing_configuration_without_format_error_or_secr
     assert response.status_code == 502
     assert response.json()['detail']['code'] == 'provider_config_missing'
     assert '配置' in response.text and 'SECRET' not in response.text and '格式' not in response.text
+
+
+@pytest.mark.asyncio
+async def test_quality_failure_requests_revision_instead_of_stopping_or_approving(monkeypatch):
+    provider=SimpleNamespace(chat=AsyncMock(return_value=LLMResponse(content=json.dumps({'decision':'revise','reason':'小伞是蘑菇生物，候选错误混入兔大侠的服饰','asset_id':''}))))
+    monkeypatch.setattr(review,'create_provider',lambda:provider)
+    req=request();before=req.model_dump()
+    result=await review.review_creation(req)
+    assert result.decision=='revise' and req.model_dump()==before
+    assert provider.chat.await_count==1
+    assert 'revise' in provider.chat.call_args.args[0][0].content
+
+
+@pytest.mark.asyncio
+async def test_revision_must_not_approve_any_candidate(monkeypatch):
+    provider=SimpleNamespace(chat=AsyncMock(side_effect=[
+        LLMResponse(content=json.dumps({'decision':'revise','reason':'需要重做','asset_id':'some-image'})),
+        LLMResponse(content=json.dumps({'decision':'revise','reason':'需要重做','asset_id':''}))]))
+    monkeypatch.setattr(review,'create_provider',lambda:provider)
+    result=await review.review_creation(request())
+    assert result.decision=='revise' and result.asset_id=='' and provider.chat.await_count==2

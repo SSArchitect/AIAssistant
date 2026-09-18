@@ -8,7 +8,7 @@ from io import BytesIO
 import json
 import logging
 import time
-from typing import Literal
+from typing import Literal, Optional
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
@@ -174,7 +174,16 @@ class CreativePreferences(StrictModel):
     aspect_ratio: Literal['', '1:1', '16:9', '9:16'] = ''
 
 
+class RepairFeedback(StrictModel):
+    node_id: str
+    reason: str = Field(min_length=1, max_length=500)
+    candidate_ids: list[str] = Field(default_factory=list, max_length=9)
+    attempt: int = Field(ge=1)
+    previous_feedback: list[str] = Field(default_factory=list, max_length=10)
+
+
 class PlanningRequest(StrictModel):
+    repair: Optional[RepairFeedback] = None
     preferences: CreativePreferences = Field(default_factory=CreativePreferences)
     automatic_mode: bool = False
     locked_node_ids: list[str] = Field(default_factory=list, max_length=20)
@@ -480,11 +489,21 @@ def parse_proposal(content: str, request: PlanningRequest) -> PlanningResponse:
                 raise ValueError('引用了未提供的图片资产')
         if node.kind == 'video':
             node.prompt = compile_creative_video(node)
+    if request.repair:
+        if not request.automatic_mode:
+            raise ValueError('自动返工需要一键生成上下文')
+        before = request.current_plan.get('nodes', [])
+        if [(n['id'], n['kind']) for n in before] != [(n.id, n.kind) for n in proposal.plan.nodes]:
+            raise ValueError('返工不能新增、删除、重排节点或改变产物类型')
+        rejected = set(request.repair.candidate_ids)
+        for node in proposal.plan.nodes:
+            if node.asset_id in rejected or any(ref.asset_id in rejected for ref in node.references):
+                raise ValueError('返工不能把已拒绝候选作为成品或生成参考')
     if request.automatic_mode:
         prior = {n.id: n for n in CreativePlan.model_validate(omit_null_fields(request.current_plan)).nodes}
         current = {n.id: n for n in proposal.plan.nodes}
         for ident in request.locked_node_ids:
-            if ident not in prior or ident not in current or prior[ident].model_dump(exclude={'prompt'}) != current[ident].model_dump(exclude={'prompt'}):
+            if ident not in prior or ident not in current or prior[ident].model_dump(exclude={'prompt'} if prior[ident].kind == 'video' else set()) != current[ident].model_dump(exclude={'prompt'} if prior[ident].kind == 'video' else set()):
                 raise ValueError('一键生成不能修改已确认节点及其依赖：' + ident)
     return proposal
 
@@ -525,6 +544,9 @@ async def propose_creation(request: PlanningRequest, trace_store=None, on_progre
                 parts.extend([{'type': 'text', 'text': f'资产 {asset.id}: {asset.name}'},
                               {'type': 'image_url', 'image_url': {'url': image_preview(asset.data_url)}}])
         auto_prompt = ('\n用户已授权一键生成：未确认的常规选项由你判断并确定，清空已解决的 questions；不得改变 locked_node_ids 中任何节点及其依赖。不要生成审批字段或直接生成媒体。必需信息缺失或能力不支持时保留具体问题。' if request.automatic_mode else '')
+        if request.repair:
+            auto_prompt += '\n当前是自动返工：repair 是自动审阅工具对指定节点的反馈，非用户新增要求。只修改 repair.node_id 和受影响的未确认下游；保持节点ID、顺序、类型、交付目标，其他节点及 locked_node_ids 保持完全不变。结合失败候选的真实预览、reason 和 previous_feedback 找根因，调整提示词、参考图职责或模板，避免重复同一种失败。候选图是反例，严禁用它们作节点asset_id或生成参考。角色串形时，检查是否错误使用了人物动漫化/chibi身份保留模板；新角色借鉴另一个角色的画风，不等于转换原角色，必要时清空character_style、移除会污染身份的参考，直接文字描述统一画风。清除字段必须明确返回character_style=""、template_id=""、references=[]，不能用null（null表示保持原值）。修正图像生成节点时保持asset_id为空，后续由执行器重新生图。常规修正由你决定，不再问用户选方向；只有确实缺少不可替代的外部条件才提问。不要宣称已经生成或审阅通过。'
+
         messages = [LLMMessage(role='system', content=DIRECTOR_PROMPT + auto_prompt + (REVISION_PROMPT if revising else '') + '\nJSON schema:\n' + json.dumps(schema, ensure_ascii=False)),
                     LLMMessage(role='user', content=parts)]
         for step in range(8):

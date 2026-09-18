@@ -67,7 +67,15 @@ type PlanningAsset struct {
 	MimeType string `json:"mime_type"`
 	DataURL  string `json:"data_url,omitempty"`
 }
+type CreationRepairFeedback struct {
+	NodeID           string   `json:"node_id"`
+	Reason           string   `json:"reason"`
+	CandidateIDs     []string `json:"candidate_ids"`
+	Attempt          int      `json:"attempt"`
+	PreviousFeedback []string `json:"previous_feedback"`
+}
 type CreationPlanningRequest struct {
+	Repair              *CreationRepairFeedback           `json:"repair,omitempty"`
 	Preferences         *CreativePreferences              `json:"preferences,omitempty"`
 	AutomaticMode       bool                              `json:"automatic_mode,omitempty"`
 	LockedNodeIDs       []string                          `json:"locked_node_ids,omitempty"`
