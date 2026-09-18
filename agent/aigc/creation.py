@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from agent.aigc.image_inputs import decode_image_data_url, load_image_url
 from agent.aigc.image_service import generate_image
+from agent.aigc.creation_image_context import ImageReferenceContext, style_only_prompt
 from agent.aigc.video_service import generate_video
 from agent.aigc.video_prompting import VideoStoryboard, compile_storyboard
 from agent.schemas.aigc import ImageGenerationRequest, VideoGenerationRequest
@@ -26,6 +27,7 @@ class CreationNodeRequest(BaseModel):
     aspect_ratio: Literal['1:1', '16:9', '9:16'] = '1:1'
     duration_seconds: int = Field(default=5, ge=1, le=15)
     character_style: Literal['', 'anime', 'chibi'] = ''
+    image_references: list[ImageReferenceContext] = Field(default_factory=list, max_length=1)
     input_images: list[str] = Field(default_factory=list, max_length=9)
     idempotency_key: str = Field(min_length=1, max_length=128)
     video_mode: Literal['', 'text_to_video', 'image_to_video', 'reference_to_video'] = ''
@@ -39,6 +41,8 @@ class CreationNodeRequest(BaseModel):
             raise ValueError('生图节点最多引用一张图片')
         if self.character_style and (self.kind != 'image' or not self.input_images):
             raise ValueError('人物风格模板需要一张参考图片')
+        if self.image_references and (self.kind != 'image' or len(self.image_references) != len(self.input_images)):
+            raise ValueError('图片参考职责必须与图片输入逐一对应')
         for value in self.input_images:
             decode_image_data_url(value)
         if self.kind == 'image' and (self.video_mode or self.storyboard):
@@ -56,10 +60,20 @@ async def execute_node(request: CreationNodeRequest):
     if request.kind == 'image':
         options = dict(provider='spark', prompt=request.prompt, aspect_ratio=request.aspect_ratio,
                        idempotency_key=request.idempotency_key)
-        if request.input_images:
-            options['image_data_url'] = request.input_images[0]
-        if request.character_style:
-            options.update(mode='character_stylization', character_style=request.character_style)
+        reference = request.image_references[0] if request.image_references else None
+        if reference and reference.role == 'style':
+            # Style guides never become img2img source pixels or identity templates.
+            options['prompt'] = await style_only_prompt(request.prompt, request.input_images[0], reference, request.idempotency_key)
+            options['mode'] = 'text_to_image'
+        else:
+            if request.input_images:
+                options['image_data_url'] = request.input_images[0]
+            if request.character_style:
+                options.update(mode='character_stylization', character_style=request.character_style)
+            if reference and reference.note:
+                addition = '\nReference responsibility (' + reference.role + '): ' + reference.note
+                if len(options['prompt']) + len(addition) <= 4000:
+                    options['prompt'] += addition
         result = await generate_image(ImageGenerationRequest(**options))
         if len(result.images) != 1:
             raise ValueError('生图服务未返回一张图片')

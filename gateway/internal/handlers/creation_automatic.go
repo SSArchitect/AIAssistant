@@ -372,6 +372,15 @@ func (h *CreationHandler) advanceAutomatic(ctx context.Context, id, request stri
 			candidates = append(candidates, state.Candidates...)
 		}
 	}
+	// There is no output to review yet. Generate first; review only real candidates.
+	if node.Kind == "image" && len(candidates) == 0 {
+		submission, err := h.prepareAutomaticRun(row, doc, node, request)
+		h.mu.Unlock()
+		if err != nil {
+			return false, err
+		}
+		return h.runAutomaticMedia(submission)
+	}
 	req, err := h.automaticRequest(row, doc, node, candidates)
 	if err != nil {
 		h.mu.Unlock()
@@ -437,14 +446,7 @@ func (h *CreationHandler) advanceAutomatic(ctx context.Context, id, request stri
 		return false, errors.New("自动审阅不能引用其他资产")
 	}
 	automaticStep(&doc, "decision", "「"+node.Title+"」："+response.Reason, node.ID)
-	if node.Kind == "image" && len(candidates) == 0 {
-		submission, err := h.prepareAutomaticRun(row, doc, node, request)
-		h.mu.Unlock()
-		if err != nil {
-			return false, err
-		}
-		return h.runAutomaticMedia(submission)
-	}
+
 	state = doc.States[node.ID]
 	if response.Decision == "select" && state.SelectedAssetID != response.AssetID {
 		state.SelectedAssetID = response.AssetID

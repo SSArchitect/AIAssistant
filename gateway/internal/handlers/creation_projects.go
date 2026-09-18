@@ -327,8 +327,8 @@ func (h *CreationHandler) planningTemplates(user string) ([]map[string]interface
 		{"id": "builtin-story", "name": "角色短片", "kind": "workflow_template", "description": "简报→主视觉候选与分镜脚本→参考图审阅→多图参考视频；缺少场景时补主视觉"},
 		{"id": "builtin-refine", "name": "原图→二次创作", "kind": "workflow_template", "description": "先生成原图，再用已确认的原图创作新图"},
 		{"id": "builtin-product", "name": "产品摄影", "kind": "image_template", "description": "柔和棚拍光线与简洁背景"},
-		{"id": "builtin-anime", "name": "人物动漫化", "kind": "image_template", "character_style": "anime"},
-		{"id": "builtin-chibi", "name": "Q版人物", "kind": "image_template", "character_style": "chibi"},
+		{"id": "builtin-anime", "name": "原角色动漫化", "description": "保留输入图人物身份的转换模板；不用于新角色设计、场景或仅参考画风", "kind": "image_template", "character_style": "anime"},
+		{"id": "builtin-chibi", "name": "原角色转Q版", "description": "保留输入图人物身份的转换模板；不用于新角色设计、场景或仅参考画风", "kind": "image_template", "character_style": "chibi"},
 		{"id": "builtin-cinema", "name": "电影感运镜", "kind": "video_template", "description": "连贯动作、克制运镜、清楚的空间关系"},
 	}
 	var templates []models.CreationDefinition
@@ -722,7 +722,13 @@ func (h *CreationHandler) prepareProjectRun(row models.CreationProject, doc crea
 			}
 		}
 	}
-	graph := creationGraph{Nodes: []creationNode{{ID: node.ID, Kind: node.Kind, Name: node.Title, Prompt: node.Prompt, Count: node.Count, AspectRatio: node.AspectRatio, DurationSeconds: node.DurationSeconds, CharacterStyle: node.CharacterStyle, Inputs: []string{}, AssetIDs: ids, InputHashes: hashes, VideoMode: mode, Storyboard: node.Storyboard}}}
+	imageReferences := []bridge.ImageReferenceContext{}
+	if node.Kind == "image" {
+		for _, ref := range node.References {
+			imageReferences = append(imageReferences, bridge.ImageReferenceContext{Role: ref.Role, Note: ref.Note})
+		}
+	}
+	graph := creationGraph{Nodes: []creationNode{{ID: node.ID, Kind: node.Kind, Name: node.Title, Prompt: node.Prompt, Count: node.Count, AspectRatio: node.AspectRatio, DurationSeconds: node.DurationSeconds, CharacterStyle: node.CharacterStyle, Inputs: []string{}, AssetIDs: ids, ImageReferences: imageReferences, InputHashes: hashes, VideoMode: mode, Storyboard: node.Storyboard}}}
 	if err = validateCreationGraph(graph, true); err != nil {
 		return nil, &creationSubmissionError{400, fmt.Sprint(err)}
 	}

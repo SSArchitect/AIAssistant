@@ -12,6 +12,48 @@ import (
 	"time"
 )
 
+func TestAgentClientCreationPreservesImageReferenceResponsibility(t *testing.T) {
+	for _, role := range []string{"style", "identity", "reference", ""} {
+		t.Run(role, func(t *testing.T) {
+			note := "只参考画风，不继承原图人物或构图"
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost || r.URL.Path != "/agent/creation/node" {
+					t.Errorf("unexpected creation endpoint: %s %s", r.Method, r.URL.Path)
+				}
+				var payload map[string]json.RawMessage
+				if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+					t.Error(err)
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+				if role == "" {
+					if _, ok := payload["image_references"]; ok {
+						t.Error("legacy requests must omit reference metadata")
+					}
+				} else {
+					var refs []struct {
+						Role string `json:"role"`
+						Note string `json:"note"`
+					}
+					if err := json.Unmarshal(payload["image_references"], &refs); err != nil || len(refs) != 1 || refs[0].Role != role || refs[0].Note != note {
+						t.Errorf("reference responsibility lost at Python boundary: %s", payload["image_references"])
+					}
+				}
+				_, _ = io.WriteString(w, `{"content":"image-data","mime_type":"image/png","provider_task_id":"generated"}`)
+			}))
+			defer server.Close()
+			req := CreationNodeRequest{Kind: "image", Prompt: "小伞人设图", InputImages: []string{"data:image/png;base64,test"}, IdempotencyKey: "test-context"}
+			if role != "" {
+				req.ImageReferences = []ImageReferenceContext{{Role: role, Note: note}}
+			}
+			result, err := NewAgentClient(server.URL, time.Second).CreateMedia(context.Background(), req)
+			if err != nil || result == nil || result.ProviderTaskID != "generated" {
+				t.Fatalf("generation response: %+v, %v", result, err)
+			}
+		})
+	}
+}
+
 func TestAgentClientSearchContextCancelsInFlightRequest(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		select {

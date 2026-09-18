@@ -9,16 +9,21 @@ import (
 	"net/http"
 )
 
+type ImageReferenceContext struct {
+	Role string `json:"role"`
+	Note string `json:"note"`
+}
 type CreationNodeRequest struct {
-	Kind            string          `json:"kind"`
-	Prompt          string          `json:"prompt"`
-	AspectRatio     string          `json:"aspect_ratio"`
-	DurationSeconds int             `json:"duration_seconds"`
-	CharacterStyle  string          `json:"character_style"`
-	InputImages     []string        `json:"input_images"`
-	IdempotencyKey  string          `json:"idempotency_key"`
-	VideoMode       string          `json:"video_mode,omitempty"`
-	Storyboard      json.RawMessage `json:"storyboard,omitempty"`
+	ImageReferences []ImageReferenceContext `json:"image_references,omitempty"`
+	Kind            string                  `json:"kind"`
+	Prompt          string                  `json:"prompt"`
+	AspectRatio     string                  `json:"aspect_ratio"`
+	DurationSeconds int                     `json:"duration_seconds"`
+	CharacterStyle  string                  `json:"character_style"`
+	InputImages     []string                `json:"input_images"`
+	IdempotencyKey  string                  `json:"idempotency_key"`
+	VideoMode       string                  `json:"video_mode,omitempty"`
+	Storyboard      json.RawMessage         `json:"storyboard,omitempty"`
 }
 type CreationNodeResponse struct {
 	Content        string `json:"content"`

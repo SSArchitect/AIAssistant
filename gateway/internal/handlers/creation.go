@@ -24,19 +24,20 @@ import (
 const creationMaxBytes = 64 << 20
 
 type creationNode struct {
-	ID              string            `json:"id"`
-	Kind            string            `json:"kind"`
-	Name            string            `json:"name"`
-	Prompt          string            `json:"prompt"`
-	Count           int               `json:"count"`
-	AspectRatio     string            `json:"aspect_ratio"`
-	DurationSeconds int               `json:"duration_seconds"`
-	CharacterStyle  string            `json:"character_style"`
-	Inputs          []string          `json:"inputs"`
-	AssetIDs        []string          `json:"asset_ids"`
-	InputHashes     map[string]string `json:"input_hashes,omitempty"`
-	VideoMode       string            `json:"video_mode,omitempty"`
-	Storyboard      json.RawMessage   `json:"storyboard,omitempty"`
+	ImageReferences []bridge.ImageReferenceContext `json:"image_references,omitempty"`
+	ID              string                         `json:"id"`
+	Kind            string                         `json:"kind"`
+	Name            string                         `json:"name"`
+	Prompt          string                         `json:"prompt"`
+	Count           int                            `json:"count"`
+	AspectRatio     string                         `json:"aspect_ratio"`
+	DurationSeconds int                            `json:"duration_seconds"`
+	CharacterStyle  string                         `json:"character_style"`
+	Inputs          []string                       `json:"inputs"`
+	AssetIDs        []string                       `json:"asset_ids"`
+	InputHashes     map[string]string              `json:"input_hashes,omitempty"`
+	VideoMode       string                         `json:"video_mode,omitempty"`
+	Storyboard      json.RawMessage                `json:"storyboard,omitempty"`
 }
 type creationGraph struct {
 	Nodes []creationNode `json:"nodes"`
@@ -180,6 +181,16 @@ func validateCreationGraph(graph creationGraph, runnable bool) error {
 		}
 		if inputCount > 9 || (n.Kind == "image" && inputCount > 1) {
 			return errors.New("生图节点最多输入 1 张图片；视频节点最多输入 9 张图片")
+		}
+		if len(n.ImageReferences) > 0 {
+			if n.Kind != "image" || len(n.ImageReferences) != inputCount {
+				return errors.New("图片参考职责与输入不匹配")
+			}
+			for _, ref := range n.ImageReferences {
+				if (ref.Role != "identity" && ref.Role != "style" && ref.Role != "reference") || len([]rune(ref.Note)) > 500 {
+					return errors.New("图片参考职责无效")
+				}
+			}
 		}
 		if n.CharacterStyle != "" && (n.Kind != "image" || (runnable && inputCount != 1)) {
 			return errors.New("人物风格模板需要一张输入图片")
@@ -641,7 +652,7 @@ func (h *CreationHandler) execute(run models.CreationRun, graph creationGraph, p
 				return
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 50*time.Minute)
-			media, err := h.generator.CreateMedia(ctx, bridge.CreationNodeRequest{Kind: node.Kind, Prompt: node.Prompt, AspectRatio: node.AspectRatio, DurationSeconds: node.DurationSeconds, CharacterStyle: node.CharacterStyle, InputImages: inputs, IdempotencyKey: fmt.Sprintf("creation-%s-%d-%d", run.ID, i, j), VideoMode: node.VideoMode, Storyboard: node.Storyboard})
+			media, err := h.generator.CreateMedia(ctx, bridge.CreationNodeRequest{Kind: node.Kind, Prompt: node.Prompt, AspectRatio: node.AspectRatio, DurationSeconds: node.DurationSeconds, CharacterStyle: node.CharacterStyle, InputImages: inputs, ImageReferences: node.ImageReferences, IdempotencyKey: fmt.Sprintf("creation-%s-%d-%d", run.ID, i, j), VideoMode: node.VideoMode, Storyboard: node.Storyboard})
 			cancel()
 			if err != nil {
 				status = "failed"

@@ -35,6 +35,7 @@ class ReviewResponse(ReviewDecision):
 REVIEW_PROMPT = '''你是创作 Agent 的自动审阅工具。用户已点击“一键生成”，授权系统替用户确定尚未确认的常规创作选择并逐步生成。
 基于用户原始要求、完整画布、已确认的上游和真实参考预览，仅评估指定节点，不能修改任何节点或覆盖已确认内容。
 文本节点审阅故事、脚本、运镜、时长、声音是否自洽；待生成图片审阅提示词与参考分工；视频审阅分镜及参考关系。
+review_phase=plan时只审阅文本方案或视频执行方案，不得因尚未生成媒体要求返工；review_phase=image_output时才评估candidate_ids对应的真实候选，其他资产只是参考，不是被审阅成品。
 通常选择 approve 并简述判断理由，不要为风格偏好或常规参数再次要求用户确认。不是保证成片质量，也不能宣称尚未生成的媒体已完成。
 candidate_ids 非空时，比较提供的实际图片预览，从中选择最符合用户要求、已确认身份与视觉风格的一张，返回 select 和准确 asset_id，不能编造候选。只有一张时同样判断它是否适用。
 角色串形、身份混淆、构图/画风/动作不符、提示词或参考图职责错误、所有候选均不合格等可以通过修正设计或重新生成处理的问题，必须返回 revise，asset_id 为空，reason 指出具体问题及修正方向。系统会调用规划工具修正当前节点，重新生成并再次审阅，不能把这些质量问题当作 blocked，也不能为了继续而批准不合格候选。
@@ -62,6 +63,8 @@ async def review_creation(request: ReviewRequest, trace_store=None):
     try:
         payload = request.model_dump(exclude={'assets'})
         payload['messages'] = payload['messages'][-12:]
+        payload['review_phase'] = 'image_output' if request.candidate_ids else 'plan'
+        payload['review_target'] = node.model_dump()
         payload['assets'] = [a.model_dump(exclude={'data_url'}) for a in request.assets]
         parts = [{'type': 'text', 'text': json.dumps(payload, ensure_ascii=False)}]
         for asset in request.assets:

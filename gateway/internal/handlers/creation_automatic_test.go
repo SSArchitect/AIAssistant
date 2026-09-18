@@ -573,3 +573,53 @@ func TestAutomaticCreationRejectsAssetChangedDuringRepair(t *testing.T) {
 		t.Fatal("changed asset used for repair")
 	}
 }
+
+func TestAutomaticImageGenerationPrecedesOutputReview(t *testing.T) {
+	r, h, f, token, row := setupAutomatic(t)
+	emptyImageReviews := 0
+	f.reviewDecision = func(req bridge.CreationReviewRequest) *bridge.CreationReviewResponse {
+		if req.NodeID == "visual" && len(req.CandidateIDs) == 0 {
+			emptyImageReviews++
+			return &bridge.CreationReviewResponse{Decision: "revise", Reason: "没有候选，需要先生成"}
+		}
+		return nil
+	}
+	startAutomatic(t, r, h, token, row.ID, "generate-before-review")
+	row = waitAutomatic(t, h, row.ID)
+	if row.AutomaticStatus != "completed" || emptyImageReviews != 0 || len(f.requests) != 3 {
+		t.Fatal("empty-candidate revision loop", emptyImageReviews, row.AutomaticStatus)
+	}
+}
+
+func TestAutomaticImageFreezesReferenceRoleAndNoteThroughExecution(t *testing.T) {
+	r, h, f, token, row := setupAutomatic(t)
+	asset, err := h.saveAsset(row.UserID, "forest-style.png", creationPNG, "image/png", "upload", "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc, _ := projectDocument(row)
+	doc.AssetIDs = []string{asset.ID}
+	doc.Plan.Nodes[1].References = []bridge.CreativeReference{{AssetID: asset.ID, Role: "style", Note: "只借用线条和上色，不保留兔子或森林构图"}}
+	doc.Plan.Nodes[1].CharacterStyle = "chibi" // Legacy plans are routed by the stronger style-only role.
+	if err = h.updateProject(&row, doc, false); err != nil {
+		t.Fatal(err)
+	}
+	startAutomatic(t, r, h, token, row.ID, "style-context")
+	row = waitAutomatic(t, h, row.ID)
+	if row.AutomaticStatus != "completed" {
+		t.Fatal(row.AutomaticStatus)
+	}
+	expected := []bridge.ImageReferenceContext{{Role: "style", Note: doc.Plan.Nodes[1].References[0].Note}}
+	for _, req := range f.requests {
+		if req.Kind == "image" && !reflect.DeepEqual(req.ImageReferences, expected) {
+			t.Fatal("reference semantics lost", req)
+		}
+	}
+	var run models.CreationRun
+	h.db.Where("project_id = ? AND project_node_id = ?", row.ID, "visual").First(&run)
+	var graph creationGraph
+	_ = json.Unmarshal([]byte(run.Definition), &graph)
+	if !reflect.DeepEqual(graph.Nodes[0].ImageReferences, expected) {
+		t.Fatal("reference context not frozen")
+	}
+}
