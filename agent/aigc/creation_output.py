@@ -12,7 +12,10 @@ def thinking_options(provider):
     # Ark GLM-5.3 is a reasoning-only model and rejects thinking.type=disabled.
     if getattr(provider, 'provider_name', '') == 'doubao' and getattr(provider, 'model', '') == 'glm-5.3':
         return {}
-    params = inspect.signature(provider.chat).parameters
+    method = getattr(provider, 'chat', None) or getattr(provider, 'chat_stream_response', None)
+    if method is None:
+        return {}
+    params = inspect.signature(method).parameters
     if 'thinking_enabled' in params or any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()):
         return {'thinking_enabled': False}
     return {}

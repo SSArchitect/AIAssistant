@@ -74,7 +74,7 @@ def planning_error(exc):
     if isinstance(exc, PlanningConstraintError):
         return exc.code, str(exc)
     if isinstance(exc, PlanningOutputTruncated):
-        return 'planning_output_truncated', '模型未完整返回创作方案，原有内容已保留；请分段规划后继续'
+        return 'planning_output_truncated', '创作方案自动分段重试后仍未完整返回，原有内容已保留；请稍后继续'
     if unsupported_image_input(exc):
         return 'model_image_unsupported', '当前规划模型不支持图片输入，请配置支持图片理解的模型后重试；素材已保留'
     if isinstance(exc, (asyncio.TimeoutError, httpx.TimeoutException, openai.APITimeoutError)):

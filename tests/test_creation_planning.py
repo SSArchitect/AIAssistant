@@ -489,7 +489,7 @@ def test_director_output_budget_is_local_to_official_plan_provider():
 
 
 @pytest.mark.asyncio
-async def test_truncated_long_plan_is_not_rewritten_at_same_limit(monkeypatch):
+async def test_truncated_long_plan_has_bounded_partition_recovery(monkeypatch):
     from agent.aigc.creation_models import PlanningOutputTruncated, planning_error
     provider = SimpleNamespace(chat=AsyncMock(return_value=LLMResponse(
         content='{"reply":"review","plan":{"nodes":[' + ' ' * 13000, finish_reason='length')))
@@ -497,7 +497,8 @@ async def test_truncated_long_plan_is_not_rewritten_at_same_limit(monkeypatch):
     trace = TraceStore()
     with pytest.raises(PlanningOutputTruncated) as failure:
         await planning.propose_creation(request(), trace)
-    assert provider.chat.await_count == 1
+    assert provider.chat.await_count == 3
+    assert provider.chat.call_args.kwargs["tools"] is None
     assert planning_error(failure.value)[0] == 'planning_output_truncated'
     assert all(run.status == 'failed' for run in trace._runs.values())
 

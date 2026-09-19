@@ -17,13 +17,15 @@ from pydantic import BaseModel, ConfigDict, Field, create_model, model_validator
 
 from agent.aigc.image_inputs import decode_image_data_url
 from agent.aigc.video_prompting import VIDEO_PROMPT_GUIDANCE, VideoStoryboard, compile_storyboard, render_storyboard
-from agent.llm.base import LLMMessage
-from agent.aigc.creation_output import structured_options, unsupported_schema, omit_null_fields, validation_details, thinking_options
+from agent.llm.base import LLMMessage, LLMResponse
+from agent.aigc.creation_output import omit_null_fields, validation_details
 from agent.aigc.creation_tools import director_tools, execute_director_tool, tool_definitions
 from agent.aigc.creation_models import (can_use_plan_vision, use_plan_vision, unsupported_image_input,
-    planning_error, configure_planning_output, PlanningOutputTruncated, create_creation_provider, PlanningConstraintError)
+    planning_error, PlanningOutputTruncated, create_creation_provider, PlanningConstraintError)
 from agent.aigc.creation_compaction import compact_storyboard
 from agent.aigc.creation_references import reference_error, repair_reference_storyboard
+from agent.aigc.creation_completion import PlanningCompletion
+from agent.aigc.creation_partition import partition_proposal, incomplete_json
 from agent.llm.factory import create_provider
 from agent.schemas.aigc import VideoGenerationRequest
 
@@ -72,7 +74,7 @@ class CreativeNode(StrictModel):
     character_style: Literal['', 'anime', 'chibi'] = Field(default='', description='仅用于identity/reference输入的原角色转换；style参考及新角色设计必须为空；视频和文本必须为空字符串，视频画风写入storyboard.style。')
     template_id: str = Field(default='', max_length=100)
     revision_suggestions: list[CreativeRevisionSuggestion] = Field(default_factory=list, max_length=12,
-        description='6–10个适合当前节点内容的可选修改方向。label简短，instruction具体描述怎么改；只提出建议，不代表用户选择或授权。')
+        description='最多4个当前节点特有的简短修改方向；界面会补充通用候选，无需重复。只提出建议，不代表用户选择或授权。')
 
     @model_validator(mode='after')
     def video_fields(self):
@@ -254,7 +256,7 @@ preferences 是用户在对话框选择的创作目标与画面比例。非空 o
 返回一个 JSON 对象，只有 reply 和 plan 两个字段，严格遵守给出的 schema，不输出 Markdown。
 如果用户只给出剧集编号、缩写或不明项目名称，且上下文没有相应内容，不要编造剧情。先返回简短 reply 和 1–2 个具体问题，plan.nodes=[]，让用户提供该集脚本或说明；不必强行创建视频节点。
 不要要求用户选择常规技术参数，按意图选择工作流、效果模板、画幅和合理时长。有重大歧义时至多问2个问题，每个2–3个选项（推荐项在前），仍允许自由回答。
-为新建或实质修改的创作简报、分镜脚本提供6–8个简洁的revision_suggestions，结合本节点具体内容，方向要互有区别，如人物动机、情绪、叙事节奏、运镜、视觉一致性、台词与声音等；不要只写“优化一下”。其他产物节点按需提供，不修改的节点保留原字段，前端会补充常用候选。这些是可选修改方向，不是阻塞生成的questions，也不是多个付费生成任务。用户可以多选并补充自由输入；只有收到选择/修改消息后才改内容，只同步受影响下游，不改无关节点，不自动批准或执行媒体生成。
+为新建或实质修改的创作简报、分镜脚本按需提供至多4个简洁的revision_suggestions，结合本节点具体内容，方向要互有区别，如人物动机、情绪、叙事节奏、运镜、视觉一致性、台词与声音等；不要只写“优化一下”。其他产物节点按需提供，不修改的节点保留原字段，前端会补充常用候选。这些是可选修改方向，不是阻塞生成的questions，也不是多个付费生成任务。用户可以多选并补充自由输入；只有收到选择/修改消息后才改内容，只同步受影响下游，不改无关节点，不自动批准或执行媒体生成。
 若存在未解决的问题，系统会等待用户回复后才开放生成；在后续回答解决问题后清空 questions。单纯修改或询问时保留不受影响节点的所有字段与 id。
 节点用稳定的英文 id，拓扑排序。文本节点保存可读创意简报、分镜脚本；图片节点保存主视觉/必要镜头参考/图片产物；视频节点保存结构化 storyboard。
 已有图片直接用 asset_id 复用；不要假装已经生成图片。缺少主视觉时，先计划一个 key_visual 图片节点，默认2个候选。主视觉负责世界观和整体气氛，scene负责每条视频的具体地点与空间；人设图不是场景。主视觉与场景属于重新构图，即使借用人物identity，也只保留身份特征、不继承三视图或人设构图。场景应由环境主导，默认无人；人物需要出现的主视觉中明确人物占比、景别、前中后景。character_style始终为空，不使用人物转换模板。
@@ -583,7 +585,8 @@ async def propose_creation(request: PlanningRequest, trace_store=None, on_progre
     skills = director_tools()
     used_tools, tool_count, repairs = [], 0, 0
     repair_draft = ''
-    json_only = False
+    partitioned = False
+    completion = None
     try:
         provider = create_creation_provider(create_provider)
         has_images = any(asset.data_url and asset.mime_type.startswith('image/') for asset in request.assets)
@@ -612,52 +615,31 @@ async def propose_creation(request: PlanningRequest, trace_store=None, on_progre
         if request.repair:
             auto_prompt += '\n当前是自动返工：repair 是自动审阅工具对指定节点的反馈，非用户新增要求。只修改 repair.node_id 和受影响的未确认下游；保持节点ID、顺序、类型、交付目标，其他节点及 locked_node_ids 保持完全不变。结合失败候选的真实预览、reason 和 previous_feedback 找根因，调整提示词、参考图职责或模板，避免重复同一种失败。候选图是反例，严禁用它们作节点asset_id或生成参考。角色串形时，检查是否错误使用了人物动漫化/chibi身份保留模板；新角色借鉴另一个角色的画风，不等于转换原角色，必要时清空character_style、移除会污染身份的参考，直接文字描述统一画风。清除字段必须明确返回character_style=""、template_id=""、references=[]，不能用null（null表示保持原值）。修正图像生成节点时保持asset_id为空，后续由执行器重新生图。常规修正由你决定，不再问用户选方向；只有确实缺少不可替代的外部条件才提问。不要宣称已经生成或审阅通过。'
 
+        completion = PlanningCompletion(provider, report, streaming=bool(on_progress))
+        usage = completion.usage
         messages = [LLMMessage(role='system', content=DIRECTOR_PROMPT + auto_prompt + (REVISION_PROMPT if revising else '') + '\nJSON schema:\n' + json.dumps(schema, ensure_ascii=False)),
                     LLMMessage(role='user', content=parts)]
         for step in range(8):
-            configure_planning_output(provider)
             available = tool_definitions(skills) if step < 6 and tool_count < 8 else None
             await report('model', '正在理解创作意图、匹配工作流与模板' if not step else '结合当前进度与资料，继续推进创作方案')
             try:
-                options = dict(tools=available, temperature=.4, **structured_options(provider, schema, "creation_revision" if revising else "creation_plan", json_only=json_only))
-                if revising:
-                    options.update(thinking_options(provider))
-                if on_progress and callable(getattr(provider, 'chat_stream_response', None)):
-                    response = None
-                    parts, chars, last_report, last_stage = [], 0, 0., ''
-                    async for chunk in provider.chat_stream_response(messages, **options):
-                        if chunk.text:
-                            parts.append(chunk.text)
-                            chars += len(chunk.text)
-                        # Expose actual activity, never raw reasoning or unfinished JSON.
-                        stage = 'draft' if chars else 'thinking'
-                        if (chunk.text or chunk.reasoning) and (stage != last_stage or time.monotonic() - last_report >= 1):
-                            await report(stage, '正在编排创作方案与待审阅内容' if chars else '模型正在分析需求与素材', output_chars=chars)
-                            last_report, last_stage = time.monotonic(), stage
-                        if chunk.response is not None:
-                            response = chunk.response
-                    if response is None:
-                        raise RuntimeError('规划响应未完整返回')
-                    if not response.content and parts:
-                        response = response.model_copy(update={'content': ''.join(parts)})
-                else:
-                    response = await provider.chat(messages, **options)
+                response = await completion(messages, schema, "creation_revision" if revising else "creation_plan", tools=available)
+                if not response.tool_calls and incomplete_json(response.content):
+                    raise PlanningOutputTruncated()
+            except PlanningOutputTruncated:
+                if partitioned:
+                    raise
+                partitioned = True
+                content = await partition_proposal(request, messages, completion, report)
+                response = LLMResponse(content=content, model=completion.model)
             except Exception as exc:
-                if not json_only and unsupported_schema(exc):
-                    json_only = True
-                    await report('format', '当前模型使用 JSON 输出约束，继续执行完整结构校验')
-                    continue
                 if has_images and unsupported_image_input(exc) and can_use_plan_vision(provider):
                     provider = await use_plan_vision(provider, create_provider)
+                    completion.provider = provider
                     await report('model_selection', '当前模型无法读取图片，已自动切换到同一服务的图片理解模型')
                     continue
                 raise
-            model = response.model
-            for key, count in response.usage.items():
-                usage[key] = usage.get(key, 0) + count
-            if response.finish_reason == 'length':
-                # Rewriting the same oversized graph at the same limit cannot repair it.
-                raise PlanningOutputTruncated()
+            model = completion.model
             if response.tool_calls:
                 if not available or tool_count + len(response.tool_calls) > 8:
                     raise ValueError('资料检索达到本轮上限，请缩小创作范围后重试')
@@ -712,6 +694,9 @@ async def propose_creation(request: PlanningRequest, trace_store=None, on_progre
         code, message = planning_error(cause)
         logger.warning('Creation planning failed: run=%s type=%s code=%s http_status=%s', run.run_id if run else '', type(exc).__name__, code, getattr(exc, 'status_code', None))
         if trace_store:
+            if completion:
+                trace_store.append_event(run.run_id, type='creation.planning_diagnostics', status='failed',
+                    payload=dict(model_used=completion.model, tokens_used=usage, partitioned=partitioned, transport_retries=completion.transport_retries))
             trace_store.fail_run(run.run_id, error_type=code, error_message=message)
         raise
 
