@@ -115,7 +115,8 @@
     function renderReferences(doc, node, assets) {
         return (node.references || []).map(ref => {
             const source = ref.node_id ? doc.plan.nodes.find(n => n.id === ref.node_id) : assets.find(a => a.id === ref.asset_id);
-            return `<li><span>${esc(source?.title || source?.name || '参考素材')}</span><b>${esc(roleNames[ref.role])}</b><small>${esc(ref.note)}</small></li>`;
+            const intervals = (ref.scene_intervals || []).map(span => `${span.start_seconds}–${span.end_seconds} 秒`).join('、');
+            return `<li><span>${esc(source?.title || source?.name || '参考素材')}</span><b>${esc(roleNames[ref.role])}</b><small>${esc(intervals ? `场景时段：${intervals} · ${ref.note || ''}` : ref.note)}</small></li>`;
         }).join('');
     }
     // Restore positions immediately; smooth scrolling would replay on every DOM refresh.

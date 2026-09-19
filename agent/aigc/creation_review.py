@@ -37,6 +37,7 @@ REVIEW_PROMPT = '''你是创作 Agent 的自动审阅工具。用户已点击“
 文本节点审阅故事、脚本、运镜、时长、声音是否自洽；待生成图片审阅提示词与参考分工；视频审阅分镜及参考关系。
 review_phase=plan时只审阅文本方案或视频执行方案，不得因尚未生成媒体要求返工；review_phase=image_output时才评估candidate_ids对应的真实候选，其他资产只是参考，不是被审阅成品。
 审阅key_visual或scene候选时必须核对实际环境、空间与主体占比。人设三视图、表情格、色板、角色大特写或沿用设定图构图不能冒充场景；prompt要求辽阔环境、小比例角色时，人物占满画面必须revise。scene默认无人，重点核对该视频的地点、时段、前中后景、光线与环境连续性。
+视频含多个地点时，检查每个环境都有独立scene引用和scene_intervals时段，时段覆盖全片且与对应剧情一致；不能让一张环境图代表所有地点，连续运镜也可有多个环境。超过9张总参考或15秒时需调整编排，不能牺牲明确的集数、对白或交付约定。只有preview_available=true的资产才有本轮可见预览，不能声称已查看目录中其他图片。
 通常选择 approve 并简述判断理由，不要为风格偏好或常规参数再次要求用户确认。不是保证成片质量，也不能宣称尚未生成的媒体已完成。
 candidate_ids 非空时，比较提供的实际图片预览，从中选择最符合用户要求、已确认身份与视觉风格的一张，返回 select 和准确 asset_id，不能编造候选。只有一张时同样判断它是否适用。
 角色串形、身份混淆、构图/画风/动作不符、提示词或参考图职责错误、所有候选均不合格等可以通过修正设计或重新生成处理的问题，必须返回 revise，asset_id 为空，reason 指出具体问题及修正方向。系统会调用规划工具修正当前节点，重新生成并再次审阅，不能把这些质量问题当作 blocked，也不能为了继续而批准不合格候选。
@@ -54,7 +55,7 @@ async def review_creation(request: ReviewRequest, trace_store=None):
     if any(a not in assets or not assets[a].data_url for a in request.candidate_ids):
         raise ValueError('候选图片预览缺失')
     provider = create_creation_provider(create_provider)
-    if request.assets and getattr(provider, 'model', '') == 'glm-5.3' and can_use_plan_vision(provider):
+    if any(a.data_url for a in request.assets) and getattr(provider, 'model', '') == 'glm-5.3' and can_use_plan_vision(provider):
         provider = await use_plan_vision(provider, create_provider)
     if hasattr(provider, 'max_tokens'):
         provider.max_tokens = 8192 if getattr(provider, 'model', '') == 'glm-5.3' else 2048
@@ -66,7 +67,7 @@ async def review_creation(request: ReviewRequest, trace_store=None):
         payload['messages'] = payload['messages'][-12:]
         payload['review_phase'] = 'image_output' if request.candidate_ids else 'plan'
         payload['review_target'] = node.model_dump()
-        payload['assets'] = [a.model_dump(exclude={'data_url'}) for a in request.assets]
+        payload['assets'] = [dict(**a.model_dump(exclude={'data_url'}), preview_available=bool(a.data_url)) for a in request.assets]
         parts = [{'type': 'text', 'text': json.dumps(payload, ensure_ascii=False)}]
         for asset in request.assets:
             if asset.data_url and asset.mime_type.startswith('image/'):

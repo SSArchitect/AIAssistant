@@ -38,6 +38,7 @@
     function removeNode(graph, id) { return { nodes: graph.nodes.filter(n => n.id !== id).map(n => ({ ...n, inputs: n.inputs.filter(input => input !== id) })) }; }
     function validateGraph(graph) {
         if (!graph.nodes.length) return '请添加至少一个节点';
+        if (graph.nodes.length > 64) return '最多 64 个节点';
         const seen = new Map();
         for (const n of graph.nodes) {
             if (!n.prompt.trim()) return `${n.name}：请输入提示词`;
@@ -143,12 +144,12 @@
             if (name === 'project-new' || name === 'project-template') { tab = 'projects'; render(); await projectController?.newProject(name === 'project-template' ? id : ''); return; }
             if (name === 'new') { draft = { name: '未命名工作流', graph: { nodes: [newNode()] } }; tab = 'workflows'; render(); return; }
             if (name === 'edit') { const d = definitions.find(d => d.id === id); draft = { id, name: d.name, graph: graphOf(d) }; render(); return; }
-            if (name === 'add-image' || name === 'add-video') { if (draft.graph.nodes.length >= 20) throw new Error('最多 20 个节点'); draft.graph.nodes.push(newNode(name === 'add-image' ? 'image' : 'video')); render(); return; }
+            if (name === 'add-image' || name === 'add-video') { if (draft.graph.nodes.length >= 64) throw new Error('最多 64 个节点'); draft.graph.nodes.push(newNode(name === 'add-image' ? 'image' : 'video')); render(); return; }
             if (name === 'remove-node') { draft.graph = removeNode(draft.graph, id); render(); return; }
             if (name === 'use-template') {
                 const t = templates().find(t => t.id === id);
                 if (t.kind === 'workflow_template') draft = { name: `${t.name} · 新创作`, graph: instantiate(t) };
-                else { if (!draft) draft = { name: '未命名工作流', graph: { nodes: [] } }; if (draft.graph.nodes.length >= 20) throw new Error('最多 20 个节点'); draft.graph.nodes.push(...instantiate(t).nodes); }
+                else { if (!draft) draft = { name: '未命名工作流', graph: { nodes: [] } }; const incoming = instantiate(t).nodes; if (draft.graph.nodes.length + incoming.length > 64) throw new Error('最多 64 个节点'); draft.graph.nodes.push(...incoming); }
                 tab = 'workflows'; render(); return;
             }
             const version = epoch;

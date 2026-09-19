@@ -93,3 +93,9 @@ test('a recovered refresh clears its connection error without hiding later failu
     await controller.setVisible(true);
     assert.equal(status.textContent, 'Failed to fetch');
 });
+
+test('larger scene workflows allow 64 nodes and reject overflow', () => {
+    const nodes = Array.from({ length: 64 }, (_, i) => ({ ...C.newNode('image'), id: `image${i}`, prompt: 'forest' }));
+    assert.equal(C.validateGraph({ nodes }), '');
+    assert.match(C.validateGraph({ nodes: [...nodes, { ...nodes[0], id: 'extra' }] }), /64/);
+});

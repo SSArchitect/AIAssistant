@@ -45,7 +45,7 @@ def protected(text):
     return Counter(re.findall(r'<d>[\s\S]*?</d>|"(?:[^"\\]|\\.)*"|<(?:Subject|Picture)\s+\d+>', text))
 
 
-async def compact_storyboard(storyboard, request, provider):
+async def compact_storyboard(storyboard, request, provider, *, reserved_chars=0):
     original = storyboard.model_dump()
     paths = list(prose_paths(original))
     segments, fields = [], {}
@@ -78,7 +78,7 @@ async def compact_storyboard(storyboard, request, provider):
     blank = assemble(['x'] * len(segments))
     # Keep 100 characters of headroom; rendered overhead is measured exactly.
     fixed = len(render_storyboard(VideoStoryboard.model_validate(blank), request.mode)) - len(segments)
-    available = 3900 - fixed
+    available = 3900 - reserved_chars - fixed
     texts = [text for _, text in segments]
     minimum = [min(24, len(text)) for text in texts]
     if available < sum(minimum):

@@ -16,7 +16,7 @@ from agent.aigc.creation_output import validation_details
 from agent.llm.base import LLMMessage
 
 
-MAX_PARTITION_CALLS = 32
+MAX_PARTITION_CALLS = 96
 
 
 def incomplete_json(text):
@@ -61,7 +61,7 @@ async def partition_proposal(request, messages, complete, report):
         summary: str | None = Field(default=None, min_length=1, max_length=1200)
         workflow_template_id: str | None = Field(default=None, max_length=100)
         questions: list[CreativeQuestion] | None = Field(default=None, max_length=2)
-        nodes: list[NodeTask] = Field(max_length=20)
+        nodes: list[NodeTask] = Field(max_length=64)
 
     class NodeResponse(StrictModel):
         node: CreativeNodePatch
@@ -102,8 +102,8 @@ async def partition_proposal(request, messages, complete, report):
 
     def validate_manifest(value):
         ids = [n.id for n in value.nodes]
-        if len(ids) != len(set(ids)) or len(set(existing) | set(ids)) > 20:
-            raise ValueError('节点ID不能重复，完整画布最多20个节点')
+        if len(ids) != len(set(ids)) or len(set(existing) | set(ids)) > 64:
+            raise ValueError('节点ID不能重复，完整画布最多64个节点')
         if not revising and (not value.title or not value.summary):
             raise ValueError('新画布必须提供title和summary')
         if revising and value.workflow_template_id is not None:

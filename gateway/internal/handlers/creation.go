@@ -144,8 +144,8 @@ func creationError(c *gin.Context, status int, err interface{}) {
 	c.JSON(status, gin.H{"error": fmt.Sprint(err)})
 }
 func validateCreationGraph(graph creationGraph, runnable bool) error {
-	if len(graph.Nodes) < 1 || len(graph.Nodes) > 20 {
-		return errors.New("工作流需要 1–20 个节点")
+	if len(graph.Nodes) < 1 || len(graph.Nodes) > maxCreativeNodes {
+		return errors.New("工作流需要 1–64 个节点")
 	}
 	seen := map[string]creationNode{}
 	for _, n := range graph.Nodes {

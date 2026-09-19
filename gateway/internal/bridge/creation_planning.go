@@ -10,12 +10,33 @@ import (
 	"time"
 )
 
-type CreativeReference struct {
-	NodeID  string `json:"node_id"`
-	AssetID string `json:"asset_id"`
-	Role    string `json:"role"`
-	Note    string `json:"note"`
+type CreativeSceneInterval struct {
+	StartSeconds float64 `json:"start_seconds"`
+	EndSeconds   float64 `json:"end_seconds"`
 }
+type CreativeReference struct {
+	SceneIntervals []CreativeSceneInterval `json:"scene_intervals,omitempty"`
+	NodeID         string                  `json:"node_id"`
+	AssetID        string                  `json:"asset_id"`
+	Role           string                  `json:"role"`
+	Note           string                  `json:"note"`
+}
+
+// Omitted and empty optional bindings have the same semantics. Normalize on
+// decode so old approved references are not invalidated by a model round-trip.
+func (r *CreativeReference) UnmarshalJSON(data []byte) error {
+	type wire CreativeReference
+	var value wire
+	if err := json.Unmarshal(data, &value); err != nil {
+		return err
+	}
+	if len(value.SceneIntervals) == 0 {
+		value.SceneIntervals = nil
+	}
+	*r = CreativeReference(value)
+	return nil
+}
+
 type CreativeRevisionSuggestion struct {
 	Label       string `json:"label"`
 	Instruction string `json:"instruction"`

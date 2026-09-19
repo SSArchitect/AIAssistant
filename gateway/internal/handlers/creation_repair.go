@@ -106,7 +106,7 @@ func (h *CreationHandler) repairAutomatic(ctx context.Context, row models.Creati
 		h.mu.Unlock()
 		return false, errors.New("自动返工尚未连接创作规划")
 	}
-	req, err := h.automaticRequest(row, doc, bridge.CreativeNode{}, candidates)
+	req, err := h.automaticRequest(row, doc, node, candidates)
 	if err != nil {
 		h.mu.Unlock()
 		return false, err

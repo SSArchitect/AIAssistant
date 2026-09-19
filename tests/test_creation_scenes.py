@@ -26,7 +26,7 @@ def test_every_video_requires_its_own_scene_not_a_character_or_style_image():
     assert parse(with_scene()).plan.nodes[1].purpose == 'scene'
     with pytest.raises(ValueError, match='场景'):
         parse(plan('identity'))
-    for change in ['purpose', 'role', 'shared']:
+    for change in ['purpose', 'role']:
         value = with_scene()
         if change == 'purpose': value['nodes'][1]['purpose'] = 'shot_reference'
         if change == 'role': value['nodes'][-1]['references'][-1]['role'] = 'style'
@@ -90,3 +90,84 @@ def test_added_scene_cycle_remains_invalid():
     other = dict(id='other_scene', kind='image', purpose='scene', title='循环', prompt='empty forest', depends_on=['scene'])
     with pytest.raises(ValueError, match='循环'):
         planning.parse_proposal(json.dumps(dict(reply='错误循环', patch=dict(nodes=[revised['nodes'][1], other, revised['nodes'][-1]]))), request(current_plan=original, require_video_scenes=True))
+
+
+def multi_scene():
+    value=with_scene()
+    other=copy.deepcopy(value['nodes'][1]);other.update(id='cave',title='洞穴',prompt='Wide empty glowing cave')
+    value['nodes'].insert(2,other)
+    video=value['nodes'][-1]
+    video['depends_on'].append('cave')
+    video['references'][-1]['scene_intervals']=[dict(start_seconds=0,end_seconds=2.5)]
+    video['references'].append(dict(node_id='cave',role='reference',note='后半段飞入洞穴',scene_intervals=[dict(start_seconds=2.5,end_seconds=5)]))
+    video['storyboard']['subject_definitions']+='\n<Picture 3> provides the cave environment.'
+    video['storyboard']['retention_analysis']+='\n<Picture 3> (appears in all shots): attribute_transfer - environment only.'
+    return value
+
+
+def test_single_continuous_video_can_bind_two_scenes_and_compile_exact_execution_payload():
+    from agent.aigc.video_prompting import compile_storyboard
+    from agent.aigc.creation_scenes import SCENE_PREFIX
+    result=parse(multi_scene())
+    video=result.plan.nodes[-1]
+    assert len(video.storyboard.shots)==1 and video.count==1
+    assert '0-2.5s <Picture 2>' in video.prompt and '2.5-5s <Picture 3>' in video.prompt
+    assert compile_storyboard(video.storyboard,planning.creative_video_request(video))==video.prompt
+    # Round-trips are idempotent, including already confirmed videos.
+    again=planning.parse_proposal(json.dumps(dict(reply='未改动',patch=dict(nodes=[]))),request(current_plan=result.plan.model_dump(),automatic_mode=True,locked_node_ids=[n.id for n in result.plan.nodes]))
+    assert again.plan.nodes[-1].prompt==video.prompt
+    assert again.plan.nodes[-1].storyboard.style.count(SCENE_PREFIX)==1
+
+
+@pytest.mark.parametrize('case',['missing','gap','overlap','tail','overflow','identity','non_scene'])
+def test_multiscene_binding_rejects_ambiguous_or_incomplete_environment_timeline(case):
+    value=multi_scene();video=value['nodes'][-1]
+    if case=='missing': video['references'][-1].pop('scene_intervals')
+    if case=='gap': video['references'][-1]['scene_intervals'][0]['start_seconds']=3
+    if case=='overlap': video['references'][-1]['scene_intervals'][0]['start_seconds']=2
+    if case=='tail': video['references'][-1]['scene_intervals'][0]['end_seconds']=4
+    if case=='overflow': video['references'][-1]['scene_intervals'][0]['end_seconds']=6
+    if case=='identity': video['references'][0]['scene_intervals']=[dict(start_seconds=0,end_seconds=5)]
+    if case=='non_scene': value['nodes'][2]['purpose']='shot_reference'
+    with pytest.raises(ValueError,match='场景'):
+        parse(value)
+
+
+def test_same_environment_can_be_reused_across_multiple_videos():
+    value=multi_scene()
+    value['nodes'].append({**copy.deepcopy(value['nodes'][-1]),'id':'second_video'})
+    assert len([n for n in parse(value).plan.nodes if n.kind=='video'])==2
+
+
+def test_planning_catalogue_accepts_fifty_assets_but_bounds_image_previews():
+    assets=[dict(id=f'a{i}',name=f'图{i}',mime_type='image/png',data_url='preview' if i<12 else '') for i in range(50)]
+    req=planning.PlanningRequest(project_id='p',user_id='u',messages=[],assets=assets)
+    assert len(req.assets)==50
+    assets[12]['data_url']='extra'
+    with pytest.raises(ValueError,match='预览'):
+        planning.PlanningRequest(project_id='p',user_id='u',messages=[],assets=assets)
+    with pytest.raises(ValueError,match='重复'):
+        planning.PlanningRequest(project_id='p',user_id='u',messages=[],assets=[assets[0],assets[0]])
+
+
+def test_expanded_canvas_accepts_64_nodes_and_rejects_65():
+    value=dict(title='多集多场景',summary='完整目录',nodes=[dict(id=f'n{i}',kind='text',title='脚本',content='文本') for i in range(64)])
+    assert len(planning.CreativePlan.model_validate(value).nodes)==64
+    value['nodes'].append(dict(id='extra',kind='text',title='extra',content='text'))
+    with pytest.raises(ValueError): planning.CreativePlan.model_validate(value)
+
+
+@pytest.mark.asyncio
+async def test_compaction_reserves_space_for_deterministic_scene_timeline():
+    from tests.test_creation_compaction import editor
+    from agent.aigc.creation_scenes import SCENE_PREFIX
+    from unittest.mock import AsyncMock
+    value=multi_scene()
+    value['nodes'][-1]['storyboard']['style']='Watercolor forest with glowing cave. '*70
+    value['nodes'][-1]['storyboard']['shots'][0]['description']='The rabbit flies from the forest into a glowing cave. '*40
+    wire=json.dumps(dict(reply='分段游览',plan=value))
+    compacted,_=await planning.compact_proposal(wire,request(require_video_scenes=True),editor(),AsyncMock())
+    result=planning.parse_proposal(compacted,request(require_video_scenes=True))
+    video=result.plan.nodes[-1]
+    assert len(video.prompt)<=4000 and SCENE_PREFIX in video.prompt
+    assert '2.5-5s <Picture 3>' in video.prompt

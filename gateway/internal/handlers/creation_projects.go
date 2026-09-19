@@ -113,7 +113,7 @@ func invalidateCreativeChildren(doc *creativeDocument, id string) {
 	}
 }
 func validateCreativePlan(plan bridge.CreativePlan, allowed map[string]bool) error {
-	if strings.TrimSpace(plan.Title) == "" || len([]rune(plan.Title)) > 100 || len(plan.Nodes) > 20 || len(plan.Questions) > 2 {
+	if strings.TrimSpace(plan.Title) == "" || len([]rune(plan.Title)) > 100 || len(plan.Nodes) > maxCreativeNodes || len(plan.Questions) > 2 {
 		return errors.New("无效的创作方案")
 	}
 	seen := map[string]bridge.CreativeNode{}
@@ -194,6 +194,9 @@ func validateCreativePlan(plan bridge.CreativePlan, allowed map[string]bool) err
 			}
 		default:
 			return errors.New("未知节点类型")
+		}
+		if err := validateSceneIntervals(node, seen); err != nil {
+			return err
 		}
 		seen[node.ID] = node
 	}
@@ -301,32 +304,6 @@ func (h *CreationHandler) CreateProject(c *gin.Context) {
 	}
 	c.JSON(201, gin.H{"project": row})
 }
-func (h *CreationHandler) planningAssets(user string, ids []string) ([]bridge.PlanningAsset, error) {
-	if len(ids) > 12 {
-		return nil, errors.New("每个项目最多提供12个资产")
-	}
-	result := []bridge.PlanningAsset{}
-	total := 0
-	for _, id := range ids {
-		item, err := h.assetItem(user, id)
-		if err != nil {
-			return nil, errors.New("资产不存在或已删除")
-		}
-		asset := bridge.PlanningAsset{ID: id, Name: item.Name, MimeType: item.MimeType}
-		if strings.HasPrefix(item.MimeType, "image/") {
-			asset.DataURL, err = h.imageInput(user, id)
-			if err != nil {
-				return nil, err
-			}
-			total += len(asset.DataURL)
-			if total > 64<<20 {
-				return nil, errors.New("本次图片素材合计过大，请使用较小的参考图")
-			}
-		}
-		result = append(result, asset)
-	}
-	return result, nil
-}
 func (h *CreationHandler) planningTemplates(user string) ([]map[string]interface{}, error) {
 	result := []map[string]interface{}{
 		{"id": "builtin-story", "name": "角色短片", "kind": "workflow_template", "description": "简报→主视觉候选与分镜脚本→参考图审阅→多图参考视频；缺少场景时补主视觉"},
@@ -400,19 +377,10 @@ func (h *CreationHandler) ProjectMessage(c *gin.Context) {
 			merged = append(merged, id)
 		}
 	}
-	// Include selected generated candidates so the director can see the current visual.
-	planningIDs := append([]string{}, merged...)
-	for _, node := range doc.Plan.Nodes {
-		selected := doc.States[node.ID].SelectedAssetID
-		found := selected == ""
-		for _, id := range planningIDs {
-			found = found || id == selected
-		}
-		if !found {
-			planningIDs = append(planningIDs, selected)
-		}
-	}
-	assets, err := h.planningAssets(row.UserID, planningIDs)
+	planningDoc := doc
+	planningDoc.AssetIDs = merged
+	planningIDs, previewIDs := planningAssetContext(planningDoc, req.NodeID, req.AssetIDs, nil)
+	assets, err := h.planningAssets(row.UserID, planningIDs, previewIDs)
 	if err != nil {
 		creationError(c, 400, err)
 		return

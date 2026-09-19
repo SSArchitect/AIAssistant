@@ -512,3 +512,11 @@ test('automatic busy and missing-plan gates remain distinct from manual approval
     assert.equal(C.automaticBlock({...project(),automatic_status:'failed'}),'');
     const doc=document();doc.states.script.approved_by='agent';assert.equal(C.nodeStatus(doc,doc.plan.nodes[0],[]),'AI 已确认');
 });
+
+test('video reference review shows each environment interval and escapes annotations', () => {
+    const doc = document();
+    const node = { references: [{ node_id: 'script', role: 'reference', note: '<script>bad</script>', scene_intervals: [{ start_seconds: 0, end_seconds: 2.5 }, { start_seconds: 4, end_seconds: 5 }] }] };
+    const html = C.renderReferences(doc, node, []);
+    assert.match(html, /场景时段：0–2.5 秒、4–5 秒/);
+    assert.match(html, /&lt;script&gt;/); assert.doesNotMatch(html, /<script>/);
+});

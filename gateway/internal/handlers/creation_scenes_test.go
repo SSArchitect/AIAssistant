@@ -37,7 +37,7 @@ func TestCreationScenesRequireEnvironmentInsteadOfCharacterOrStyle(t *testing.T)
 				locked = []string{"video"}
 			}
 			err := validateVideoScenes(p, locked)
-			if (err == nil) != (change == "valid" || change == "locked") {
+			if (err == nil) != (change == "valid" || change == "locked" || change == "shared") {
 				t.Fatalf("unexpected scene validation: %v", err)
 			}
 		})
@@ -129,5 +129,54 @@ func TestAutomaticRejectsSceneLessPlanBeforeGeneration(t *testing.T) {
 	row = waitAutomatic(t, h, row.ID)
 	if row.AutomaticStatus != "failed" || len(f.requests) != 0 {
 		t.Fatal("unprepared video executed")
+	}
+}
+
+func TestMultiSceneVideoBindsContinuousShotToCompleteEnvironmentTimeline(t *testing.T) {
+	for _, change := range []string{"valid", "gap", "overlap", "tail", "missing", "non-scene", "identity"} {
+		t.Run(change, func(t *testing.T) {
+			p := creativeTestPlan()
+			cave := p.Nodes[1]
+			cave.ID = "cave"
+			cave.Title = "洞穴"
+			video := p.Nodes[3]
+			video.DependsOn = append(video.DependsOn, "cave")
+			video.References[0].SceneIntervals = []bridge.CreativeSceneInterval{{StartSeconds: 0, EndSeconds: 2.5}}
+			video.References = append(video.References, bridge.CreativeReference{NodeID: "cave", Role: "reference", SceneIntervals: []bridge.CreativeSceneInterval{{StartSeconds: 2.5, EndSeconds: 5}}})
+			switch change {
+			case "gap":
+				video.References[1].SceneIntervals[0].StartSeconds = 3
+			case "overlap":
+				video.References[1].SceneIntervals[0].StartSeconds = 2
+			case "tail":
+				video.References[1].SceneIntervals[0].EndSeconds = 4
+			case "missing":
+				video.References[1].SceneIntervals = nil
+			case "non-scene":
+				cave.Purpose = "shot_reference"
+			case "identity":
+				video.References[1].Role = "identity"
+			}
+			p.Nodes = append(p.Nodes[:3], cave, video)
+			err := validateCreativePlan(p, nil)
+			if (err == nil) != (change == "valid") {
+				t.Fatal(change, err)
+			}
+			if change == "valid" {
+				if err := validateVideoScenes(p, nil); err != nil {
+					t.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+func TestEmptySceneBindingsDoNotInvalidateLegacyConfirmedReferences(t *testing.T) {
+	var ref bridge.CreativeReference
+	if err := json.Unmarshal([]byte(`{"node_id":"scene","role":"reference","scene_intervals":[]}`), &ref); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(ref, bridge.CreativeReference{NodeID: "scene", Role: "reference"}) {
+		t.Fatal("empty bindings changed approved reference")
 	}
 }

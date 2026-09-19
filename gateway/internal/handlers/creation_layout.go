@@ -30,7 +30,7 @@ func (h *CreationHandler) UpdateProjectLayout(c *gin.Context) {
 		} `json:"positions"`
 	}
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 32<<10)
-	if c.ShouldBindJSON(&req) != nil || len(req.Positions) > 32 || (!req.Reset && len(req.Positions) == 0) || (req.Reset && len(req.Positions) > 0) {
+	if c.ShouldBindJSON(&req) != nil || len(req.Positions) > 128 || (!req.Reset && len(req.Positions) == 0) || (req.Reset && len(req.Positions) > 0) {
 		creationError(c, 400, "无效的画布布局")
 		return
 	}

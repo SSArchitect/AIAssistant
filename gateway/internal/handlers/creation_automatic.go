@@ -232,37 +232,8 @@ func (h *CreationHandler) executeAutomatic(ctx context.Context, id, request stri
 	}
 }
 func (h *CreationHandler) automaticRequest(row models.CreationProject, doc creativeDocument, node bridge.CreativeNode, candidates []string) (bridge.CreationPlanningRequest, error) {
-	ids := []string{}
-	seen := map[string]bool{}
-	add := func(id string) {
-		if id != "" && !seen[id] {
-			seen[id] = true
-			ids = append(ids, id)
-		}
-	}
-	if node.ID == "" {
-		for _, id := range doc.AssetIDs {
-			add(id)
-		}
-		for _, n := range doc.Plan.Nodes {
-			add(doc.States[n.ID].SelectedAssetID)
-			add(n.AssetID)
-			for _, ref := range n.References {
-				add(ref.AssetID)
-			}
-		}
-	}
-	for _, ref := range node.References {
-		id := ref.AssetID
-		if ref.NodeID != "" {
-			id = doc.States[ref.NodeID].SelectedAssetID
-		}
-		add(id)
-	}
-	for _, id := range candidates {
-		add(id)
-	}
-	assets, err := h.planningAssets(row.UserID, ids)
+	ids, previews := planningAssetContext(doc, node.ID, nil, candidates)
+	assets, err := h.planningAssets(row.UserID, ids, previews)
 	if err != nil {
 		return bridge.CreationPlanningRequest{}, err
 	}
