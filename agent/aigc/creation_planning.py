@@ -25,6 +25,9 @@ from agent.aigc.creation_models import (can_use_plan_vision, use_plan_vision, un
 from agent.aigc.creation_compaction import compact_storyboard
 from agent.aigc.creation_references import reference_error, repair_reference_storyboard
 from agent.aigc.creation_completion import PlanningCompletion
+from agent.aigc.creation_contract import planning_schema
+from agent.aigc.creation_repair_scope import validate_repair_scope
+from agent.aigc.creation_node_repair import repair_draft_nodes
 from agent.aigc.creation_partition import partition_proposal, incomplete_json
 from agent.aigc.creation_scenes import validate_scene_intervals, scene_storyboard, scene_timeline_rule, clean_scene_storyboard
 from agent.llm.factory import create_provider
@@ -132,10 +135,10 @@ class CreativePlan(StrictModel):
                 raise ValueError('不能重复引用同一图片')
             if node.kind == 'text':
                 if not node.content.strip() or node.references or node.asset_id or node.storyboard:
-                    raise ValueError('文本节点需要内容，不能执行媒体生成')
+                    raise ValueError('文本节点 ' + node.id + ' 需要非空content；references必须=[]、asset_id必须为空、storyboard必须为空')
             elif node.kind == 'image':
                 if (not node.asset_id and not node.prompt.strip()) or len(node.references) > 1 or node.storyboard:
-                    raise ValueError('生图需要提示词，最多引用一张图片')
+                    raise ValueError('图片节点 ' + node.id + ' 需要prompt或asset_id，references最多一张，storyboard必须为空')
                 if node.asset_id and node.references:
                     raise ValueError('已有资产节点不能同时提出生成引用')
                 if node.character_style and len(node.references) != 1:
@@ -573,20 +576,12 @@ def parse_proposal(content: str, request: PlanningRequest) -> PlanningResponse:
             raise ValueError('未知效果模板')
         for asset_id in [node.asset_id, *(ref.asset_id for ref in node.references)]:
             if asset_id and (asset_id not in assets or not assets[asset_id].mime_type.startswith('image/')):
-                raise ValueError('引用了未提供的图片资产')
+                raise ValueError('节点 ' + node.id + ' 引用了未提供的图片资产')
         if node.kind == 'video':
             node.storyboard = scene_storyboard(node)
             node.prompt = compile_creative_video(node)
     if request.repair:
-        if not request.automatic_mode:
-            raise ValueError('自动返工需要一键生成上下文')
-        before = request.current_plan.get('nodes', [])
-        if [(n['id'], n['kind']) for n in before] != [(n.id, n.kind) for n in proposal.plan.nodes]:
-            raise ValueError('返工不能新增、删除、重排节点或改变产物类型')
-        rejected = set(request.repair.candidate_ids)
-        for node in proposal.plan.nodes:
-            if node.asset_id in rejected or any(ref.asset_id in rejected for ref in node.references):
-                raise ValueError('返工不能把已拒绝候选作为成品或生成参考')
+        validate_repair_scope(proposal.plan, request)
     if request.automatic_mode:
         prior = {n.id: n for n in CreativePlan.model_validate(omit_null_fields(request.current_plan)).nodes}
         current = {n.id: n for n in proposal.plan.nodes}
@@ -618,7 +613,7 @@ async def propose_creation(request: PlanningRequest, trace_store=None, on_progre
             await report('model_selection', '本轮含图片素材，已自动选用支持图片理解的创作模型')
         await report('context', f'已读取 {len(request.messages)} 条对话、{len(request.assets)} 份素材，正在整理创作上下文')
         revising = bool(request.current_plan.get('nodes'))
-        schema = (RevisionResponse if revising else PlanProposal).model_json_schema()
+        schema = planning_schema(RevisionResponse if revising else PlanProposal, request)
         payload = request.model_dump(exclude={'assets'})
         payload['resolved_choices'] = resolved_choices(request)
         # Video prompts are deterministic compilations; resending them alongside
@@ -636,12 +631,18 @@ async def propose_creation(request: PlanningRequest, trace_store=None, on_progre
         if request.require_video_scenes:
             auto_prompt += '\n场景准备是本轮必需工作：每个未锁定视频必须按剧情中的实际地点与环境变化准备一个或多个 purpose=scene 图片节点，依赖对应脚本，以相同画幅生成一个具体地点的环境建立镜头，count=1，明确空间结构、前中后景、光线、色彩与关键环境物件，默认无人；禁止把人设图、角色特写、三视图作为场景。场景节点 character_style 为空，可引用已确认主视觉的 style，但不能引用角色 identity。视频依赖并以 reference 引用自己的场景节点，保留其余角色 identity 与画风 style 的职责和编号；场景不自动成为精确首帧。每段发生换场时按需要增加场景。相同地点要延续建筑、地形、光线规则，可跨视频复用同一已确认场景节点。现有视频补场景时 patch.nodes 可新增节点并更新对应 depends_on/references/storyboard，系统按新增依赖插入；不要仅因补场景改动无关的已确认内容或原台词；非自动模式仍执行用户本轮明确要求的修改。不要仅在文字里说已有场景，必须创建真实图片节点并连线。'
         if request.repair:
-            auto_prompt += '\n当前是自动返工：repair 是自动审阅工具对指定节点的反馈，非用户新增要求。只修改 repair.node_id 和受影响的未确认下游；保持节点ID、顺序、类型、交付目标，其他节点及 locked_node_ids 保持完全不变。结合失败候选的真实预览、reason 和 previous_feedback 找根因，调整提示词、参考图职责或模板，避免重复同一种失败。候选图是反例，严禁用它们作节点asset_id或生成参考。角色串形时，检查是否错误使用了人物动漫化/chibi身份保留模板；新角色借鉴另一个角色的画风，不等于转换原角色，必要时清空character_style、移除会污染身份的参考，直接文字描述统一画风。清除字段必须明确返回character_style=""、template_id=""、references=[]，不能用null（null表示保持原值）。修正图像生成节点时保持asset_id为空，后续由执行器重新生图。常规修正由你决定，不再问用户选方向；只有确实缺少不可替代的外部条件才提问。不要宣称已经生成或审阅通过。'
+            auto_prompt += '\n当前是自动返工：repair 是自动审阅工具对指定节点的反馈，非用户新增要求。只修改 repair.node_id 和受影响的未确认下游；保持原有节点ID、相对顺序、类型、交付目标，其他节点及 locked_node_ids 保持完全不变。允许新增受影响的未确认视频实际引用的必要scene图片节点，count=1，插入视频前并补全依赖和scene_intervals；不能新增视频、删除原节点或增加无关产物。结合失败候选的真实预览、reason 和 previous_feedback 找根因，调整提示词、参考图职责或模板，避免重复同一种失败。候选图是反例，严禁用它们作节点asset_id或生成参考。角色串形时，检查是否错误使用了人物动漫化/chibi身份保留模板；新角色借鉴另一个角色的画风，不等于转换原角色，必要时清空character_style、移除会污染身份的参考，直接文字描述统一画风。清除字段必须明确返回character_style=""、template_id=""、references=[]，不能用null（null表示保持原值）。修正图像生成节点时保持asset_id为空，后续由执行器重新生图。常规修正由你决定，不再问用户选方向；只有确实缺少不可替代的外部条件才提问。不要宣称已经生成或审阅通过。'
 
         completion = PlanningCompletion(provider, report, streaming=bool(on_progress))
         usage = completion.usage
         messages = [LLMMessage(role='system', content=DIRECTOR_PROMPT + auto_prompt + (REVISION_PROMPT if revising else '') + '\nJSON schema:\n' + json.dumps(schema, ensure_ascii=False)),
                     LLMMessage(role='user', content=parts)]
+        async def check_candidate(content):
+            content, consumed = await compact_proposal(content, request, provider, report)
+            for key, count in consumed.items():
+                usage[key] = usage.get(key, 0) + count
+            return content, parse_proposal(content, request)
+
         for step in range(8):
             available = tool_definitions(skills) if step < 6 and tool_count < 8 else None
             await report('model', '正在理解创作意图、匹配工作流与模板' if not step else '结合当前进度与资料，继续推进创作方案')
@@ -679,10 +680,7 @@ async def propose_creation(request: PlanningRequest, trace_store=None, on_progre
             await report('validate', '方案已返回，正在校验节点依赖、参考素材与分镜')
             candidate = merge_revision_repair(repair_draft, response.content) if revising and repair_draft else response.content
             try:
-                candidate, consumed = await compact_proposal(candidate, request, provider, report)
-                for key, count in consumed.items():
-                    usage[key] = usage.get(key, 0) + count
-                proposal = parse_proposal(candidate, request)
+                candidate, proposal = await check_candidate(candidate)
                 break
             except (ValueError, TypeError) as exc:
                 if isinstance(exc, PlanningConstraintError):
@@ -694,7 +692,26 @@ async def propose_creation(request: PlanningRequest, trace_store=None, on_progre
                 else:
                     details = validation_details(exc)
                 logger.warning('Creation plan validation failed (attempt %s): %s', repairs + 1, details)
+                if trace_store:
+                    trace_store.append_event(run.run_id, type='creation.validation_failed', status='failed',
+                        payload=dict(attempt=repairs + 1, errors=details))
                 if repairs:
+                    if '引用了未提供的图片资产' in str(exc):
+                        raise PlanningConstraintError(str(exc) + '；原有内容保留，请选择项目中可用的图片') from exc
+                    # A malformed correction must not erase the previous complete draft.
+                    recovery = candidate
+                    try:
+                        decode_proposal(recovery)
+                    except (ValueError, TypeError):
+                        recovery = repair_draft
+                    if recovery:
+                        try:
+                            candidate, proposal = await repair_draft_nodes(recovery, request, messages, completion, report, check_candidate, exc)
+                            break
+                        except PlanningConstraintError:
+                            raise
+                        except (ValueError, TypeError):
+                            pass
                     if 'Panels must cover' in str(exc):
                         raise PlanningConstraintError('分镜时间存在空档、重叠或越界，方案未提交；原有内容保留，请调整该节点的时间分配') from exc
                     if '4000' in str(exc) and any(word in str(exc).lower() for word in ('prompt', 'compiled storyboard')):
@@ -707,6 +724,7 @@ async def propose_creation(request: PlanningRequest, trace_store=None, on_progre
                                  LLMMessage(role='user', content='方案校验失败：' + json.dumps(details, ensure_ascii=False)[:6000] + ('。仅返回 reply 和 patch，一次修正以上所有节点的问题；仅修改有问题的字段，不重写无关节点和中文审阅稿。执行文本控制在每视频3000字符内，保留完整对白、关键动作、图片角色和时间线，逐节点重新检查Picture编号。系统会合并到待提交草案并重新校验完整画布，保留其中已确定的选择、新增节点及其他修改。' if revising else '。仅返回 reply 和 plan，修正有问题的字段。'))])
         else:
             raise ValueError('本轮创作规划达到上限，请补充要求后继续')
+        model = completion.model or model
         proposal.model_used, proposal.tokens_used = model, usage
         proposal.run_id = run.run_id if run else ''
         if trace_store:

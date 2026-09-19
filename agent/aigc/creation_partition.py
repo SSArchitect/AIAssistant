@@ -113,8 +113,8 @@ async def partition_proposal(request, messages, complete, report):
                 raise ValueError('不能修改已确认节点：' + node.id)
             if node.id in existing and node.kind != existing[node.id]['kind']:
                 raise ValueError('不能改变已有节点类型：' + node.id)
-            if request.repair and node.id not in existing:
-                raise ValueError('自动返工不能新增节点')
+            if request.repair and node.id not in existing and node.kind != 'image':
+                raise ValueError('自动返工只能补充必要的场景图片节点')
 
     await report('partition', '方案较长，已自动改为分段规划：先确定修改范围，再逐个补齐节点')
     manifest = await piece(Manifest, 'creation_manifest',
@@ -136,7 +136,8 @@ async def partition_proposal(request, messages, complete, report):
             if node.kind == 'image' and not node.asset_id and not node.prompt.strip():
                 raise ValueError('图片节点必须提供生成提示词或已有资产')
         schema = NodeResponse.model_json_schema()
-        schema['$defs']['CreativeNodePatch']['properties']['id']['enum'] = [task.id]
+        from agent.aigc.creation_contract import node_schema
+        schema['$defs']['CreativeNodePatch'] = node_schema(schema, task.kind, patch=True, ident=task.id)
         value = await piece(NodeResponse, 'creation_node',
             '只返回{"node":当前一个节点的变更字段}；已有节点保持原id、kind，只写需要修改的字段（其余null）；新增节点必须完整。content和storyboard一旦修改就提供完整字段，不能省略尾部。禁止跨节点输出。视频只写本段storyboard，不重复prompt；简短中文content指向脚本，不复制完整分镜。保持时间线、对白和参考职责，执行文本尽量少于3000字符。文本脚本使用紧凑中文审阅稿，保留明确要求，不逐段重复制作简报。revision_suggestions填null，界面已有修改方向，不在恢复时重复生成。',
             validate_node, context=dict(manifest=manifest.model_dump(exclude_none=True), current_task=task.model_dump(), completed_nodes=nodes), schema=schema)

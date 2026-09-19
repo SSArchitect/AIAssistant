@@ -37,8 +37,43 @@ func automaticRepairLocks(doc creativeDocument, nodeID string) []string {
 }
 
 func validateAutomaticRepair(doc creativeDocument, plan bridge.CreativePlan, req bridge.CreationPlanningRequest) error {
-	if len(plan.Nodes) != len(doc.Plan.Nodes) {
-		return errors.New("自动返工不能新增或删除产物节点")
+	// New scene prerequisites are needed when review detects a missing location.
+	// Keep the original delivery nodes in order and prohibit unrelated additions.
+	original := map[string]bridge.CreativeNode{}
+	affected := map[string]bool{req.Repair.NodeID: true}
+	locked := map[string]bool{}
+	for _, id := range req.LockedNodeIDs {
+		locked[id] = true
+	}
+	for _, node := range doc.Plan.Nodes {
+		original[node.ID] = node
+		for _, dep := range node.DependsOn {
+			affected[node.ID] = affected[node.ID] || affected[dep]
+		}
+	}
+	linked := map[string]bool{}
+	for _, node := range plan.Nodes {
+		if node.Kind == "video" && affected[node.ID] && !locked[node.ID] {
+			for _, ref := range node.References {
+				if ref.Role == "reference" {
+					linked[ref.NodeID] = true
+				}
+			}
+		}
+	}
+	index := 0
+	for _, node := range plan.Nodes {
+		if _, exists := original[node.ID]; exists {
+			if index >= len(doc.Plan.Nodes) || node.ID != doc.Plan.Nodes[index].ID || node.Kind != doc.Plan.Nodes[index].Kind {
+				return errors.New("自动返工不能重排原有节点或改变产物类型")
+			}
+			index++
+		} else if node.Kind != "image" || node.Purpose != "scene" || node.Count != 1 || !linked[node.ID] {
+			return errors.New("自动返工只能补充受影响视频实际引用的场景图片，不能新增交付或无关节点")
+		}
+	}
+	if index != len(doc.Plan.Nodes) {
+		return errors.New("自动返工不能删除原有节点")
 	}
 	protected := doc
 	activity := *doc.Automation
@@ -79,10 +114,7 @@ func validateAutomaticRepair(doc creativeDocument, plan bridge.CreativePlan, req
 	for _, id := range req.Repair.CandidateIDs {
 		rejected[id] = true
 	}
-	for i, node := range plan.Nodes {
-		if node.ID != doc.Plan.Nodes[i].ID || node.Kind != doc.Plan.Nodes[i].Kind {
-			return errors.New("自动返工不能重排节点或改变产物类型")
-		}
+	for _, node := range plan.Nodes {
 		if rejected[node.AssetID] {
 			return errors.New("自动返工不能采用已拒绝的候选图片")
 		}
@@ -112,6 +144,7 @@ func (h *CreationHandler) repairAutomatic(ctx context.Context, row models.Creati
 		return false, err
 	}
 	req.LockedNodeIDs = automaticRepairLocks(doc, node.ID)
+	req.RequireVideoScenes = true
 	for _, id := range req.LockedNodeIDs {
 		if id == node.ID {
 			h.mu.Unlock()

@@ -1,9 +1,14 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"image"
+	"image/color"
+	"image/png"
 	"reflect"
 	"strings"
 	"testing"
@@ -374,6 +379,68 @@ func TestAutomaticRepairPreservesLockedStoryboardAcrossJSONEncodings(t *testing.
 	repaired.Nodes[3].Prompt = "changed execution prompt"
 	if validateAutomaticRepair(doc, repaired, req) == nil {
 		t.Fatal("real locked-node edit accepted")
+	}
+}
+
+func TestAutomaticRepairCanAddSceneThenContinueGeneration(t *testing.T) {
+	r, h, f, token, row := setupAutomatic(t)
+	f.imageContent = func(req bridge.CreationNodeRequest) string {
+		if req.Prompt != "empty glowing cave" {
+			return creationPNG
+		}
+		picture := image.NewRGBA(image.Rect(0, 0, 1, 1))
+		picture.Set(0, 0, color.RGBA{B: 180, A: 255})
+		var out bytes.Buffer
+		if err := png.Encode(&out, picture); err != nil {
+			t.Fatal(err)
+		}
+		return base64.StdEncoding.EncodeToString(out.Bytes())
+	}
+	repaired := false
+	f.reviewDecision = func(req bridge.CreationReviewRequest) *bridge.CreationReviewResponse {
+		if req.NodeID == "video" && !repaired {
+			return &bridge.CreationReviewResponse{Decision: "revise", Reason: "缺少后半段洞穴场景"}
+		}
+		return nil
+	}
+	f.planHook = func(ctx context.Context, req bridge.CreationPlanningRequest) (*bridge.CreationPlanningResponse, error) {
+		if req.Repair == nil || req.Repair.NodeID != "video" || !req.RequireVideoScenes {
+			t.Fatal("missing targeted repair")
+		}
+		p := copyAutomaticPlan(req.CurrentPlan)
+		scene := p.Nodes[1]
+		scene.ID, scene.Title, scene.Prompt, scene.Count = "cave", "洞穴", "empty glowing cave", 1
+		video := p.Nodes[3]
+		video.DependsOn = append(video.DependsOn, "cave")
+		video.References[0].SceneIntervals = []bridge.CreativeSceneInterval{{StartSeconds: 0, EndSeconds: 2.5}}
+		video.References = append(video.References, bridge.CreativeReference{NodeID: "cave", Role: "reference", SceneIntervals: []bridge.CreativeSceneInterval{{StartSeconds: 2.5, EndSeconds: 5}}})
+		p.Nodes = append(p.Nodes[:3], scene, video)
+		repaired = true
+		return &bridge.CreationPlanningResponse{Plan: p, Reply: "补齐洞穴"}, nil
+	}
+	startAutomatic(t, r, h, token, row.ID, "repair-missing-scene")
+	row = waitAutomatic(t, h, row.ID)
+	doc, _ := projectDocument(row)
+	if row.AutomaticStatus != "completed" || !creativeApproved(doc.States["cave"]) || len(f.requests) != 4 {
+		t.Fatal("scene insertion interrupted loop", row.AutomaticStatus, doc.Automation.Steps, len(f.requests))
+	}
+	if f.requests[2].Kind != "image" || f.requests[3].Kind != "video" || len(f.requests[3].InputImages) != 2 {
+		t.Fatal("new prerequisite not generated before video", f.requests)
+	}
+}
+
+func TestAutomaticRepairRejectsNewDeliverablesOrUnrelatedScenes(t *testing.T) {
+	for _, kind := range []string{"video", "image"} {
+		plan := creativeTestPlan()
+		doc := creativeDocument{Plan: plan, Automation: &creativeAutomation{}}
+		p := copyAutomaticPlan(plan)
+		node := plan.Nodes[1]
+		node.ID, node.Kind, node.Count = "unrelated", kind, 1
+		p.Nodes = append(p.Nodes, node)
+		req := bridge.CreationPlanningRequest{Repair: &bridge.CreationRepairFeedback{NodeID: "video"}}
+		if validateAutomaticRepair(doc, p, req) == nil {
+			t.Fatal("accepted unrelated or extra delivery", kind)
+		}
 	}
 }
 func TestAutomaticCreationRevisesRejectedImagesUntilAcceptedThenGeneratesVideo(t *testing.T) {

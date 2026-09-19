@@ -117,7 +117,7 @@ async def test_recovered_graph_still_requires_valid_asset_ownership_and_dependen
         answer(manifest(value['nodes'])), *[answer(dict(node=n)) for n in value['nodes']], answer(correction)]))
     monkeypatch.setattr(planning, 'create_provider', lambda: provider)
     original = plan()
-    with pytest.raises(ValueError, match='格式校验失败'):
+    with pytest.raises(ValueError, match='video.*未提供的图片资产'):
         await planning.propose_creation(request(current_plan=original))
     assert original['nodes'][1]['references'] == []
 

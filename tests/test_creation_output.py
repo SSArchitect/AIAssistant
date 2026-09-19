@@ -111,9 +111,11 @@ async def test_semantic_timeline_failure_is_distinct_from_json_format_error(monk
     from agent.aigc.creation_models import PlanningConstraintError,planning_error
     value=plan()
     value['nodes'][-1]['storyboard']['shots'][0]['panels']=[dict(start_seconds=1.,end_seconds=5.,description='A rabbit bows.')]
-    provider=SimpleNamespace(chat=AsyncMock(return_value=LLMResponse(content=json.dumps({'reply':'review','plan':value}))))
+    provider=SimpleNamespace(chat=AsyncMock(side_effect=[
+        *[LLMResponse(content=json.dumps({'reply':'review','plan':value})) for _ in range(2)],
+        *[LLMResponse(content=json.dumps({'reply':'repair','patch':{'nodes':[value['nodes'][-1]]}})) for _ in range(3)]]))
     monkeypatch.setattr(planning,'create_provider',lambda:provider)
     with pytest.raises(PlanningConstraintError) as caught:await planning.propose_creation(request())
     code,message=planning_error(caught.value)
     assert code=='plan_constraint_failed' and '分镜时间' in message and '格式校验失败' not in message
-    assert provider.chat.await_count==2
+    assert provider.chat.await_count==5
