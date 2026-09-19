@@ -34,6 +34,7 @@ type CreationRun struct {
 // The project owns dialogue, review decisions and versioned artifact definitions.
 // Media contents continue to live solely in DriveItem.
 type CreationProject struct {
+	NameLocked         bool      `json:"-"`
 	AutomaticStatus    string    `json:"automatic_status,omitempty" gorm:"index"`
 	AutomaticRequestID string    `json:"-"`
 	ID                 string    `json:"id" gorm:"primaryKey"`
@@ -58,6 +59,7 @@ type CreationProjectVersion struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 type CreationAsset struct {
+	ProjectID      string    `json:"project_id" gorm:"index;not null;default:''"`
 	ID             string    `json:"id" gorm:"primaryKey"`
 	UserID         string    `json:"-" gorm:"uniqueIndex:creation_asset_file;not null"`
 	DriveItemID    string    `json:"drive_item_id" gorm:"uniqueIndex:creation_asset_file;not null"`
@@ -66,4 +68,11 @@ type CreationAsset struct {
 	NodeID         string    `json:"node_id,omitempty"`
 	ProviderTaskID string    `json:"provider_task_id,omitempty"`
 	CreatedAt      time.Time `json:"created_at"`
+}
+
+// Small cached previews are stored separately so asset metadata never reads media bytes.
+type CreationThumbnail struct {
+	DriveItemID     string `gorm:"primaryKey"`
+	SourceUpdatedAt time.Time
+	Content         []byte `gorm:"type:blob"`
 }

@@ -63,6 +63,7 @@ func Init(dbPath string) error {
 		&models.CreationDefinition{},
 		&models.CreationRun{},
 		&models.CreationAsset{},
+		&models.CreationThumbnail{},
 		&models.CreationProject{},
 		&models.CreationProjectVersion{},
 	); err != nil {

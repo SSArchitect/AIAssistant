@@ -348,7 +348,9 @@ func (h *CreationHandler) advanceAutomatic(ctx context.Context, id, request stri
 			return false, fmt.Errorf("需要补充信息：%s", response.Plan.Questions[0].Question)
 		}
 		doc = applyCreativePlan(doc, response.Plan)
-		row.Name = response.Plan.Title
+		if !row.NameLocked {
+			row.Name = response.Plan.Title
+		}
 		automaticStep(&doc, "decided", response.Reply, "")
 		_ = persistTokenUsageRecordDB(h.db, row.ID, row.UserID, 0, "creation_director", time.Now(), &bridge.ChatResponse{ModelUsed: response.ModelUsed, TokensUsed: response.TokensUsed, RunID: response.RunID, Runtime: "self"})
 		return false, h.updateProject(&row, doc, true)

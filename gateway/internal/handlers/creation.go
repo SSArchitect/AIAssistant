@@ -60,6 +60,9 @@ type CreationHandler struct {
 	db               *gorm.DB
 	mu               sync.Mutex
 	automaticCancels map[string]context.CancelFunc
+	libraryMu        sync.Mutex
+	libraryReady     map[string]bool
+	thumbnailMu      sync.Mutex
 }
 
 func NewCreationHandler(generator creationGenerator) *CreationHandler {
@@ -125,6 +128,9 @@ func (h *CreationHandler) Register(api *gin.RouterGroup) {
 	group.PUT("/definitions/:id", h.SaveDefinition)
 	group.DELETE("/definitions/:id", h.DeleteDefinition)
 	group.GET("/assets", h.Assets)
+	group.GET("/asset-folders", h.AssetFolders)
+	group.POST("/assets/delete", h.DeleteAssets)
+	group.GET("/assets/:id/thumbnail", h.AssetThumbnail)
 	group.POST("/assets", h.UploadAsset)
 	group.POST("/assets/import", h.ImportAsset)
 	group.GET("/assets/:id/content", h.AssetContent)
@@ -338,51 +344,61 @@ type creationAssetView struct {
 
 func (h *CreationHandler) Assets(c *gin.Context) {
 	user := c.GetString("creation_user_id")
+	if err := h.organizeAssets(user); err != nil {
+		creationError(c, 500, "无法整理资产文件夹")
+		return
+	}
+	query := h.db.Table("creation_assets").Select("creation_assets.*, drive_items.name, drive_items.mime_type, drive_items.size").Joins("JOIN drive_items ON drive_items.id = creation_assets.drive_item_id AND drive_items.user_id = creation_assets.user_id").Where("creation_assets.user_id = ?", user)
 	folder, err := h.assetFolder(user)
 	if err != nil {
 		creationError(c, 500, "无法打开资产文件夹")
 		return
 	}
-	// Include media placed in the Drive asset folder, without duplicating their bytes.
-	ids, err := h.assetDescendants(folder.ID, user)
-	if err != nil {
-		creationError(c, 500, "无法读取资产")
-		return
-	}
-	if len(ids) > 0 {
-		var registered []models.CreationAsset
-		if err := h.db.Select("drive_item_id").Where("user_id = ?", user).Find(&registered).Error; err != nil {
-			creationError(c, 500, "无法读取资产记录")
-			return
-		}
-		linked := map[string]bool{}
-		for _, asset := range registered {
-			linked[asset.DriveItemID] = true
-		}
-		var items []models.DriveItem
-		if err = h.db.Select("id", "user_id").Where("id IN ? AND user_id = ? AND type = ? AND (mime_type LIKE ? OR mime_type LIKE ?)", ids, user, "file", "image/%", "video/%").Find(&items).Error; err != nil {
-			creationError(c, 500, "无法读取资产")
-			return
-		}
-		for _, item := range items {
-			if linked[item.ID] {
-				continue
-			}
-			asset := models.CreationAsset{ID: uuid.NewString(), UserID: user, DriveItemID: item.ID, Source: "drive"}
-			if err = h.db.Clauses(clause.OnConflict{DoNothing: true}).Create(&asset).Error; err != nil {
-				creationError(c, 500, "无法记录资产")
+	if _, present := c.Request.URL.Query()["project_id"]; present {
+		projectID := c.Query("project_id")
+		if projectID != "" {
+			folder, err = h.projectAssetFolder(user, projectID)
+			if err != nil {
+				creationError(c, 404, "项目不存在")
 				return
 			}
 		}
+		query = query.Where("creation_assets.project_id = ?", projectID)
+	}
+	if raw := c.Query("ids"); raw != "" {
+		ids := strings.Split(raw, ",")
+		if len(ids) > 500 {
+			creationError(c, 400, "引用过多")
+			return
+		}
+		query = query.Where("creation_assets.id IN ?", ids)
+	}
+	if q := c.Query("q"); q != "" {
+		query = query.Where("instr(lower(drive_items.name), lower(?)) > 0", q)
+	}
+	if kind := c.Query("media"); kind == "image/" || kind == "video/" {
+		query = query.Where("drive_items.mime_type LIKE ?", kind+"%")
+	}
+	if source := c.Query("source"); source != "" {
+		query = query.Where("creation_assets.source = ?", source)
+	}
+	var total int64
+	if err = query.Count(&total).Error; err != nil {
+		creationError(c, 500, "无法读取资产")
+		return
+	}
+	if c.Query("limit") != "" {
+		query = query.Limit(libraryLimit(c, 48)).Offset(libraryOffset(c))
 	}
 	var assets []creationAssetView
-	err = h.db.Table("creation_assets").Select("creation_assets.*, drive_items.name, drive_items.mime_type, drive_items.size").Joins("JOIN drive_items ON drive_items.id = creation_assets.drive_item_id AND drive_items.user_id = creation_assets.user_id").Where("creation_assets.user_id = ?", user).Order("creation_assets.created_at DESC").Scan(&assets).Error
+	err = query.Order("creation_assets.created_at DESC, creation_assets.id DESC").Scan(&assets).Error
 	if err != nil {
 		creationError(c, 500, "无法读取资产")
 		return
 	}
-	c.JSON(200, gin.H{"assets": assets, "folder_id": folder.ID})
+	c.JSON(200, gin.H{"assets": assets, "folder_id": folder.ID, "total": total})
 }
+
 func creationMediaType(content []byte) string {
 	kind := http.DetectContentType(content)
 	switch kind {
@@ -391,7 +407,7 @@ func creationMediaType(content []byte) string {
 	}
 	return ""
 }
-func (h *CreationHandler) saveAsset(user, name, content, mime, source, run, node, task string) (models.CreationAsset, error) {
+func (h *CreationHandler) saveAsset(user, name, content, mime, source, run, node, task string, projectIDs ...string) (models.CreationAsset, error) {
 	asset := models.CreationAsset{}
 	if len(content) > ((creationMaxBytes+2)/3)*4 {
 		return asset, errors.New("资产超过 64 MiB")
@@ -403,7 +419,20 @@ func (h *CreationHandler) saveAsset(user, name, content, mime, source, run, node
 	if creationMediaType(decoded) != mime || mime == "" {
 		return asset, errors.New("文件内容与媒体类型不匹配，请使用 PNG、JPEG、WebP、MP4 或 WebM")
 	}
+	projectID := ""
+	if len(projectIDs) > 0 {
+		projectID = projectIDs[0]
+	}
+	if run != "" {
+		var row models.CreationRun
+		if h.db.Select("project_id").Where("id = ? AND user_id = ?", run, user).First(&row).Error == nil {
+			projectID = row.ProjectID
+		}
+	}
 	folder, err := h.assetFolder(user)
+	if projectID != "" {
+		folder, err = h.projectAssetFolder(user, projectID)
+	}
 	if err != nil {
 		return asset, err
 	}
@@ -411,7 +440,7 @@ func (h *CreationHandler) saveAsset(user, name, content, mime, source, run, node
 	if item.Name == "" {
 		item.Name = "创作资产"
 	}
-	asset = models.CreationAsset{ID: uuid.NewString(), UserID: user, DriveItemID: item.ID, Source: source, RunID: run, NodeID: node, ProviderTaskID: task}
+	asset = models.CreationAsset{ID: uuid.NewString(), UserID: user, DriveItemID: item.ID, Source: source, ProjectID: projectID, RunID: run, NodeID: node, ProviderTaskID: task}
 	err = h.db.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(&item).Error; err != nil {
 			return err
@@ -423,15 +452,18 @@ func (h *CreationHandler) saveAsset(user, name, content, mime, source, run, node
 func (h *CreationHandler) UploadAsset(c *gin.Context) {
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 90<<20)
 	var req struct {
-		Name     string `json:"name"`
-		Content  string `json:"content"`
-		MimeType string `json:"mime_type"`
+		Name      string `json:"name"`
+		Content   string `json:"content"`
+		MimeType  string `json:"mime_type"`
+		ProjectID string `json:"project_id"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		creationError(c, 400, "文件上传失败，最大 64 MiB")
 		return
 	}
-	asset, err := h.saveAsset(c.GetString("creation_user_id"), req.Name, req.Content, req.MimeType, "upload", "", "", "")
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	asset, err := h.saveAsset(c.GetString("creation_user_id"), req.Name, req.Content, req.MimeType, "upload", "", "", "", req.ProjectID)
 	if err != nil {
 		creationError(c, 400, err)
 		return
@@ -439,13 +471,17 @@ func (h *CreationHandler) UploadAsset(c *gin.Context) {
 	c.JSON(201, gin.H{"asset": asset})
 }
 func (h *CreationHandler) ImportAsset(c *gin.Context) {
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 16<<10)
 	var req struct {
-		ID string `json:"drive_item_id"`
+		ID        string `json:"drive_item_id"`
+		ProjectID string `json:"project_id"`
 	}
 	if c.ShouldBindJSON(&req) != nil {
 		creationError(c, 400, "请选择网盘文件")
 		return
 	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	user := c.GetString("creation_user_id")
 	var item models.DriveItem
 	if h.db.Where("id = ? AND user_id = ? AND type = ?", req.ID, user, "file").First(&item).Error != nil {
@@ -456,17 +492,29 @@ func (h *CreationHandler) ImportAsset(c *gin.Context) {
 		creationError(c, 400, "请选择图片或视频文件")
 		return
 	}
-	folder, err := h.assetFolder(user)
-	if err != nil {
-		creationError(c, 500, "无法打开资产文件夹")
+	var existing models.CreationAsset
+	if h.db.Where("user_id = ? AND drive_item_id = ?", user, item.ID).First(&existing).Error == nil && existing.ProjectID == req.ProjectID {
+		c.JSON(200, gin.H{"asset": existing})
 		return
 	}
-	asset := models.CreationAsset{ID: uuid.NewString(), UserID: user, DriveItemID: item.ID, Source: "drive"}
+	folder, err := h.assetFolder(user)
+	if req.ProjectID != "" {
+		folder, err = h.projectAssetFolder(user, req.ProjectID)
+	}
+	if err != nil {
+		creationError(c, 404, "项目资产文件夹不存在")
+		return
+	}
+	asset := models.CreationAsset{ID: uuid.NewString(), UserID: user, DriveItemID: item.ID, Source: "drive", ProjectID: req.ProjectID}
+	if existing.ID != "" {
+		asset = existing
+		asset.ProjectID = req.ProjectID
+	}
 	err = h.db.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Model(&item).Update("parent_id", folder.ID).Error; err != nil {
 			return err
 		}
-		if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&asset).Error; err != nil {
+		if err := tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "user_id"}, {Name: "drive_item_id"}}, DoUpdates: clause.AssignmentColumns([]string{"project_id"})}).Create(&asset).Error; err != nil {
 			return err
 		}
 		asset = models.CreationAsset{}
@@ -502,6 +550,9 @@ func (h *CreationHandler) AssetContent(c *gin.Context) {
 func (h *CreationHandler) Runs(c *gin.Context) {
 	var rows []models.CreationRun
 	query := h.db.Where("user_id = ?", c.GetString("creation_user_id"))
+	if id := c.Query("project_id"); id != "" {
+		query = query.Where("project_id = ?", id)
+	}
 	if id := c.Query("workflow_id"); id != "" {
 		query = query.Where("workflow_id = ?", id)
 	}

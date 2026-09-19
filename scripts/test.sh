@@ -69,6 +69,7 @@ if command -v node >/dev/null 2>&1; then
        node --check web/static/js/conversation-pager.js 2>&1 && \
        node --check web/static/js/run-pager.js 2>&1 && \
        node --check web/static/js/connect.js 2>&1 && \
+       node --check web/static/js/creation-library.js 2>&1 && \
        node --check web/static/js/creation.js 2>&1 && \
        node --check web/static/js/creation-projects.js 2>&1 && \
        node --check web/static/js/share-card.js 2>&1 && \

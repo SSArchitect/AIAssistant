@@ -281,7 +281,7 @@ test('project module loads before navigation and legacy controller cannot overri
     const html = fs.readFileSync('web/index.html', 'utf8'), parent = fs.readFileSync('web/static/js/creation.js', 'utf8');
     assert.ok(html.indexOf('/static/js/creation-projects.js') < html.indexOf('/static/js/creation.js'));
     assert.match(parent, /tab = 'projects'/);
-    assert.match(parent, /!b.closest\('\.creation-project-host'\)/);
+    assert.match(parent, /!b.closest\('\.creation-project-host, \.creation-asset-host'\)/);
     assert.match(parent, /projectController\?\.reset\(\)/);
 });
 

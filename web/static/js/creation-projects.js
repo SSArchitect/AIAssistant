@@ -1,8 +1,8 @@
 (function (root, factory) {
-    const api = factory();
+    const api = factory(typeof module === 'object' && module.exports ? require('./creation-library.js') : root.CreationLibrary);
     if (typeof module === 'object' && module.exports) module.exports = api;
     root.CreationProjects = api;
-})(typeof globalThis !== 'undefined' ? globalThis : this, function () {
+})(typeof globalThis !== 'undefined' ? globalThis : this, function (Library) {
     'use strict';
     const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
     const parse = (value, fallback) => { try { return typeof value === 'string' ? JSON.parse(value) : value || fallback; } catch (_) { return fallback; } };
@@ -191,8 +191,9 @@
         if (!questions.length || project?.planning || project?.error || automaticActive(project)) return '';
         return `<section class="cp-decisions" aria-label="等待你的判断"><header><span>下一步</span><strong>需要你来定</strong></header>${questions.map((q, i) => `<fieldset><legend>${esc(q.question)}</legend><div>${q.options.map((option, j) => `<button type="button" data-cp-action="answer" data-id="${i}:${j}" ${busy ? 'disabled' : ''}><span>${esc(option)}</span>${j === 0 && !option.includes('推荐') ? '<small>推荐</small>' : ''}</button>`).join('')}</div></fieldset>`).join('')}<p>选择一个方向，或在下方输入你的想法。</p></section>`;
     }
-    function createController({ api, user, mediaURL, onAssets = () => {}, onTemplates = () => {} }) {
+    function createController({ api, user, mediaURL, confirm = async () => false, onAssets = () => {}, onTemplates = () => {} }) {
         let element = null, visible = false, timer = null, epoch = 0, viewEpoch = 0, busy = false;
+        let projectsView = true, projectSearch = '', renameID = '', renameValue = '', openRequest = 0;
         let projects = [], project = null, assets = [], runs = [], selected = '', draft = '', attachments = [], feedback = '', picker = false, versions = null, editing = false, editText = '';
         let zoom = 1, autoFit = true, pan = null, dragging = null, renderPending = false, suppressClick = null;
         const canvasStates = new Map(), refinementDrafts = new Map();
@@ -200,6 +201,10 @@
         let optionsOpen = false;
         const requestKeys = new Map(), planningOpen = new Map(), roundsOpen = new Map();
         let pendingMessage = null, followMessages = false, pollError = '';
+        const assetPicker = Library.createController({api,user,mediaURL,onAttach: async chosen => {
+            attachments=[...new Set([...attachments,...chosen.map(a=>a.id)])];
+            assets=[...assets.filter(a=>!chosen.some(b=>b.id===a.id)),...chosen];picker=false;render();
+        }});
         const currentDoc = () => documentOf(project);
         const currentPreferences = () => preferenceDrafts.get(project?.id || '') || normalizePreferences(currentDoc().preferences);
         const preferencesChanged = () => JSON.stringify(currentPreferences()) !== JSON.stringify(normalizePreferences(currentDoc().preferences));
@@ -249,8 +254,8 @@
             const retry = element?.querySelector('[data-cp-action="retry-layout"]'); if (retry) retry.hidden = !state.failed;
         }
         const button = (action, label, { id = '', primary = false, disabled = false, asset = '' } = {}) => `<button type="button" class="${primary ? 'btn-primary' : 'btn-secondary'}" data-cp-action="${action}" data-id="${esc(id)}" data-asset="${esc(asset)}" ${disabled || busy || project?.planning || (automaticActive(project) && !['automatic-stop','versions','new','select','assets','close-versions'].includes(action)) ? 'disabled' : ''}>${esc(label)}</button>`;
-        function mount(target) { element = target; if (target) { bind(); render(); } }
-        function reset() { epoch++; viewEpoch++; visible = false; clearTimeout(timer); timer = null; project = null; projects = []; assets = []; runs = []; selected = ''; draft = ''; attachments = []; feedback = ''; picker = false; busy = false; versions = null; requestKeys.clear(); planningOpen.clear(); roundsOpen.clear(); preferenceDrafts.clear(); optionsOpen = false; canvasStates.clear(); refinementDrafts.clear(); dragging = null; pan = null; renderPending = false; suppressClick = null; pendingMessage = null; followMessages = false; pollError = '';  if (element) element.innerHTML = ''; }
+        function mount(target) { element = target; if (target) { Library.bindMedia(target); bind(); render(); } }
+        function reset() { assetPicker.reset(); projectsView = true; projectSearch = ''; renameID = ''; openRequest++; epoch++; viewEpoch++; visible = false; clearTimeout(timer); timer = null; project = null; projects = []; assets = []; runs = []; selected = ''; draft = ''; attachments = []; feedback = ''; picker = false; busy = false; versions = null; requestKeys.clear(); planningOpen.clear(); roundsOpen.clear(); preferenceDrafts.clear(); optionsOpen = false; canvasStates.clear(); refinementDrafts.clear(); dragging = null; pan = null; renderPending = false; suppressClick = null; pendingMessage = null; followMessages = false; pollError = '';  if (element) element.innerHTML = ''; }
         function setVisible(value) { visible = value; viewEpoch++; clearTimeout(timer); if (value) { render(); void poll(viewEpoch); } }
         async function poll(version) {
             if (!visible || version !== viewEpoch) return;
@@ -259,15 +264,29 @@
         }
         async function refresh() {
             if (!user()) return;
-            const owner = epoch, id = project?.id;
-            const [p, a, r, detail] = await Promise.all([api('GET', '/api/creation/projects'), api('GET', '/api/creation/assets'), api('GET', '/api/creation/runs'), id ? api('GET', `/api/creation/projects/${encodeURIComponent(id)}`) : null]);
-            if (owner !== epoch) return;
+            const owner = epoch, id = project?.id, opening = openRequest;
+            if(projectsView || !id) {
+                const p=await api('GET','/api/creation/projects');if(owner!==epoch||opening!==openRequest)return;
+                const changed=JSON.stringify(projects)!==JSON.stringify(p.projects||[]);projects=p.projects||[];
+                if(pollError){if(feedback===pollError)showMessage('');pollError='';}
+                if(changed)render();return;
+            }
+            const [detail,r]=await Promise.all([api('GET',`/api/creation/projects/${encodeURIComponent(id)}`),api('GET',`/api/creation/runs?project_id=${encodeURIComponent(id)}`)]);
+            if(owner!==epoch||opening!==openRequest||id!==project?.id)return;
             if (pollError) { if (feedback === pollError) showMessage(''); pollError = ''; }
-            const before = JSON.stringify([projects, project, assets, runs]), previousLayout = layoutState();
-            projects = p.projects || []; assets = a.assets || []; runs = r.runs || [];
-            if (detail && id === project?.id && detail.project.revision >= project.revision) project = detail.project;
-            if (before !== JSON.stringify([projects, project, assets, runs]) || project?.planning) {
-                if (previousLayout !== layoutState() || !updatePlanningProgress()) render();
+            const before=JSON.stringify([project,assets,runs]),previousLayout=layoutState();
+            if(detail?.project && detail.project.revision>=project.revision)project=detail.project;
+            runs=r.runs||[];
+            if(before!==JSON.stringify([project,assets,runs])||project?.planning){if(previousLayout!==layoutState()||!updatePlanningProgress())render();}
+            const doc=currentDoc(),ids=new Set([...doc.asset_ids,...attachments]);
+            for(const n of doc.plan.nodes){if(n.asset_id)ids.add(n.asset_id);for(const ref of n.references||[])if(ref.asset_id)ids.add(ref.asset_id);}
+            for(const state of Object.values(doc.states)){if(state.selected_asset_id)ids.add(state.selected_asset_id);for(const a of state.candidates||[])ids.add(a);}
+            for(const run of runs)for(const step of parse(run.progress,[]))for(const a of step.asset_ids||[])ids.add(a);
+            const missing=[...ids].filter(a=>!assets.some(existing=>existing.id===a));
+            if(missing.length){
+                const responses=await Promise.all(Array.from({length:Math.ceil(missing.length/100)},(_,i)=>api('GET',`/api/creation/assets?ids=${encodeURIComponent(missing.slice(i*100,i*100+100).join(','))}`)));
+                if(owner!==epoch||opening!==openRequest||id!==project?.id)return;
+                const added=responses.flatMap(a=>a.assets||[]);if(added.length){assets=[...assets,...added];render();}
             }
             // The media service may return unchanged status for minutes; tick text only.
             for (const target of element?.querySelectorAll?.('[data-cp-media-run]') || []) {
@@ -299,6 +318,7 @@
             if (dragging || pan) { renderPending = true; return; }
             renderPending = false;
             selectDefault();
+            if(projectsView){renderProjectLibrary();return;}
             const doc = currentDoc(), focused = typeof document !== 'undefined' && element.contains?.(document.activeElement) ? document.activeElement : null;
             const preferenceFocus = focused?.dataset?.cpPreference;
             const focusKind = focused?.hasAttribute('data-cp-draft') ? 'draft' : focused?.hasAttribute('data-cp-edit') ? 'edit' : focused?.hasAttribute('data-cp-refine') ? 'refine' : '';
@@ -306,16 +326,25 @@
             const viewport = element.querySelector('[data-cp-viewport]'), scroll = viewport ? { x: viewport.scrollLeft, y: viewport.scrollTop } : null;
             const reading = captureReadingPosition(element);
             element.querySelectorAll?.('[data-cp-planning]').forEach(details => planningOpen.set(details.dataset.cpPlanning, details.open));
-            element.innerHTML = `<section class="cp-project"><header class="cp-project-head"><div><label class="cp-project-label">创作项目<select data-cp-project aria-label="选择创作项目"><option value="">新的创作</option>${projects.map(p => `<option value="${esc(p.id)}" ${p.id === project?.id ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select></label>${project ? `<span class="cp-version">v${project.revision} · ${automaticActive(project) ? '一键生成中' : project.planning ? '正在规划' : '自动保存'}</span>` : ''}</div><div>${project ? `<div class="cp-auto-controls">${automaticActive(project) ? button('automatic-stop', project.automatic_status === 'stopping' ? '正在停止…' : '停止一键生成', { disabled: project.automatic_status === 'stopping' }) : button('automatic-start', ['failed','interrupted','cancelled'].includes(project.automatic_status) ? '继续一键生成' : '一键生成', { primary: true, disabled: !!automaticBlock(project, runs) })}<small>保留已确认内容，AI 确定其余节点并生成</small></div>` + button('versions', '历史方案') + button('save-template', '存为模板', { disabled: !doc.plan.nodes.length }) : ''}${button('new', '＋ 新创作')}</div></header>
+            element.innerHTML = `<section class="cp-project"><header class="cp-project-head"><div><button type="button" class="creation-text-button" data-cp-action="project-list">← 项目列表</button><strong class="cp-project-name">${esc(project?.name || '新的创作')}</strong>${project ? `<span class="cp-version">v${project.revision} · ${automaticActive(project) ? '一键生成中' : project.planning ? '正在规划' : '自动保存'}</span>` : ''}</div><div>${project ? `<div class="cp-auto-controls">${automaticActive(project) ? button('automatic-stop', project.automatic_status === 'stopping' ? '正在停止…' : '停止一键生成', { disabled: project.automatic_status === 'stopping' }) : button('automatic-start', ['failed','interrupted','cancelled'].includes(project.automatic_status) ? '继续一键生成' : '一键生成', { primary: true, disabled: !!automaticBlock(project, runs) })}<small>保留已确认内容，AI 确定其余节点并生成</small></div>` + button('project-assets', '项目资产') + button('rename-project', '重命名', {id:project.id}) + button('delete-project', '删除项目', {id:project.id}) + button('versions', '历史方案') + button('save-template', '存为模板', { disabled: !doc.plan.nodes.length }) : ''}${button('new', '＋ 新创作')}</div></header>
             <div class="cp-workspace ${doc.plan.nodes.length ? '' : 'cp-start'}"><aside class="cp-dialogue"><header><strong>创作进程</strong><span>${project?.planning ? '正在整理方案…' : '想法与画布同步'}</span></header><div class="cp-messages" aria-live="polite">${renderConversation(doc)}${renderAutomatic(project, planningOpen.get(`auto:${doc.automation?.id}`) ?? true)}${renderDecisions(project, busy)}</div>
             <form class="cp-compose" data-cp-form><label for="cp-draft">${doc.plan.questions?.length ? '回复创作助手' : selected && !selected.startsWith('asset:') ? `针对：${esc(doc.plan.nodes.find(n => n.id === selected)?.title || '整个项目')}` : '描述你的创作想法'}</label>${attachments.length ? `<div class="cp-attachments">${attachments.map(id => `<button type="button" data-cp-action="detach" data-id="${esc(id)}">${esc(assets.find(a => a.id === id)?.name || '素材')} ×</button>`).join('')}</div>` : ''}<textarea id="cp-draft" data-cp-draft rows="4" maxlength="8000" placeholder="例如：用这几个人设做一支水墨武侠短片，最后有一点反转…" ${project?.planning || automaticActive(project) ? 'disabled' : ''}>${esc(draft)}</textarea><footer><div>${renderComposerOptions()}${button('upload', '＋ 上传')}${button('pick', '引用资产')}</div><button type="submit" class="btn-primary" ${busy || project?.planning || automaticActive(project) ? 'disabled' : ''}>${pendingMessage ? '发送中…' : project?.planning ? '规划中…' : '发送'}</button></footer><input type="file" data-cp-upload multiple accept="image/png,image/jpeg,image/webp,video/mp4,video/webm" hidden></form><p class="cp-feedback" role="status" data-cp-feedback>${esc(feedback || '')}</p></aside>
-            <main class="cp-main">${doc.plan.nodes.length ? `<div class="cp-canvas-head"><div><strong>创作画布</strong><span>${doc.plan.nodes.filter(n => !approved(doc.states[n.id])).length} 项待审阅</span></div><div><button data-cp-action="zoom-out" aria-label="缩小画布">−</button><span data-cp-zoom>${Math.round(zoom * 100)}%</span><button data-cp-action="zoom-in" aria-label="放大画布">＋</button><button data-cp-action="fit">适应画布</button><button data-cp-action="arrange">自动排列</button></div></div><div class="cp-canvas-help"><span data-cp-layout-status role="status"></span><button type="button" class="creation-text-button" data-cp-action="retry-layout" hidden>重试保存位置</button></div><div class="cp-viewport" data-cp-viewport aria-label="创作画布，可拖动节点调整位置，拖动空白区域或滚动查看"><div class="cp-canvas-space" data-cp-space><div class="cp-graph" data-cp-graph></div></div></div><section class="cp-review" aria-label="节点审阅">${renderReview(doc)}</section>` : `<div class="cp-empty-canvas"><span>素材 → 方案 → 作品</span><h3>你的创作，会在这里展开</h3><p>对话后，人物参考、主视觉、脚本和作品会成为可查看、可修改的节点。</p><p>图片与视频生成都由你明确提交，确认前可以继续调整。</p></div>`}<div class="cp-project-extras">${picker ? renderPicker() : ''}${versions ? renderVersions() : ''}${renderHistory()}</div></main></div></section>`;
+            <main class="cp-main">${doc.plan.nodes.length ? `<div class="cp-canvas-head"><div><strong>创作画布</strong><span>${doc.plan.nodes.filter(n => !approved(doc.states[n.id])).length} 项待审阅</span></div><div><button data-cp-action="zoom-out" aria-label="缩小画布">−</button><span data-cp-zoom>${Math.round(zoom * 100)}%</span><button data-cp-action="zoom-in" aria-label="放大画布">＋</button><button data-cp-action="fit">适应画布</button><button data-cp-action="arrange">自动排列</button></div></div><div class="cp-canvas-help"><span data-cp-layout-status role="status"></span><button type="button" class="creation-text-button" data-cp-action="retry-layout" hidden>重试保存位置</button></div><div class="cp-viewport" data-cp-viewport aria-label="创作画布，可拖动节点调整位置，拖动空白区域或滚动查看"><div class="cp-canvas-space" data-cp-space><div class="cp-graph" data-cp-graph></div></div></div><section class="cp-review" aria-label="节点审阅">${renderReview(doc)}</section>` : `<div class="cp-empty-canvas"><span>素材 → 方案 → 作品</span><h3>你的创作，会在这里展开</h3><p>对话后，人物参考、主视觉、脚本和作品会成为可查看、可修改的节点。</p><p>图片与视频生成都由你明确提交，确认前可以继续调整。</p></div>`}<div class="cp-project-extras">${picker ? '<section class="cp-picker"><header><h3>引用已有资产</h3><button data-cp-action="close-picker">关闭</button></header><div data-cp-asset-picker></div></section>' : ''}${versions ? renderVersions() : ''}${renderHistory()}</div></main></div></section>`;
+            if(picker)assetPicker.mount(element.querySelector('[data-cp-asset-picker]'));
             drawCanvas(); updateLayoutStatus();
             if (scroll && !autoFit) { const v = element.querySelector('[data-cp-viewport]'); if (v) { v.scrollLeft = scroll.x; v.scrollTop = scroll.y; } }
             if (focusKind) { const target = element.querySelector(`[data-cp-${focusKind}]`); target?.focus({ preventScroll: true }); target?.setSelectionRange(start, end); }
             if (preferenceFocus) element.querySelector(`[data-cp-preference="${preferenceFocus}"]`)?.focus({ preventScroll: true });
             restoreReadingPosition(element, reading, followMessages);
             followMessages = false;
+        }
+        function projectCards() {
+            return projects.filter(p=>p.name.toLowerCase().includes(projectSearch.toLowerCase())).map(p=>`<article class="cp-project-card"><button type="button" class="cp-project-open" data-cp-action="open-project" data-id="${esc(p.id)}"><span class="cp-card-symbol" aria-hidden="true">◈</span><strong>${esc(p.name)}</strong><small>${p.planning?'正在规划':automaticActive(p)?'一键生成中':p.error?'需要处理':'创作项目'} · ${esc(new Date(p.updated_at||p.created_at).toLocaleDateString())}</small><span>进入创作 →</span></button><footer>${renameID===p.id?`<input data-cp-rename aria-label="项目新名称" maxlength="100" value="${esc(renameValue)}"><button data-cp-action="save-rename" data-id="${esc(p.id)}">保存</button><button data-cp-action="cancel-rename">取消</button>`:`<button data-cp-action="rename-project" data-id="${esc(p.id)}">重命名</button><button data-cp-action="delete-project" data-id="${esc(p.id)}">删除</button>`}</footer></article>`).join('')||'<p class="creation-empty">暂无匹配项目，可以新建一个创作。</p>';
+        }
+        function renderProjectLibrary(){
+            const focus=element.ownerDocument?.activeElement,kind=focus?.hasAttribute?.('data-cp-rename')?'rename':focus?.hasAttribute?.('data-cp-search')?'search':'',start=focus?.selectionStart;
+            element.innerHTML=`<section class="cp-project-library"><header><div><h3>我的创作项目</h3><p>从想法到作品，每个项目都有独立的画布与资产文件夹。</p></div><button class="btn-primary" data-cp-action="new">＋ 新创作</button></header><input type="search" data-cp-search aria-label="搜索创作项目" placeholder="搜索项目名称" value="${esc(projectSearch)}"><p class="cp-feedback" data-cp-feedback role="status">${esc(feedback)}</p><div class="cp-project-grid">${projectCards()}</div></section>`;
+            if(kind){const target=element.querySelector(`[data-cp-${kind}]`);target?.focus({preventScroll:true});target?.setSelectionRange(start,start);}
         }
         function renderConversation(doc) {
             const rounds = conversationRounds(doc);
@@ -342,7 +371,7 @@
         function renderReview(doc) {
             if (selected.startsWith('asset:')) {
                 const asset = assets.find(a => `asset:${a.id}` === selected);
-                return asset ? `<header><h3>${esc(asset.name)}</h3><span>原始素材</span></header>${asset.mime_type.startsWith('video/') ? `<video controls playsinline src="${esc(mediaURL(asset.id))}"></video><p>视频可作为项目资产保存；当前生成服务不支持视频参考输入。</p>` : `<img class="cp-source-preview" src="${esc(mediaURL(asset.id))}" alt="${esc(asset.name)}">`}<p>原文件保存在网盘「资产」中。</p>` : '';
+                return asset ? `<header><h3>${esc(asset.name)}</h3><span>原始素材</span></header>${asset.mime_type.startsWith('video/') ? `${Library.media(asset.id,asset.name,true,mediaURL)}<p>视频可作为项目资产保存；当前生成服务不支持视频参考输入。</p>` : Library.media(asset.id,asset.name,false,mediaURL)}<p>原文件保存在网盘「资产」中。</p>` : '';
             }
             const node = doc.plan.nodes.find(n => n.id === selected); if (!node) return '';
             const state = doc.states[node.id] || {}, blocked = generationBlock(project, node, runs), upstreamReady = dependenciesReady(doc, node);
@@ -353,7 +382,7 @@
             ${renderRefinements(node)}
             ${renderMediaProgress(run)}
             ${editing ? `<label class="cp-edit-label">修改后交给创作助手同步相关节点<textarea data-cp-edit rows="8" maxlength="7000">${esc(editText)}</textarea></label>${button('save-edit', '更新此节点及相关方案', { id: node.id, primary: true })}` : `<div class="cp-review-text">${esc(node.content)}</div>`}
-            ${candidates.length ? `<div class="cp-candidates">${candidates.map((id, i) => node.kind === 'video' ? `<article><video controls playsinline preload="metadata" src="${esc(mediaURL(id))}"></video><a href="${esc(mediaURL(id))}" target="_blank" rel="noopener">打开视频</a></article>` : `<article class="${state.selected_asset_id === id && approved(state) ? 'is-chosen' : ''}"><img loading="lazy" src="${esc(mediaURL(id))}" alt="${esc(node.title)} · 候选 ${i + 1}">${button('choose', state.selected_asset_id === id && approved(state) ? '已选用 · 再次确认' : `选用候选 ${i + 1} 并确认`, { id: node.id, asset: id, disabled: !upstreamReady })}</article>`).join('')}</div>` : ''}
+            ${candidates.length ? `<div class="cp-candidates">${candidates.map((id, i) => node.kind === 'video' ? `<article>${Library.media(id,node.title,true,mediaURL)}<a href="${esc(mediaURL(id))}" target="_blank" rel="noopener">打开视频</a></article>` : `<article class="${state.selected_asset_id === id && approved(state) ? 'is-chosen' : ''}">${Library.media(id,`${node.title} · 候选 ${i + 1}`,false,mediaURL)}${button('choose', state.selected_asset_id === id && approved(state) ? '已选用 · 再次确认' : `选用候选 ${i + 1} 并确认`, { id: node.id, asset: id, disabled: !upstreamReady })}</article>`).join('')}</div>` : ''}
             ${node.references?.length ? `<div class="cp-reference-review"><h4>参考素材的用途</h4><ul>${renderReferences(doc, node, assets)}</ul></div>` : ''}
             ${node.depends_on?.length ? `<p class="cp-dependencies">内容依据：${node.depends_on.map(id => esc(doc.plan.nodes.find(n => n.id === id)?.title || id)).join('、')}</p>` : ''}
             ${node.kind !== 'text' ? `<details class="cp-technical"><summary>查看生成方案与参数</summary><p>${esc(node.aspect_ratio)}${node.kind === 'video' ? ` · ${node.duration_seconds} 秒 · 分镜 skill` : ` · ${node.count} 张`} · 当前已配置的 Spark 生成服务</p><pre>${esc(node.prompt)}</pre></details><p class="cp-cost">本次提交${node.kind === 'video' ? ` 1 个 ${node.duration_seconds} 秒视频` : ` ${node.count} 张图片`}；费用与完成时间以生成服务为准。</p>` : ''}
@@ -367,15 +396,12 @@
             <label class="cp-refine-custom">补充修改方向<textarea data-cp-refine rows="2" maxlength="2000" placeholder="例如：保留结尾，让白露的出场更俏皮，前半段节奏再快一点…" ${disabled ? 'disabled' : ''}>${esc(state.custom)}</textarea></label>
             <footer><span>修改后重新审阅，再决定生成</span>${button('refine-submit', '按这些方向优化', { id: node.id, primary: true, disabled: !state.choices.size && !state.custom.trim() })}</footer></section>`;
         }
-        function renderPicker() {
-            return `<section class="cp-picker" aria-label="选择创作资产"><header><h3>引用已有资产</h3>${button('close-picker', '关闭')}</header><div>${assets.map(asset => `<button type="button" data-cp-action="attach" data-id="${esc(asset.id)}" aria-pressed="${attachments.includes(asset.id)}">${asset.mime_type.startsWith('image/') ? `<img loading="lazy" src="${esc(mediaURL(asset.id))}" alt="">` : '<span>▷ 视频</span>'}<strong>${esc(asset.name)}</strong><small>${attachments.includes(asset.id) ? '已附加' : '附加到对话'}</small></button>`).join('') || '<p>暂无资产，可以上传素材或前往资产页从网盘归入。</p>'}</div>${button('assets', '管理资产')}</section>`;
-        }
         function renderVersions() {
             return `<section class="cp-versions"><header><h3>历史方案 · 只读</h3>${button('close-versions', '关闭')}</header>${versions.map(v => { const d = parse(v.plan, {}); return `<details><summary>v${v.revision} · ${esc(new Date(v.created_at).toLocaleString())}</summary><p>${esc(d.plan?.summary)}</p>${(d.plan?.nodes || []).map(n => `<article><strong>${esc(n.title)}</strong><span>${approved(d.states?.[n.id]) ? '已确认' : '待审阅'}</span><pre>${esc(n.content || n.prompt)}</pre></article>`).join('')}</details>`; }).join('') || '<p>提出方案或确认内容后，会保存对应的历史版本。</p>'}</section>`;
         }
         function renderHistory() {
             const items = runs.filter(r => r.project_id === project?.id); if (!items.length) return '';
-            return `<section class="cp-history"><h3>生成记录</h3>${items.map(run => { const progress = parse(run.progress, []); return `<article><header><strong>${esc(run.name)}</strong><span>提交版本 v${run.project_revision} · ${esc(statusNames[run.status] || run.status)}</span>${['queued', 'running'].includes(run.status) ? button('stop', '完成当前生成后停止', { id: run.id }) : ''}</header>${run.error ? `<p class="cp-error">${esc(run.error)}</p>` : ''}<div>${progress.flatMap(p => p.asset_ids || []).map(id => { const a = assets.find(a => a.id === id); return a?.mime_type.startsWith('video/') ? `<video controls playsinline preload="metadata" src="${esc(mediaURL(id))}"></video>` : `<a href="${esc(mediaURL(id))}" target="_blank" rel="noopener"><img loading="lazy" src="${esc(mediaURL(id))}" alt="生成结果"></a>`; }).join('')}</div><details><summary>查看本次提交的方案</summary><pre>${esc(parse(run.snapshot, {}).plan?.summary || run.name)}</pre>${(parse(run.snapshot, {}).plan?.nodes || []).filter(n => n.kind === 'text').map(n => `<h4>${esc(n.title)}</h4><pre>${esc(n.content)}</pre>`).join('')}</details></article>`; }).join('')}</section>`;
+            return `<section class="cp-history"><h3>生成记录</h3>${items.map(run => { const progress = parse(run.progress, []); return `<article><header><strong>${esc(run.name)}</strong><span>提交版本 v${run.project_revision} · ${esc(statusNames[run.status] || run.status)}</span>${['queued', 'running'].includes(run.status) ? button('stop', '完成当前生成后停止', { id: run.id }) : ''}</header>${run.error ? `<p class="cp-error">${esc(run.error)}</p>` : ''}<div>${progress.flatMap(p => p.asset_ids || []).map(id => { const a = assets.find(a => a.id === id); if(!a)return '<span class="creation-muted">资产未加载或已删除</span>'; return a.mime_type.startsWith('video/') ? Library.media(id,a.name,true,mediaURL) : `<a href="${esc(mediaURL(id))}" target="_blank" rel="noopener">${Library.media(id,'生成结果',false,mediaURL)}</a>`; }).join('')}</div><details><summary>查看本次提交的方案</summary><pre>${esc(parse(run.snapshot, {}).plan?.summary || run.name)}</pre>${(parse(run.snapshot, {}).plan?.nodes || []).filter(n => n.kind === 'text').map(n => `<h4>${esc(n.title)}</h4><pre>${esc(n.content)}</pre>`).join('')}</details></article>`; }).join('')}</section>`;
         }
         function drawCanvas() {
             const target = element?.querySelector('[data-cp-graph]'); if (!target) return;
@@ -388,7 +414,7 @@
                 const { data: n } = item, isAsset = item.kind === 'asset', state = doc.states[item.id] || {};
                 const assetID = isAsset ? n.id : state.selected_asset_id || state.candidates?.[0] || n.asset_id;
                 const title = isAsset ? n.name : n.title, video = isAsset ? n.mime_type.startsWith('video/') : n.kind === 'video';
-                const image = assetID && !video ? `<img loading="lazy" draggable="false" src="${esc(mediaURL(assetID))}" alt="${esc(title)}">` : `<div class="cp-node-copy">${esc(isAsset ? '视频素材' : n.kind === 'text' ? n.content : n.content || (video ? '确认方案后生成视频' : '生成候选后在此审阅'))}</div>`;
+                const image = assetID && !video ? Library.media(assetID,title,false,mediaURL) : `<div class="cp-node-copy">${esc(isAsset ? '视频素材' : n.kind === 'text' ? n.content : n.content || (video ? '确认方案后生成视频' : '生成候选后在此审阅'))}</div>`;
                 return `<button type="button" class="cp-artifact ${selected === item.id ? 'is-selected' : ''} ${isAsset ? 'cp-source' : ''}" data-cp-action="select" data-id="${esc(item.id)}" aria-pressed="${selected === item.id}" title="拖动调整位置；点击查看；Alt + 方向键移动" style="left:${item.x}px;top:${item.y}px;width:${item.width}px;height:${item.height}px"><header><strong>${esc(title)}</strong><span>${esc(isAsset ? '已提供' : nodeStatus(doc, n, runs))}</span></header>${image}<footer>${esc(isAsset ? '原始资产' : ({ text: '文本', image: '图片', video: '视频' })[n.kind])}${!isAsset && state.candidates?.length ? ` · ${state.candidates.length} 个产出` : ''}${!isAsset && n.purpose === 'script' ? ' · 动作 / 运镜 / 声音' : ''}</footer></button>`;
             }).join('')}`;
             const space = element.querySelector('[data-cp-space]'); space.style.width = `${layout.width * zoom}px`; space.style.height = `${layout.height * zoom}px`;
@@ -417,7 +443,7 @@
             const version = epoch, initialPreferences = project ? null : currentPreferences();
             const response = await api('POST', '/api/creation/projects', { template_id: templateID });
             if (version !== epoch) return null;
-            project = response.project; projects = [project, ...projects.filter(p => p.id !== project.id)];
+            projectsView=false;openRequest++;assets=[];runs=[];project = response.project; projects = [project, ...projects.filter(p => p.id !== project.id)];
             if (initialPreferences && (initialPreferences.output_kind || initialPreferences.aspect_ratio)) preferenceDrafts.set(project.id, initialPreferences);
             optionsOpen = false;
             selected = ''; draft = ''; attachments = []; editing = false; versions = null; feedback = ''; autoFit = true; render();
@@ -451,12 +477,35 @@
             const version = epoch, projectID = project?.id;
             if (['automatic-start', 'generate'].includes(name) && preferencesChanged()) throw new Error('创作选项尚未应用，请先发送，让助手更新方案');
             if (name === 'retry-plan') { const message = [...currentDoc().messages].reverse().find(m => m.role === 'user'); if (message) await send(message.content, message.node_id || ''); return; }
-            if (name === 'new') { preferenceDrafts.delete(''); optionsOpen = false; project = null; selected = ''; draft = ''; attachments = []; versions = null; feedback = ''; editing = false; render(); return; }
+            if (name === 'new') { projectsView=false;openRequest++;assets=[];runs=[]; preferenceDrafts.delete(''); optionsOpen = false; project = null; selected = ''; draft = ''; attachments = []; versions = null; feedback = ''; editing = false; render(); return; }
+            if(name==='project-list'){projectsView=true;openRequest++;renameID='';render();await refresh();return;}
+            if(name==='open-project'){
+                const request=++openRequest;const response=await api('GET',`/api/creation/projects/${encodeURIComponent(id)}`);
+                if(version!==epoch||request!==openRequest)return;
+                project=response.project;projectsView=false;selected='';draft='';attachments=[];assets=[];runs=[];picker=false;versions=null;editing=false;feedback='';autoFit=true;optionsOpen=false;render();await refresh();return;
+            }
+            if(name==='project-assets'){onAssets(projectID);return;}
+            if(name==='rename-project'){renameID=id;renameValue=((project?.id===id?project:projects.find(p=>p.id===id)))?.name||'';projectsView=true;render();element.querySelector('[data-cp-rename]')?.focus();return;}
+            if(name==='cancel-rename'){renameID='';render();return;}
+            if(name==='save-rename'){
+                const row=(project?.id===id?project:projects.find(p=>p.id===id));
+                const response=await api('PATCH',`/api/creation/projects/${encodeURIComponent(id)}`,{name:renameValue.trim(),revision:row.revision});
+                if(version!==epoch)return;
+                projects=projects.map(p=>p.id===id?response.project:p);if(project?.id===id)project=response.project;renameID='';feedback='项目已重命名';render();return;
+            }
+            if(name==='delete-project'){
+                const row=(project?.id===id?project:projects.find(p=>p.id===id));
+                if(!await confirm(`删除项目「${row.name}」及对话、画布和生成记录？图片与视频会保留在「未归属资产」。`)||version!==epoch)return;
+                await api('DELETE',`/api/creation/projects/${encodeURIComponent(id)}?revision=${row.revision}`);
+                if(version!==epoch)return;
+                if(project?.id===id){project=null;assets=[];runs=[];selected='';draft='';attachments=[];}
+                projects=projects.filter(p=>p.id!==id);projectsView=true;feedback='项目已删除，资产已保留';render();return;
+            }
             if (name === 'select') { selected = id; editing = false; render(); return; }
             if (name === 'arrange') { saveLayout({}, true); autoFit = true; drawCanvas(); return; }
             if (name === 'retry-layout') { const positions = canvasState().positions; saveLayout(positions, !Object.keys(positions).length); return; }
             if (name === 'zoom-in' || name === 'zoom-out' || name === 'fit') { if (name === 'fit') autoFit = true; else zoom = Math.min(1.6, Math.max(.35, zoom + (name === 'zoom-in' ? .15 : -.15))); drawCanvas(); return; }
-            if (name === 'pick' || name === 'close-picker') { picker = name === 'pick'; render(); return; }
+            if (name === 'pick' || name === 'close-picker') { picker = name === 'pick'; render(); if(picker)await assetPicker.show(); return; }
             if (name === 'attach') { attachments = attachments.includes(id) ? attachments.filter(a => a !== id) : [...attachments, id]; render(); return; }
             if (name === 'detach') { attachments = attachments.filter(a => a !== id); render(); return; }
             if (name === 'upload') { element.querySelector('[data-cp-upload]')?.click(); return; }
@@ -529,6 +578,8 @@
             });
             element.addEventListener('submit', event => { if (event.target.hasAttribute('data-cp-form')) { event.preventDefault(); void perform(() => send()); } });
             element.addEventListener('input', event => {
+                if(event.target.hasAttribute('data-cp-search')){projectSearch=event.target.value;const grid=element.querySelector('.cp-project-grid');if(grid)grid.innerHTML=projectCards();}
+                if(event.target.hasAttribute('data-cp-rename'))renameValue=event.target.value;
                 if (event.target.hasAttribute('data-cp-draft')) draft = event.target.value;
                 if (event.target.hasAttribute('data-cp-edit')) editText = event.target.value;
                 if (event.target.hasAttribute('data-cp-refine')) {
@@ -544,19 +595,15 @@
                     preferenceDrafts.set(project?.id || '', normalizePreferences({ ...currentPreferences(), [key]: el.value }));
                     render();
                 }
-                if (el.hasAttribute('data-cp-project')) void perform(async () => {
-                    if (!el.value) return action('new');
-                    const version = epoch, response = await api('GET', `/api/creation/projects/${encodeURIComponent(el.value)}`);
-                    if (version !== epoch) return;
-                    project = response.project; optionsOpen = false; selected = ''; draft = ''; attachments = []; editing = false; versions = null; feedback = ''; autoFit = true; render();
-                });
                 if (el.hasAttribute('data-cp-upload')) void perform(async () => {
                     const version = epoch;
+                    if(!project){const savedDraft=draft,savedAttachments=[...attachments];if(!await newProject())return;draft=savedDraft;attachments=savedAttachments;}
+                    const uploadProjectID=project.id;
                     for (const file of Array.from(el.files || [])) {
                         if (file.size > 64 * 1024 * 1024) throw new Error(`${file.name} 超过64 MiB`);
                         const data = await new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(reader.result); reader.onerror = () => reject(new Error('文件读取失败')); reader.readAsDataURL(file); });
                         if (version !== epoch) return;
-                        const result = await api('POST', '/api/creation/assets', { name: file.name, mime_type: file.type, content: data.split(',')[1] });
+                        const result = await api('POST', '/api/creation/assets', { name: file.name, mime_type: file.type, content: data.split(',')[1], project_id:uploadProjectID });
                         if (version !== epoch) return;
                         attachments.push(result.asset.id);
                     }

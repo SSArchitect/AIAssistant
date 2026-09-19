@@ -41,7 +41,7 @@ test('editor and media rendering escape user supplied strings and render video c
     const html = C.renderNode(n, 0, { nodes: [n] }, [], C.builtin);
     assert.ok(!html.includes('<script>')); assert.ok(html.includes('&lt;script&gt;'));
     const media = C.renderAsset({ id: 'id', mime_type: 'video/mp4', name: '<img>', size: 1024, source: 'generated' }, id => `/api/creation/assets/${id}/content`);
-    assert.match(media, /<video controls playsinline/); assert.match(media, /&lt;img&gt;/); assert.ok(!media.includes('autoplay'));
+    assert.match(media, /data-creation-video/); assert.doesNotMatch(media, /<video/); assert.match(media, /&lt;img&gt;/); assert.ok(!media.includes('autoplay'));
 });
 test('creation navigation and controller load with authenticated API and account reset', () => {
     const html = fs.readFileSync('web/index.html', 'utf8'), app = fs.readFileSync('web/static/js/app.js', 'utf8');
@@ -76,12 +76,14 @@ test('late account responses cannot restore another account’s workflows after 
 test('a recovered refresh clears its connection error without hiding later failures', async t => {
     let offline = true;
     const status = { textContent: '' }, body = { innerHTML: '', querySelector: () => null };
-    const element = { innerHTML: '', querySelector: s => s === '.creation-feedback' ? status : s === '.creation-body' ? body : null, querySelectorAll: () => [], addEventListener() {} };
+    const listeners = {}; const element = { innerHTML: '', querySelector: s => s === '.creation-feedback' ? status : s === '.creation-body' ? body : null, querySelectorAll: () => [], addEventListener(name, fn) { listeners[name] = fn; } };
     const controller = C.createController({ element, user: () => 'alice', mediaURL: () => '', openDrive() {}, api: async () => {
         if (offline) throw new Error('Failed to fetch');
         return {};
     } });
     t.after(() => controller.reset());
+    listeners.click({ target: { closest: () => ({ dataset: { tab: 'templates' } }) } });
+    await new Promise(resolve => setImmediate(resolve));
     await controller.setVisible(true);
     assert.equal(status.textContent, 'Failed to fetch');
     offline = false;

@@ -1,8 +1,8 @@
 (function (root, factory) {
-    const api = factory();
+    const api = factory(typeof module === 'object' && module.exports ? require('./creation-library.js') : root.CreationLibrary);
     if (typeof module === 'object' && module.exports) module.exports = api;
     root.CreationUI = api;
-})(typeof globalThis !== 'undefined' ? globalThis : this, function () {
+})(typeof globalThis !== 'undefined' ? globalThis : this, function (Library) {
     'use strict';
     const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
     const clone = value => JSON.parse(JSON.stringify(value));
@@ -64,23 +64,24 @@
     }
     function renderAsset(asset, mediaURL) {
         const url = esc(mediaURL(asset.id));
-        return `<article class="creation-asset"><div class="creation-asset-preview">${asset.mime_type.startsWith('video/') ? `<video controls playsinline preload="metadata" src="${url}"></video>` : `<img loading="lazy" src="${url}" alt="${esc(asset.name)}">`}</div><div class="creation-asset-info"><strong title="${esc(asset.name)}">${esc(asset.name)}</strong><span>${({ generated: '生成', upload: '上传', drive: '网盘' })[asset.source] || '网盘'} · ${(asset.size / 1024 / 1024).toFixed(1)} MB</span><a href="${url}" target="_blank" rel="noopener" download="${esc(asset.name)}">打开 / 下载</a></div></article>`;
+        return `<article class="creation-asset"><div class="creation-asset-preview">${Library.media(asset.id, asset.name, asset.mime_type.startsWith('video/'), mediaURL)}</div><div class="creation-asset-info"><strong title="${esc(asset.name)}">${esc(asset.name)}</strong><span>${({ generated: '生成', upload: '上传', drive: '网盘' })[asset.source] || '网盘'} · ${(asset.size / 1024 / 1024).toFixed(1)} MB</span><a href="${url}" target="_blank" rel="noopener" download="${esc(asset.name)}">打开 / 下载</a></div></article>`;
     }
     function renderRun(run, assets, mediaURL) {
         const progress = parse(run.progress, []);
         return `<article class="creation-run"><header><strong>${esc(run.name)}</strong><span class="creation-status ${esc(run.status)}">${esc(statuses[run.status] || run.status)}</span></header><small>${esc(new Date(run.created_at).toLocaleString())}</small><ol>${progress.map((p, i) => `<li>${i + 1}. ${esc(statuses[p.status] || p.status)}${p.asset_ids.length ? ` · ${p.asset_ids.length} 个产出` : ''}</li>`).join('')}</ol>${run.error ? `<p class="creation-error">${esc(run.error)}</p>` : ''}${['running', 'queued'].includes(run.status) ? `<button class="btn-secondary" data-action="stop" data-id="${esc(run.id)}">完成当前生成后停止</button>` : ''}<div class="creation-results">${assets.filter(a => a.run_id === run.id).map(a => renderAsset(a, mediaURL)).join('')}</div></article>`;
     }
     function createController({ element, api, user, mediaURL, openDrive, confirm = async () => false }) {
-        let epoch = 0, visibilityEpoch = 0, visible = false, timer = null, busy = false, tab = 'projects', definitions = [], assets = [], runs = [], draft = null, feedback = '', folderID = '', importItems = null;
-        let search = '', mediaFilter = '', sourceFilter = '';
+        let epoch = 0, visibilityEpoch = 0, visible = false, timer = null, busy = false, tab = 'projects', definitions = [], assets = [], runs = [], draft = null, feedback = '';
         const templates = () => [...builtin, ...definitions.filter(d => d.kind !== 'workflow')];
         let refreshFailed = false;
-        const projectController = globalThis.CreationProjects?.createController({ api, user, mediaURL, onAssets: () => { tab = 'assets'; render(); }, onTemplates: () => { void refresh(); } });
-        function reset() { projectController?.reset(); tab = 'projects'; epoch++; visibilityEpoch++; visible = false; search = ''; mediaFilter = ''; sourceFilter = ''; clearTimeout(timer); timer = null; busy = false; definitions = []; assets = []; runs = []; draft = null; feedback = ''; folderID = ''; importItems = null; element.innerHTML = ''; }
+        const projectController = globalThis.CreationProjects?.createController({ api, user, mediaURL, confirm, onAssets: projectID => { tab = 'assets'; render(); void assetLibrary.show(projectID); }, onTemplates: () => { void refresh(); } });
+        const assetLibrary = Library.createController({api,user,mediaURL,confirm,openDrive});
+        Library.bindMedia(element);
+        function reset() { projectController?.reset(); assetLibrary.reset(); tab = 'projects'; epoch++; visibilityEpoch++; visible = false; clearTimeout(timer); timer = null; busy = false; definitions = []; assets = []; runs = []; draft = null; feedback = ''; element.innerHTML = ''; }
         function render() {
             projectController?.setVisible(false);
             const count = definitions.filter(d => d.kind === 'workflow').length;
-            element.innerHTML = `<div class="creation-page ${tab === 'projects' ? 'is-projects' : ''}"><div class="creation-heading"><div><span class="creation-eyebrow">CREATIVE STUDIO</span><h2>让灵感，一步步成形。</h2><p>聊聊你的想法，让 AI 安排每一步创作。</p></div><button class="btn-primary" data-action="project-new">＋ 新创作</button></div><div class="creation-tabs" role="tablist">${[['projects', '创作项目', ''], ['templates', '模板', templates().length], ['assets', '资产', assets.length], ['workflows', '工作流编辑', count]].map(([id, label, n]) => `<button role="tab" aria-selected="${tab === id}" data-tab="${id}">${label}<span>${n}</span></button>`).join('')}</div><p class="creation-feedback" role="status">${esc(feedback)}</p><div class="creation-body"></div></div>`;
+            element.innerHTML = `<div class="creation-page ${tab === 'projects' ? 'is-projects' : ''}"><div class="creation-heading"><div><span class="creation-eyebrow">CREATIVE STUDIO</span><h2>让灵感，一步步成形。</h2><p>聊聊你的想法，让 AI 安排每一步创作。</p></div><button class="btn-primary" data-action="project-new">＋ 新创作</button></div><div class="creation-tabs" role="tablist">${[['projects', '创作项目', ''], ['templates', '模板', templates().length], ['assets', '资产', ''], ['workflows', '工作流编辑', count]].map(([id, label, n]) => `<button role="tab" aria-selected="${tab === id}" data-tab="${id}">${label}${n !== '' ? `<span>${n}</span>` : ''}</button>`).join('')}</div><p class="creation-feedback" role="status">${esc(feedback)}</p><div class="creation-body"></div></div>`;
             const body = element.querySelector('.creation-body');
             if (!user()) { body.innerHTML = '<p class="creation-empty">登录后即可保存工作流、模板与创作资产。</p>'; return; }
             if (tab === 'projects') {
@@ -90,42 +91,45 @@
             } else if (tab === 'templates') {
                 body.innerHTML = ['project_template', 'workflow_template', 'image_template', 'video_template'].map(kind => `<h3 class="creation-section-title">${({ project_template: '创作项目模板', workflow_template: '工作流模板', image_template: '生图效果', video_template: '视频效果' })[kind]}</h3><div class="creation-template-grid">${templates().filter(t => t.kind === kind).map(t => `<article class="creation-template"><span class="creation-template-symbol">${kind === 'workflow_template' ? '◈ → ◇' : kind === 'image_template' ? '▧' : '▷'}</span><h3>${esc(t.name)}</h3><p>${esc(t.description || `${graphOf(t).nodes.length} 个节点 · 我的模板`)}</p><button class="btn-secondary" data-action="project-template" data-id="${esc(t.id)}">用这个模板创作</button>${kind !== 'project_template' ? `<button class="creation-text-button" data-action="use-template" data-id="${esc(t.id)}">手动编辑</button>` : ''}${!t.id.startsWith('builtin-') ? `<button class="creation-text-button" data-action="delete" data-id="${esc(t.id)}">删除</button>` : ''}</article>`).join('')}</div>`).join('');
             } else if (tab === 'assets') {
-                body.innerHTML = `<div class="creation-assets-toolbar"><div><h3>我的资产</h3><p>文件保存在网盘「资产」中，创作记录关联原文件。</p></div><button class="btn-primary" type="button" data-action="upload">上传图片 / 视频</button><input type="file" multiple accept="image/png,image/jpeg,image/webp,video/mp4,video/webm" data-upload hidden><button class="btn-secondary" data-action="import">从网盘归入</button><button class="btn-secondary" data-action="drive">打开资产文件夹</button></div><p class="creation-muted">支持 PNG、JPEG、WebP、MP4、WebM，单文件最大 64 MiB；节点参考图片最大 16 MiB。</p><div class="creation-options"><input aria-label="搜索资产" data-search placeholder="搜索资产名称" value="${esc(search)}"><select aria-label="媒体类型" data-media-filter><option value="">全部类型</option><option value="image/" ${mediaFilter === 'image/' ? 'selected' : ''}>图片</option><option value="video/" ${mediaFilter === 'video/' ? 'selected' : ''}>视频</option></select><select aria-label="资产来源" data-source-filter>${[['', '全部来源'], ['generated', '生成'], ['upload', '上传'], ['drive', '网盘']].map(([v, name]) => `<option value="${v}" ${sourceFilter === v ? 'selected' : ''}>${name}</option>`).join('')}</select></div><div class="creation-import"></div><div class="creation-asset-grid"></div>`;
-                renderAssets();
-                if (importItems) body.querySelector('.creation-import').innerHTML = `<h3>选择文件，移入网盘「资产」文件夹</h3>${importItems.length ? importItems.map(i => `<button class="btn-secondary" data-action="import-file" data-id="${esc(i.id)}">${esc(i.name)}</button>`).join('') : '<p>暂无可归入的媒体文件。</p>'}<button class="creation-text-button" data-action="close-import">关闭</button>`;
+                body.innerHTML = '<div class="creation-asset-host"></div>';
+                assetLibrary.mount(body.querySelector('.creation-asset-host'));
             } else {
                 body.innerHTML = `<div class="creation-workspace"><aside class="creation-library"><h3>我的工作流</h3>${definitions.filter(d => d.kind === 'workflow').map(d => `<div class="creation-workflow-row ${draft?.id === d.id ? 'active' : ''}"><button data-action="edit" data-id="${esc(d.id)}"><strong>${esc(d.name)}</strong><small>${graphOf(d).nodes.length} 个节点</small></button><button class="creation-icon" aria-label="删除工作流" data-action="delete" data-id="${esc(d.id)}">×</button></div>`).join('') || '<p>从空白开始，或选择一个模板。</p>'}<button class="creation-text-button" data-tab="templates">浏览模板 →</button></aside><div class="creation-canvas">${draft ? `<div class="creation-editor-head"><input aria-label="工作流名称" data-workflow-name maxlength="100" value="${esc(draft.name)}"><div><button class="btn-secondary" data-action="save">保存</button><button class="btn-secondary" data-action="save-template">存为模板</button><button class="btn-primary" data-action="run">运行工作流</button></div></div><p class="creation-muted">按顺序运行 · 结果自动归入资产 · 离开页面后继续执行</p><div class="creation-flow">${draft.graph.nodes.map((n, i) => renderNode(n, i, draft.graph, assets, templates())).join('<div class="creation-connector" aria-hidden="true">↓</div>')}</div><div class="creation-add"><button class="btn-secondary" data-action="add-image">＋ 图片节点</button><button class="btn-secondary" data-action="add-video">＋ 视频节点</button></div>` : `<div class="creation-empty"><div class="creation-empty-symbol">◈ → ◇ → ▷</div><h3>连接你的创作步骤</h3><p>批量创作分镜、将图片制作成视频，或在原图上继续创作。</p><button class="btn-primary" data-action="new">新建工作流</button><button class="btn-secondary" data-tab="templates">从模板开始</button></div>`}</div></div><section class="creation-history"><h3>最近运行</h3><div class="creation-runs"></div></section>`;
                 renderRuns();
             }
-            element.querySelectorAll('button').forEach(b => { if (!b.closest('.creation-project-host')) b.disabled = busy; });
+            element.querySelectorAll('button').forEach(b => { if (!b.closest('.creation-project-host, .creation-asset-host')) b.disabled = busy; });
         }
         function replaceIfChanged(target, html) { if (target && target._creationHTML !== html) { target.innerHTML = html; target._creationHTML = html; } }
-        function renderAssets() {
-            const target = element.querySelector('.creation-asset-grid');
-            if (target) replaceIfChanged(target, assets.filter(a => a.name.toLowerCase().includes(search.toLowerCase()) && a.mime_type.startsWith(mediaFilter) && (!sourceFilter || a.source === sourceFilter)).map(a => renderAsset(a, mediaURL)).join('') || '<p class="creation-empty">暂无匹配的资产。上传素材或运行工作流后，结果会出现在这里。</p>');
-        }
         function renderRuns() { const target = element.querySelector('.creation-runs'); if (target) replaceIfChanged(target, runs.map(r => renderRun(r, assets, mediaURL)).join('') || '<p class="creation-muted">还没有运行记录。</p>'); }
         function message(value, transient = false) { feedback = value; refreshFailed = transient; const node = element.querySelector('.creation-feedback'); if (node) node.textContent = feedback; }
         async function refresh(full = false) {
             if (!user()) { render(); return; }
-            const version = epoch;
-            const [d, a, r] = await Promise.all([api('GET', '/api/creation/definitions'), api('GET', '/api/creation/assets'), api('GET', '/api/creation/runs')]);
-            if (epoch !== version) return;
+            if (tab === 'projects' || tab === 'assets') return;
+            const version = epoch, currentTab = tab;
+            const d = await api('GET', '/api/creation/definitions');
+            if (epoch !== version || currentTab !== tab) return;
+            definitions = d.definitions || [];
+            if (full) render();
+            if (tab === 'workflows') {
+                const [a,r] = await Promise.all([api('GET','/api/creation/assets'),api('GET','/api/creation/runs')]);
+                if (epoch !== version || currentTab !== tab) return;
+                assets=a.assets||[];runs=r.runs||[];
+                if(full)render();else renderRuns();
+            }
             if (refreshFailed) message('');
-            definitions = d.definitions || []; assets = a.assets || []; folderID = a.folder_id; runs = r.runs || [];
-            if (full) render(); else { renderRuns(); if (tab === 'assets') renderAssets(); }
         }
         async function poll(version = visibilityEpoch) {
             clearTimeout(timer);
             if (!visible) return;
-            try { await refresh(); } catch (error) { if (version === visibilityEpoch) message(error.message, true); }
-            if (visible && version === visibilityEpoch) timer = setTimeout(() => poll(version), 5000);
+            try { if(tab==='workflows'&&runs.some(r=>['queued','running','stopping'].includes(r.status)))await refresh(); } catch (error) { if(version===visibilityEpoch)message(error.message,true); }
+            if(visible&&version===visibilityEpoch)timer=setTimeout(()=>poll(version),5000);
         }
         async function setVisible(value) {
-            visible = value; const version = ++visibilityEpoch; clearTimeout(timer);
-            if (!value) { projectController?.setVisible(false); return; }
-            render(); try { await refresh(true); } catch (error) { if (version === visibilityEpoch) message(error.message, true); }
-            if (visible && version === visibilityEpoch) timer = setTimeout(() => poll(version), 5000);
+            visible=value;const version=++visibilityEpoch;clearTimeout(timer);
+            if(!value){projectController?.setVisible(false);return;}
+            render();
+            try { if(tab==='assets')await assetLibrary.show();else await refresh(true); } catch(error){if(version===visibilityEpoch)message(error.message,true);}
+            if(visible&&version===visibilityEpoch)timer=setTimeout(()=>poll(version),5000);
         }
         async function save(kind = 'workflow', graph = draft.graph, name = draft.name) {
             const version = epoch, currentDraft = draft;
@@ -147,9 +151,6 @@
                 else { if (!draft) draft = { name: '未命名工作流', graph: { nodes: [] } }; if (draft.graph.nodes.length >= 20) throw new Error('最多 20 个节点'); draft.graph.nodes.push(...instantiate(t).nodes); }
                 tab = 'workflows'; render(); return;
             }
-            if (name === 'upload') { element.querySelector('[data-upload]')?.click(); return; }
-            if (name === 'drive') { await openDrive(folderID); return; }
-            if (name === 'close-import') { importItems = null; render(); return; }
             const version = epoch;
             if (name === 'delete') {
                 if (!await confirm('删除此工作流或模板？运行记录和资产会保留。') || epoch !== version) return;
@@ -166,27 +167,22 @@
                 if (epoch !== version) return;
                 message('工作流已启动，产出会逐步归入资产');
             } else if (name === 'stop') { await api('POST', `/api/creation/runs/${encodeURIComponent(id)}/cancel`, {}); if (epoch !== version) return; message('当前生成完成并归档后停止'); }
-            else if (name === 'import') {
-                const result = await api('GET', '/api/drive/tree'); if (epoch !== version) return;
-                importItems = (result.flat_items || []).filter(i => i.type === 'file' && /^(image|video)\//.test(i.mime_type || '') && !assets.some(a => a.drive_item_id === i.id));
-            } else if (name === 'import-file') { await api('POST', '/api/creation/assets/import', { drive_item_id: id }); if (epoch !== version) return; importItems = importItems.filter(i => i.id !== id); message('已归入网盘资产文件夹'); }
             if (epoch === version) await refresh(true);
         }
         async function perform(fn) {
             if (busy) return;
-            const version = epoch; busy = true; element.querySelectorAll('button').forEach(b => { if (!b.closest('.creation-project-host')) b.disabled = true; });
+            const version = epoch; busy = true; element.querySelectorAll('button').forEach(b => { if (!b.closest('.creation-project-host, .creation-asset-host')) b.disabled = true; });
             try { await fn(); } catch (error) { if (version === epoch) message(error.message || '操作失败'); }
-            finally { if (version === epoch) { busy = false; element.querySelectorAll('button').forEach(b => { if (!b.closest('.creation-project-host')) b.disabled = false; }); } }
+            finally { if (version === epoch) { busy = false; element.querySelectorAll('button').forEach(b => { if (!b.closest('.creation-project-host, .creation-asset-host')) b.disabled = false; }); } }
         }
         element.addEventListener('click', event => {
             const target = event.target.closest('[data-tab], [data-action]'); if (!target || busy) return;
-            if (target.dataset.tab) { tab = target.dataset.tab; render(); return; }
+            if (target.dataset.tab) { tab = target.dataset.tab; render(); void perform(() => tab === 'assets' ? assetLibrary.show() : refresh(true)); return; }
             void perform(() => action(target.dataset.action, target.dataset.id));
         });
         element.addEventListener('input', event => {
             const el = event.target;
             if (el.hasAttribute('data-workflow-name') && draft) draft.name = el.value;
-            if (el.hasAttribute('data-search')) { search = el.value; renderAssets(); }
             const n = draft?.graph.nodes.find(n => n.id === el.closest('[data-node]')?.dataset.node);
             if (n && el.dataset.field) n[el.dataset.field] = ['count', 'duration_seconds'].includes(el.dataset.field) ? Number(el.value) : el.value;
         });
@@ -197,20 +193,7 @@
                 el.closest('[data-node]').querySelector('summary').textContent = `参考图片 · ${n.inputs.length} 个上游节点 / ${n.asset_ids.length} 个资产`;
             }
             if (n && el.hasAttribute('data-node-template') && el.value) { draft.graph.nodes[draft.graph.nodes.indexOf(n)] = applyNodeTemplate(n, templates().find(t => t.id === el.value)); render(); }
-            if (el.hasAttribute('data-media-filter')) { mediaFilter = el.value; renderAssets(); }
-            if (el.hasAttribute('data-source-filter')) { sourceFilter = el.value; renderAssets(); }
-            if (el.hasAttribute('data-upload')) void perform(async () => {
-                const version = epoch;
-                for (const file of Array.from(el.files || [])) {
-                    if (file.size > 64 * 1024 * 1024) throw new Error(`${file.name} 超过 64 MiB`);
-                    const data = await new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(reader.result); reader.onerror = () => reject(new Error('文件读取失败')); reader.readAsDataURL(file); });
-                    if (epoch !== version) return;
-                    await api('POST', '/api/creation/assets', { name: file.name, mime_type: file.type, content: data.split(',')[1] });
-                    if (epoch !== version) return;
-                    message(`已上传 ${file.name}`);
-                }
-                await refresh(true);
-            });
+
         });
         return { reset, setVisible };
     }

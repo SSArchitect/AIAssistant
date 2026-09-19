@@ -204,6 +204,8 @@ func (h *CreationHandler) registerProjects(group *gin.RouterGroup) {
 	group.GET("/projects", h.Projects)
 	group.POST("/projects", h.CreateProject)
 	group.GET("/projects/:id", h.Project)
+	group.PATCH("/projects/:id", h.RenameProject)
+	group.DELETE("/projects/:id", h.DeleteProject)
 	group.PATCH("/projects/:id/layout", h.UpdateProjectLayout)
 	group.POST("/projects/:id/messages", h.ProjectMessage)
 	group.POST("/projects/:id/review", h.ReviewProject)
@@ -238,6 +240,9 @@ func (h *CreationHandler) updateProject(row *models.CreationProject, doc creativ
 		}
 		if result.RowsAffected != 1 {
 			return errors.New("项目已更新，请刷新后重试")
+		}
+		if err := tx.Model(&models.DriveItem{}).Where("user_id = ? AND id = ?", row.UserID, projectFolderID(row.UserID, row.ID)).Update("name", cleanDriveName(row.Name)).Error; err != nil {
+			return err
 		}
 		if saveVersion {
 			return tx.Create(&models.CreationProjectVersion{ID: uuid.NewString(), UserID: row.UserID, ProjectID: row.ID, Revision: row.Revision, Plan: creationJSON(doc)}).Error
@@ -494,7 +499,9 @@ func (h *CreationHandler) planProject(planner creationPlanner, submitted models.
 	finishPlanningActivity(&doc, "completed", "方案已整理完成，请查看回复与画布")
 	doc.Messages = append(doc.Messages, bridge.CreativeMessage{Role: "assistant", Content: response.Reply, Planning: doc.Planning})
 	doc.Planning = nil
-	row.Name = response.Plan.Title
+	if !row.NameLocked {
+		row.Name = response.Plan.Title
+	}
 	row.Error = ""
 	_ = h.updateProject(&row, doc, true)
 	_ = persistTokenUsageRecordDB(h.db, row.ID, row.UserID, 0, "creation_director", time.Now(), &bridge.ChatResponse{ModelUsed: response.ModelUsed, TokensUsed: response.TokensUsed, RunID: response.RunID, Runtime: "self"})
