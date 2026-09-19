@@ -195,8 +195,13 @@ func validateCreativePlan(plan bridge.CreativePlan, allowed map[string]bool) err
 		default:
 			return errors.New("未知节点类型")
 		}
-		if err := validateSceneIntervals(node, seen); err != nil {
-			return err
+		for _, ref := range node.References {
+			if len(ref.SceneIntervals) > 0 {
+				if err := validateSceneIntervals(node, seen); err != nil {
+					return err
+				}
+				break
+			}
 		}
 		seen[node.ID] = node
 	}

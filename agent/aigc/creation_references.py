@@ -8,7 +8,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from agent.aigc.creation_models import PlanningConstraintError
-from agent.aigc.creation_output import structured_options, thinking_options, unsupported_schema
+from agent.aigc.creation_output import structured_options, thinking_options, unsupported_schema, validation_details
 from agent.aigc.video_prompting import VideoStoryboard, compile_storyboard
 from agent.llm.base import LLMMessage
 
@@ -26,6 +26,51 @@ class ReferenceRepair(BaseModel):
     subject_definitions: str | None = Field(max_length=4000)
     summary: str | None = Field(max_length=4000)
     retention_analysis: str | None = Field(max_length=4000)
+
+
+class ReferenceEntry(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    kind: Literal['Subject', 'Picture']
+    number: int = Field(ge=1, le=99)
+    description: str = Field(min_length=1, max_length=1000, pattern=r'^[^\r\n]+$')
+    pictures: list[int] = Field(min_length=1, max_length=9)
+    shots: list[int] = Field(min_length=1, max_length=12)
+    retention: Literal['fully_preserved', 'partially_preserved', 'attribute_transfer', 'weak_reference']
+    retained_features: str = Field(min_length=1, max_length=1000, pattern=r'^[^\r\n]+$')
+
+
+class ReferenceBlueprint(BaseModel):
+    """The model chooses roles/indices; code owns labels, lines and punctuation."""
+    model_config = ConfigDict(extra='forbid')
+    labels: list[LabelChange] = Field(max_length=30)
+    entries: list[ReferenceEntry] = Field(max_length=30)
+    summary: str | None = Field(max_length=4000)
+
+    def materialize(self, picture_count, shot_count, mode):
+        if mode != 'reference_to_video':
+            if self.entries or self.summary:
+                raise ValueError('非多图参考模式不应新增参考定义')
+            return ReferenceRepair(labels=self.labels, subject_definitions=None, summary=None, retention_analysis=None)
+        definitions, retention, seen = [], [], set()
+        for entry in self.entries:
+            label = f'<{entry.kind} {entry.number}>'
+            if label in seen or len(set(entry.pictures)) != len(entry.pictures) or len(set(entry.shots)) != len(entry.shots):
+                raise ValueError('参考标签、输入图片或出现镜头不能重复')
+            seen.add(label)
+            if any(not 1 <= i <= picture_count for i in entry.pictures):
+                raise ValueError('参考图片编号越界')
+            if any(not 1 <= i <= shot_count for i in entry.shots):
+                raise ValueError('出现镜头只能使用实际Logical Shot编号，场景/Panel序号不是Shot编号')
+            if entry.kind == 'Picture' and entry.pictures != [entry.number]:
+                raise ValueError('独立Picture锚点必须对应同号输入图片')
+            sources = ', '.join(f'<Picture {i}>' for i in entry.pictures)
+            definitions.append(f'{label} {entry.description}' + (f' (from {sources}).' if entry.kind == 'Subject' else ''))
+            shots = ', '.join(f'[Shot {i}]' for i in sorted(entry.shots))
+            retention.append(f'{label} (appears in {shots}): {entry.retention} - {entry.retained_features}')
+        if not definitions or not self.summary:
+            raise ValueError('多图参考需要完整定义与叙事摘要')
+        summary = self.summary if self.summary.startswith('[reference generation]') else '[reference generation] ' + self.summary
+        return ReferenceRepair(labels=self.labels, subject_definitions='\n'.join(definitions), summary=summary, retention_analysis='\n'.join(retention))
 
 
 def reference_error(error):
@@ -67,13 +112,18 @@ def apply_reference_repair(storyboard, repair):
 
 
 async def repair_reference_storyboard(storyboard, request, images, provider):
-    messages = [LLMMessage(role='system', content='你是创作 Agent 的视频参考绑定修复工具。只修正当前视频内的图片/主体编号和参考定义。图片编号从1开始，以input_images顺序、名称、role和note为权威，禁止沿用其他视频或项目的全局编号。不得新增或删除参考图，不得改变身份/风格/首帧职责。labels给出需要替换的旧编号到新编号；程序只替换这些标签，不会改写镜头、时间、台词、动作、规则或用户选择。返回三份完整参考字段：subject_definitions每行定义一个Subject并关联实际Picture，所有实际输入图都须分配职责；风格/构图图可独立定义为Picture锚点。summary以[reference generation]开头；retention_analysis每个定义一行，含实际[Shot N]与合法保留标记。原文对白和引号原文必须原样保留。非reference_to_video模式三字段返回null。只返回严格JSON。'),
-        LLMMessage(role='user', content=json.dumps(dict(mode=request.mode, input_images=images, storyboard=storyboard.model_dump()), ensure_ascii=False))]
+    inputs = (request.reference_image_asset_ids or request.reference_image_attachment_indices or request.reference_image_urls or request.reference_image_data_urls or [])
+    picture_count, shot_count = len(inputs), len(storyboard.shots)
+    schema = ReferenceBlueprint.model_json_schema()
+    schema['$defs']['ReferenceEntry']['properties']['pictures']['items']['enum'] = list(range(1, picture_count + 1)) or [1]
+    schema['$defs']['ReferenceEntry']['properties']['shots']['items']['enum'] = list(range(1, shot_count + 1))
+    messages = [LLMMessage(role='system', content='你是创作 Agent 的视频参考绑定修复工具。只修正当前视频内的图片/主体编号和参考定义。图片编号从1开始，以input_images顺序、名称、role和note为权威，禁止沿用其他视频或项目的全局编号。不得新增或删除参考图，不得改变身份/风格/首帧职责。labels给出需要替换的旧编号到新编号；程序只替换标签，不改写镜头、时间、台词、动作、规则或用户选择。entries逐项填写主体或独立Picture锚点的kind、number、单行description、来源pictures、出现的实际shots、retention保留方式与retained_features；程序编译所有标签和协议行，不在description里自行写定义前缀。所有输入图片都须分配职责；Picture锚点的pictures只含自身编号。shots仅能取actual_shots中的编号，场景数量与Panel数量不等于Logical Shot数量；单个连续Shot经过多个环境时，多个环境都出现于Shot 1，用scene_intervals区分时段，严禁虚构Shot 2/3。summary写叙事摘要，程序添加协议前缀。原文对白和引号原文必须原样保留。非reference_to_video模式entries=[]、summary=null。只返回严格JSON。\nJSON schema:\n'+json.dumps(schema,ensure_ascii=False)),
+        LLMMessage(role='user', content=json.dumps(dict(mode=request.mode, input_images=images, actual_shots=[dict(number=i, start_seconds=shot.start_seconds) for i, shot in enumerate(storyboard.shots, 1)], storyboard=storyboard.model_dump()), ensure_ascii=False))]
     usage, json_only = {}, False
     for attempt in range(3):
         try:
             response = await provider.chat(messages, tools=None, temperature=.1, **thinking_options(provider),
-                **structured_options(provider, ReferenceRepair.model_json_schema(), 'creation_reference_repair', json_only=json_only))
+                **structured_options(provider, schema, 'creation_reference_repair', json_only=json_only))
         except Exception as exc:
             if not json_only and unsupported_schema(exc):
                 json_only = True
@@ -82,7 +132,8 @@ async def repair_reference_storyboard(storyboard, request, images, provider):
         for key, count in response.usage.items():
             usage[key] = usage.get(key, 0) + count
         try:
-            fixed = apply_reference_repair(storyboard, ReferenceRepair.model_validate_json(response.content))
+            blueprint = ReferenceBlueprint.model_validate_json(response.content)
+            fixed = apply_reference_repair(storyboard, blueprint.materialize(picture_count, shot_count, request.mode))
             try:
                 compile_storyboard(fixed, request)
             except ValueError as exc:
@@ -91,7 +142,7 @@ async def repair_reference_storyboard(storyboard, request, images, provider):
             return fixed, usage
         except (ValueError, TypeError) as exc:
             # No raw response or user content enters the public error/diagnostic log.
-            detail = type(exc).__name__ if hasattr(exc, 'errors') else str(exc)
+            detail = json.dumps(validation_details(exc),ensure_ascii=False) if hasattr(exc, 'errors') else str(exc)
             messages.extend([LLMMessage(role='assistant', content=response.content),
                 LLMMessage(role='user', content='参考绑定仍未通过：'+detail[:600]+'。只修复参考字段与标签映射，返回全部JSON字段。')])
     raise PlanningConstraintError('视频参考图绑定自动整理未完成，已保留你的选择与原方案，请重试这次规划，无需重新选择创作方向', code='video_reference_failed')

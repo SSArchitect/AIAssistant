@@ -171,3 +171,15 @@ async def test_compaction_reserves_space_for_deterministic_scene_timeline():
     video=result.plan.nodes[-1]
     assert len(video.prompt)<=4000 and SCENE_PREFIX in video.prompt
     assert '2.5-5s <Picture 3>' in video.prompt
+
+
+def test_confirmed_legacy_multiscene_video_is_preserved_without_forced_migration():
+    value=multi_scene()
+    for ref in value['nodes'][-1]['references']:
+        ref.pop('scene_intervals',None)
+    locked=[n['id'] for n in value['nodes']]
+    result=parse(value,current_plan=value,automatic_mode=True,locked_node_ids=locked)
+    assert len(result.plan.nodes[-1].references)==3
+    assert all(not r.scene_intervals for r in result.plan.nodes[-1].references)
+    with pytest.raises(ValueError,match='多场景'):
+        parse(value)

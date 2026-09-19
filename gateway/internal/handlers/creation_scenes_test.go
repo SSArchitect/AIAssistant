@@ -180,3 +180,22 @@ func TestEmptySceneBindingsDoNotInvalidateLegacyConfirmedReferences(t *testing.T
 		t.Fatal("empty bindings changed approved reference")
 	}
 }
+
+func TestConfirmedLegacyMultiSceneVideoDoesNotRequireMigration(t *testing.T) {
+	p := creativeTestPlan()
+	cave := p.Nodes[1]
+	cave.ID = "cave"
+	video := p.Nodes[3]
+	video.DependsOn = append(video.DependsOn, "cave")
+	video.References = append(video.References, bridge.CreativeReference{NodeID: "cave", Role: "reference"})
+	p.Nodes = append(p.Nodes[:3], cave, video)
+	if err := validateCreativePlan(p, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateVideoScenes(p, []string{video.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if validateVideoScenes(p, nil) == nil {
+		t.Fatal("new unconfirmed multi-scene plan needs intervals")
+	}
+}

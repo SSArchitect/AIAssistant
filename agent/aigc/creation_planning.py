@@ -143,7 +143,8 @@ class CreativePlan(StrictModel):
             else:
                 if not any(seen[dep].purpose == 'script' and seen[dep].kind == 'text' for dep in node.depends_on):
                     raise ValueError('视频必须依赖可审阅的分镜脚本')
-                validate_scene_intervals(node, seen)
+                if any(ref.scene_intervals for ref in node.references):
+                    validate_scene_intervals(node, seen)
                 try:
                     compile_creative_video(node)
                 except ValueError as exc:
@@ -506,7 +507,7 @@ async def compact_proposal(content, request, provider, report):
                 await report('references', '正在核对当前视频的参考图编号与职责：' + node.title)
                 names = {item['id']: item.get('title', '') for item in value['plan']['nodes'] if isinstance(item, dict) and 'id' in item}
                 names.update({asset.id: asset.name for asset in request.assets})
-                images = [dict(picture=i, source=ref.node_id or ref.asset_id, name=names.get(ref.node_id or ref.asset_id, ''), role=ref.role, note=ref.note) for i, ref in enumerate(node.references, 1)]
+                images = [dict(picture=i, source=ref.node_id or ref.asset_id, name=names.get(ref.node_id or ref.asset_id, ''), role=ref.role, note=ref.note, scene_intervals=[span.model_dump() for span in ref.scene_intervals]) for i, ref in enumerate(node.references, 1)]
                 node.storyboard, consumed = await repair_reference_storyboard(node.storyboard, creative_video_request(node), images, provider)
                 changes[node.id]['storyboard'] = node.storyboard.model_dump()
                 for key, count in consumed.items():
@@ -542,6 +543,7 @@ def validate_video_scenes(plan: CreativePlan, request: PlanningRequest):
                 errors.append('场景节点只承载环境，不能套用人设身份或人物转换模板；用文字描述场景，可只借用统一画风：' + node.id)
         if node.kind != 'video' or node.id in locked:
             continue
+        validate_scene_intervals(node, nodes)
         scenes = [nodes[r.node_id] for r in node.references if r.node_id in nodes and nodes[r.node_id].purpose == 'scene' and r.role in {'reference','first_frame'}]
         if not scenes:
             errors.append('视频需要对应的场景图片节点（purpose=scene），加入 depends_on 并以 reference 引用；人设和仅画风参考不能替代场景：' + node.id)
