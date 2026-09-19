@@ -12,6 +12,7 @@ import (
 	"github.com/aan/agent-assistant-gateway/internal/bridge"
 	"github.com/aan/agent-assistant-gateway/internal/models"
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
 
 type creationReviewer interface {
@@ -114,6 +115,14 @@ func (h *CreationHandler) StartAutomaticCreation(c *gin.Context) {
 			return
 		}
 	}
+	if row.AutomaticStatus == "running" {
+		c.JSON(202, gin.H{"project": row})
+		return
+	}
+	if row.AutomaticStatus == "stopping" {
+		creationError(c, 409, "正在停止原任务，请稍后继续")
+		return
+	}
 	if !checkProjectRevision(c, row, req.Revision) {
 		return
 	}
@@ -121,12 +130,19 @@ func (h *CreationHandler) StartAutomaticCreation(c *gin.Context) {
 		creationError(c, 409, "先描述创作想法，形成画布后即可一键生成")
 		return
 	}
-	var active int64
-	if err := h.db.Model(&models.CreationRun{}).Where("user_id = ? AND status IN ?", row.UserID, []string{"queued", "running", "stopping"}).Count(&active).Error; err != nil {
+	var active []models.CreationRun
+	if err := h.db.Where("user_id = ? AND status IN ?", row.UserID, []string{"queued", "running", "stopping"}).Find(&active).Error; err != nil {
 		creationError(c, 500, "无法检查任务状态")
 		return
 	}
-	if active > 0 || h.automaticBusy(row.UserID, row.ID) {
+	for _, run := range active {
+		state, exists := doc.States[run.ProjectNodeID]
+		if run.ProjectID != row.ID || run.Status == "stopping" || !exists || state.RunID != run.ID || state.Revision != run.NodeRevision {
+			creationError(c, 409, "已有其他生成任务正在运行，请等待完成或停止")
+			return
+		}
+	}
+	if h.automaticBusy(row.UserID, row.ID) {
 		creationError(c, 409, "已有生成任务正在运行，请等待完成或停止")
 		return
 	}
@@ -176,7 +192,7 @@ func (h *CreationHandler) StopAutomaticCreation(c *gin.Context) {
 		creationError(c, 409, err)
 		return
 	}
-	if err := h.db.Model(&models.CreationRun{}).Where("project_id = ? AND user_id = ? AND status IN ?", row.ID, row.UserID, []string{"queued", "running"}).Updates(map[string]interface{}{"status": "stopping", "updated_at": time.Now()}).Error; err != nil {
+	if err := h.db.Model(&models.CreationRun{}).Where("project_id = ? AND user_id = ? AND status IN ?", row.ID, row.UserID, []string{"queued", "running"}).Updates(map[string]interface{}{"status": gorm.Expr("CASE WHEN status = 'queued' THEN 'cancelled' ELSE 'stopping' END"), "updated_at": time.Now()}).Error; err != nil {
 		creationError(c, 500, "停止生成失败，请重试")
 		return
 	}
@@ -270,6 +286,16 @@ func (h *CreationHandler) advanceAutomatic(ctx context.Context, id, request stri
 		h.mu.Unlock()
 		return false, errors.New("无法读取创作方案")
 	}
+	var active models.CreationRun
+	if err := h.db.Where("project_id = ? AND user_id = ? AND status IN ?", row.ID, row.UserID, []string{"queued", "running", "stopping"}).First(&active).Error; err == nil {
+		automaticStep(&doc, "takeover", "已接管正在生成的节点，等待原任务结果后继续", active.ProjectNodeID)
+		err = h.updateProject(&row, doc, false)
+		h.mu.Unlock()
+		if err != nil {
+			return false, err
+		}
+		return false, h.waitForCreationRun(ctx, active.ID)
+	}
 	if len(doc.Plan.Questions) > 0 || validateVideoScenes(doc.Plan, doc.Automation.LockedNodeIDs) != nil {
 		planner, ok := h.generator.(creationPlanner)
 		if !ok {
@@ -356,7 +382,20 @@ func (h *CreationHandler) advanceAutomatic(ctx context.Context, id, request stri
 		if err != nil {
 			return false, err
 		}
-		return h.runAutomaticMedia(submission)
+		return h.runAutomaticMedia(ctx, submission)
+	}
+	// A saved first candidate does not mean the original batch has finished.
+	if node.Kind == "image" && state.RunID != "" && len(state.Candidates) > 0 {
+		var prior models.CreationRun
+		var progress []creationProgress
+		if h.db.Where("id = ? AND user_id = ? AND project_id = ? AND node_revision = ? AND status IN ?", state.RunID, row.UserID, row.ID, state.Revision, []string{"failed", "interrupted"}).First(&prior).Error == nil && json.Unmarshal([]byte(prior.Progress), &progress) == nil && len(progress) == 1 && (progress[0].Retryable || prior.Status == "interrupted") {
+			submission, err := h.prepareAutomaticRun(row, doc, node, request)
+			h.mu.Unlock()
+			if err != nil {
+				return false, err
+			}
+			return h.runAutomaticMedia(ctx, submission)
+		}
 	}
 	candidates := []string{}
 	if node.Kind == "image" {
@@ -375,7 +414,7 @@ func (h *CreationHandler) advanceAutomatic(ctx context.Context, id, request stri
 		if err != nil {
 			return false, err
 		}
-		return h.runAutomaticMedia(submission)
+		return h.runAutomaticMedia(ctx, submission)
 	}
 	req, err := h.automaticRequest(row, doc, node, candidates)
 	if err != nil {
@@ -472,14 +511,104 @@ func (h *CreationHandler) prepareAutomaticRun(row models.CreationProject, doc cr
 	automaticStep(&doc, "generate", "正在生成「"+node.Title+"」", node.ID)
 	return h.prepareProjectRun(row, doc, node.ID, fmt.Sprintf("auto:%s:%s:%d", request, node.ID, doc.States[node.ID].Revision))
 }
-func (h *CreationHandler) runAutomaticMedia(submission *creationSubmission) (bool, error) {
-	h.execute(submission.run, submission.graph, submission.progress)
-	var run models.CreationRun
-	if err := h.db.First(&run, "id = ?", submission.run.ID).Error; err != nil {
-		return false, errors.New("无法读取生成结果，已完成资产保留")
+
+// Waiting on a running manual task never re-executes it. Adoption is idempotent
+// because the worker may publish its terminal status just before attaching assets.
+func (h *CreationHandler) waitForCreationRun(ctx context.Context, id string) error {
+	for {
+		var run models.CreationRun
+		if err := h.db.First(&run, "id = ?", id).Error; err != nil {
+			return errors.New("无法读取原生成任务")
+		}
+		if run.Status != "queued" && run.Status != "running" && run.Status != "stopping" {
+			var progress []creationProgress
+			if json.Unmarshal([]byte(run.Progress), &progress) == nil {
+				h.finishProjectRun(run, progress)
+			}
+			return nil
+		}
+		if err := waitCreationRetry(ctx, 100*time.Millisecond); err != nil {
+			return err
+		}
 	}
-	if run.Status != "completed" {
-		return false, errors.New("当前节点未完成，后续生成已停止；已有产物保留，可检查后继续")
+}
+func waitCreationRetry(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
 	}
-	return false, nil
+}
+func (h *CreationHandler) runAutomaticMedia(ctx context.Context, submission *creationSubmission) (bool, error) {
+	request := submission.project.AutomaticRequestID
+	for attempt := 0; ; attempt++ {
+		if ctx.Err() != nil {
+			return true, nil
+		}
+		h.execute(submission.run, submission.graph, submission.progress)
+		if err := h.waitForCreationRun(ctx, submission.run.ID); err != nil {
+			return false, err
+		}
+		var run models.CreationRun
+		if err := h.db.First(&run, "id = ?", submission.run.ID).Error; err != nil {
+			return false, errors.New("无法读取生成结果，已完成资产保留")
+		}
+		if run.Status == "completed" {
+			return false, nil
+		}
+		var progress []creationProgress
+		_ = json.Unmarshal([]byte(run.Progress), &progress)
+		retryable := len(progress) == 1 && (progress[0].Retryable || (progress[0].ErrorCode == "media_provider_error" && progress[0].ProviderTaskID != ""))
+		if ctx.Err() != nil || run.Status == "cancelled" {
+			return true, nil
+		}
+		if !retryable || attempt >= 2 {
+			if run.Error != "" {
+				return false, errors.New(run.Error)
+			}
+			return false, errors.New("无法确认节点结果，已保留原任务与产物，请稍后继续")
+		}
+		h.mu.Lock()
+		row := submission.project
+		if !h.automaticCurrent(&row, request) {
+			h.mu.Unlock()
+			return true, nil
+		}
+		doc, err := projectDocument(row)
+		if err == nil {
+			automaticStep(&doc, "reconnect", fmt.Sprintf("正在恢复原生成任务（%d/2），取回结果后继续：%s", attempt+1, run.Error), run.ProjectNodeID)
+			err = h.updateProject(&row, doc, false)
+		}
+		h.mu.Unlock()
+		if err != nil {
+			return false, err
+		}
+		wait := h.retryWait
+		if wait == nil {
+			wait = waitCreationRetry
+		}
+		if err = wait(ctx, time.Duration(2<<attempt)*time.Second); err != nil {
+			return true, nil
+		}
+		h.mu.Lock()
+		if !h.automaticCurrent(&row, request) {
+			h.mu.Unlock()
+			return true, nil
+		}
+		doc, err = projectDocument(row)
+		if err == nil {
+			if doc.States[run.ProjectNodeID].Revision != run.NodeRevision {
+				err = errors.New("节点已更改，已保留最新内容")
+			} else {
+				submission, err = h.prepareProjectRun(row, doc, run.ProjectNodeID, run.RequestID)
+			}
+		}
+		h.mu.Unlock()
+		if err != nil {
+			return false, err
+		}
+	}
 }

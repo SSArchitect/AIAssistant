@@ -30,11 +30,12 @@ ASPECT_SIZES = {
 
 class SparkProviderError(RuntimeError):
     def __init__(self, message: str, *, code: str = "provider_error", task_id: str | None = None,
-                 idempotency_key: str | None = None):
+                 idempotency_key: str | None = None, http_status: int | None = None, task_status: str | None = None):
         super().__init__(message)
         self.code = code
         self.task_id = task_id
         self.idempotency_key = idempotency_key
+        self.http_status, self.task_status = http_status, task_status
 
     def context(self) -> dict:
         return {"code": self.code, "task_id": self.task_id, "idempotency_key": self.idempotency_key}
@@ -83,7 +84,7 @@ class SparkTaskClient:
                             except ValueError:
                                 pass
                         # Never surface proxy HTML or response text that could echo credentials.
-                        raise SparkProviderError(f"Spark HTTP {response.status_code} ({code})", code=code)
+                        raise SparkProviderError(f"Spark HTTP {response.status_code} ({code})", code=code, http_status=response.status_code)
                     return response
             await asyncio.sleep(0.5 * (2 ** attempt))
         raise AssertionError("unreachable")
@@ -198,7 +199,7 @@ class SparkTaskClient:
         if task["status"] == "failed":
             error = task.get("error") or {}
             code = str(error.get("code", "generation_failed")) if isinstance(error, dict) else "generation_failed"
-            raise SparkProviderError(f"Spark generation failed ({code})", code=code)
+            raise SparkProviderError(f"Spark generation failed ({code})", code=code, task_status='failed')
         if task["status"] == "expired":
             raise SparkProviderError("Spark artifact expired", code="artifact_expired")
         self._report(payload, key, "saving")
@@ -284,7 +285,8 @@ class SparkImageClient(SparkTaskClient):
         async with httpx.AsyncClient(base_url=self.base_url, headers={"Authorization": f"Bearer {self.api_key}"},
                                      timeout=httpx.Timeout(60, connect=10), follow_redirects=False,
                                      transport=self.transport) as client:
-            await self._prepare_image_input(client, request, payload, key)
+            if not self._task_ids.get(key):
+                await self._prepare_image_input(client, request, payload, key)
             task = await self._wait_for_task(client, payload, key)
             task_id = task["id"]
             task_path = "/v1/tasks/" + quote(task_id, safe="")

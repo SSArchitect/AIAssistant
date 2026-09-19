@@ -930,3 +930,23 @@ func TestGenerateCharacterStylizationFields(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestCreationMediaForwardsAcceptedTaskIdentity(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Error(err)
+		}
+		if r.URL.Path != "/agent/creation/node" || req["resume_task_id"] != "original-task" || req["idempotency_key"] != "original-key" {
+			t.Error(req)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"content":"aW1hZ2U=","mime_type":"image/png","provider_task_id":"original-task"}`))
+	}))
+	defer server.Close()
+	client := NewAgentClient(server.URL, time.Second)
+	result, err := client.CreateMedia(context.Background(), CreationNodeRequest{Kind: "image", Prompt: "valley", IdempotencyKey: "original-key", ResumeTaskID: "original-task"})
+	if err != nil || result.ProviderTaskID != "original-task" {
+		t.Fatal(result, err)
+	}
+}

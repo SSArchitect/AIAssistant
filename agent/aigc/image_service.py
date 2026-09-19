@@ -5,11 +5,11 @@ from agent.config import runtime_config
 from agent.schemas.aigc import ImageGenerationRequest, ImageGenerationResponse
 
 
-async def generate_image(request: ImageGenerationRequest) -> ImageGenerationResponse:
+async def generate_image(request: ImageGenerationRequest, *, resume_task_id=None) -> ImageGenerationResponse:
     provider = request.provider or runtime_config.get("aigc.image_provider", "minimax")
     if provider == "spark":
         client = SparkImageClient(runtime_config.get("aigc.spark.base_url"), runtime_config.get("aigc.spark.api_key"))
-        return await client.generate(request)
+        return await client.generate(request, **({'resume_task_id': resume_task_id} if resume_task_id else {}))
     if provider != "minimax":
         raise ValueError(f"Unknown image provider: {provider}")
     if request.mode in ("image_to_image", "character_stylization") or request.denoise is not None or request.image_fit is not None:

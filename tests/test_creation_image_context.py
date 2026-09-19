@@ -12,6 +12,12 @@ from agent.llm.base import LLMResponse
 from tests.test_creation import PNG, request
 
 
+@pytest.fixture(autouse=True)
+def isolated_media_state(monkeypatch, tmp_path):
+    from agent.aigc import creation_media_state
+    monkeypatch.setattr(creation_media_state, "STATE_DIR", tmp_path / "media-state")
+
+
 def profile():
     return context.VisualStyle(medium='flat cartoon illustration', linework='bold clean outlines', shading='flat cel shading',
         palette='warm saturated colors', shapes='rounded stylized shapes', texture='smooth clean surfaces')
@@ -93,7 +99,7 @@ async def test_failed_style_analysis_never_falls_back_to_editing_source_image(mo
     monkeypatch.setattr(context,'extract_visual_style',AsyncMock(side_effect=RuntimeError('analysis failed')))
     generate=AsyncMock();monkeypatch.setattr(creation,'generate_image',generate)
     with pytest.raises(RuntimeError):await creation.execute_node(request(input_images=[PNG],image_references=[dict(role='style')]))
-    assert generate.await_count==0 and list(tmp_path.iterdir())==[]
+    assert generate.await_count==0 and list(tmp_path.glob('*.json'))==[]
 
 
 def test_style_vocabulary_excludes_identity_and_never_truncates_target_brief():

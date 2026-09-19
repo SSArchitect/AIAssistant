@@ -36,6 +36,7 @@ class CreationNodeRequest(BaseModel):
     image_references: list[ImageReferenceContext] = Field(default_factory=list, max_length=1)
     input_images: list[str] = Field(default_factory=list, max_length=9)
     idempotency_key: str = Field(min_length=1, max_length=128)
+    resume_task_id: str = Field(default='', max_length=128, pattern=r'^[A-Za-z0-9_-]*$')
     video_mode: Literal['', 'text_to_video', 'image_to_video', 'reference_to_video'] = ''
     storyboard: VideoStoryboard | None = None
 
@@ -83,14 +84,11 @@ def prepare_video_request(request: CreationNodeRequest):
 
 
 async def execute_node(request: CreationNodeRequest):
-    if request.kind == 'video':
-        prepared_video = prepare_video_request(request)
-        state = CreationMediaState(request)
-        # Acknowledged media tasks have the same background budget as Super Chat.
-        # Persist the provider ID before polling so a retry can GET the same task.
-        with progress_scope(state.progress, background=True):
-            return await _execute_node(request, resume_task_id=state.task_id, prepared_video=prepared_video)
-    return await _execute_node(request)
+    prepared_video = prepare_video_request(request) if request.kind == 'video' else None
+    state = CreationMediaState(request)
+    # Images and videos both retain acknowledged task IDs before polling.
+    with progress_scope(state.progress, background=True):
+        return await _execute_node(request, resume_task_id=state.task_id, prepared_video=prepared_video)
 
 
 async def _execute_node(request: CreationNodeRequest, *, resume_task_id=None, prepared_video=None):
@@ -100,11 +98,11 @@ async def _execute_node(request: CreationNodeRequest, *, resume_task_id=None, pr
         reference = request.image_references[0] if request.image_references else None
         if reference and reference.role == 'style':
             # Style guides never become img2img source pixels or identity templates.
-            options['prompt'] = await style_only_prompt(request.prompt, request.input_images[0], reference, request.idempotency_key)
+            options['prompt'] = request.prompt if resume_task_id else await style_only_prompt(request.prompt, request.input_images[0], reference, request.idempotency_key)
             options['mode'] = 'text_to_image'
         elif request.image_purpose in {'key_visual', 'scene'} and request.input_images:
             reference = reference or ImageReferenceContext(role='reference')
-            options['prompt'] = await composition_only_prompt(request.prompt, request.input_images[0], reference, request.idempotency_key)
+            options['prompt'] = request.prompt if resume_task_id else await composition_only_prompt(request.prompt, request.input_images[0], reference, request.idempotency_key)
             options['mode'] = 'text_to_image'
         else:
             if request.input_images:
@@ -115,7 +113,7 @@ async def _execute_node(request: CreationNodeRequest, *, resume_task_id=None, pr
                 addition = '\nReference responsibility (' + reference.role + '): ' + reference.note
                 if len(options['prompt']) + len(addition) <= 4000:
                     options['prompt'] += addition
-        result = await generate_image(ImageGenerationRequest(**options))
+        result = await generate_image(ImageGenerationRequest(**options), **({'resume_task_id': resume_task_id} if resume_task_id else {}))
         if len(result.images) != 1:
             raise ValueError('生图服务未返回一张图片')
         item = result.images[0]
@@ -150,6 +148,16 @@ async def creation_node(request: CreationNodeRequest):
                  'generation_failed', 'unauthorized', 'idempotency_conflict', 'unsupported_task_type',
                  'invalid_output', 'storage_failed', 'provider_busy'}
         code = exc.code if exc.code in known else 'provider_error'
+        if exc.task_status == 'failed':
+            code = 'generation_failed'
+        elif exc.http_status in (401, 403):
+            code = 'unauthorized'
+        elif exc.http_status == 429:
+            code = 'provider_busy'
+        elif exc.http_status is not None and exc.http_status >= 500:
+            code = 'connection_failed'
+        elif exc.code == 'invalid_response':
+            code = 'status_unknown'
         logging.getLogger(__name__).warning('Creation media error: code=%s task=%s', code, exc.task_id or '')
         raise HTTPException(status_code=504 if code == 'wait_timeout' else 502,
             detail={'code': 'media_' + code, 'provider_task_id': exc.task_id or ''}) from exc

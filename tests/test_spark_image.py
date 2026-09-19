@@ -390,3 +390,42 @@ async def test_tool_preserves_custom_dimensions_and_exposes_ratio():
 def test_missing_spark_url_is_reported_as_missing_configuration():
     with pytest.raises(ValueError,match='base URL not configured'):
         SparkImageClient('', '')
+
+
+@pytest.mark.asyncio
+async def test_resume_accepted_image_only_queries_and_downloads_without_upload(tmp_path):
+    seen = []
+    def handler(request):
+        seen.append((request.method, request.url.path))
+        assert request.method == 'GET'
+        if '/artifacts/' in request.url.path:
+            return httpx.Response(200, content=png(), headers={'Content-Type': 'image/png'})
+        assert request.url.path == '/v1/tasks/task-123'
+        return httpx.Response(200, json=task())
+    req = ImageGenerationRequest(prompt='edit character', mode='image_to_image',
+        image_data_url='data:image/png;base64,' + base64.b64encode(png()).decode(), idempotency_key='original')
+    result = await make_client(tmp_path, handler).generate(req, resume_task_id='task-123')
+    assert result.id == 'task-123' and len(seen) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('status,code', [(503,'upstream_unavailable'),(401,'not_authorized')])
+async def test_http_failure_keeps_status_without_exposing_provider_body(tmp_path, status, code):
+    def handler(request):
+        return httpx.Response(status, json={'error': {'code': code, 'message': 'SECRET'}})
+    with patch('agent.aigc.spark_client.asyncio.sleep', new=AsyncMock()):
+        with pytest.raises(SparkProviderError) as caught:
+            await make_client(tmp_path, handler).generate(ImageGenerationRequest(prompt='valley'), resume_task_id='task-123')
+    assert caught.value.http_status == status and caught.value.task_id == 'task-123'
+    assert 'SECRET' not in str(caught.value)
+
+
+@pytest.mark.asyncio
+async def test_unknown_terminal_task_code_still_records_definitive_failure(tmp_path):
+    def handler(request):
+        value = task('failed'); value['error'] = {'code':'custom_provider_failure','message':'SECRET'}
+        return httpx.Response(200, json=value)
+    with pytest.raises(SparkProviderError) as caught:
+        await make_client(tmp_path, handler).generate(ImageGenerationRequest(prompt='valley'),resume_task_id='task-123')
+    assert caught.value.task_status == 'failed' and caught.value.task_id == 'task-123'
+    assert 'SECRET' not in str(caught.value)

@@ -1,4 +1,4 @@
-"""Persist accepted Creation video identities without storing prompts or credentials."""
+"""Persist accepted Creation image/video identities without storing prompts or credentials."""
 from __future__ import annotations
 
 import hashlib
@@ -14,7 +14,7 @@ STATE_DIR = Path(__file__).resolve().parents[2] / 'data/creation-media-tasks'
 
 class CreationMediaState:
     def __init__(self, request):
-        fingerprint = hashlib.sha256((request.model_dump_json() + '\n' + runtime_config.get('aigc.spark.base_url')).encode()).hexdigest()
+        fingerprint = hashlib.sha256((request.model_dump_json(exclude={'resume_task_id'}) + '\n' + runtime_config.get('aigc.spark.base_url')).encode()).hexdigest()
         self.path = STATE_DIR / (hashlib.sha256(request.idempotency_key.encode()).hexdigest() + '.json')
         self.record = dict(fingerprint=fingerprint, task_id='', stage='submitting')
         STATE_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -22,6 +22,11 @@ class CreationMediaState:
         self.record = json.loads(self.path.read_text())
         if self.record.get('fingerprint') != fingerprint:
             raise ValueError('生成请求的上下文已变化，请使用新的生成请求')
+        if request.resume_task_id:
+            if self.task_id and self.task_id != request.resume_task_id:
+                raise ValueError('原任务标识与已保存记录不一致')
+            self.record['task_id'] = request.resume_task_id
+            self._save()
 
     @property
     def task_id(self):

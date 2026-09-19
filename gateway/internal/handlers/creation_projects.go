@@ -721,18 +721,42 @@ func (h *CreationHandler) prepareProjectRun(row models.CreationProject, doc crea
 	run := models.CreationRun{ID: uuid.NewString(), UserID: row.UserID, Name: row.Name + " · " + node.Title, Status: "queued", Definition: creationJSON(graph), ProjectID: row.ID, ProjectRevision: row.Revision, ProjectNodeID: node.ID, NodeRevision: state.Revision, RequestID: requestID, Snapshot: creationJSON(doc)}
 	progress := []creationProgress{{NodeID: node.ID, Status: "pending", AssetIDs: []string{}}}
 	resuming := false
-	if node.Kind == "video" && state.RunID != "" {
-		var previous models.CreationRun
-		if h.db.Where("id = ? AND user_id = ? AND project_id = ? AND project_node_id = ?", state.RunID, row.UserID, row.ID, node.ID).First(&previous).Error == nil && previous.NodeRevision == state.Revision && (previous.Status == "failed" || previous.Status == "interrupted") {
-			var frozen creationGraph
-			var prior []creationProgress
-			if json.Unmarshal([]byte(previous.Definition), &frozen) == nil && creationJSON(frozen) == creationJSON(graph) && json.Unmarshal([]byte(previous.Progress), &prior) == nil && len(prior) == 1 && len(prior[0].AssetIDs) == 0 && (prior[0].Retryable || previous.Status == "interrupted") {
-				run = previous // Preserve the original run ID, snapshot and provider idempotency key.
-				run.Status, run.Error, run.RequestID = "queued", "", requestID
-				progress[0].ProviderTaskID = prior[0].ProviderTaskID
-				resuming = true
-			}
+	// A legacy failed retry may hide an earlier accepted task. Prefer that task,
+	// but only when ownership, node revision and all frozen inputs still match.
+	var previousRuns []models.CreationRun
+	if err := h.db.Where("user_id = ? AND project_id = ? AND project_node_id = ? AND node_revision = ? AND status IN ?", row.UserID, row.ID, node.ID, state.Revision, []string{"failed", "interrupted"}).Order("created_at DESC").Find(&previousRuns).Error; err != nil {
+		return nil, &creationSubmissionError{500, "无法检查原生成任务"}
+	}
+	var completed models.CreationRun
+	h.db.Where("user_id = ? AND project_id = ? AND project_node_id = ? AND node_revision = ? AND status = ?", row.UserID, row.ID, node.ID, state.Revision, "completed").Order("created_at DESC").First(&completed)
+	bestScore := -1
+	for _, previous := range previousRuns {
+		if completed.ID != "" && !previous.CreatedAt.After(completed.CreatedAt) {
+			continue
 		}
+		var frozen creationGraph
+		var prior []creationProgress
+		if json.Unmarshal([]byte(previous.Definition), &frozen) != nil || creationJSON(frozen) != creationJSON(graph) || json.Unmarshal([]byte(previous.Progress), &prior) != nil || len(prior) != 1 || prior[0].NodeID != node.ID {
+			continue
+		}
+		p := prior[0]
+		legacyAccepted := p.ErrorCode == "media_provider_error" && p.ProviderTaskID != ""
+		if !p.Retryable && previous.Status != "interrupted" && !legacyAccepted {
+			continue
+		}
+		score := len(p.AssetIDs)
+		if p.ProviderTaskID != "" {
+			score += 100
+		}
+		if score <= bestScore {
+			continue
+		}
+		bestScore = score
+		run = previous // Keep the task's original idempotency key and snapshot.
+		run.Status, run.Error, run.RequestID = "queued", "", requestID
+		progress = prior
+		progress[0].Status, progress[0].Error = "pending", ""
+		resuming = true
 	}
 	run.Progress = creationJSON(progress)
 	state.RunID = run.ID
@@ -785,8 +809,16 @@ func (h *CreationHandler) finishProjectRun(run models.CreationRun, progress []cr
 		return
 	} // Changed plans never adopt an older render.
 	changed := false
+	seen := map[string]bool{}
+	for _, id := range state.Candidates {
+		seen[id] = true
+	}
 	for _, p := range progress {
 		for _, id := range p.AssetIDs {
+			if seen[id] {
+				continue
+			}
+			seen[id] = true
 			state.Candidates = append(state.Candidates, id)
 			changed = true
 		}

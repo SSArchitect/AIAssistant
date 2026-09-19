@@ -60,6 +60,7 @@ type CreationHandler struct {
 	db               *gorm.DB
 	mu               sync.Mutex
 	automaticCancels map[string]context.CancelFunc
+	retryWait        func(context.Context, time.Duration) error
 	libraryMu        sync.Mutex
 	libraryReady     map[string]bool
 	thumbnailMu      sync.Mutex
@@ -618,7 +619,7 @@ func (h *CreationHandler) StartRun(c *gin.Context) {
 }
 func (h *CreationHandler) CancelRun(c *gin.Context) {
 	// Finish any provider submission already in flight and archive its result. Never launch the next one.
-	result := h.db.Model(&models.CreationRun{}).Where("id = ? AND user_id = ? AND status IN ?", c.Param("id"), c.GetString("creation_user_id"), []string{"queued", "running"}).Updates(map[string]interface{}{"status": "stopping", "updated_at": time.Now()})
+	result := h.db.Model(&models.CreationRun{}).Where("id = ? AND user_id = ? AND status IN ?", c.Param("id"), c.GetString("creation_user_id"), []string{"queued", "running"}).Updates(map[string]interface{}{"status": gorm.Expr("CASE WHEN status = 'queued' THEN 'cancelled' ELSE 'stopping' END"), "updated_at": time.Now()})
 	if result.Error != nil {
 		creationError(c, 500, "停止失败")
 		return
@@ -647,6 +648,11 @@ func (h *CreationHandler) checkpoint(run models.CreationRun, progress []creation
 	return h.db.Model(&models.CreationRun{}).Where("id = ?", run.ID).Updates(map[string]interface{}{"progress": creationJSON(progress), "updated_at": time.Now()}).Error
 }
 func (h *CreationHandler) execute(run models.CreationRun, graph creationGraph, progress []creationProgress) {
+	// Only the worker that claims the submission may execute or finalize it.
+	claim := h.db.Model(&models.CreationRun{}).Where("id = ? AND status = ?", run.ID, "queued").Update("status", "running")
+	if claim.Error != nil || claim.RowsAffected != 1 {
+		return
+	}
 	status := "completed"
 	errorText := ""
 	defer func() {
@@ -668,11 +674,6 @@ func (h *CreationHandler) execute(run models.CreationRun, graph creationGraph, p
 		h.db.Model(&models.CreationRun{}).Where("id = ?", run.ID).Updates(map[string]interface{}{"status": status, "error": errorText, "progress": creationJSON(progress), "updated_at": time.Now()})
 		h.finishProjectRun(run, progress)
 	}()
-	if err := h.db.Model(&models.CreationRun{}).Where("id = ? AND status = ?", run.ID, "queued").Update("status", "running").Error; err != nil {
-		status = "failed"
-		errorText = "无法保存运行状态"
-		return
-	}
 	outputs := map[string][]string{}
 	for i, node := range graph.Nodes {
 		if h.runStopped(run.ID) {
@@ -704,19 +705,23 @@ func (h *CreationHandler) execute(run models.CreationRun, graph creationGraph, p
 			}
 			inputs = append(inputs, input)
 		}
-		for j := 0; j < node.Count; j++ {
+		outputs[node.ID] = append([]string{}, progress[i].AssetIDs...)
+		for j := len(progress[i].AssetIDs); j < node.Count; j++ {
 			if h.runStopped(run.ID) {
 				status = "cancelled"
 				return
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 6*time.Hour+2*time.Minute)
-			media, err := h.generator.CreateMedia(ctx, bridge.CreationNodeRequest{ImagePurpose: node.ImagePurpose, Kind: node.Kind, Prompt: node.Prompt, AspectRatio: node.AspectRatio, DurationSeconds: node.DurationSeconds, CharacterStyle: node.CharacterStyle, InputImages: inputs, ImageReferences: node.ImageReferences, IdempotencyKey: fmt.Sprintf("creation-%s-%d-%d", run.ID, i, j), VideoMode: node.VideoMode, Storyboard: node.Storyboard})
+			media, err := h.generator.CreateMedia(ctx, bridge.CreationNodeRequest{ResumeTaskID: progress[i].ProviderTaskID, ImagePurpose: node.ImagePurpose, Kind: node.Kind, Prompt: node.Prompt, AspectRatio: node.AspectRatio, DurationSeconds: node.DurationSeconds, CharacterStyle: node.CharacterStyle, InputImages: inputs, ImageReferences: node.ImageReferences, IdempotencyKey: fmt.Sprintf("creation-%s-%d-%d", run.ID, i, j), VideoMode: node.VideoMode, Storyboard: node.Storyboard})
 			cancel()
 			if err != nil {
 				status = "failed"
 				var detail *bridge.CreationMediaError
 				if errors.As(err, &detail) {
-					progress[i].ErrorCode, progress[i].ProviderTaskID, progress[i].Retryable = detail.Code, detail.ProviderTaskID, detail.Retryable
+					progress[i].ErrorCode, progress[i].Retryable = detail.Code, detail.Retryable
+					if detail.ProviderTaskID != "" {
+						progress[i].ProviderTaskID = detail.ProviderTaskID
+					}
 				}
 				errorText = fmt.Sprintf("「%s」%s", node.Name, creationFailureMessage(err, "生成失败，已完成的资产保留，请检查生成服务后重试"))
 				return
@@ -726,13 +731,16 @@ func (h *CreationHandler) execute(run models.CreationRun, graph creationGraph, p
 				errorText = "生成服务返回了错误的媒体类型"
 				return
 			}
+			progress[i].ProviderTaskID = media.ProviderTaskID
 			ext := map[string]string{"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp", "video/mp4": ".mp4", "video/webm": ".webm"}[media.MimeType]
 			asset, err := h.saveAsset(run.UserID, fmt.Sprintf("%s-%s-%d%s", run.Name, node.Name, j+1, ext), media.Content, media.MimeType, "generated", run.ID, node.ID, media.ProviderTaskID)
 			if err != nil {
 				status = "failed"
 				errorText = "资产归档失败：" + err.Error()
+				progress[i].Retryable, progress[i].ErrorCode = true, "media_storage_failed"
 				return
 			}
+			progress[i].ProviderTaskID, progress[i].ErrorCode, progress[i].Error, progress[i].Retryable = "", "", "", false
 			progress[i].AssetIDs = append(progress[i].AssetIDs, asset.ID)
 			outputs[node.ID] = append(outputs[node.ID], asset.ID)
 			if err := h.checkpoint(run, progress); err != nil {

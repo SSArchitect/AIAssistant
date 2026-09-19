@@ -16,6 +16,47 @@ def request(**kwargs):
     return creation.CreationNodeRequest(kind='video',prompt='mist over forest',idempotency_key='original-run',**kwargs)
 
 
+@pytest.mark.asyncio
+async def test_image_task_is_persisted_and_reconnected_after_lost_status(monkeypatch):
+    req=creation.CreationNodeRequest(kind='image',prompt='empty glowing valley',idempotency_key='image-run')
+    async def first(sent, **kwargs):
+        assert background_enabled() and not kwargs
+        emit_progress(kind='image',stage='running',task_id='image-task',idempotency_key=sent.idempotency_key)
+        raise SparkProviderError('private provider response',code='connection_failed')
+    monkeypatch.setattr(creation,'generate_image',first)
+    with pytest.raises(SparkProviderError): await creation.execute_node(req)
+    async def resumed(sent, **kwargs):
+        assert kwargs == {'resume_task_id':'image-task'}
+        return SimpleNamespace(id='image-task',images=[SimpleNamespace(base64=base64.b64encode(b'png').decode(),mime_type='image/png')])
+    monkeypatch.setattr(creation,'generate_image',resumed)
+    assert (await creation.execute_node(req))['provider_task_id']=='image-task'
+
+
+@pytest.mark.asyncio
+async def test_legacy_gateway_task_id_can_resume_image_without_prior_python_state(monkeypatch):
+    req=creation.CreationNodeRequest(kind='image',prompt='empty valley',idempotency_key='legacy-image',resume_task_id='known-task')
+    generate=AsyncMock(return_value=SimpleNamespace(id='known-task',images=[SimpleNamespace(base64=base64.b64encode(b'png').decode(),mime_type='image/png')]))
+    monkeypatch.setattr(creation,'generate_image',generate)
+    await creation.execute_node(req)
+    assert generate.call_args.kwargs == {'resume_task_id':'known-task'}
+    # The same frozen request stays compatible when the Gateway has no task ID.
+    await creation.execute_node(req.model_copy(update={'resume_task_id':''}))
+    assert generate.call_args.kwargs == {'resume_task_id':'known-task'}
+    with pytest.raises(ValueError):
+        await creation.execute_node(req.model_copy(update={'resume_task_id':'different-task'}))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('code,status,expected', [('upstream_unavailable',503,'media_connection_failed'),('invalid_response',None,'media_status_unknown'),('unknown-terminal',None,'media_generation_failed')])
+async def test_provider_diagnostics_distinguish_uncertain_and_terminal_failures(monkeypatch,code,status,expected):
+    from agent.main import app
+    error=SparkProviderError('SECRET',code=code,task_id='existing-task',http_status=status,task_status='failed' if code=='unknown-terminal' else None)
+    monkeypatch.setattr(creation,'execute_node',AsyncMock(side_effect=error))
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url='http://test') as client:
+        response=await client.post('/agent/creation/node',json=request().model_dump())
+    assert response.json()['detail']['code']==expected and 'SECRET' not in response.text
+
+
 @pytest.fixture(autouse=True)
 def isolated_state(monkeypatch,tmp_path):
     monkeypatch.setattr(state,'STATE_DIR',tmp_path/'state')
