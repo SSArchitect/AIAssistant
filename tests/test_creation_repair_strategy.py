@@ -63,3 +63,59 @@ def test_binding_never_promotes_unrelated_existing_or_user_selected_identity(cas
     if case=='missing_target':proposed.nodes=[helper]
     bind_prepared_identity(proposed,req)
     assert reference.role=='composition'
+
+
+@pytest.mark.parametrize('category',['scale','action'])
+def test_later_repairs_keep_prepared_identity_pixels_and_do_not_reintroduce_its_original_sheet(category):
+    from agent.aigc.creation_planning import CreativePlan
+    req=repeated();req.repair.findings[0].category=category
+    helper=dict(id='pose_ready',kind='image',purpose='character',title='动作参考',prompt='背侧站剑',references=[dict(asset_id='rabbit',role='identity')])
+    req.current_plan['nodes'].insert(2,helper)
+    target=next(n for n in req.current_plan['nodes'] if n['id']=='shot_frame')
+    target['references'][0]=dict(node_id='pose_ready',role='identity',note='单个角色的身份和已准备姿态');target['depends_on'].append('pose_ready')
+    changed=copy.deepcopy(req.current_plan)
+    shot=next(n for n in changed['nodes'] if n['id']=='shot_frame')
+    shot['references'][0]['role']='composition'
+    shot['references'][0]['note']='只抽取构图语义，不带入身份或道具'
+    shot['references'].append(dict(asset_id='rabbit',role='identity'))
+    proposal=CreativePlan.model_validate(changed)
+    bind_prepared_identity(proposal,req)
+    result=next(n for n in proposal.nodes if n.id=='shot_frame')
+    assert [(r.node_id,r.asset_id,r.role) for r in result.references]==[('pose_ready','','identity'),('scene','','environment')]
+    assert 'pose_ready' in result.depends_on
+    assert result.references[0].note=='单个角色的身份和已准备姿态'
+
+
+def test_existing_prepared_identity_does_not_remove_an_unrelated_character():
+    from agent.aigc.creation_planning import CreativePlan
+    req=repeated()
+    helper=dict(id='pose_ready',kind='image',purpose='character',title='动作参考',prompt='背侧站剑',references=[dict(asset_id='rabbit',role='identity')])
+    req.current_plan['nodes'].insert(2,helper)
+    target=next(n for n in req.current_plan['nodes'] if n['id']=='shot_frame')
+    target['references'][0]=dict(node_id='pose_ready',role='identity');target['depends_on'].append('pose_ready')
+    changed=copy.deepcopy(req.current_plan)
+    shot=next(n for n in changed['nodes'] if n['id']=='shot_frame');shot['references'][0]['role']='composition'
+    # An actual second identity must not disappear while restoring the first.
+    shot['references'].append(dict(asset_id='asset-img',role='identity'))
+    proposal=CreativePlan.model_validate(changed);bind_prepared_identity(proposal,req)
+    result=next(n for n in proposal.nodes if n.id=='shot_frame')
+    assert result.references[0].role=='identity'
+    assert result.references[-1].asset_id=='asset-img'
+
+
+@pytest.mark.parametrize('case',['manual','locked','different_source','previous_composition'])
+def test_continuity_does_not_override_user_roles_locks_or_changed_identity(case):
+    from agent.aigc.creation_planning import CreativePlan
+    req=repeated()
+    helper=dict(id='pose_ready',kind='image',purpose='character',title='动作',prompt='站剑',references=[dict(asset_id='rabbit',role='identity')])
+    req.current_plan['nodes'].insert(2,helper)
+    shot=next(n for n in req.current_plan['nodes'] if n['id']=='shot_frame')
+    shot['references'][0]=dict(node_id='pose_ready',role='composition' if case=='previous_composition' else 'identity')
+    shot['depends_on'].append('pose_ready')
+    proposal=CreativePlan.model_validate(copy.deepcopy(req.current_plan))
+    target=next(n for n in proposal.nodes if n.id=='shot_frame');target.references[0].role='composition'
+    if case=='manual':req.automatic_mode=False
+    if case=='locked':req.locked_node_ids.append('shot_frame')
+    if case=='different_source':next(n for n in proposal.nodes if n.id=='pose_ready').references[0].asset_id='asset-img'
+    bind_prepared_identity(proposal,req)
+    assert target.references[0].role=='composition'

@@ -38,6 +38,36 @@ def test_approximate_scale_has_stable_bounds_without_relaxing_exact_limits():
     assert scale_within_contract(contract,measured_geometry(Localizations.model_validate(value)),'candidate') is None
 
 
+@pytest.mark.parametrize('ratio',['10%','10％','1/10','1 / 10','十分之一','百分之十'])
+def test_frame_height_ratio_spellings_have_the_same_bounds(ratio):
+    text='兔大侠站在胡萝卜剑上，整体高度约为画面高度的'+ratio+'。背侧仰望。'
+    contract=approximate_scale_contract(text)
+    assert contract and contract['target_percent']==10
+    assert (contract['minimum_percent'],contract['maximum_percent'])==(8,12)
+    assert contract['metric']=='body_and_prop_height_percent'
+    assert contract['requirement_quote'] in text
+
+
+@pytest.mark.parametrize('text',[
+    '人物精确为画面高度的十分之一', '人物不超过画面高度的十分之一',
+    '人物至少约为画高10%', '人物约为画面高度的0/10',
+    '人物约为画面高度的1/0', '人物约为画面高度的十一分之十二',
+    '树约占画高80%，兔子约占画高10%',
+    '巨树约占据背景。人物精确为画高10%',
+    '巨树约占据背景，人物为画高10%',
+    '人物约为画高10%-20%', '人物约为画高十分之一至五分之一',
+    '人物不能超过画面高度约为10%', '人物小于约画高10%',
+    '人物约占画高10%或20%', '人物以约画高10%为上限',
+])
+def test_ambiguous_exact_and_invalid_ratios_never_gain_a_tolerance(text):
+    assert approximate_scale_contract(text) is None
+
+
+def test_unrelated_tree_fraction_does_not_hide_the_character_height_contract():
+    text='巨树占据画面约上四分之三。兔子站在剑上，整体高度约为画面高度的十分之一。'
+    assert approximate_scale_contract(text)['maximum_percent']==12
+
+
 def test_confirmed_in_range_scale_cannot_trigger_repainting_but_large_subject_can():
     from agent.aigc.creation_review import ReviewDecision
     from agent.aigc.creation_review_evidence import validate_image_findings

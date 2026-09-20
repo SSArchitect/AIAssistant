@@ -85,6 +85,59 @@ async def test_scale_review_uses_independent_geometry_without_auto_approving_on_
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('uncertain',[False,True])
+async def test_chinese_fraction_cannot_be_approved_against_clear_out_of_range_measurement(monkeypatch,uncertain):
+    from tests.test_creation_review_geometry import asset
+    data=asset().data_url
+    req=request(assets=[dict(id='candidate',name='图',mime_type='image/png',data_url=data)],candidate_ids=['candidate'])
+    req.current_plan['nodes'].append(dict(id='image',kind='image',purpose='shot_reference',title='树',
+        content='兔子站在剑上，整体高度约为画面高度的十分之一。',prompt='执行技巧不改变验收'))
+    req.node_id='image'
+    geometry=[dict(candidate_id='candidate',uncertain=uncertain,subject_count=1,subjects=[dict(body_and_prop_height_percent=20)])]
+    monkeypatch.setattr(review,'locate_subjects',AsyncMock(return_value=(geometry,{})))
+    provider=SimpleNamespace(chat=AsyncMock(return_value=LLMResponse(content=json.dumps(dict(
+        decision='select',asset_id='candidate',reason='符合十分之一',findings=[])))))
+    monkeypatch.setattr(review,'create_provider',lambda:provider)
+    trace=TraceStore();result=await review.review_creation(req,trace)
+    assert provider.chat.await_count==1
+    assert result.decision==('select' if uncertain else 'revise')
+    if not uncertain:
+        assert result.asset_id=='' and result.findings[0].category=='scale'
+        assert result.findings[0].requirement_quote in req.current_plan['nodes'][-1]['content']
+        assert '20%' in result.reason and '8%–12%' in result.reason
+        assert any(e.type=='creation.review.scale_guard' for e in trace.get_run(result.run_id).events)
+
+
+@pytest.mark.asyncio
+async def test_multi_candidate_scale_guard_reconsiders_selection_instead_of_rejecting_every_image(monkeypatch):
+    from tests.test_creation_review_geometry import asset
+    req=request(assets=[dict(id=n,name=n,mime_type='image/png',data_url=asset().data_url) for n in ['large','good']],candidate_ids=['large','good'])
+    req.current_plan['nodes'].append(dict(id='image',kind='image',purpose='shot_reference',title='树',content='人物约占画高10%',prompt='远景'))
+    req.node_id='image'
+    geometry=[dict(candidate_id=n,uncertain=False,subject_count=1,subjects=[dict(body_height_percent=size)]) for n,size in [('large',20),('good',10)]]
+    monkeypatch.setattr(review,'locate_subjects',AsyncMock(return_value=(geometry,{})))
+    provider=SimpleNamespace(chat=AsyncMock(side_effect=[LLMResponse(content=json.dumps(dict(decision='select',asset_id=n,reason='选择候选',findings=[]))) for n in ['large','good']]))
+    monkeypatch.setattr(review,'create_provider',lambda:provider)
+    result=await review.review_creation(req)
+    assert result.decision=='select' and result.asset_id=='good' and provider.chat.await_count==2
+
+
+@pytest.mark.asyncio
+async def test_final_verification_cannot_reintroduce_a_known_scale_mismatch(monkeypatch):
+    from tests.test_creation_review_geometry import asset
+    requirement='人物约占画高10%'
+    req=request(assets=[dict(id='candidate',name='图',mime_type='image/png',data_url=asset().data_url)],candidate_ids=['candidate'])
+    req.current_plan['nodes'].append(dict(id='image',kind='image',purpose='shot_reference',title='树',content=requirement,prompt='远景'))
+    req.node_id='image'
+    monkeypatch.setattr(review,'locate_subjects',AsyncMock(return_value=([dict(candidate_id='candidate',uncertain=False,subject_count=1,subjects=[dict(body_height_percent=20)])],{})))
+    reject=dict(decision='revise',reason='太大',findings=[dict(candidate_id='candidate',category='scale',source_id='target',requirement_quote=requirement,observation='人物占20%')])
+    provider=SimpleNamespace(chat=AsyncMock(side_effect=[LLMResponse(content=json.dumps(reject)),LLMResponse(content=json.dumps(dict(decision='select',asset_id='candidate',reason='复核通过')))]))
+    monkeypatch.setattr(review,'create_provider',lambda:provider)
+    result=await review.review_creation(req)
+    assert result.decision=='revise' and result.asset_id=='' and provider.chat.await_count==2
+
+
+@pytest.mark.asyncio
 async def test_review_only_returns_a_decision_and_preserves_user_plan(monkeypatch):
     provider=SimpleNamespace(chat=AsyncMock(return_value=LLMResponse(content=json.dumps({'decision':'approve','reason':'分镜清楚','asset_id':''}),model='test')))
     monkeypatch.setattr(review,'create_provider',lambda:provider)

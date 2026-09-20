@@ -13,7 +13,7 @@ from agent.aigc.creation_models import (can_use_plan_vision, use_plan_vision,
 from agent.llm.base import LLMMessage
 from agent.llm.factory import create_provider
 from agent.aigc.creation_review_evidence import ReviewFinding, ReviewEvidenceError, requirement_sources, validate_image_findings
-from agent.aigc.creation_review_geometry import approximate_scale_contract, locate_subjects, review_preview
+from agent.aigc.creation_review_geometry import approximate_scale_contract, locate_subjects, review_preview, measured_scale_rejection
 
 router = APIRouter()
 
@@ -222,6 +222,8 @@ async def review_creation(request: ReviewRequest, trace_store=None):
                     if request.candidate_ids and decision.decision == 'approve': raise ValueError('请通过 select 选中具体候选')
                     if decision.decision == 'select' and decision.asset_id not in request.candidate_ids: raise ValueError('只能选择提供的候选图片')
                     if decision.decision != 'select' and decision.asset_id: raise ValueError('非选图决策不应设置资产')
+                    if len(request.candidate_ids)>1 and decision.decision=='select' and measured_scale_rejection(scale_contract,geometry,decision.asset_id):
+                        raise ReviewEvidenceError('selected_scale_out_of_range','所选候选的独立比例测量超出原约数要求区间；请检查其他候选，不能因一个候选不符而拒绝尚未评估的其他候选')
                     validate_image_findings(decision, request.candidate_ids, sources,scale_contract=scale_contract,geometry=geometry)
                     return decision, response.model
                 except ValueError as exc:
@@ -247,6 +249,14 @@ async def review_creation(request: ReviewRequest, trace_store=None):
                 '只返回schema规定的决策，不修改方案，不反复自我复核。')
             stage = 'verify'
             decision, model = await judge([*messages, verification])
+        if decision.decision=='select':
+            scale_finding=measured_scale_rejection(scale_contract,geometry,decision.asset_id)
+            if scale_finding:
+                decision=ReviewDecision(decision='revise',reason='角色画面占比不符合原要求',findings=[scale_finding])
+                validate_image_findings(decision,request.candidate_ids,sources,scale_contract=scale_contract,geometry=geometry)
+                if trace_store:
+                    trace_store.append_event(run.run_id,type='creation.review.scale_guard',status='completed',
+                        title='核对选图与比例测量的一致性',payload={'candidate_id':scale_finding['candidate_id']})
         result=ReviewResponse(**decision.model_dump(),model_used=model,tokens_used=usage,run_id=run.run_id if run else '')
         if trace_store: trace_store.complete_run(run.run_id,output=decision.reason,model_used=model,tokens_used=usage,skills_used=[])
         return result
