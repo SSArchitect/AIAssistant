@@ -255,34 +255,40 @@ class OpenAIProvider(LLMProvider):
         response_model = self.model
         usage: dict[str, int] = {}
         finish_reason = ""
-        async for chunk in stream:
-            response_model = getattr(chunk, "model", None) or response_model
-            chunk_usage = getattr(chunk, "usage", None)
-            if chunk_usage:
-                usage = self._usage_payload(chunk_usage)
-            if not chunk.choices:
-                continue
-            finish_reason = getattr(chunk.choices[0], "finish_reason", None) or finish_reason
-            delta = chunk.choices[0].delta
-            reasoning = self._extract_reasoning(delta)
-            if reasoning:
-                reasoning_parts.append(reasoning)
-                yield LLMStreamChunk(reasoning=reasoning)
-            text = delta.content or ""
-            if text:
-                content_parts.append(text)
-                yield LLMStreamChunk(text=text)
-            for tool_delta in getattr(delta, "tool_calls", None) or []:
-                index = int(getattr(tool_delta, "index", 0) or 0)
-                part = tool_call_parts.setdefault(
-                    index,
-                    {"id": "", "name": "", "arguments": ""},
-                )
-                part["id"] += getattr(tool_delta, "id", None) or ""
-                function = getattr(tool_delta, "function", None)
-                if function:
-                    part["name"] += getattr(function, "name", None) or ""
-                    part["arguments"] += getattr(function, "arguments", None) or ""
+        try:
+            async for chunk in stream:
+                response_model = getattr(chunk, "model", None) or response_model
+                chunk_usage = getattr(chunk, "usage", None)
+                if chunk_usage:
+                    usage = self._usage_payload(chunk_usage)
+                if not chunk.choices:
+                    continue
+                finish_reason = getattr(chunk.choices[0], "finish_reason", None) or finish_reason
+                delta = chunk.choices[0].delta
+                reasoning = self._extract_reasoning(delta)
+                if reasoning:
+                    reasoning_parts.append(reasoning)
+                    yield LLMStreamChunk(reasoning=reasoning)
+                text = delta.content or ""
+                if text:
+                    content_parts.append(text)
+                    yield LLMStreamChunk(text=text)
+                for tool_delta in getattr(delta, "tool_calls", None) or []:
+                    index = int(getattr(tool_delta, "index", 0) or 0)
+                    part = tool_call_parts.setdefault(
+                        index,
+                        {"id": "", "name": "", "arguments": ""},
+                    )
+                    part["id"] += getattr(tool_delta, "id", None) or ""
+                    function = getattr(tool_delta, "function", None)
+                    if function:
+                        part["name"] += getattr(function, "name", None) or ""
+                        part["arguments"] += getattr(function, "arguments", None) or ""
+
+        finally:
+            close = getattr(stream, "close", None) or getattr(stream, "aclose", None)
+            if close:
+                await close()
 
         tool_calls: list[ToolCall] = []
         for index in sorted(tool_call_parts):

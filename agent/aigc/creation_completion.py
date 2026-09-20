@@ -20,6 +20,7 @@ class PlanningCompletion:
 
     async def __call__(self, messages, schema, name, *, tools=None):
         configure_planning_output(self.provider)
+        output_limit = {'creation_manifest': 16000, 'creation_node': 32000}.get(name, 64000)
         while True:
             options = dict(tools=tools, temperature=.4,
                 **thinking_options(self.provider),
@@ -28,16 +29,24 @@ class PlanningCompletion:
                 if self.streaming and callable(getattr(self.provider, 'chat_stream_response', None)):
                     response = None
                     parts, chars, last_report, last_stage = [], 0, 0., ''
-                    async for chunk in self.provider.chat_stream_response(messages, **options):
-                        if chunk.text:
-                            parts.append(chunk.text)
-                            chars += len(chunk.text)
-                        stage = 'draft' if chars else 'thinking'
-                        if (chunk.text or chunk.reasoning) and (stage != last_stage or time.monotonic() - last_report >= 1):
-                            await self.report(stage, '正在编排创作方案与待审阅内容' if chars else '模型正在分析需求与素材', output_chars=chars)
-                            last_report, last_stage = time.monotonic(), stage
-                        if chunk.response is not None:
-                            response = chunk.response
+                    stream = self.provider.chat_stream_response(messages, **options)
+                    try:
+                        async for chunk in stream:
+                            if chunk.text:
+                                chars += len(chunk.text)
+                                if chars > output_limit:
+                                    await self.report('output_limit', '本段输出过长，已停止接收，改用有界分段校验')
+                                    raise PlanningOutputTruncated()
+                                parts.append(chunk.text)
+                            stage = 'draft' if chars else 'thinking'
+                            if (chunk.text or chunk.reasoning) and (stage != last_stage or time.monotonic() - last_report >= 1):
+                                await self.report(stage, '正在编排创作方案与待审阅内容' if chars else '模型正在分析需求与素材', output_chars=chars)
+                                last_report, last_stage = time.monotonic(), stage
+                            if chunk.response is not None:
+                                response = chunk.response
+                    finally:
+                        close = getattr(stream, 'aclose', None)
+                        if close: await close()
                     if response is None:
                         raise PlanningOutputTruncated()
                     if not response.content and parts:
@@ -61,6 +70,6 @@ class PlanningCompletion:
             self.model = response.model or self.model
             for key, count in response.usage.items():
                 self.usage[key] = self.usage.get(key, 0) + count
-            if response.finish_reason == 'length':
+            if response.finish_reason == 'length' or len(response.content or '') > output_limit:
                 raise PlanningOutputTruncated()
             return response

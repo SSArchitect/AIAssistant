@@ -25,6 +25,62 @@ function harness(api, user = () => 'alice') {
 }
 const tick = () => new Promise(resolve => setImmediate(resolve));
 
+test('fit includes both dimensions of a tall canvas and locate centers an offscreen node', () => {
+    const layout={width:1800,height:6000};
+    const scale=C.canvasFit(layout,900,600);
+    assert.ok(scale*layout.width<=900 && scale*layout.height<=600);
+    assert.ok(scale<.5);
+    assert.equal(C.canvasFit({width:300,height:200},900,600),1);
+    assert.deepEqual(C.canvasFocus({x:1000,y:4000,width:232,height:216},1,900,600),{left:666,top:3808});
+    assert.deepEqual(C.canvasFocus({x:0,y:0,width:232,height:216},1,900,600),{left:0,top:0});
+});
+
+test('canvas draws explicitly referenced assets even when they are not in the composer attachments', () => {
+    const doc=document();doc.asset_ids=[];
+    const layout=C.layoutGraph(doc,[{id:'role',name:'已确认动作参考'}]);
+    assert.ok(layout.nodes.some(n=>n.id==='asset:role'));
+    assert.ok(layout.edges.some(e=>e.from==='asset:role'&&e.to==='visual'));
+    const pending=C.layoutGraph(doc,[]);
+    assert.ok(pending.nodes.some(n=>n.id==='asset:role'),'lightweight placeholders retain edges before asset metadata arrives');
+});
+
+test('fullscreen works during generation, persists through refresh, and Escape or leaving restores normal canvas', async () => {
+    const p={...project(),automatic_status:'running'},calls=[];
+    const h=harness(async(method,path)=>{calls.push({method,path});return {project:p,assets:[],runs:[]};});
+    await h.controller.newProject();
+    h.click('fullscreen');await tick();
+    assert.match(h.root.innerHTML,/cp-main is-canvas-fullscreen/);
+    assert.match(h.root.innerHTML,/退出全屏/);
+    assert.match(h.root.innerHTML,/aria-pressed="true"[^>]*>退出全屏/);
+    await h.controller.refresh();assert.match(h.root.innerHTML,/is-canvas-fullscreen/);
+    const noTarget={closest:()=>null};
+    h.handlers.keydown({key:'Escape',target:noTarget,preventDefault(){}});
+    assert.doesNotMatch(h.root.innerHTML,/cp-main is-canvas-fullscreen/);
+    h.click('fullscreen');await tick();h.controller.setVisible(false);
+    assert.doesNotMatch(h.root.innerHTML,/cp-main is-canvas-fullscreen/);
+    assert.equal(calls.filter(c=>c.method!=='GET').length,1,'canvas controls cannot start media or mutate the plan');
+    h.controller.reset();
+});
+
+test('unbound storyboard images are visible and repair requests target the project without generating media', async () => {
+    const doc=document();
+    doc.plan.nodes.splice(2,0,{id:'frame',title:'起飞分镜',kind:'image',purpose:'shot_reference',depends_on:['script','visual'],references:[]});
+    assert.deepEqual(C.unboundShots(doc).map(n=>n.id),['frame']);
+    const calls=[],h=harness(async(method,path,body)=>{calls.push({method,path,body});return {project:project(doc)};});
+    await h.controller.newProject();h.click('select','frame');await tick();
+    assert.match(h.root.innerHTML,/1 张分镜图尚未连接到视频/);
+    h.click('connect-shots');await tick();await tick();
+    const sent=calls.find(c=>c.path.endsWith('/messages'));
+    assert.equal(sent.body.node_id,'');assert.match(sent.body.message,/起飞分镜/);
+    assert.match(sent.body.message,/shot_ids/);assert.match(sent.body.message,/不自动生成/);
+    assert.equal(calls.filter(c=>c.path.endsWith('/generate')).length,0);
+    h.controller.reset();
+    doc.plan.nodes.at(-1).references.push({node_id:'frame',role:'reference',shot_ids:['takeoff']});
+    assert.equal(C.unboundShots(doc).length,0);
+    doc.plan.nodes=doc.plan.nodes.filter(n=>n.kind!=='video');doc.preferences={output_kind:'image'};
+    assert.equal(C.unboundShots(doc).length,0,'standalone storyboard image projects are valid');
+});
+
 test('human decisions appear at the end of the creation conversation and submit in project context', async () => {
     const doc=document(); doc.messages=[{role:'user',content:'做一支动画'},{role:'assistant',content:'先确定交付形式'}];
     doc.plan.questions=[{question:'视频交付形式？',options:['拆成三段独立短片','精选开场15秒']},{question:'画幅比例？',options:['16:9','9:16']}];

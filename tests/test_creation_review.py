@@ -98,6 +98,29 @@ async def test_revision_must_not_approve_any_candidate(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('second,expected', [('select', 'select'), ('revise', 'revise')])
+async def test_image_rejection_is_checked_against_original_pixels_before_expensive_regeneration(monkeypatch, second, expected):
+    content=BytesIO();Image.new('RGB',(8,8),'red').save(content,format='PNG')
+    data='data:image/png;base64,'+base64.b64encode(content.getvalue()).decode()
+    req=request(assets=[dict(id='candidate',name='候选',mime_type='image/png',data_url=data)],candidate_ids=['candidate'])
+    req.current_plan['nodes'].append(dict(id='image',kind='image',title='飞行分镜',purpose='shot_reference',prompt='保持参考中的护手'))
+    req.node_id='image';before=req.model_dump()
+    provider=SimpleNamespace(chat=AsyncMock(side_effect=[
+        LLMResponse(content=json.dumps({'decision':'revise','asset_id':'','reason':'多出了护手，需要删除'}),usage={'total_tokens':10}),
+        LLMResponse(content=json.dumps({'decision':second,'asset_id':'candidate' if second=='select' else '',
+            'reason':'与参考一致' if second=='select' else '确有身份错误'}),usage={'total_tokens':20})]))
+    monkeypatch.setattr(review,'create_provider',lambda:provider)
+    result=await review.review_creation(req)
+    assert result.decision==expected and provider.chat.await_count==2
+    assert result.tokens_used['total_tokens']==30 and req.model_dump()==before
+    messages=provider.chat.call_args.args[0]
+    assert all(m.role!='assistant' for m in messages), 'fresh verification must not inherit the first answer as fact'
+    assert any(p['type']=='image_url' for p in messages[1].content)
+    assert '不是已确认事实' in messages[-1].content
+    assert '明确要求' in messages[-1].content
+
+
+@pytest.mark.asyncio
 async def test_review_isolates_sibling_repairs_and_labels_actual_reference_images(monkeypatch):
     content=BytesIO();Image.new('RGB',(8,8),'red').save(content,format='PNG')
     data='data:image/png;base64,'+base64.b64encode(content.getvalue()).decode()

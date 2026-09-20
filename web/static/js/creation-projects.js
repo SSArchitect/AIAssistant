@@ -43,15 +43,20 @@
             const position = validPosition(positions[id]) ? positions[id] : { x: 28 + depth * 302, y: 35 + lane * 255 };
             nodes.push({ id, kind, data, ...position, width: 232, height: 216 });
         };
-        for (const id of doc.asset_ids || []) {
-            const asset = assets.find(a => a.id === id);
-            if (asset) add(`asset:${id}`, 0, 'asset', asset);
+        const sourceIDs = new Set(doc.asset_ids || []);
+        for (const node of doc.plan.nodes || []) {
+            if (node.asset_id) sourceIDs.add(node.asset_id);
+            for (const ref of node.references || []) if (ref.asset_id) sourceIDs.add(ref.asset_id);
+        }
+        for (const id of sourceIDs) {
+            const asset = assets.find(a => a.id === id) || { id, name: '引用素材（信息加载中）', mime_type: 'image/png' };
+            add(`asset:${id}`, 0, 'asset', asset);
         }
         for (const node of doc.plan.nodes || []) {
             const refs = node.references || [], sources = [...(node.depends_on || [])];
             for (const ref of refs) if (ref.asset_id && depths.has(`asset:${ref.asset_id}`)) sources.push(`asset:${ref.asset_id}`);
             if (node.asset_id && depths.has(`asset:${node.asset_id}`)) sources.push(`asset:${node.asset_id}`);
-            const depth = sources.length ? 1 + Math.max(...sources.map(id => depths.get(id) || 0)) : (doc.asset_ids?.length ? 1 : 0);
+            const depth = sources.length ? 1 + Math.max(...sources.map(id => depths.get(id) || 0)) : (sourceIDs.size ? 1 : 0);
             add(node.id, depth, node.kind, node);
             for (const from of new Set(sources)) {
                 const ref = refs.find(r => (r.node_id || `asset:${r.asset_id}`) === from);
@@ -63,6 +68,18 @@
     function movedPosition(origin, dx, dy, zoom) {
         const bounded = value => Math.round(Math.max(0, Math.min(20000, value)) * 100) / 100;
         return { x: bounded(origin.x + dx / zoom), y: bounded(origin.y + dy / zoom) };
+    }
+    function canvasFit(layout, width, height) {
+        return Math.min(1, Math.max(1, width - 24) / layout.width, Math.max(1, height - 24) / layout.height);
+    }
+    function canvasFocus(node, zoom, width, height) {
+        return { left: Math.max(0, (node.x + node.width / 2) * zoom - width / 2), top: Math.max(0, (node.y + node.height / 2) * zoom - height / 2) };
+    }
+    function unboundShots(doc) {
+        const videos = doc.plan.nodes.filter(n => n.kind === 'video');
+        if (!videos.length && doc.preferences?.output_kind !== 'video') return [];
+        const bound = new Set(videos.flatMap(n => (n.references || []).filter(r => r.shot_ids?.length).map(r => r.node_id)));
+        return doc.plan.nodes.filter(n => n.purpose === 'shot_reference' && !bound.has(n.id));
     }
     function revisionSuggestions(node) {
         const common = [
@@ -228,6 +245,32 @@
         let projectsView = true, projectSearch = '', renameID = '', renameValue = '', openRequest = 0;
         let projects = [], project = null, assets = [], runs = [], selected = '', draft = '', attachments = [], feedback = '', picker = false, versions = null, editing = false, editText = '';
         let zoom = 1, autoFit = true, pan = null, dragging = null, renderPending = false, suppressClick = null;
+        let fullscreen = false, fullscreenReview = false, normalCanvas = null;
+        const fullscreenEscape = event => {
+            if (fullscreen && event.key === 'Escape') { event.preventDefault(); toggleFullscreen(false); }
+        };
+        function focusCanvasNode(id) {
+            const node = canvasLayout().nodes.find(n => n.id === id), view = element?.querySelector('[data-cp-viewport]');
+            if (!node || !view) return;
+            zoom = Math.max(.75, zoom); autoFit = false; drawCanvas();
+            const pos = canvasFocus(node, zoom, view.clientWidth, view.clientHeight);
+            view.scrollLeft = pos.left; view.scrollTop = pos.top;
+        }
+        function toggleFullscreen(value = !fullscreen) {
+            if (value === fullscreen) return;
+            const view = element?.querySelector('[data-cp-viewport]');
+            if (value) normalCanvas = { zoom, x: view?.scrollLeft || 0, y: view?.scrollTop || 0 };
+            fullscreen = value; fullscreenReview = false;
+            if (typeof document !== 'undefined') {
+                document.removeEventListener('keydown', fullscreenEscape);
+                if (value) document.addEventListener('keydown', fullscreenEscape);
+            }
+            if (!value && normalCanvas) zoom = normalCanvas.zoom;
+            render();
+            const next = element?.querySelector('[data-cp-viewport]');
+            if (!value && next && normalCanvas) { next.scrollLeft = normalCanvas.x; next.scrollTop = normalCanvas.y; }
+            element?.querySelector('[data-cp-action="fullscreen"]')?.focus({ preventScroll: true });
+        }
         const canvasStates = new Map(), refinementDrafts = new Map();
         const preferenceDrafts = new Map();
         let optionsOpen = false;
@@ -287,8 +330,8 @@
         }
         const button = (action, label, { id = '', primary = false, disabled = false, asset = '' } = {}) => `<button type="button" class="${primary ? 'btn-primary' : 'btn-secondary'}" data-cp-action="${action}" data-id="${esc(id)}" data-asset="${esc(asset)}" ${disabled || busy || project?.planning || (automaticActive(project) && !['automatic-stop','versions','new','select','assets','close-versions'].includes(action)) ? 'disabled' : ''}>${esc(label)}</button>`;
         function mount(target) { element = target; if (target) { Library.bindMedia(target); bind(); render(); } }
-        function reset() { assetPicker.reset(); projectsView = true; projectSearch = ''; renameID = ''; openRequest++; epoch++; viewEpoch++; visible = false; clearTimeout(timer); timer = null; project = null; projects = []; assets = []; runs = []; selected = ''; draft = ''; attachments = []; feedback = ''; picker = false; busy = false; versions = null; requestKeys.clear(); planningOpen.clear(); roundsOpen.clear(); preferenceDrafts.clear(); optionsOpen = false; canvasStates.clear(); refinementDrafts.clear(); dragging = null; pan = null; renderPending = false; suppressClick = null; pendingMessage = null; followMessages = false; pollError = '';  if (element) element.innerHTML = ''; }
-        function setVisible(value) { visible = value; viewEpoch++; clearTimeout(timer); if (value) { render(); void poll(viewEpoch); } }
+        function reset() { if (typeof document !== 'undefined') document.removeEventListener('keydown', fullscreenEscape); fullscreen = false; fullscreenReview = false; normalCanvas = null; assetPicker.reset(); projectsView = true; projectSearch = ''; renameID = ''; openRequest++; epoch++; viewEpoch++; visible = false; clearTimeout(timer); timer = null; project = null; projects = []; assets = []; runs = []; selected = ''; draft = ''; attachments = []; feedback = ''; picker = false; busy = false; versions = null; requestKeys.clear(); planningOpen.clear(); roundsOpen.clear(); preferenceDrafts.clear(); optionsOpen = false; canvasStates.clear(); refinementDrafts.clear(); dragging = null; pan = null; renderPending = false; suppressClick = null; pendingMessage = null; followMessages = false; pollError = '';  if (element) element.innerHTML = ''; }
+        function setVisible(value) { if (!value && fullscreen) toggleFullscreen(false); visible = value; viewEpoch++; clearTimeout(timer); if (value) { render(); void poll(viewEpoch); } }
         async function poll(version) {
             if (!visible || version !== viewEpoch) return;
             try { await refresh(); } catch (error) { if (version === viewEpoch) { pollError = error.message; showMessage(pollError); } }
@@ -350,7 +393,7 @@
             if (dragging || pan) { renderPending = true; return; }
             renderPending = false;
             selectDefault();
-            if(projectsView){renderProjectLibrary();return;}
+            if(projectsView){if (typeof document !== 'undefined') document.removeEventListener('keydown', fullscreenEscape); fullscreen = false; fullscreenReview = false; renderProjectLibrary();return;}
             const doc = currentDoc(), focused = typeof document !== 'undefined' && element.contains?.(document.activeElement) ? document.activeElement : null;
             const preferenceFocus = focused?.dataset?.cpPreference;
             const focusKind = focused?.hasAttribute('data-cp-draft') ? 'draft' : focused?.hasAttribute('data-cp-edit') ? 'edit' : focused?.hasAttribute('data-cp-refine') ? 'refine' : '';
@@ -361,10 +404,11 @@
             element.innerHTML = `<section class="cp-project"><header class="cp-project-head"><div><button type="button" class="creation-text-button" data-cp-action="project-list">← 项目列表</button><strong class="cp-project-name">${esc(project?.name || '新的创作')}</strong>${project ? `<span class="cp-version">v${project.revision} · ${automaticActive(project) ? '一键生成中' : project.planning ? '正在规划' : '自动保存'}</span>` : ''}</div><div>${project ? `<div class="cp-auto-controls">${automaticActive(project) ? button('automatic-stop', project.automatic_status === 'stopping' ? '正在停止…' : '停止一键生成', { disabled: project.automatic_status === 'stopping' }) : button('automatic-start', ['failed','interrupted','cancelled'].includes(project.automatic_status) ? '继续一键生成' : '一键生成', { primary: true, disabled: !!automaticBlock(project, runs) })}<small>保留已确认内容，AI 确定其余节点并生成</small></div>` + button('project-assets', '项目资产') + button('rename-project', '重命名', {id:project.id}) + button('delete-project', '删除项目', {id:project.id}) + button('versions', '历史方案') + button('save-template', '存为模板', { disabled: !doc.plan.nodes.length }) : ''}${button('new', '＋ 新创作')}</div></header>
             <div class="cp-workspace ${doc.plan.nodes.length ? '' : 'cp-start'}"><aside class="cp-dialogue"><header><strong>创作进程</strong><span>${project?.planning ? '正在整理方案…' : '想法与画布同步'}</span></header><div class="cp-messages" aria-live="polite">${renderConversation(doc)}${renderAutomatic(project, planningOpen.get(`auto:${doc.automation?.id}`) ?? true)}${renderDecisions(project, busy)}</div>
             <form class="cp-compose" data-cp-form><label for="cp-draft">${doc.plan.questions?.length ? '回复创作助手' : selected && !selected.startsWith('asset:') ? `针对：${esc(doc.plan.nodes.find(n => n.id === selected)?.title || '整个项目')}` : '描述你的创作想法'}</label>${attachments.length ? `<div class="cp-attachments">${attachments.map(id => `<button type="button" data-cp-action="detach" data-id="${esc(id)}">${esc(assets.find(a => a.id === id)?.name || '素材')} ×</button>`).join('')}</div>` : ''}<textarea id="cp-draft" data-cp-draft rows="4" maxlength="8000" placeholder="例如：用这几个人设做一支水墨武侠短片，最后有一点反转…" ${project?.planning || automaticActive(project) ? 'disabled' : ''}>${esc(draft)}</textarea><footer><div>${renderComposerOptions()}${button('upload', '＋ 上传')}${button('pick', '引用资产')}</div><button type="submit" class="btn-primary" ${busy || project?.planning || automaticActive(project) ? 'disabled' : ''}>${pendingMessage ? '发送中…' : project?.planning ? '规划中…' : '发送'}</button></footer><input type="file" data-cp-upload multiple accept="image/png,image/jpeg,image/webp,video/mp4,video/webm" hidden></form><p class="cp-feedback" role="status" data-cp-feedback>${esc(feedback || '')}</p></aside>
-            <main class="cp-main">${doc.plan.nodes.length ? `<div class="cp-canvas-head"><div><strong>创作画布</strong><span>${doc.plan.nodes.filter(n => !approved(doc.states[n.id])).length} 项待审阅</span></div><div><button data-cp-action="zoom-out" aria-label="缩小画布">−</button><span data-cp-zoom>${Math.round(zoom * 100)}%</span><button data-cp-action="zoom-in" aria-label="放大画布">＋</button><button data-cp-action="fit">适应画布</button><button data-cp-action="arrange">自动排列</button></div></div><div class="cp-canvas-help"><span data-cp-layout-status role="status"></span><button type="button" class="creation-text-button" data-cp-action="retry-layout" hidden>重试保存位置</button></div><div class="cp-viewport" data-cp-viewport aria-label="创作画布，可拖动节点调整位置，拖动空白区域或滚动查看"><div class="cp-canvas-space" data-cp-space><div class="cp-graph" data-cp-graph></div></div></div><section class="cp-review" aria-label="节点审阅">${renderReview(doc)}</section>` : `<div class="cp-empty-canvas"><span>素材 → 方案 → 作品</span><h3>你的创作，会在这里展开</h3><p>对话后，人物参考、主视觉、脚本和作品会成为可查看、可修改的节点。</p><p>图片与视频生成都由你明确提交，确认前可以继续调整。</p></div>`}<div class="cp-project-extras">${picker ? '<section class="cp-picker"><header><h3>引用已有资产</h3><button data-cp-action="close-picker">关闭</button></header><div data-cp-asset-picker></div></section>' : ''}${versions ? renderVersions() : ''}${renderHistory()}</div></main></div></section>`;
+            <main class="cp-main${fullscreen ? ' is-canvas-fullscreen' : ''}${fullscreenReview ? ' is-review-open' : ''}">${doc.plan.nodes.length ? `<div class="cp-canvas-head"><div><strong>创作画布</strong><span>${doc.plan.nodes.length} 个节点 · ${doc.plan.nodes.filter(n => n.purpose === 'shot_reference').length} 张分镜 · ${doc.plan.nodes.filter(n => n.kind === 'video').length} 个视频</span></div><div><button data-cp-action="zoom-out" aria-label="缩小画布">−</button><span data-cp-zoom>${Math.round(zoom * 100)}%</span><button data-cp-action="zoom-in" aria-label="放大画布">＋</button><button data-cp-action="fit">查看全图</button><button data-cp-action="locate-selected">定位选中</button><button data-cp-action="arrange">自动排列</button><button type="button" data-cp-action="fullscreen" aria-pressed="${fullscreen}">${fullscreen ? '退出全屏 · Esc' : '全屏画布'}</button>${fullscreen ? `<button type="button" data-cp-action="canvas-review" aria-pressed="${fullscreenReview}">${fullscreenReview ? '收起审阅' : '查看审阅'}</button>` : ''}</div></div><div class="cp-canvas-help"><select data-cp-locate aria-label="定位画布节点"><option value="">定位节点…</option>${doc.plan.nodes.map(n => `<option value="${esc(n.id)}">${n.purpose === 'shot_reference' ? '分镜图 · ' : n.kind === 'video' ? '视频 · ' : ''}${esc(n.title)}</option>`).join('')}</select>${unboundShots(doc).length ? `<span class="cp-binding-warning">${unboundShots(doc).length} 张分镜图尚未连接到视频 ${button('connect-shots', '补齐视频依赖')}</span>` : ''}<span data-cp-layout-status role="status"></span><button type="button" class="creation-text-button" data-cp-action="retry-layout" hidden>重试保存位置</button></div><div class="cp-viewport" data-cp-viewport aria-label="创作画布，可拖动节点调整位置，拖动空白区域或滚动查看"><div class="cp-canvas-space" data-cp-space><div class="cp-graph" data-cp-graph></div></div></div><section class="cp-review" aria-label="节点审阅">${renderReview(doc)}</section>` : `<div class="cp-empty-canvas"><span>素材 → 方案 → 作品</span><h3>你的创作，会在这里展开</h3><p>对话后，人物参考、主视觉、脚本和作品会成为可查看、可修改的节点。</p><p>图片与视频生成都由你明确提交，确认前可以继续调整。</p></div>`}<div class="cp-project-extras">${picker ? '<section class="cp-picker"><header><h3>引用已有资产</h3><button data-cp-action="close-picker">关闭</button></header><div data-cp-asset-picker></div></section>' : ''}${versions ? renderVersions() : ''}${renderHistory()}</div></main></div></section>`;
             if(picker)assetPicker.mount(element.querySelector('[data-cp-asset-picker]'));
+            const fitted = autoFit;
             drawCanvas(); updateLayoutStatus();
-            if (scroll && !autoFit) { const v = element.querySelector('[data-cp-viewport]'); if (v) { v.scrollLeft = scroll.x; v.scrollTop = scroll.y; } }
+            if (scroll && !fitted) { const v = element.querySelector('[data-cp-viewport]'); if (v) { v.scrollLeft = scroll.x; v.scrollTop = scroll.y; } }
             if (focusKind) { const target = element.querySelector(`[data-cp-${focusKind}]`); target?.focus({ preventScroll: true }); target?.setSelectionRange(start, end); }
             if (preferenceFocus) element.querySelector(`[data-cp-preference="${preferenceFocus}"]`)?.focus({ preventScroll: true });
             restoreReadingPosition(element, reading, followMessages);
@@ -440,7 +484,7 @@
             const target = element?.querySelector('[data-cp-graph]'); if (!target) return;
             const doc = currentDoc(), layout = canvasLayout();
             const viewport = element.querySelector('[data-cp-viewport]');
-            if (autoFit) { zoom = Math.max(.5, Math.min(1, ((viewport?.clientWidth || 820) - 16) / layout.width)); autoFit = false; }
+            if (autoFit) { zoom = canvasFit(layout, viewport?.clientWidth || 820, viewport?.clientHeight || 510); autoFit = false; if (viewport) { viewport.scrollLeft = 0; viewport.scrollTop = 0; } }
             const paths = canvasPaths(layout);
             target.style.width = `${layout.width}px`; target.style.height = `${layout.height}px`; target.style.transform = `scale(${zoom})`;
             target.innerHTML = `<svg class="cp-edges" width="${layout.width}" height="${layout.height}" aria-hidden="true">${paths}</svg>${layout.nodes.map(item => {
@@ -534,10 +578,19 @@
                 if(project?.id===id){project=null;assets=[];runs=[];selected='';draft='';attachments=[];}
                 projects=projects.filter(p=>p.id!==id);projectsView=true;feedback='项目已删除，资产已保留';render();return;
             }
-            if (name === 'select') { selected = id; editing = false; render(); return; }
+            if (name === 'fullscreen') { toggleFullscreen(); return; }
+            if (name === 'canvas-review') { fullscreenReview = !fullscreenReview; render(); return; }
+            if (name === 'locate-selected') { focusCanvasNode(selected); return; }
+            if (name === 'connect-shots') {
+                if (project?.planning || automaticActive(project)) return;
+                const nodes = unboundShots(currentDoc()); if (!nodes.length) return;
+                selected = ''; draft = `请补齐这些分镜图与对应视频的真实依赖：${nodes.map(n => n.title + '（' + n.id + '）').join('、')}。按原脚本的视频交付数量与镜头时段匹配，视频 references 的 shot_ids 必须绑定对应 storyboard/shot_ids，同时补齐 depends_on。已有未确认视频优先更新；已确认视频和产物保留，必要时新增待审阅的分镜版视频节点，不覆盖旧版。复用已确认分镜图，不重新生图；只整理方案，不自动生成图片或视频。`;
+                await send(); return;
+            }
+            if (name === 'select') { selected = id; editing = false; if (fullscreen) fullscreenReview = true; render(); return; }
             if (name === 'arrange') { saveLayout({}, true); autoFit = true; drawCanvas(); return; }
             if (name === 'retry-layout') { const positions = canvasState().positions; saveLayout(positions, !Object.keys(positions).length); return; }
-            if (name === 'zoom-in' || name === 'zoom-out' || name === 'fit') { if (name === 'fit') autoFit = true; else zoom = Math.min(1.6, Math.max(.35, zoom + (name === 'zoom-in' ? .15 : -.15))); drawCanvas(); return; }
+            if (name === 'zoom-in' || name === 'zoom-out' || name === 'fit') { if (name === 'fit') autoFit = true; else zoom = Math.min(1.6, Math.max(.025, zoom + (name === 'zoom-in' ? .15 : -.15))); drawCanvas(); return; }
             if (name === 'pick' || name === 'close-picker') { picker = name === 'pick'; render(); if(picker)await assetPicker.show(); return; }
             if (name === 'attach') { attachments = attachments.includes(id) ? attachments.filter(a => a !== id) : [...attachments, id]; render(); return; }
             if (name === 'detach') { attachments = attachments.filter(a => a !== id); render(); return; }
@@ -622,6 +675,7 @@
             });
             element.addEventListener('change', event => {
                 const el = event.target;
+                if (el.hasAttribute('data-cp-locate') && el.value) { selected = el.value; editing = false; render(); focusCanvasNode(selected); return; }
                 if (el.hasAttribute('data-cp-preference') && !busy && !project?.planning && !automaticActive(project)) {
                     const key = el.dataset.cpPreference;
                     if (!['output_kind', 'aspect_ratio'].includes(key)) return;
@@ -680,6 +734,7 @@
             element.addEventListener('pointercancel', event => endPointer(event, true));
             element.addEventListener('lostpointercapture', event => endPointer(event, true));
             element.addEventListener('keydown', event => {
+                if (event.key === 'Escape' && fullscreen) { event.preventDefault(); toggleFullscreen(false); return; }
                 if (event.key === 'Escape' && optionsOpen) { const options = element.querySelector('[data-cp-options]'); if (options) { options.open = false; options.querySelector('summary')?.focus({ preventScroll: true }); } optionsOpen = false; }
 
                 const offsets = { ArrowLeft: [-20, 0], ArrowRight: [20, 0], ArrowUp: [0, -20], ArrowDown: [0, 20] };
@@ -691,5 +746,5 @@
         }
         return { mount, reset, setVisible, newProject: template => perform(() => newProject(template)), refresh };
     }
-    return { shotCards, renderShotStrip, normalizePreferences, preferenceSummary, renderDecisions, automaticActive, automaticBlock, renderAutomatic, conversationRounds, captureReadingPosition, restoreReadingPosition, renderPlanning, renderMediaProgress, documentOf, approved, dependenciesReady, generationBlock, layoutGraph, movedPosition, revisionSuggestions, refinementMessage, renderReferences, nodeStatus, createController };
+    return { canvasFit, canvasFocus, unboundShots, shotCards, renderShotStrip, normalizePreferences, preferenceSummary, renderDecisions, automaticActive, automaticBlock, renderAutomatic, conversationRounds, captureReadingPosition, restoreReadingPosition, renderPlanning, renderMediaProgress, documentOf, approved, dependenciesReady, generationBlock, layoutGraph, movedPosition, revisionSuggestions, refinementMessage, renderReferences, nodeStatus, createController };
 });

@@ -676,7 +676,15 @@ async def propose_creation(request: PlanningRequest, trace_store=None, on_progre
             available = tool_definitions(skills) if step < 6 and tool_count < 8 else None
             await report('model', '正在理解创作意图、匹配工作流与模板' if not step else '结合当前进度与资料，继续推进创作方案')
             try:
-                response = await completion(messages, schema, "creation_revision" if revising else "creation_plan", tools=available)
+                # Large project-wide edits already need bounded node patches;
+                # do not first spend minutes generating an oversized full reply.
+                targeted = request.repair or (request.messages and request.messages[-1].get('node_id'))
+                if not step and revising and not targeted and len(request.current_plan.get('nodes', [])) >= 16:
+                    partitioned = True
+                    content = await partition_proposal(request, messages, completion, report)
+                    response = LLMResponse(content=content, model=completion.model)
+                else:
+                    response = await completion(messages, schema, "creation_revision" if revising else "creation_plan", tools=available)
                 if not response.tool_calls and incomplete_json(response.content):
                     raise PlanningOutputTruncated()
             except PlanningOutputTruncated:

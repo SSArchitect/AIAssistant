@@ -25,6 +25,53 @@ def manifest(nodes, **kwargs):
 
 
 @pytest.mark.asyncio
+async def test_large_project_revision_starts_with_manifest_without_waiting_for_truncation(monkeypatch):
+    original=plan()
+    original['nodes'].extend(dict(id=f'scene{i}',kind='image',title=f'场景{i}',prompt='forest') for i in range(20))
+    provider=SimpleNamespace(chat=AsyncMock(side_effect=[answer(manifest([original['nodes'][1]])),
+        answer(dict(node=dict(id='video',content='只更新此节点')))]))
+    monkeypatch.setattr(planning,'create_provider',lambda:provider)
+    result=await planning.propose_creation(request(current_plan=original))
+    assert provider.chat.await_count==2
+    assert '分段协议' in provider.chat.call_args_list[0].args[0][0].content
+    assert result.plan.nodes[1].content=='只更新此节点' and len(result.plan.nodes)==22
+
+
+@pytest.mark.asyncio
+async def test_runaway_stream_is_closed_at_output_budget_without_waiting_for_terminal_chunk():
+    closed=[]
+    async def stream(*args,**kwargs):
+        try:
+            for _ in range(1000):yield LLMStreamChunk(text=' ' * 4096)
+            pytest.fail('unbounded stream consumed to the end')
+        finally:closed.append(True)
+    complete=creation_completion.PlanningCompletion(SimpleNamespace(chat_stream_response=stream),AsyncMock(),streaming=True)
+    with pytest.raises(PlanningOutputTruncated):await complete([],{},'creation_node')
+    assert closed==[True]
+
+
+@pytest.mark.asyncio
+async def test_output_budget_releases_the_underlying_provider_http_stream():
+    from agent.llm.openai_provider import OpenAIProvider
+    closed=[]
+    class Body(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            for _ in range(100):
+                data={'choices':[{'index':0,'delta':{'content':' ' * 4096},'finish_reason':None}]}
+                yield ('data: '+json.dumps(data)+'\n\n').encode()
+        async def aclose(self):closed.append(True)
+    provider=OpenAIProvider(api_key='sk-test',model='test',base_url='https://test/v1')
+    await provider.client.close()
+    provider.client=openai.AsyncOpenAI(api_key='sk-test',base_url='https://test/v1',
+        http_client=httpx.AsyncClient(transport=httpx.MockTransport(lambda req:httpx.Response(200,headers={'content-type':'text/event-stream'},stream=Body()))))
+    try:
+        complete=creation_completion.PlanningCompletion(provider,AsyncMock(),streaming=True)
+        with pytest.raises(PlanningOutputTruncated):await complete([],{},'creation_node')
+        assert closed==[True]
+    finally:await provider.client.close()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('failure', ['length', 'unfinished_json', 'missing_terminal'])
 async def test_incomplete_output_recovers_complete_nodes_and_preserves_usage(monkeypatch, failure):
     value = plan('identity')

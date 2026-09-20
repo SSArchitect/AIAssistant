@@ -24,6 +24,32 @@ type creativeAutomation struct {
 	LockedNodeIDs []string                        `json:"locked_node_ids"`
 	RepairCounts  map[string]int                  `json:"repair_counts,omitempty"`
 	Repairs       []bridge.CreationRepairFeedback `json:"repairs,omitempty"`
+	TargetNodeIDs []string                        `json:"target_node_ids,omitempty"`
+}
+
+// nil means the whole project. A targeted pass includes prerequisites but never
+// follows outgoing edges into video deliveries that were not requested.
+func automaticScope(doc creativeDocument) map[string]bool {
+	if doc.Automation == nil || len(doc.Automation.TargetNodeIDs) == 0 {
+		return nil
+	}
+	scope := map[string]bool{}
+	var visit func(string)
+	visit = func(id string) {
+		if scope[id] {
+			return
+		}
+		scope[id] = true
+		if node, ok := creativeNode(doc, id); ok {
+			for _, dep := range node.DependsOn {
+				visit(dep)
+			}
+		}
+	}
+	for _, id := range doc.Automation.TargetNodeIDs {
+		visit(id)
+	}
+	return scope
 }
 
 func automaticActive(status string) bool { return status == "running" || status == "stopping" }
@@ -87,8 +113,9 @@ func protectAutomaticPlan(doc creativeDocument, plan bridge.CreativePlan) error 
 }
 func (h *CreationHandler) StartAutomaticCreation(c *gin.Context) {
 	var req struct {
-		Revision  int    `json:"revision"`
-		RequestID string `json:"request_id"`
+		Revision      int      `json:"revision"`
+		RequestID     string   `json:"request_id"`
+		TargetNodeIDs []string `json:"target_node_ids"`
 	}
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 16<<10)
 	if c.ShouldBindJSON(&req) != nil || req.RequestID == "" || len(req.RequestID) > 100 {
@@ -130,6 +157,19 @@ func (h *CreationHandler) StartAutomaticCreation(c *gin.Context) {
 		creationError(c, 409, "先描述创作想法，形成画布后即可一键生成")
 		return
 	}
+	if req.TargetNodeIDs == nil && doc.Automation != nil && doc.Automation.Status != "completed" {
+		req.TargetNodeIDs = doc.Automation.TargetNodeIDs
+	}
+	if len(req.TargetNodeIDs) > 64 {
+		creationError(c, 400, "本轮目标节点过多")
+		return
+	}
+	for _, id := range req.TargetNodeIDs {
+		if _, ok := creativeNode(doc, id); !ok {
+			creationError(c, 400, "本轮目标节点不存在")
+			return
+		}
+	}
 	var active []models.CreationRun
 	if err := h.db.Where("user_id = ? AND status IN ?", row.UserID, []string{"queued", "running", "stopping"}).Find(&active).Error; err != nil {
 		creationError(c, 500, "无法检查任务状态")
@@ -149,8 +189,30 @@ func (h *CreationHandler) StartAutomaticCreation(c *gin.Context) {
 	row.AutomaticStatus = "running"
 	row.AutomaticRequestID = req.RequestID
 	row.Error = ""
+	previous := doc.Automation
 	doc.Automation = &creativeAutomation{CreativePlanningActivity: bridge.CreativePlanningActivity{ID: req.RequestID, Status: "running", StartedAt: time.Now(), Steps: []bridge.CreativePlanningStep{}}, LockedNodeIDs: lockedCreativeNodes(doc)}
-	doc.Messages = append(doc.Messages, bridge.CreativeMessage{Role: "user", Content: "一键生成：保留已确认内容，由创作助手确定其余节点并继续生成。"})
+	doc.Automation.TargetNodeIDs = append([]string(nil), req.TargetNodeIDs...)
+	// A fresh transport request resumes the creative work. Keep the scheduler's
+	// history so stop/restart does not send a repeatedly rejected early node back
+	// ahead of untouched branches or hide past failures from the repair planner.
+	if previous != nil && previous.Status != "completed" {
+		doc.Automation.RepairCounts = map[string]int{}
+		for _, node := range doc.Plan.Nodes {
+			if count := previous.RepairCounts[node.ID]; count > 0 {
+				doc.Automation.RepairCounts[node.ID] = count
+			}
+		}
+		for _, repair := range previous.Repairs {
+			if _, exists := creativeNode(doc, repair.NodeID); exists {
+				doc.Automation.Repairs = append(doc.Automation.Repairs, repair)
+			}
+		}
+	}
+	message := "一键生成：保留已确认内容，由创作助手确定其余节点并继续生成。"
+	if len(req.TargetNodeIDs) > 0 {
+		message = "一键生成：仅完成指定目标节点及其上游，保留已确认内容，不执行范围之外的下游视频。"
+	}
+	doc.Messages = append(doc.Messages, bridge.CreativeMessage{Role: "user", Content: message})
 	automaticStep(&doc, "start", "已接手后续创作；保留已确认内容与已有产物", "")
 	if err := h.updateProject(&row, doc, false); err != nil {
 		creationError(c, 409, err)
@@ -242,7 +304,7 @@ func (h *CreationHandler) executeAutomatic(ctx context.Context, id, request stri
 			return
 		}
 		if done {
-			h.finishAutomatic(id, request, "completed", "一键生成已完成，所有产物已归入画布和资产。")
+			h.finishAutomatic(id, request, "completed", "本轮一键生成已完成，产物已归入画布和资产。")
 			return
 		}
 	}
@@ -354,7 +416,11 @@ func (h *CreationHandler) advanceAutomatic(ctx context.Context, id, request stri
 	}
 	var node bridge.CreativeNode
 	var blockedDependency error
+	scope := automaticScope(doc)
 	for _, n := range doc.Plan.Nodes {
+		if scope != nil && !scope[n.ID] {
+			continue
+		}
 		state := doc.States[n.ID]
 		if n.Kind == "video" && state.RunID != "" {
 			var run models.CreationRun

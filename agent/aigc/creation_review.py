@@ -126,28 +126,42 @@ async def review_creation(request: ReviewRequest, trace_store=None):
         parts = review_context(request, plan, node)
         schema = ReviewDecision.model_json_schema()
         messages = [LLMMessage(role='system',content=REVIEW_PROMPT+'\nJSON schema:\n'+json.dumps(schema)), LLMMessage(role='user',content=parts)]
-        json_only = False
-        for attempt in range(3):
-            try:
-                response = await provider.chat(messages, tools=None, temperature=.2, **thinking_options(provider),
-                    **structured_options(provider,schema,'creation_review',json_only=json_only))
-            except Exception as exc:
-                if not json_only and unsupported_schema(exc): json_only=True;continue
-                raise
-            for key,value in response.usage.items():usage[key]=usage.get(key,0)+value
-            try:
-                if response.finish_reason == 'length': raise ValueError('审阅结果未完整返回')
-                decision = ReviewDecision.model_validate_json(response.content)
-                if request.candidate_ids and decision.decision == 'approve': raise ValueError('请通过 select 选中具体候选')
-                if decision.decision == 'select' and decision.asset_id not in request.candidate_ids: raise ValueError('只能选择提供的候选图片')
-                if decision.decision != 'select' and decision.asset_id: raise ValueError('非选图决策不应设置资产')
-                result=ReviewResponse(**decision.model_dump(),model_used=response.model,tokens_used=usage,run_id=run.run_id if run else '')
-                if trace_store: trace_store.complete_run(run.run_id,output=decision.reason,model_used=response.model,tokens_used=usage,skills_used=[])
-                return result
-            except ValueError:
-                if attempt==2: raise
-                messages.extend([LLMMessage(role='assistant',content=response.content),LLMMessage(role='user',content='请按 schema 返回有效决策；选择图片时只能使用 candidate_ids 中的 ID，不要修改方案。')])
-        raise ValueError('审阅未完成')
+        async def judge(dialogue):
+            json_only = False
+            for attempt in range(3):
+                try:
+                    response = await provider.chat(dialogue, tools=None, temperature=.2, **thinking_options(provider),
+                        **structured_options(provider,schema,'creation_review',json_only=json_only))
+                except Exception as exc:
+                    if not json_only and unsupported_schema(exc): json_only=True;continue
+                    raise
+                for key,value in response.usage.items():usage[key]=usage.get(key,0)+value
+                try:
+                    if response.finish_reason == 'length': raise ValueError('审阅结果未完整返回')
+                    decision = ReviewDecision.model_validate_json(response.content)
+                    if request.candidate_ids and decision.decision == 'approve': raise ValueError('请通过 select 选中具体候选')
+                    if decision.decision == 'select' and decision.asset_id not in request.candidate_ids: raise ValueError('只能选择提供的候选图片')
+                    if decision.decision != 'select' and decision.asset_id: raise ValueError('非选图决策不应设置资产')
+                    return decision, response.model
+                except ValueError:
+                    if attempt==2: raise
+                    dialogue.extend([LLMMessage(role='assistant',content=response.content),LLMMessage(role='user',content='请按 schema 返回有效决策；选择图片时只能使用 candidate_ids 中的 ID，不要修改方案。')])
+            raise ValueError('审阅未完成')
+
+        decision, model = await judge(list(messages))
+        if request.candidate_ids and decision.decision == 'revise':
+            # A single visual misread otherwise costs another full image job.
+            # Verify once in a fresh dialogue, with the original pixels and rules.
+            verification = LLMMessage(role='user', content='在触发重画前独立复核一次。以下是待核实的先前判断，不是已确认事实，也不是新增要求：'
+                + json.dumps(decision.reason, ensure_ascii=False)
+                + '\n重新对照候选与真实参考，区分人物道具和背景、遮挡与缺失、参考已有细节与新增缺陷。'
+                '逐项检查本镜头脚本及用户明确要求；不能借此放宽身份、动作、比例或场景约束。'
+                '若确有不符，仍返回revise并指出可见证据和被违反的明确要求；若前一判断误读且候选符合要求，select准确候选ID。'
+                '只返回schema规定的决策，不修改方案，不反复自我复核。')
+            decision, model = await judge([*messages, verification])
+        result=ReviewResponse(**decision.model_dump(),model_used=model,tokens_used=usage,run_id=run.run_id if run else '')
+        if trace_store: trace_store.complete_run(run.run_id,output=decision.reason,model_used=model,tokens_used=usage,skills_used=[])
+        return result
     except (Exception,asyncio.CancelledError):
         if trace_store: trace_store.fail_run(run.run_id,error_message='自动审阅未完成，原有内容保留')
         raise
