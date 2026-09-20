@@ -62,6 +62,50 @@ test('fullscreen works during generation, persists through refresh, and Escape o
     h.controller.reset();
 });
 
+test('canvas navigation remains usable while a model request is pending without releasing its mutation lock', async () => {
+    let finish;
+    const requests=[], h=harness(async(method,path,body)=>{
+        requests.push({method,path,body});
+        if(path.endsWith('/messages')) return await new Promise(resolve=>{finish=resolve;});
+        return {project:project(),assets:[],runs:[]};
+    });
+    await h.controller.newProject(); h.input('调整脚本');h.send();await tick();
+    assert.ok(finish);
+    h.click('fullscreen');await tick();
+    assert.match(h.root.innerHTML,/cp-main is-canvas-fullscreen/);
+    h.click('zoom-in');h.click('select','video');await tick();
+    assert.match(h.root.innerHTML,/data-cp-zoom>115%/);
+    assert.match(h.root.innerHTML,/cp-main is-canvas-fullscreen is-review-open/);
+    h.click('canvas-review');await tick();
+    assert.doesNotMatch(h.root.innerHTML,/is-review-open/);
+    h.click('generate','video');h.send();await tick();
+    assert.equal(requests.filter(r=>r.path.endsWith('/messages')).length,1);
+    assert.equal(requests.filter(r=>r.path.endsWith('/generate')).length,0);
+    finish({project:project()});await tick();
+    assert.match(h.root.innerHTML,/is-canvas-fullscreen/);
+    h.click('fullscreen');await tick();
+    assert.doesNotMatch(h.root.innerHTML,/cp-main is-canvas-fullscreen/);
+    h.controller.reset();
+});
+
+test('opening a project releases editing controls before slow asset metadata finishes, including failure', async () => {
+    let failAssets;
+    const h=harness(async(method,path)=>{
+        if(path.startsWith('/api/creation/assets?'))return await new Promise((_,reject)=>{failAssets=reject;});
+        return {project:project(),assets:[],runs:[]};
+    });
+    h.click('open-project','p');await tick();await tick();
+    assert.ok(failAssets);
+    assert.doesNotMatch(h.root.innerHTML.match(/<button[^>]*data-cp-action="edit"[^>]*>/)?.[0]||'',/disabled/);
+    h.click('fullscreen');await tick();
+    assert.match(h.root.innerHTML,/is-canvas-fullscreen/);
+    failAssets(new Error('资产暂未加载'));await tick();
+    h.click('fullscreen');await tick();
+    assert.match(h.root.innerHTML,/资产暂未加载/);
+    assert.doesNotMatch(h.root.innerHTML,/cp-main is-canvas-fullscreen/);
+    h.controller.reset();
+});
+
 test('unbound storyboard images are visible and repair requests target the project without generating media', async () => {
     const doc=document();
     doc.plan.nodes.splice(2,0,{id:'frame',title:'起飞分镜',kind:'image',purpose:'shot_reference',depends_on:['script','visual'],references:[]});

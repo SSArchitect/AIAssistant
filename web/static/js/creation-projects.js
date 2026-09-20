@@ -559,7 +559,10 @@
             if(name==='open-project'){
                 const request=++openRequest;const response=await api('GET',`/api/creation/projects/${encodeURIComponent(id)}`);
                 if(version!==epoch||request!==openRequest)return;
-                project=response.project;projectsView=false;selected='';draft='';attachments=[];assets=[];runs=[];picker=false;versions=null;editing=false;feedback='';autoFit=true;optionsOpen=false;render();await refresh();return;
+                project=response.project;projectsView=false;selected='';draft='';attachments=[];assets=[];runs=[];picker=false;versions=null;editing=false;feedback='';autoFit=true;optionsOpen=false;render();
+                // Asset metadata is optional for interacting with the already loaded project.
+                void refresh().catch(error => { if(version===epoch && request===openRequest)showMessage(error.message || '资产暂未加载，请稍后刷新'); });
+                return;
             }
             if(name==='project-assets'){onAssets(projectID);return;}
             if(name==='rename-project'){renameID=id;renameValue=((project?.id===id?project:projects.find(p=>p.id===id)))?.name||'';projectsView=true;render();element.querySelector('[data-cp-rename]')?.focus();return;}
@@ -644,13 +647,16 @@
             }
             if (response && version === epoch && projectID === project?.id) { project = response.project; feedback = name === 'generate' ? '已提交生成，结果会自动归入资产。离开页面后仍会继续。' : '已确认。修改上游内容时，相关下游会重新进入待审阅。'; render(); }
         }
-        async function perform(fn) {
-            if (busy) return;
-            const version = epoch; busy = true;
+        async function perform(fn, navigation = false) {
+            if (busy && !navigation) return;
+            const version = epoch;
+            if (!navigation) busy = true;
             try { await fn(); }
             catch (error) { if (version === epoch) { feedback = error.message || '操作失败，请重试'; if (error.httpStatus === 409) { try { await refresh(); } catch (_) {} } } }
-            finally { if (version === epoch) { busy = false; render(); } }
+            finally { if (version === epoch && !navigation) { busy = false; render(); } }
         }
+        // Canvas-only actions cannot submit models or media and must not share their lock.
+        const canvasNavigation = new Set(['fullscreen', 'canvas-review', 'locate-selected', 'select', 'zoom-in', 'zoom-out', 'fit', 'arrange', 'retry-layout']);
         function bind() {
             element.addEventListener('toggle', event => { if (event.target.hasAttribute?.('data-cp-options') && element.contains?.(event.target)) optionsOpen = event.target.open; }, true);
             element.addEventListener('click', event => {
@@ -660,7 +666,7 @@
                 if (round?.hasAttribute?.('data-cp-turn')) roundsOpen.set(round.dataset.cpTurn, !round.open);
                 const target = event.target.closest('[data-cp-action]');
                 if (suppressClick) { const suppressed = suppressClick; suppressClick = null; if (target?.dataset.cpAction === 'select' && target.dataset.id === suppressed.id && Date.now() < suppressed.until) { event.preventDefault?.(); return; } }
-                if (target && !target.disabled) void perform(() => action(target.dataset.cpAction, target.dataset.id, target.dataset.asset));
+                if (target && !target.disabled) void perform(() => action(target.dataset.cpAction, target.dataset.id, target.dataset.asset), canvasNavigation.has(target.dataset.cpAction));
             });
             element.addEventListener('submit', event => { if (event.target.hasAttribute('data-cp-form')) { event.preventDefault(); void perform(() => send()); } });
             element.addEventListener('input', event => {
