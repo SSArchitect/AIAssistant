@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field
 class ReviewFinding(BaseModel):
     model_config = ConfigDict(extra='forbid')
     candidate_id: str
-    category: Literal['identity', 'action', 'composition', 'environment', 'artifact']
+    category: Literal['identity', 'action', 'composition', 'scale', 'environment', 'artifact']
     source_id: str
     requirement_quote: str = Field(min_length=2, max_length=400)
     observation: str = Field(min_length=2, max_length=400)
@@ -40,7 +40,7 @@ def requirement_sources(payload):
     return {key: value for key, value in sources.items() if value.strip()}
 
 
-def validate_image_findings(decision, candidates, sources):
+def validate_image_findings(decision, candidates, sources, *, scale_contract=None, geometry=()):
     """Reject invented/missing citations before paying for another image job."""
     if decision.decision != 'revise' or not candidates:
         if decision.findings:
@@ -58,6 +58,12 @@ def validate_image_findings(decision, candidates, sources):
             raise ValueError('未知source_id：' + finding.source_id[:100] + '；只能使用review_requirements的键')
         if compact(finding.requirement_quote) not in compact(source):
             raise ValueError('引用与' + finding.source_id[:100] + '的原文不匹配；按text_path查找原文逐字引用，不能改写、拼接或引用AI返工新增条件')
+        if scale_contract:
+            from agent.aigc.creation_review_geometry import scale_within_contract
+            if finding.category=='composition' and re.search(r'画高|身高|高度占比|角色比例|人物占比|尺寸偏|尺寸过',finding.observation):
+                raise ValueError('人物尺寸或占比问题必须单独使用scale分类，不能混入其他构图问题')
+            if finding.category=='scale' and scale_within_contract(scale_contract,geometry,finding.candidate_id) is True:
+                raise ValueError('独立定位的占比已在原约数要求的固定审阅区间内，不能作为返工理由；请select合格候选或指出其他有依据的真实问题')
         covered.add(finding.candidate_id)
     if covered != set(candidates):
         raise ValueError('要求全部重画时，每个候选都需要有依据的问题；存在合格候选应select')

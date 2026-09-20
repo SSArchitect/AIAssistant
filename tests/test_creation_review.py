@@ -29,6 +29,7 @@ def test_image_review_uses_stable_contract_not_self_written_repair_requirements(
     assert payload['review_target']['content'] == '兔大侠侧面御剑，披风向后'
     assert 'AI新增' not in json.dumps(payload, ensure_ascii=False)
     assert '执行技巧' not in json.dumps(payload, ensure_ascii=False)
+    assert payload['messages']==[]
     assert req.model_dump() == before
 
 
@@ -48,6 +49,39 @@ async def test_invented_image_requirement_is_repaired_before_returning_a_decisio
     assert result.decision=='select' and provider.chat.await_count==2
     assert provider.max_tokens==4096
     assert '原文不匹配' in provider.chat.call_args.args[0][-1].content
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('measurement_failed',[False,True])
+async def test_scale_review_uses_independent_geometry_without_auto_approving_on_tool_failure(monkeypatch,measurement_failed):
+    content=BytesIO();Image.new('RGB',(576,1024),'red').save(content,format='PNG')
+    data='data:image/png;base64,'+base64.b64encode(content.getvalue()).decode()
+    req=request(assets=[dict(id='candidate',name='图',mime_type='image/png',data_url=data)],candidate_ids=['candidate'])
+    req.current_plan['nodes'].append(dict(id='image',kind='image',purpose='shot_reference',title='远景',content='人物约占画高3%',prompt='微小角色'))
+    req.node_id='image'
+    geometry=[dict(candidate_id='candidate',uncertain=False,subject_count=1,subjects=[dict(body_height_percent=2.5)])]
+    locator=AsyncMock(side_effect=ValueError('unavailable')) if measurement_failed else AsyncMock(return_value=(geometry,{'input':12}))
+    monkeypatch.setattr(review,'locate_subjects',locator)
+    provider=SimpleNamespace(chat=AsyncMock(return_value=LLMResponse(content=json.dumps(
+        dict(decision='select',asset_id='candidate',reason='比例与环境符合',findings=[])),usage={'input':20})))
+    monkeypatch.setattr(review,'create_provider',lambda:provider)
+    trace=TraceStore()
+    result=await review.review_creation(req,trace)
+    assert provider.chat.await_count==1 and result.asset_id=='candidate'
+    payload=json.loads(provider.chat.call_args.args[0][1].content[0]['text'])
+    if measurement_failed:
+        assert payload['visual_measurements_unavailable'] and 'visual_measurements' not in payload
+        assert result.tokens_used['input']==20
+    else:
+        assert payload['visual_measurements']==geometry and result.tokens_used['input']==32
+    run=trace.get_run(result.run_id)
+    events=[e for e in run.events if e.type=='creation.review.geometry']
+    assert len(events)==1 and run.status=='completed'
+    assert events[0].status==('failed' if measurement_failed else 'completed')
+    assert 'unavailable' not in events[0].model_dump_json()
+    assert payload['scale_contract']['minimum_percent']==2.4
+    # The locator accepts no plan/messages/requirements or prior judgments.
+    assert len(locator.call_args.args)==3 and locator.call_args.args[2]==['candidate']
 
 
 @pytest.mark.asyncio
