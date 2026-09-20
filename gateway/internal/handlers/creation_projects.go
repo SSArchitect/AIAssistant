@@ -72,6 +72,28 @@ func creativeApproved(state creativeNodeState) bool {
 	return state.Revision > 0 && state.ApprovedRevision == state.Revision
 }
 
+// Raw storyboard JSON may be re-encoded by the planner without changing the
+// approved content. Key order, whitespace and 0 versus 0.0 are not edits.
+func creativeNodesEqual(left, right bridge.CreativeNode) bool {
+	leftStory, rightStory := left.Storyboard, right.Storyboard
+	left.Storyboard, right.Storyboard = nil, nil
+	if !reflect.DeepEqual(left, right) {
+		return false
+	}
+	var a, b interface{}
+	if len(leftStory) > 0 {
+		if err := json.Unmarshal(leftStory, &a); err != nil {
+			return false
+		}
+	}
+	if len(rightStory) > 0 {
+		if err := json.Unmarshal(rightStory, &b); err != nil {
+			return false
+		}
+	}
+	return reflect.DeepEqual(a, b)
+}
+
 // Apply only the proposal. Approval and generated asset IDs are never model-owned.
 func applyCreativePlan(doc creativeDocument, plan bridge.CreativePlan) creativeDocument {
 	old := doc
@@ -85,7 +107,7 @@ func applyCreativePlan(doc creativeDocument, plan bridge.CreativePlan) creativeD
 		comparison := node
 		before.RevisionSuggestions = nil
 		comparison.RevisionSuggestions = nil
-		changed[node.ID] = !exists || !reflect.DeepEqual(before, comparison)
+		changed[node.ID] = !exists || !creativeNodesEqual(before, comparison)
 		for _, dep := range node.DependsOn {
 			changed[node.ID] = changed[node.ID] || changed[dep]
 		}
