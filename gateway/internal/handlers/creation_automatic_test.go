@@ -502,6 +502,75 @@ func TestAutomaticCreationRevisesRejectedImagesUntilAcceptedThenGeneratesVideo(t
 		t.Fatal(doc.States["visual"])
 	}
 }
+
+func TestAutomaticCreationAdvancesIndependentImagesBeforeRetryingRejectedScene(t *testing.T) {
+	r, h, f, token, row := setupAutomatic(t)
+	doc, _ := projectDocument(row)
+	plan := creativeTestPlan()
+	scene := plan.Nodes[1]
+	scene.Count = 1
+	dependent, independent := scene, scene
+	dependent.ID, dependent.Title, dependent.Prompt = "dependent", "落日分镜", "sunset storyboard"
+	dependent.DependsOn = []string{"visual"}
+	independent.ID, independent.Title, independent.Prompt = "independent", "菌林分镜", "forest storyboard"
+	plan.Nodes = []bridge.CreativeNode{plan.Nodes[0], scene, dependent, independent}
+	doc = applyCreativePlan(doc, plan)
+	if err := h.updateProject(&row, doc, true); err != nil {
+		t.Fatal(err)
+	}
+	row = reviewTestNode(t, r, h, token, row.ID, "brief", "")
+	before, _ := projectDocument(row)
+	order := []string{}
+	rejected := false
+	f.reviewDecision = func(req bridge.CreationReviewRequest) *bridge.CreationReviewResponse {
+		order = append(order, req.NodeID)
+		if req.NodeID == "visual" && !rejected {
+			rejected = true
+			return &bridge.CreationReviewResponse{Decision: "revise", Reason: "落日场景机位错误，需要重新生成"}
+		}
+		return nil
+	}
+	f.planHook = func(_ context.Context, req bridge.CreationPlanningRequest) (*bridge.CreationPlanningResponse, error) {
+		return &bridge.CreationPlanningResponse{Plan: copyAutomaticPlan(req.CurrentPlan), Reply: "保留场景要求，重新生成候选"}, nil
+	}
+	startAutomatic(t, r, h, token, row.ID, "fair-scene-retry")
+	row = waitAutomatic(t, h, row.ID)
+	doc, _ = projectDocument(row)
+	if row.AutomaticStatus != "completed" {
+		t.Fatal(row.AutomaticStatus, doc.Automation.Steps)
+	}
+	want := []string{"visual", "independent", "visual", "dependent"}
+	if !reflect.DeepEqual(order, want) {
+		t.Fatalf("rejected scene blocked independent work or released its child early: got %v, want %v", order, want)
+	}
+	if len(f.requests) != 4 || !reflect.DeepEqual(before.States["brief"], doc.States["brief"]) {
+		t.Fatal("duplicated generation or changed confirmed content")
+	}
+	for _, id := range []string{"visual", "independent", "dependent"} {
+		if !creativeApproved(doc.States[id]) || doc.States[id].SelectedAssetID == "" {
+			t.Fatal("did not return to unfinished work", id)
+		}
+	}
+}
+
+func TestAutomaticCreationDoesNotCompleteWhenEveryPendingNodeIsBlocked(t *testing.T) {
+	_, h, f, _, row := setupAutomatic(t)
+	doc, _ := projectDocument(row)
+	// A damaged/recovered dependency graph must fail visibly, never report completion.
+	first, second := doc.Plan.Nodes[0], doc.Plan.Nodes[2]
+	first.DependsOn = []string{second.ID}
+	second.DependsOn = []string{first.ID}
+	doc.Plan.Nodes = []bridge.CreativeNode{first, second}
+	doc.Automation = &creativeAutomation{RepairCounts: map[string]int{}}
+	row.AutomaticStatus, row.AutomaticRequestID = "running", "blocked-dependencies"
+	if err := h.updateProject(&row, doc, false); err != nil {
+		t.Fatal(err)
+	}
+	done, err := h.advanceAutomatic(context.Background(), row.ID, row.AutomaticRequestID)
+	if done || err == nil || !strings.Contains(err.Error(), "上游") || len(f.requests) != 0 || len(f.reviews) != 0 {
+		t.Fatalf("blocked workflow appeared complete: done=%v err=%v", done, err)
+	}
+}
 func TestAutomaticCreationRepairStopDiscardsLatePlan(t *testing.T) {
 	r, h, f, token, row := setupAutomatic(t)
 	before, _ := projectDocument(row)

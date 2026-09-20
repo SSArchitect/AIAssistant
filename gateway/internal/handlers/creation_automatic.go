@@ -353,6 +353,7 @@ func (h *CreationHandler) advanceAutomatic(ctx context.Context, id, request stri
 		return false, h.updateProject(&row, doc, true)
 	}
 	var node bridge.CreativeNode
+	var blockedDependency error
 	for _, n := range doc.Plan.Nodes {
 		state := doc.States[n.ID]
 		if n.Kind == "video" && state.RunID != "" {
@@ -364,16 +365,22 @@ func (h *CreationHandler) advanceAutomatic(ctx context.Context, id, request stri
 		if creativeApproved(state) && n.Kind != "video" {
 			continue
 		}
-		node = n
-		break
+		if err := creativeDependenciesReady(doc, n); err != nil {
+			blockedDependency = err
+			continue
+		}
+		// Let independent branches make progress while a rejected node is being
+		// repaired. Keep plan order for ties and never release unapproved children.
+		if node.ID == "" || doc.Automation.RepairCounts[n.ID] < doc.Automation.RepairCounts[node.ID] {
+			node = n
+		}
 	}
 	if node.ID == "" {
 		h.mu.Unlock()
+		if blockedDependency != nil {
+			return false, blockedDependency
+		}
 		return true, nil
-	}
-	if err = creativeDependenciesReady(doc, node); err != nil {
-		h.mu.Unlock()
-		return false, err
 	}
 	state := doc.States[node.ID]
 	if node.Kind == "video" && creativeApproved(state) {
