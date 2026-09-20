@@ -95,3 +95,59 @@ async def test_revision_must_not_approve_any_candidate(monkeypatch):
     monkeypatch.setattr(review,'create_provider',lambda:provider)
     result=await review.review_creation(request())
     assert result.decision=='revise' and result.asset_id=='' and provider.chat.await_count==2
+
+
+@pytest.mark.asyncio
+async def test_review_isolates_sibling_repairs_and_labels_actual_reference_images(monkeypatch):
+    content=BytesIO();Image.new('RGB',(8,8),'red').save(content,format='PNG')
+    data='data:image/png;base64,'+base64.b64encode(content.getvalue()).decode()
+    req=request(assets=[dict(id=i,name=i+'.png',mime_type='image/png',data_url=data)
+        for i in ['candidate','identity','scene-result','unrelated']],candidate_ids=['candidate'],
+        node_context={'scene':{'approved':True,'selected_asset_id':'scene-result'},
+            'script':{'approved':True},'other':{'approved':False}},locked_node_ids=['script','scene'])
+    req.current_plan['nodes'] = [req.current_plan['nodes'][0],
+        dict(id='scene',kind='image',purpose='scene',title='已确认场景',prompt='发光孢子带尾迹',depends_on=['script']),
+        dict(id='other',kind='image',title='另一张返工草稿',prompt='UNRELATED_REPAIR: 所有孢子绝不能有尾迹',asset_id='unrelated'),
+        dict(id='shot',kind='image',purpose='shot_reference',title='触碰孢子',prompt='指尖触碰孢子',depends_on=['script','scene'],
+             references=[dict(asset_id='identity',role='identity',note='人物与道具'),
+                         dict(node_id='scene',role='environment',note='孢子形态与云海')])]
+    req.messages.extend([
+        dict(role='assistant',content='UNRELATED_REPAIR: 我推断全项目不能有尾迹'),
+        dict(role='user',node_id='other',content='UNRELATED_REPAIR: 仅此节点取消尾迹'),
+        dict(role='user',node_id='shot',content='保持当前场景中的孢子形态')])
+    req.node_id='shot';before=req.model_dump()
+    provider=SimpleNamespace(chat=AsyncMock(return_value=LLMResponse(content=json.dumps(
+        {'decision':'select','asset_id':'candidate','reason':'符合已确认场景与动作'}))))
+    monkeypatch.setattr(review,'create_provider',lambda:provider)
+    result=await review.review_creation(req)
+    parts=provider.chat.call_args.args[0][1].content
+    payload=json.loads(parts[0]['text'])
+    assert [n['id'] for n in payload['current_plan']['nodes']]==['script','scene','shot']
+    assert 'UNRELATED_REPAIR' not in json.dumps(parts,ensure_ascii=False)
+    assert [m['content'] for m in payload['messages']]==['生成短片','保持当前场景中的孢子形态']
+    assert set(payload['node_context'])=={'script','scene'}
+    assert {a['id'] for a in payload['assets']}=={'candidate','identity','scene-result'}
+    assert len([p for p in parts if p['type']=='image_url'])==3
+    bindings=payload['review_references']
+    assert [(r['asset_id'],r['role']) for r in bindings]==[('identity','identity'),('scene-result','environment')]
+    assert bindings[1]['source_node_id']=='scene' and bindings[1]['source_approved'] is True
+    labels=[p['text'] for p in parts[1:] if p['type']=='text']
+    assert any('candidate' in label and '候选' in label for label in labels)
+    assert any('scene-result' in label and 'environment' in label and '已确认' in label for label in labels)
+    assert result.asset_id=='candidate' and req.model_dump()==before
+
+
+@pytest.mark.asyncio
+async def test_review_marks_unavailable_reference_as_unseen_and_keeps_video_dependencies(monkeypatch):
+    req=request(assets=[dict(id='rabbit',name='人设.png',mime_type='image/png')])
+    req.current_plan=plan('identity');req.node_id='video'
+    provider=SimpleNamespace(chat=AsyncMock(return_value=LLMResponse(content=json.dumps(
+        {'decision':'approve','reason':'执行方案自洽','asset_id':''}))))
+    monkeypatch.setattr(review,'create_provider',lambda:provider)
+    await review.review_creation(req)
+    parts=provider.chat.call_args.args[0][1].content;payload=json.loads(parts[0]['text'])
+    assert [n['id'] for n in payload['current_plan']['nodes']]==['script','video']
+    assert payload['review_references'][0]['asset_id']=='rabbit'
+    assert payload['review_references'][0]['preview_available'] is False
+    assert payload['assets'][0]['preview_available'] is False
+    assert not any(p['type']=='image_url' for p in parts)
