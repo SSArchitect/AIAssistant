@@ -119,8 +119,8 @@ async def compact_storyboard(storyboard, request, provider, *, reserved_chars=0)
                 rewritten = []
                 for i, (text, limit) in enumerate(zip(texts, budgets)):
                     new = replacement[f'text_{i}']
-                    if not isinstance(new, str) or not new.strip() or len(new) > limit:
-                        raise ValueError(f'text_{i}必须为1–{limit}字符的非空字符串')
+                    if not isinstance(new, str) or not new.strip():
+                        raise ValueError(f'text_{i}必须为非空字符串，建议不超过{limit}字符')
                     if LITERAL.search(new):
                         raise ValueError(f'text_{i}不得新增对白或协议标记；程序会恢复原文')
                     rewritten.append(new)
@@ -129,6 +129,13 @@ async def compact_storyboard(storyboard, request, provider, *, reserved_chars=0)
                     raise ValueError('压缩改变了原文或协议边界')
                 compacted = VideoStoryboard.model_validate(value)
                 compile_storyboard(compacted, request)
+                # Segment allocations guide the model; only the complete provider
+                # prompt has a hard capacity. Spare space from short segments may
+                # be used by another segment without changing any protected text.
+                total = len(render_storyboard(compacted, request.mode)) + reserved_chars
+                if total > 3900:
+                    over = [f'text_{i}={len(text)}/{limit}' for i, (text, limit) in enumerate(zip(rewritten, budgets)) if len(text) > limit]
+                    raise ValueError(f'执行稿总长度{total}超过3900字符预算；请精简叙述片段：' + ', '.join(over[:12]))
                 return compacted, usage
             except (ValueError, TypeError) as exc:
                 logger.warning('Creation execution compaction rejected: attempt=%s reason=%s', attempt + 1, type(exc).__name__ if hasattr(exc, 'errors') else str(exc)[:300])

@@ -111,3 +111,36 @@ async def test_uncompressible_literal_text_reports_capacity_without_spending_rep
         await compact_storyboard(original,VideoGenerationRequest(prompt='placeholder',duration_seconds=5),provider)
     assert caught.value.code=='execution_capacity_exceeded'
     provider.chat.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_segment_can_borrow_unused_budget_without_rejecting_valid_total():
+    """Live six-reference planning repeated a 35-character segment error three times."""
+    original = storyboard()
+    req = VideoGenerationRequest(prompt='placeholder', duration_seconds=5)
+    async def respond(messages, **kwargs):
+        payload = json.loads(messages[1].content)
+        values = {key: '保留动作与光线。' for key in payload}
+        key = min(payload, key=lambda key: payload[key]['max_characters'])
+        values[key] = '景' * (payload[key]['max_characters'] + 8)
+        return LLMResponse(content=json.dumps(values))
+    provider = SimpleNamespace(chat=AsyncMock(side_effect=respond), max_tokens=16000)
+    result, _ = await compact_storyboard(original, req, provider, reserved_chars=500)
+    assert len(compile_storyboard(result, req)) + 500 <= 3900
+    assert '<d>[Chinese]你好。</d>' in result.shots[0].panels[0].description
+    assert provider.chat.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_borrowing_segment_budget_still_enforces_total_with_reserved_bindings():
+    original = storyboard()
+    req = VideoGenerationRequest(prompt='placeholder', duration_seconds=5)
+    async def respond(messages, **kwargs):
+        payload = json.loads(messages[1].content)
+        values = {key: '景' * (item['max_characters'] + 30) for key, item in payload.items()}
+        return LLMResponse(content=json.dumps(values))
+    provider = SimpleNamespace(chat=AsyncMock(side_effect=respond), max_tokens=16000)
+    with pytest.raises(PlanningConstraintError):
+        await compact_storyboard(original, req, provider, reserved_chars=800)
+    assert provider.chat.await_count == 3
+    assert provider.max_tokens == 16000
