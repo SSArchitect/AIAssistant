@@ -34,7 +34,11 @@ func applyAutomaticRepair(doc creativeDocument, plan bridge.CreativePlan) creati
 			plan.Nodes[i].Content = contract.Content
 		}
 	}
+	history := doc.Automation
 	doc = applyCreativePlan(doc, plan)
+	// An automatic repair changes execution, not the user's creative goal. Keep
+	// its past failures so changing prompts cannot reset the retry strategy.
+	doc.Automation = history
 	doc.ReviewContracts = contracts
 	return doc
 }

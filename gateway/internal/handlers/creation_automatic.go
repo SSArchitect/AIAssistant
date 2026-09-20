@@ -195,18 +195,15 @@ func (h *CreationHandler) StartAutomaticCreation(c *gin.Context) {
 	// A fresh transport request resumes the creative work. Keep the scheduler's
 	// history so stop/restart does not send a repeatedly rejected early node back
 	// ahead of untouched branches or hide past failures from the repair planner.
-	if previous != nil && previous.Status != "completed" {
-		doc.Automation.RepairCounts = map[string]int{}
-		for _, node := range doc.Plan.Nodes {
-			if count := previous.RepairCounts[node.ID]; count > 0 {
-				doc.Automation.RepairCounts[node.ID] = count
-			}
-		}
-		for _, repair := range previous.Repairs {
-			if _, exists := creativeNode(doc, repair.NodeID); exists {
-				doc.Automation.Repairs = append(doc.Automation.Repairs, repair)
-			}
-		}
+	// "Completed" can mean a single requested target, not the whole project.
+	if previous != nil {
+		history := filterCreativeRepairHistory(previous, func(id string) bool {
+			state, exists := doc.States[id]
+			_, nodeExists := creativeNode(doc, id)
+			return exists && nodeExists && !creativeApproved(state)
+		})
+		doc.Automation.RepairCounts = history.RepairCounts
+		doc.Automation.Repairs = history.Repairs
 	}
 	message := "一键生成：保留已确认内容，由创作助手确定其余节点并继续生成。"
 	if len(req.TargetNodeIDs) > 0 {

@@ -120,6 +120,12 @@ func applyCreativePlan(doc creativeDocument, plan bridge.CreativePlan) creativeD
 		}
 		doc.States[node.ID] = state
 	}
+	// A new proposal invalidates feedback for edited nodes and descendants.
+	// Automatic repairs explicitly preserve their history in applyAutomaticRepair.
+	doc.Automation = filterCreativeRepairHistory(old.Automation, func(id string) bool {
+		_, exists := doc.States[id]
+		return exists && !changed[id]
+	})
 	return doc
 }
 func invalidateCreativeChildren(doc *creativeDocument, id string) {
@@ -592,6 +598,10 @@ func (h *CreationHandler) ReviewProject(c *gin.Context) {
 		creationError(c, 409, err)
 		return
 	}
+	previousRevisions := map[string]int{}
+	for id, previous := range doc.States {
+		previousRevisions[id] = previous.Revision
+	}
 	state := doc.States[node.ID]
 	if node.Kind == "image" {
 		if req.AssetID == "" {
@@ -624,6 +634,12 @@ func (h *CreationHandler) ReviewProject(c *gin.Context) {
 	state.ApprovedBy = "user"
 	state.ApprovedInputs = hashes
 	doc.States[node.ID] = state
+	// Selecting a different reference invalidates downstream feedback, while
+	// reviewing the same candidate leaves independent unfinished work intact.
+	doc.Automation = filterCreativeRepairHistory(doc.Automation, func(id string) bool {
+		current, exists := doc.States[id]
+		return exists && current.Revision == previousRevisions[id] && !creativeApproved(current)
+	})
 	if err = h.updateProject(&row, doc, true); err != nil {
 		creationError(c, 409, err)
 		return
