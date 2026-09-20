@@ -25,6 +25,18 @@ async def test_shot_uses_ordered_identity_and_environment_with_single_scene_rule
     assert 'Picture 1' in sent.prompt and 'Picture 2' in sent.prompt and '荧光菇谷' in sent.prompt
     assert 'single' in sent.prompt.lower() and 'layout' in sent.prompt.lower()
 
+
+@pytest.mark.asyncio
+async def test_scene_reuses_two_environment_pixels_without_character_identity(monkeypatch):
+    generate = AsyncMock(return_value=SimpleNamespace(id='scene', images=[SimpleNamespace(base64=PNG.split(',')[1], mime_type='image/png')]))
+    monkeypatch.setattr(creation, 'generate_image', generate)
+    await creation.execute_node(request(image_purpose='scene', input_images=[PNG, SECOND],
+        image_references=[dict(role='environment', note='远景森林'), dict(role='composition', note='上方菌盖')]))
+    sent = generate.call_args.args[0]
+    assert sent.mode == 'reference_to_image' and sent.reference_image_data_urls == [PNG, SECOND]
+    assert 'Picture 1' in sent.prompt and 'Picture 2' in sent.prompt
+    assert 'Unpopulated environment' in sent.prompt
+
 @pytest.mark.asyncio
 async def test_style_guide_is_abstracted_not_uploaded_and_numbering_is_compacted(monkeypatch):
     from agent.aigc import creation_reference_images as refs

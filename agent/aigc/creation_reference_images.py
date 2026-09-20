@@ -27,6 +27,8 @@ async def prepare_reference_image(request, *, resume=False):
     if not images:
         return dict(prompt=prompt, mode='text_to_image')
     guide = 'Create one single continuous scene on a new canvas, not a collage, grid or reference sheet. The target brief controls the action and explicit changes.\n'
+    if request.image_purpose == 'scene':
+        guide += 'Unpopulated environment establishing shot. Use only the referenced environment and spatial structure; do not import or add characters.\n'
     compiled = guide + prompt + '\n' + '\n'.join(rules)
     if len(compiled) > 4000:
         raise ValueError('分镜图提示词与参考职责超过4000字，请精简描述；尚未提交生成')

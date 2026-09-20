@@ -28,8 +28,12 @@ func validateVideoScenes(plan bridge.CreativePlan, lockedIDs []string) error {
 				return fmt.Errorf("场景节点不能套用人物转换模板：%s", n.Title)
 			}
 			for _, ref := range n.References {
-				if ref.Role != "style" {
-					return fmt.Errorf("场景节点只借用画风，不引用角色身份：%s", n.Title)
+				if ref.Role == "style" {
+					continue
+				}
+				source, ok := nodes[ref.NodeID]
+				if (ref.Role != "environment" && ref.Role != "composition") || !ok || source.Kind != "image" || source.Purpose != "scene" {
+					return fmt.Errorf("场景节点只能借用画风或引用其他场景的环境/构图，不引用人设或未分类资产：%s", n.Title)
 				}
 			}
 		}

@@ -44,6 +44,32 @@ func TestCreationScenesRequireEnvironmentInsteadOfCharacterOrStyle(t *testing.T)
 	}
 }
 
+func TestSceneReferencesKeepEnvironmentReuseSeparateFromIdentity(t *testing.T) {
+	for _, change := range []string{"environment", "composition", "identity", "reference", "asset", "character", "key_visual", "shot_reference"} {
+		t.Run(change, func(t *testing.T) {
+			p := creativeTestPlan()
+			source := p.Nodes[1]
+			source.ID = "source_scene"
+			ref := bridge.CreativeReference{NodeID: source.ID, Role: "composition"}
+			switch change {
+			case "environment", "composition", "identity", "reference":
+				ref.Role = change
+			case "asset":
+				ref.NodeID, ref.AssetID, ref.Role = "", "unclassified-image", "environment"
+			default:
+				source.Purpose = change
+			}
+			p.Nodes[1].DependsOn = append(p.Nodes[1].DependsOn, source.ID)
+			p.Nodes[1].References = []bridge.CreativeReference{ref}
+			p.Nodes = append(p.Nodes, source)
+			err := validateVideoScenes(p, nil)
+			if (err == nil) != (change == "environment" || change == "composition") {
+				t.Fatalf("unexpected environment reference validation: %v", err)
+			}
+		})
+	}
+}
+
 func TestScenePreflightPreservesConfirmedStoryboardAcrossJSONEncoding(t *testing.T) {
 	doc := applyCreativePlan(emptyCreativeDocument(), creativeTestPlan())
 	doc.Automation = &creativeAutomation{LockedNodeIDs: []string{"video"}}

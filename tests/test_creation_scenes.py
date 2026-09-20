@@ -42,6 +42,40 @@ def test_scene_cannot_use_a_character_identity_or_conversion_template():
         parse(value)
 
 
+@pytest.mark.parametrize('role', ['environment', 'composition'])
+def test_scene_can_recompose_an_existing_environment(role):
+    value = with_scene()
+    source = copy.deepcopy(value['nodes'][1])
+    source.update(id='source_scene', title='已建立的环境')
+    target = value['nodes'][1]
+    target['depends_on'].append('source_scene')
+    target['references'] = [dict(node_id='source_scene', role=role, note='只沿用环境结构，无人')]
+    value['nodes'].insert(1, source)
+    result = parse(value)
+    assert result.plan.nodes[2].references[0].role == role
+    assert result.plan.nodes[2].references[0].node_id == 'source_scene'
+
+
+@pytest.mark.parametrize('role', ['environment', 'composition', 'reference', 'identity'])
+def test_scene_cannot_import_unclassified_asset_pixels(role):
+    value = with_scene()
+    value['nodes'][1]['references'] = [dict(asset_id='rabbit', role=role)]
+    with pytest.raises(ValueError, match='场景'):
+        parse(value)
+
+
+@pytest.mark.parametrize('purpose', ['character', 'key_visual', 'shot_reference'])
+def test_scene_composition_source_must_itself_be_a_scene(purpose):
+    value = with_scene()
+    source = copy.deepcopy(value['nodes'][1])
+    source.update(id='source', purpose=purpose)
+    value['nodes'][1]['depends_on'].append('source')
+    value['nodes'][1]['references'] = [dict(node_id='source', role='composition')]
+    value['nodes'].insert(1, source)
+    with pytest.raises(ValueError, match='场景'):
+        parse(value)
+
+
 def test_existing_confirmed_video_is_not_rewritten_to_add_scene():
     value = plan('identity')
     result = parse(value, current_plan=value, automatic_mode=True, locked_node_ids=['script','video'])

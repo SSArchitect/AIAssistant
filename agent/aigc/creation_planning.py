@@ -302,7 +302,7 @@ assets是完整资产目录，只有preview_available=true的条目附带本轮�
 分镜图依赖相关脚本文本、出场人设和对应scene图片节点。身份用identity；生图中的environment用于场景图；composition只用于构图/姿态锚点；style仍只提取抽象画风、不将其主体像素导入。缺少角色时可建purpose=character图片节点。分镜图只包含本镜头的角色/环境/动作，禁止人设排版、拼图和多格。人物与场景最多三张输入，character_style保持空，不使用chibi/anime人物转换模板。分镜prompt建议不超过2800字符，reference.note简短，程序会按最终传入图片顺序编译Picture N职责；不要手写图片编号。景别、光线、人物位置和动作关键姿态由你安排。
 视频同时使用人设、场景和分镜图时用多图参考，不把分镜图当精确first_frame；三类图总计最多9张。分镜图只约束对应shot_ids的构图和动作，不覆盖已确认身份与环境。角色与场景引用仍显式保留，不因有分镜图就把所有原始约束删除。需要精确首帧时使用单独first_frame模式，不能附加其他图片，不能假装两种模式可混用。
 节点用稳定的英文 id，拓扑排序。文本节点保存可读创意简报、分镜脚本；图片节点保存主视觉/必要镜头参考/图片产物；视频节点保存结构化 storyboard。
-已有图片直接用 asset_id 复用；不要假装已经生成图片。缺少主视觉时，先计划一个 key_visual 图片节点，默认2个候选。主视觉负责世界观和整体气氛，scene负责每条视频的具体地点与空间；人设图不是场景。主视觉与场景属于重新构图，即使借用人物identity，也只保留身份特征、不继承三视图或人设构图。场景应由环境主导，默认无人；人物需要出现的主视觉中明确人物占比、景别、前中后景。character_style始终为空，不使用人物转换模板。
+已有图片直接用 asset_id 复用；不要假装已经生成图片。缺少主视觉时，先计划一个 key_visual 图片节点，默认2个候选。主视觉负责世界观和整体气氛，scene负责每条视频的具体地点与空间；人设图不是场景。主视觉与场景属于重新构图；只有主视觉可按需借用人物identity，只保留身份特征、不继承三视图或人设构图。场景可用environment或composition引用其他scene图片节点的环境或空间构图，作为真实图像输入；不能从人设、分镜或未分类资产导入主体像素，抽象画风仍使用style。场景应由环境主导，默认无人；人物需要出现的主视觉中明确人物占比、景别、前中后景。character_style始终为空，不使用人物转换模板。
 每个视频必须依赖 purpose=script 的中文分镜文本节点；storyboard 和中文分镜的剧情、时间、人物、动作、运镜、台词必须一致。脚本是面向用户的审阅稿，不是仅有一句剧情摘要，也不是直接贴英文执行prompt。
 复杂叙事脚本按制作简报、素材贡献与统一规则、角色与连续性锁、Panel语义分镜、Logical Shot分组、无空档主时间线、执行锁组织。用紧凑段落呈现；时间线使用完整的「时间｜画面与动作｜摄影机｜声音」表格，不生成只有空单元格的伪表格。
 制作简报明确最终文件数量、总时长/单片时长、画幅、叙事重点、出场/不出场角色、视觉权威和声音方案。Panel交代时段、景别与空间、动作/表演、摄影机、对白/音效、连续状态和转场；Logical Shot交代叙事职责、所含Panel、起止状态与轴线。不要让用户填写这些常规参数，由你先提出可审阅方案。
@@ -560,8 +560,14 @@ def validate_video_scenes(plan: CreativePlan, request: PlanningRequest):
     locked = set(request.locked_node_ids)
     for node in plan.nodes:
         if node.purpose == 'scene' and node.id not in locked:
-            if node.kind != 'image' or node.character_style or any(r.role != 'style' for r in node.references):
-                errors.append('场景节点只承载环境，不能套用人设身份或人物转换模板；用文字描述场景，可只借用统一画风：' + node.id)
+            if node.kind != 'image' or node.character_style:
+                errors.append('场景节点只承载环境，不能套用人物转换模板：' + node.id)
+            for ref in node.references:
+                if ref.role == 'style':
+                    continue
+                source = nodes.get(ref.node_id)
+                if ref.role not in {'environment', 'composition'} or not source or source.kind != 'image' or source.purpose != 'scene':
+                    errors.append('场景节点只能借用画风，或以environment/composition引用其他场景节点；不能导入人设或未分类资产：' + node.id)
         if node.kind != 'video' or node.id in locked:
             continue
         validate_scene_intervals(node, nodes)
@@ -652,7 +658,7 @@ async def propose_creation(request: PlanningRequest, trace_store=None, on_progre
                               {'type': 'image_url', 'image_url': {'url': image_preview(asset.data_url)}}])
         auto_prompt = ('\n用户已授权一键生成：未确认的常规选项由你判断并确定，清空已解决的 questions；不得改变 locked_node_ids 中任何节点及其依赖。不要生成审批字段或直接生成媒体。必需信息缺失或能力不支持时保留具体问题。' if request.automatic_mode else '')
         if request.require_video_scenes:
-            auto_prompt += '\n场景准备是本轮必需工作：每个未锁定视频必须按剧情中的实际地点与环境变化准备一个或多个 purpose=scene 图片节点，依赖对应脚本，以相同画幅生成一个具体地点的环境建立镜头，count=1，明确空间结构、前中后景、光线、色彩与关键环境物件，默认无人；禁止把人设图、角色特写、三视图作为场景。场景节点 character_style 为空，可引用已确认主视觉的 style，但不能引用角色 identity。视频依赖并以 reference 引用自己的场景节点，保留其余角色 identity 与画风 style 的职责和编号；场景不自动成为精确首帧。每段发生换场时按需要增加场景。相同地点要延续建筑、地形、光线规则，可跨视频复用同一已确认场景节点。现有视频补场景时 patch.nodes 可新增节点并更新对应 depends_on/references/storyboard，系统按新增依赖插入；不要仅因补场景改动无关的已确认内容或原台词；非自动模式仍执行用户本轮明确要求的修改。不要仅在文字里说已有场景，必须创建真实图片节点并连线。'
+            auto_prompt += '\n场景准备是本轮必需工作：每个未锁定视频必须按剧情中的实际地点与环境变化准备一个或多个 purpose=scene 图片节点，依赖对应脚本，以相同画幅生成一个具体地点的环境建立镜头，count=1，明确空间结构、前中后景、光线、色彩与关键环境物件，默认无人；禁止把人设图、角色特写、三视图作为场景。场景节点 character_style 为空，可引用已确认主视觉的 style；也可用environment或composition引用其他scene图片节点的真实环境与空间结构，声明depends_on，默认无人。不能引用角色identity或未分类资产的主体像素。视频依赖并以 reference 引用自己的场景节点，保留其余角色 identity 与画风 style 的职责和编号；场景不自动成为精确首帧。每段发生换场时按需要增加场景。相同地点要延续建筑、地形、光线规则，可跨视频复用同一已确认场景节点。现有视频补场景时 patch.nodes 可新增节点并更新对应 depends_on/references/storyboard，系统按新增依赖插入；不要仅因补场景改动无关的已确认内容或原台词；非自动模式仍执行用户本轮明确要求的修改。不要仅在文字里说已有场景，必须创建真实图片节点并连线。'
         if request.repair:
             auto_prompt += '\n当前是自动返工：repair 是自动审阅工具对指定节点的反馈，非用户新增要求。只修改 repair.node_id 和受影响的未确认下游；保持原有节点ID、相对顺序、类型、交付目标，其他节点及 locked_node_ids 保持完全不变。允许新增受影响的未确认视频或分镜实际引用的必要scene、shot_reference、character图片节点，count=1，放在消费节点前，补全依赖、场景时段与镜头绑定；不能新增视频、删除原节点或增加无关产物。同一原因多轮失败应重新检查引用/模板并更换修复策略，不能只重复追加否定词。结合失败候选的真实预览、reason 和 previous_feedback 找根因，调整提示词、参考图职责或模板，避免重复同一种失败。候选图是反例，严禁用它们作节点asset_id或生成参考。角色串形时，检查是否错误使用了人物动漫化/chibi身份保留模板；新角色借鉴另一个角色的画风，不等于转换原角色，必要时清空character_style、移除会污染身份的参考，直接文字描述统一画风。清除字段必须明确返回character_style=""、template_id=""、references=[]，不能用null（null表示保持原值）。修正图像生成节点时保持asset_id为空，后续由执行器重新生图。常规修正由你决定，不再问用户选方向；只有确实缺少不可替代的外部条件才提问。不要宣称已经生成或审阅通过。'
 
