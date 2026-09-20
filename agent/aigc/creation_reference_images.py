@@ -3,6 +3,7 @@ import re
 from agent.aigc.creation_image_context import ImageReferenceContext, style_only_prompt
 from agent.aigc.creation_pose_context import pose_only_guide
 from agent.aigc.creation_image_prompt import fit_image_prompt
+from agent.aigc.creation_identity_context import isolated_identity_view
 
 RULES = {
     'identity': 'Preserve only this subject identity, proportions, clothing and owned props. Do not copy sheet layout, labels, background or unrelated people.',
@@ -31,6 +32,8 @@ async def prepare_reference_image(request, *, resume=False):
                 if guide:
                     rules.append('Pose guide (no source pixels, identity or scenery): '+guide)
             continue
+        if not resume and request.image_purpose in {'shot_reference','character'} and ref.role=='identity':
+            data=await isolated_identity_view(data,ref,request.prompt,request.idempotency_key+':'+str(index))
         images.append(data)
         mapping[index] = f'Picture {len(images)}'
         rules.append(f'Picture {len(images)}: {RULES[ref.role]} {ref.note}')

@@ -96,6 +96,7 @@ func newCreationMediaError(code, taskID string) *CreationMediaError {
 		"media_storage_failed":                 "视频已生成但保存失败，请检查存储后继续原任务",
 		"media_image_prompt_capacity":          "图片必须保留的原文与参考职责超出生成容量，请精简该节点；尚未提交生成",
 		"media_image_prompt_compaction_failed": "图片执行稿自动整理未完成，原有方案与资产保留；尚未提交生成，可稍后继续",
+		"media_reference_view_failed":          "人物参考视图准备未完成，原资产保留；尚未提交生成，可稍后继续",
 	}
 	message, ok := messages[code]
 	if !ok {

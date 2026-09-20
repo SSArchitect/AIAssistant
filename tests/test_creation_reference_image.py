@@ -13,6 +13,8 @@ THIRD='data:image/png;base64,'+base64.b64encode(b'style').decode()
 @pytest.fixture(autouse=True)
 def isolate(monkeypatch,tmp_path):
     monkeypatch.setattr(creation_media_state,'STATE_DIR',tmp_path)
+    from agent.aigc import creation_reference_images as refs
+    monkeypatch.setattr(refs,'isolated_identity_view',AsyncMock(side_effect=lambda data,*args:data))
 
 @pytest.mark.asyncio
 async def test_shot_uses_ordered_identity_and_environment_with_single_scene_rules(monkeypatch):
@@ -129,6 +131,8 @@ async def test_accepted_task_resume_skips_prompt_compilation_and_never_reextract
     pose=AsyncMock(side_effect=AssertionError('resume must not extract again'))
     monkeypatch.setattr(refs,'fit_image_prompt',compact,raising=False)
     monkeypatch.setattr(refs,'pose_only_guide',pose)
+    identity=AsyncMock(side_effect=AssertionError('resume must not crop again'))
+    monkeypatch.setattr(refs,'isolated_identity_view',identity)
     generate=AsyncMock(return_value=SimpleNamespace(id='accepted',images=[SimpleNamespace(base64=PNG.split(',')[1],mime_type='image/png')]))
     monkeypatch.setattr(creation,'generate_image',generate)
     req=request(resume_task_id='accepted',image_purpose='shot_reference',input_images=[PNG,SECOND,THIRD],
@@ -136,4 +140,47 @@ async def test_accepted_task_resume_skips_prompt_compilation_and_never_reextract
     req.prompt='x'*3900
     await creation.execute_node(req)
     assert generate.call_args.kwargs=={'resume_task_id':'accepted'}
-    assert not compact.called and not pose.called
+    assert not compact.called and not pose.called and not identity.called
+
+
+@pytest.mark.asyncio
+async def test_only_shot_identity_uses_isolated_view_and_keeps_original_request(monkeypatch):
+    from agent.aigc import creation_reference_images as refs
+    isolated=AsyncMock(return_value=THIRD)
+    monkeypatch.setattr(refs,'isolated_identity_view',isolated)
+    generate=AsyncMock(return_value=SimpleNamespace(id='shot',images=[SimpleNamespace(base64=PNG.split(',')[1],mime_type='image/png')]))
+    monkeypatch.setattr(creation,'generate_image',generate)
+    req=request(image_purpose='shot_reference',input_images=[SECOND,PNG],image_references=[dict(role='environment'),dict(role='identity')])
+    before=req.model_dump()
+    await creation.execute_node(req)
+    assert generate.call_args.args[0].reference_image_data_urls==[SECOND,THIRD]
+    assert req.model_dump()==before and isolated.await_count==1
+    assert isolated.call_args.args[0]==PNG and isolated.call_args.args[2]==req.prompt
+
+
+@pytest.mark.asyncio
+async def test_identity_preparation_failure_never_submits_or_uses_whole_sheet(monkeypatch):
+    from agent.aigc import creation_reference_images as refs
+    from agent.aigc.creation_identity_context import ReferenceViewError
+    monkeypatch.setattr(refs,'isolated_identity_view',AsyncMock(side_effect=ReferenceViewError()))
+    generate=AsyncMock();monkeypatch.setattr(creation,'generate_image',generate)
+    with pytest.raises(ReferenceViewError):
+        await creation.execute_node(request(image_purpose='shot_reference',input_images=[PNG,SECOND],image_references=[dict(role='identity'),dict(role='environment')]))
+    assert not generate.called
+
+
+@pytest.mark.asyncio
+async def test_single_identity_character_preparation_uses_reference_engine_not_legacy_edit(monkeypatch):
+    from agent.aigc import creation_reference_images as refs
+    isolated=AsyncMock(return_value=THIRD);monkeypatch.setattr(refs,'isolated_identity_view',isolated)
+    generate=AsyncMock(return_value=SimpleNamespace(id='pose',images=[SimpleNamespace(base64=PNG.split(',')[1],mime_type='image/png')]))
+    monkeypatch.setattr(creation,'generate_image',generate)
+    await creation.execute_node(request(image_purpose='character',input_images=[PNG],image_references=[dict(role='identity')]))
+    sent=generate.call_args.args[0]
+    assert sent.mode=='reference_to_image' and sent.reference_image_data_urls==[THIRD]
+    assert sent.image_data_url is None and sent.denoise is None
+    # Explicit character-stylization remains the user's selected template.
+    req=request(image_purpose='character',input_images=[PNG],image_references=[dict(role='identity')],character_style='chibi')
+    req.idempotency_key='other'
+    await creation.execute_node(req)
+    assert generate.call_args.args[0].mode=='character_stylization' and isolated.await_count==1

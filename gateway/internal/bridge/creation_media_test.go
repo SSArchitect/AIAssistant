@@ -30,7 +30,7 @@ func TestCreationMediaErrorsKeepSafeDiagnosisAndRecoveryIdentity(t *testing.T) {
 }
 
 func TestImagePreparationErrorsDoNotPretendProviderSubmissionFailed(t *testing.T) {
-	for _, code := range []string{"media_image_prompt_capacity", "media_image_prompt_compaction_failed"} {
+	for _, code := range []string{"media_image_prompt_capacity", "media_image_prompt_compaction_failed", "media_reference_view_failed"} {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(400)
 			w.Write([]byte(`{"detail":{"code":"` + code + `","provider_task_id":"","message":"SECRET"}}`))

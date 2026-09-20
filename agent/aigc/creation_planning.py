@@ -27,6 +27,7 @@ from agent.aigc.creation_references import reference_error, repair_reference_sto
 from agent.aigc.creation_completion import PlanningCompletion
 from agent.aigc.creation_contract import planning_schema
 from agent.aigc.creation_repair_scope import validate_repair_scope
+from agent.aigc.creation_repair_strategy import reference_preparation_guidance, bind_prepared_identity
 from agent.aigc.creation_review_evidence import ReviewFinding
 from agent.aigc.creation_node_repair import repair_draft_nodes
 from agent.aigc.creation_partition import partition_proposal, incomplete_json
@@ -615,6 +616,7 @@ def parse_proposal(content: str, request: PlanningRequest) -> PlanningResponse:
             node.storyboard = scene_storyboard(node)
             node.prompt = compile_creative_video(node)
     if request.repair:
+        bind_prepared_identity(proposal.plan, request)
         validate_repair_scope(proposal.plan, request)
     if request.automatic_mode:
         prior = {n.id: n for n in CreativePlan.model_validate(omit_null_fields(request.current_plan)).nodes}
@@ -669,6 +671,7 @@ async def propose_creation(request: PlanningRequest, trace_store=None, on_progre
 
         if request.repair:
             auto_prompt += '\nnode_context中的review_contract是返工前冻结的验收要求，图片节点content由执行器保留，不可通过改写content新增限制或降低标准。仅调整执行prompt、参考分工、模板及必要的辅助图片。repair.findings包含已校验来源的要求原文与候选的可见问题；观察结论仍须对照真实图片，不得将返工猜测写成新的人物设定。'
+            auto_prompt += reference_preparation_guidance(request)
 
         completion = PlanningCompletion(provider, report, streaming=bool(on_progress))
         usage = completion.usage

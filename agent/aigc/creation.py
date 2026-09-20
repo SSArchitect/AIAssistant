@@ -17,6 +17,7 @@ from agent.aigc.video_service import generate_video, video_task_status
 from agent.aigc.spark_client import SparkProviderError, SparkTaskClient
 from agent.aigc.creation_media_state import CreationMediaState
 from agent.aigc.creation_image_prompt import ImagePromptError
+from agent.aigc.creation_identity_context import ReferenceViewError
 from agent.aigc.progress import progress_scope
 from agent.aigc.video_prompting import VideoStoryboard, compile_storyboard
 from agent.schemas.aigc import ImageGenerationRequest, VideoGenerationRequest
@@ -99,7 +100,8 @@ async def _execute_node(request: CreationNodeRequest, *, resume_task_id=None, pr
         options = dict(provider='spark', prompt=request.prompt, aspect_ratio=request.aspect_ratio,
                        idempotency_key=request.idempotency_key)
         reference = request.image_references[0] if request.image_references else None
-        if len(request.input_images) > 1 or (request.input_images and (request.image_purpose == 'shot_reference' or (reference and reference.role in {'environment','composition'}))):
+        if len(request.input_images) > 1 or (request.input_images and (request.image_purpose == 'shot_reference' or (reference and reference.role in {'environment','composition'})
+                or (request.image_purpose=='character' and reference and reference.role=='identity' and not request.character_style))):
             from agent.aigc.creation_reference_images import prepare_reference_image
             options.update(await prepare_reference_image(request, resume=bool(resume_task_id)))
         elif reference and reference.role == 'style':
@@ -148,7 +150,7 @@ async def _execute_node(request: CreationNodeRequest, *, resume_task_id=None, pr
 async def creation_node(request: CreationNodeRequest):
     try:
         return await execute_node(request)
-    except ImagePromptError as exc:
+    except (ImagePromptError,ReferenceViewError) as exc:
         logging.getLogger(__name__).warning('Creation image preparation error: code=%s',exc.code)
         raise HTTPException(status_code=400,detail={'code':exc.code,'provider_task_id':''}) from exc
     except SparkProviderError as exc:
