@@ -52,6 +52,48 @@ async def test_style_guide_is_abstracted_not_uploaded_and_numbering_is_compacted
     await creation.execute_node(req.model_copy(update={'resume_task_id':'shot'}))
     assert style.await_count==1 and generate.call_args.kwargs=={'resume_task_id':'shot'}
 
+
+@pytest.mark.asyncio
+async def test_cross_scene_pose_reference_cannot_upload_its_background_or_identity(monkeypatch):
+    from agent.aigc import creation_reference_images as refs
+    pose=AsyncMock(return_value='Both feet rest on one shared support.')
+    monkeypatch.setattr(refs,'pose_only_guide',pose,raising=False)
+    generate=AsyncMock(return_value=SimpleNamespace(id='shot',images=[SimpleNamespace(base64=PNG.split(',')[1],mime_type='image/png')]))
+    monkeypatch.setattr(creation,'generate_image',generate)
+    req=request(image_purpose='shot_reference',input_images=[SECOND,THIRD,PNG],
+        image_references=[dict(role='environment',note='golden forest'),dict(role='composition',note='Only foot contact, not the blue canyon'),dict(role='identity',note='rabbit')])
+    req.prompt='Use Picture 1 environment, Picture 2 contact, Picture 3 identity. Rear view.'
+    await creation.execute_node(req)
+    sent=generate.call_args.args[0]
+    assert sent.reference_image_data_urls==[SECOND,PNG] and THIRD not in sent.reference_image_data_urls
+    assert 'Picture 3' not in sent.prompt and 'Picture 2 identity' in sent.prompt
+    assert 'Both feet rest on one shared support.' in sent.prompt and 'blue canyon' not in sent.prompt
+    assert 'Rear view.' in sent.prompt
+    assert pose.call_args.args[:3]==(THIRD,req.image_references[1],req.prompt)
+    await creation.execute_node(req.model_copy(update={'resume_task_id':'shot'}))
+    assert pose.await_count==1 and generate.call_args.kwargs=={'resume_task_id':'shot'}
+
+
+@pytest.mark.asyncio
+async def test_failed_pose_isolation_does_not_fall_back_to_source_pixels(monkeypatch):
+    from agent.aigc import creation_reference_images as refs
+    monkeypatch.setattr(refs,'pose_only_guide',AsyncMock(side_effect=ValueError('pose unavailable')))
+    generate=AsyncMock();monkeypatch.setattr(creation,'generate_image',generate)
+    with pytest.raises(ValueError,match='pose unavailable'):
+        await creation.execute_node(request(image_purpose='shot_reference',input_images=[PNG,SECOND],
+            image_references=[dict(role='environment'),dict(role='composition')]))
+    assert not generate.called
+
+
+@pytest.mark.asyncio
+async def test_standalone_composition_reference_remains_a_native_image_input(monkeypatch):
+    from agent.aigc import creation_reference_images as refs
+    pose=AsyncMock();monkeypatch.setattr(refs,'pose_only_guide',pose)
+    generate=AsyncMock(return_value=SimpleNamespace(id='shot',images=[SimpleNamespace(base64=PNG.split(',')[1],mime_type='image/png')]))
+    monkeypatch.setattr(creation,'generate_image',generate)
+    await creation.execute_node(request(image_purpose='shot_reference',input_images=[PNG],image_references=[dict(role='composition')]))
+    assert generate.call_args.args[0].reference_image_data_urls==[PNG] and not pose.called
+
 @pytest.mark.parametrize('options',[
     dict(input_images=[PNG,SECOND,THIRD,PNG]),
     dict(input_images=[PNG,SECOND],character_style='chibi'),
