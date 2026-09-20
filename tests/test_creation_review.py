@@ -121,6 +121,72 @@ async def test_failed_review_closes_trace_without_leaking_provider_secret(monkey
 
 
 @pytest.mark.asyncio
+async def test_reference_role_citations_do_not_repeat_review_or_promote_execution_notes(monkeypatch):
+    content=BytesIO();Image.new('RGB',(8,8),'red').save(content,format='PNG')
+    data='data:image/png;base64,'+base64.b64encode(content.getvalue()).decode()
+    req=request(assets=[dict(id=aid,name=aid,mime_type='image/png',data_url=data) for aid in ['candidate','identity']],candidate_ids=['candidate'])
+    req.current_plan['nodes'].append(dict(id='image',kind='image',title='御剑',content='保持白兔身份',prompt='白兔御剑',
+        references=[dict(asset_id='identity',role='identity',note='仅取身份；执行备注不能新增验收要求')]))
+    req.node_id='image'
+    response=LLMResponse(content=json.dumps(dict(decision='revise',reason='身份不符',asset_id='',findings=[dict(
+        candidate_id='candidate',category='identity',source_id='reference:identity:identity',
+        requirement_quote='自动生成的参考备注：额外禁止手持剑',observation='角色耳朵与实际人设不同')]),ensure_ascii=False))
+    provider=SimpleNamespace(chat=AsyncMock(return_value=response))
+    monkeypatch.setattr(review,'create_provider',lambda:provider)
+    result=await review.review_creation(req)
+    assert result.decision=='revise' and provider.chat.await_count==2
+    assert result.findings[0].requirement_quote=='保持参考中的角色身份、服装和道具特征，不复制其排版或背景。'
+    assert '额外禁止' not in result.reason
+
+
+@pytest.mark.asyncio
+async def test_invalid_evidence_is_bounded_and_trace_identifies_rule_without_private_text(monkeypatch):
+    content=BytesIO();Image.new('RGB',(8,8),'red').save(content,format='PNG')
+    data='data:image/png;base64,'+base64.b64encode(content.getvalue()).decode()
+    req=request(assets=[dict(id='candidate',name='候选',mime_type='image/png',data_url=data)],candidate_ids=['candidate'])
+    req.current_plan['nodes'].append(dict(id='image',kind='image',title='御剑',content='白兔侧面御剑',prompt='白兔御剑'))
+    req.node_id='image'
+    provider=SimpleNamespace(chat=AsyncMock(return_value=LLMResponse(content=json.dumps(dict(
+        decision='revise',reason='角色不符',asset_id='',findings=[dict(candidate_id='candidate',category='identity',
+        source_id='target',requirement_quote='SECRET-MATERIAL',observation='SECRET-OBSERVATION')])))))
+    monkeypatch.setattr(review,'create_provider',lambda:provider)
+    trace=TraceStore()
+    with pytest.raises(review.ReviewEvidenceError):await review.review_creation(req,trace)
+    run=next(iter(trace._runs.values()))
+    events=[e for e in run.events if e.type=='creation.review.validation']
+    assert run.error_type=='review_evidence_quote_mismatch' and provider.chat.await_count==3
+    assert [e.payload['attempt'] for e in events]==[1,2,3]
+    assert all(e.payload['stage']=='judge' for e in events)
+    assert 'SECRET' not in run.model_dump_json()
+
+
+@pytest.mark.asyncio
+async def test_schema_diagnostics_do_not_log_unknown_field_names_or_model_output(monkeypatch):
+    provider=SimpleNamespace(chat=AsyncMock(return_value=LLMResponse(content=json.dumps(
+        dict(decision='approve',reason='SECRET'*100,**{'SECRET-FIELD':'SECRET-OUTPUT'})))))
+    monkeypatch.setattr(review,'create_provider',lambda:provider);trace=TraceStore()
+    with pytest.raises(ValueError):await review.review_creation(request(),trace)
+    run=next(iter(trace._runs.values()))
+    events=[e for e in run.events if e.type=='creation.review.validation']
+    assert run.error_type=='review_invalid_result' and len(events)==3
+    assert any(e['loc']==['reason'] and e['type']=='string_too_long' for e in events[0].payload['validation'])
+    assert 'SECRET' not in run.model_dump_json()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('status,code',[(401,'provider_auth_failed'),(429,'provider_rate_limited'),(503,'provider_unavailable')])
+async def test_review_endpoint_preserves_safe_provider_classification(monkeypatch,status,code):
+    class ProviderFailure(RuntimeError):
+        status_code=status
+    monkeypatch.setattr(review,'create_provider',lambda:SimpleNamespace(chat=AsyncMock(side_effect=ProviderFailure('SECRET'))))
+    from agent.main import app
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url='http://test') as client:
+        response=await client.post('/agent/creation/review',json=request().model_dump())
+    assert response.status_code==502 and response.json()['detail']['code']==code
+    assert 'SECRET' not in response.text
+
+
+@pytest.mark.asyncio
 async def test_reasoning_only_reviewer_omits_unsupported_switch_and_budgets_reasoning(monkeypatch):
     provider=SimpleNamespace(provider_name='doubao',model='glm-5.3',max_tokens=None,
         chat=AsyncMock(return_value=LLMResponse(content=json.dumps({'decision':'approve','reason':'符合要求','asset_id':''}))))

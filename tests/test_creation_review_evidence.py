@@ -46,3 +46,22 @@ def test_sources_exclude_unconfirmed_scripts_and_nonvisible_reference():
     assert sources['node:script'] == '用户确认的动作'
     assert 'node:draft' not in sources and not any('hidden' in k for k in sources)
     assert '不复制其排版或背景' in sources['reference:visible:identity']
+
+
+def test_reference_citations_are_compiled_from_assigned_role_not_model_copied_notes():
+    source_id = 'reference:identity-asset:identity'
+    role_rule = '保持参考中的角色身份、服装和道具特征，不复制其排版或背景。'
+    decision = ReviewDecision(decision='revise', reason='角色身份不符', findings=[{
+        **finding(), 'category': 'identity', 'source_id': source_id,
+        'requirement_quote': '自动返工的参考备注：禁止手持短剑', 'observation': '候选服装与实际人设不同'}])
+    validate_image_findings(decision, ['candidate'], {source_id: role_rule})
+    assert decision.findings[0].requirement_quote == role_rule
+    assert role_rule in decision.reason and '禁止手持短剑' not in decision.reason
+
+
+def test_reference_citation_does_not_trust_unknown_sources_or_rewrite_target_requirements():
+    for source_id in ['reference:foreign:identity', 'target']:
+        decision = ReviewDecision(decision='revise', reason='不合格', findings=[{
+            **finding(), 'source_id': source_id, 'requirement_quote': '自动新增的无依据要求'}])
+        with pytest.raises(ValueError):
+            validate_image_findings(decision, ['candidate'], {'target': '主体占画高4%'})
