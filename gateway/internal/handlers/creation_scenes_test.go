@@ -88,6 +88,48 @@ func TestScenePreflightPreservesConfirmedStoryboardAcrossJSONEncoding(t *testing
 	}
 }
 
+func TestAutomaticRepairPreservesLockedNodesAcrossEmptySuggestionEncoding(t *testing.T) {
+	// Python emits [] for optional suggestions, while saved Go plans omit them.
+	// Unrelated, not-yet-approved videos are also locked during an image repair.
+	doc := applyCreativePlan(emptyCreativeDocument(), creativeTestPlan())
+	doc.Plan.Nodes[3].RevisionSuggestions = nil
+	doc.Automation = &creativeAutomation{LockedNodeIDs: []string{"video"}}
+	for _, suggestions := range []string{"null", "[]", `[{"label":"New direction","instruction":"Change the ending"}]`} {
+		t.Run(suggestions, func(t *testing.T) {
+			p := copyAutomaticPlan(doc.Plan)
+			raw, err := json.Marshal(p.Nodes[3])
+			if err != nil {
+				t.Fatal(err)
+			}
+			var wire map[string]json.RawMessage
+			if err := json.Unmarshal(raw, &wire); err != nil {
+				t.Fatal(err)
+			}
+			wire["revision_suggestions"] = json.RawMessage(suggestions)
+			raw, err = json.Marshal(wire)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := json.Unmarshal(raw, &p.Nodes[3]); err != nil {
+				t.Fatal(err)
+			}
+			err = protectAutomaticPlan(doc, p)
+			if suggestions != "[]" && suggestions != "null" {
+				if err == nil {
+					t.Fatal("accepted a real change to a locked node")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("no-op model round-trip rejected: %v", err)
+			}
+			if !reflect.DeepEqual(p.Nodes[3], doc.Plan.Nodes[3]) {
+				t.Fatal("original locked node was not preserved")
+			}
+		})
+	}
+}
+
 func TestAutomaticAddsMissingScenesBeforeAnyGenerationAndPreservesConfirmedNodes(t *testing.T) {
 	r, h, f, token, row := setupAutomatic(t)
 	f.imageContent = func(req bridge.CreationNodeRequest) string {

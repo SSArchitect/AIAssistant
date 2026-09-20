@@ -74,6 +74,11 @@ func (n *CreativeNode) UnmarshalJSON(data []byte) error {
 	if len(value.ShotIDs) == 0 {
 		value.ShotIDs = nil
 	}
+	// Saved Go plans omit empty suggestions; Python sends []. Both mean no
+	// suggestions and must not invalidate unrelated nodes locked during repair.
+	if len(value.RevisionSuggestions) == 0 {
+		value.RevisionSuggestions = nil
+	}
 	*n = CreativeNode(value)
 	return nil
 }
