@@ -4,12 +4,16 @@ import re
 SHOT_PREFIX='Shot image bindings (creation): '
 
 
-def validate_shot_bindings(node,nodes):
+def validate_shot_ids(node):
     if node.shot_ids:
         if not node.storyboard or len(node.shot_ids)!=len(node.storyboard.shots) or len(set(node.shot_ids))!=len(node.shot_ids):
             raise ValueError('镜头ID需唯一并与视频分镜逐一对应：'+node.id)
         if any(not re.fullmatch(r'[a-zA-Z0-9_-]{1,80}',ident) for ident in node.shot_ids):
             raise ValueError('镜头ID格式无效：'+node.id)
+
+
+def validate_shot_bindings(node,nodes):
+    validate_shot_ids(node)
     bindings=0
     for ref in node.references:
         source=nodes.get(ref.node_id)
@@ -27,6 +31,9 @@ def validate_shot_bindings(node,nodes):
 
 
 def shot_reference_rule(node):
+    # Compilation also runs before complete-graph validation (e.g. compaction).
+    # Malformed drafts must enter the normal ValueError repair path, not crash.
+    validate_shot_ids(node)
     bindings=[]
     for picture,ref in enumerate(node.references,1):
         for ident in ref.shot_ids:

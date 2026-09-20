@@ -46,6 +46,27 @@ def test_reordering_shots_keeps_reference_on_stable_id():
     assert 'fly_in' in result.plan.nodes[-1].prompt and '<Picture 3> -> [Shot 2]' in result.plan.nodes[-1].prompt
 
 
+@pytest.mark.asyncio
+async def test_inconsistent_shot_ids_do_not_crash_before_planning_validation():
+    from unittest.mock import AsyncMock
+    value=with_shot();video=value['nodes'][-1]
+    video['shot_ids']=['opening','fly_in']  # Only one structured shot exists.
+    wire=json.dumps(dict(reply='补齐分镜绑定',plan=value))
+    before=copy.deepcopy(value)
+    content,usage=await p.compact_proposal(wire,request(),None,AsyncMock())
+    with pytest.raises(ValueError,match='镜头ID'):
+        p.parse_proposal(content,request())
+    assert value==before and usage=={}
+
+
+def test_shot_binding_compiler_rejects_mismatched_arrays_without_index_error():
+    from types import SimpleNamespace
+    from agent.aigc.creation_shots import shot_reference_rule
+    node=SimpleNamespace(id='video',shot_ids=['one','two'],storyboard=SimpleNamespace(shots=[SimpleNamespace(start_seconds=0)]),
+        references=[SimpleNamespace(shot_ids=['two'])],duration_seconds=5)
+    with pytest.raises(ValueError,match='镜头ID'):shot_reference_rule(node)
+
+
 def test_generation_schema_allows_three_image_inputs_but_no_image_shot_scope():
     from agent.aigc.creation_contract import planning_schema
     schema=planning_schema(p.PlanningResponse,request())

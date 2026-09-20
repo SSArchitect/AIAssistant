@@ -38,6 +38,19 @@ async def test_large_project_revision_starts_with_manifest_without_waiting_for_t
 
 
 @pytest.mark.asyncio
+async def test_partition_repairs_shot_id_count_within_the_current_node(monkeypatch):
+    from tests.test_creation_shot_references import with_shot
+    original=with_shot();video=original['nodes'][-1]
+    provider=SimpleNamespace(chat=AsyncMock(side_effect=[LLMResponse(finish_reason='length'),
+        answer(manifest([video])),answer(dict(node=dict(id='video',shot_ids=['opening','fly_in']))),
+        answer(dict(node=dict(id='video',shot_ids=['fly_in'])))]))
+    monkeypatch.setattr(planning,'create_provider',lambda:provider)
+    result=await planning.propose_creation(request(current_plan=original))
+    assert result.plan.nodes[-1].shot_ids==['fly_in'] and provider.chat.await_count==4
+    assert '镜头ID需唯一并与视频分镜逐一对应' in provider.chat.call_args.args[0][-1].content
+
+
+@pytest.mark.asyncio
 async def test_runaway_stream_is_closed_at_output_budget_without_waiting_for_terminal_chunk():
     closed=[]
     async def stream(*args,**kwargs):

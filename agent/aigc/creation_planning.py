@@ -113,6 +113,8 @@ class CreativeNode(StrictModel):
                 errors.append('storyboard 必须为完整结构化分镜，不能只填写 prompt')
             if errors:
                 raise ValueError(f'视频节点 {self.id}: ' + '；'.join(errors))
+            from agent.aigc.creation_shots import validate_shot_ids
+            validate_shot_ids(self)
         return self
 
 
