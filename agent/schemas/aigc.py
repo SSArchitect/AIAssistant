@@ -136,7 +136,9 @@ class ImageGenerationRequest(BaseModel):
     aigc_watermark: bool = False
     style: dict[str, Any] | None = None
     subject_reference: list[dict[str, Any]] | None = None
-    mode: Literal["text_to_image", "image_to_image", "character_stylization"] | None = None
+    mode: Literal["text_to_image", "image_to_image", "character_stylization", "reference_to_image"] | None = None
+    reference_image_asset_ids: list[Annotated[str, Field(pattern=r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")]] | None = Field(default=None, min_length=1, max_length=3)
+    reference_image_data_urls: list[Annotated[str, Field(max_length=22369700)]] | None = Field(default=None, min_length=1, max_length=3, repr=False)
     character_style: Literal["anime", "chibi"] | None = None
     image_asset_id: str | None = Field(default=None, pattern=r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
     image_data_url: str | None = Field(default=None, max_length=22369700, repr=False)
@@ -148,8 +150,20 @@ class ImageGenerationRequest(BaseModel):
     def validate_image_options(self) -> "ImageGenerationRequest":
         if self.character_style and self.mode is None:
             self.mode = "character_stylization"
-        image_mode = "character_stylization" if self.mode == "character_stylization" else "image_to_image"
-        validate_image_source(self, "image_asset_id", "image_data_url", image_mode)
+        refs = [self.reference_image_asset_ids, self.reference_image_data_urls]
+        if self.mode == 'reference_to_image' or any(value is not None for value in refs):
+            if self.mode not in (None, 'reference_to_image') or sum(value is not None for value in refs) != 1:
+                raise ValueError('Reference images require exactly one ordered reference source')
+            if any(value is not None for value in (self.image_asset_id, self.image_data_url, self.image_attachment_index,
+                    self.character_style, self.image_fit, self.denoise)):
+                raise ValueError('Reference mode cannot mix single-image or character conversion options')
+            values = next(value for value in refs if value is not None)
+            if len(set(values)) != len(values):
+                raise ValueError('Reference images must be distinct')
+            self.mode = 'reference_to_image'
+        else:
+            image_mode = "character_stylization" if self.mode == "character_stylization" else "image_to_image"
+            validate_image_source(self, "image_asset_id", "image_data_url", image_mode)
         if self.mode == "character_stylization":
             if not self.character_style or not any(value is not None for value in
                     (self.image_asset_id, self.image_data_url, self.image_attachment_index)):

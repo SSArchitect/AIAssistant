@@ -94,3 +94,14 @@ python3 -m pytest tests/test_spark_image.py tests/test_minimax_provider.py tests
 ```
 
 测试通过 MockTransport 验证真实 HTTP 请求构造与状态流转，不依赖公网 Key；包含成功路径、幂等重试、recovering、超时、鉴权/参数错误、下载校验、工具注册和 API/workflow/Go 代理兼容。
+
+
+## 多参考生图（Provider 0.10.0）
+
+`image.reference.v1` / `reference_to_image` 接入 Qwen-Image-Edit-2511，接受 1–3 张有序、不重复图片，产出一张 PNG。接收 `reference_image_asset_ids` 或内部 `reference_image_data_urls`，二选一；先按顺序以独立稳定幂等键上传原始 PNG/JPEG/WebP bytes，再提交图片 UUID 数组。标签使用 `Picture 1` 等，不能使用视频 `<Picture 1>` 语法。
+
+新任务先检查 `/v1/templates` 中模板已启用。已知原任务 ID 的恢复绕过模板检查与重新上传，直接 GET 原任务。网络重试保留原提交键、顺序和 seed（随机 seed 的 null 不改写为返回值）；过期上传凭同键会重放原资产，不能把同键当重新生成。新一轮明确生成才创建新键。
+
+宽高 256–4096 且 16 对齐，总像素 262144–1048576；创作默认 1:1 为 1024×1024、16:9 为 1024×576、9:16 为 576×1024。协议不接受单图 image_asset_id、denoise、image_fit、character_style、model、steps 或 batch/workflow。Provider 不可用时报告失败，不静默切换外部服务或伪装为多图生成。
+
+创作业务由 `creation_reference_images.py` 编译各图职责。风格图先抽象、不上传身份像素；单独人物转换与普通单图编辑沿用旧模板。结果图片下载并入项目网盘资产，后续视频引用上传实际图片 bytes，不能传生图任务 ID 或 artifact ID 代替资产 UUID。

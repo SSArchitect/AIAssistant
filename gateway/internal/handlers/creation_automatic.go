@@ -268,7 +268,7 @@ func (h *CreationHandler) automaticRequest(row models.CreationProject, doc creat
 	for id, state := range doc.States {
 		context[id] = map[string]interface{}{"approved": creativeApproved(state), "selected_asset_id": state.SelectedAssetID}
 	}
-	return bridge.CreationPlanningRequest{Preferences: doc.Preferences, ProjectID: row.ID, UserID: row.UserID, Messages: messages, CurrentPlan: doc.Plan, Assets: assets, Templates: templates, NodeContext: context, AutomaticMode: true, LockedNodeIDs: doc.Automation.LockedNodeIDs}, nil
+	return bridge.CreationPlanningRequest{RequireShotReferences: true, Preferences: doc.Preferences, ProjectID: row.ID, UserID: row.UserID, Messages: messages, CurrentPlan: doc.Plan, Assets: assets, Templates: templates, NodeContext: context, AutomaticMode: true, LockedNodeIDs: doc.Automation.LockedNodeIDs}, nil
 }
 func (h *CreationHandler) advanceAutomatic(ctx context.Context, id, request string) (bool, error) {
 	h.mu.Lock()

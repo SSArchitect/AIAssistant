@@ -47,7 +47,7 @@ def test_type_specific_generation_contract_prevents_contradictory_fields():
     assert text['properties']['storyboard'] == {'type': 'null'}
     assert text['properties']['asset_id']['enum'] == ['']
     image = node_schema(base, 'image', patch=True, ident='scene')
-    assert image['properties']['references']['maxItems'] == 1
+    assert image['properties']['references']['maxItems'] == 3
     video = node_schema(base, 'video', patch=True, ident='video')
     assert video['properties']['count']['enum'] == [1]
     refs = video['properties']['references']['items']['anyOf']

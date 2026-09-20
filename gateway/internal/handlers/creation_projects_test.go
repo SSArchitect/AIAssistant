@@ -173,7 +173,7 @@ func TestCreativePlanningIsAsyncIdempotentAndNeverGeneratesMedia(t *testing.T) {
 		t.Fatal(response.Code, response.Body.String())
 	}
 	request := <-fake.called
-	if !request.RequireVideoScenes {
+	if !request.RequireVideoScenes || !request.RequireShotReferences {
 		t.Fatal("new planning omitted scene preparation")
 	}
 	if remaining := time.Until(fake.deadline); remaining < 900*time.Second || remaining > 915*time.Second {
@@ -374,7 +374,7 @@ func TestCreativePlanValidationRejectsUnsupportedReferencesAndMissingScript(t *t
 			p.Nodes[3].References[0] = bridge.CreativeReference{AssetID: "foreign", Role: "identity"}
 		},
 		func(p *bridge.CreativePlan) {
-			p.Nodes[1].References = []bridge.CreativeReference{{AssetID: "a", Role: "identity"}, {AssetID: "b", Role: "style"}}
+			p.Nodes[1].References = []bridge.CreativeReference{{AssetID: "a", Role: "identity"}, {AssetID: "b", Role: "style"}, {AssetID: "c", Role: "identity"}, {AssetID: "d", Role: "identity"}}
 		},
 	} {
 		t.Run(fmt.Sprint(index), func(t *testing.T) {

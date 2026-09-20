@@ -21,7 +21,7 @@ CONTEXT_DIR = Path(__file__).resolve().parents[2] / 'data/creation-image-context
 
 class ImageReferenceContext(BaseModel):
     model_config = ConfigDict(extra='forbid')
-    role: Literal['identity', 'style', 'reference']
+    role: Literal['identity', 'style', 'reference', 'environment', 'composition']
     note: str = Field(default='', max_length=500)
 
 

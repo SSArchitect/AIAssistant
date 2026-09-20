@@ -89,7 +89,7 @@ func TestCreationGraphValidatesReferencesAndCounts(t *testing.T) {
 		nodes []creationNode
 	}{
 		{"empty", nil}, {"forward", []creationNode{b, a}}, {"duplicate", []creationNode{a, a}},
-		{"too many image inputs", []creationNode{a, func() creationNode { n := b; n.Kind = "image"; return n }()}},
+		{"too many image inputs", []creationNode{a, func() creationNode { n := b; n.Kind = "image"; n.AssetIDs = []string{"extra"}; return n }()}},
 		{"blank prompt", []creationNode{func() creationNode { n := a; n.Prompt = " "; return n }()}},
 		{"bad count", []creationNode{func() creationNode { n := a; n.Count = 10; return n }()}},
 		{"video as input", []creationNode{creationTestNode("a", "video"), b}},

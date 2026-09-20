@@ -520,3 +520,24 @@ test('video reference review shows each environment interval and escapes annotat
     assert.match(html, /场景时段：0–2.5 秒、4–5 秒/);
     assert.match(html, /&lt;script&gt;/); assert.doesNotMatch(html, /<script>/);
 });
+
+test('storyboard cards follow stable shot IDs and reuse lazy image previews', () => {
+ const doc={plan:{nodes:[{id:'frame',kind:'image',purpose:'shot_reference',title:'<兔子>'}]},states:{frame:{revision:2,approved_revision:2,selected_asset_id:'chosen'}}};
+ const video={kind:'video',duration_seconds:5,shot_ids:['opening','flight'],storyboard:{shots:[{start_seconds:0},{start_seconds:2.5}]},references:[{node_id:'frame',role:'reference',shot_ids:['flight']}]};
+ const cards=C.shotCards(doc,video);
+ assert.equal(cards.length,1);assert.equal(cards[0].index,2);assert.equal(cards[0].assetID,'chosen');assert.equal(cards[0].start,2.5);assert.equal(cards[0].end,5);
+ const html=C.renderShotStrip(doc,video,id=>'/api/creation/assets/'+id+'/content');
+ assert.match(html,/关键分镜图/);assert.match(html,/data-cp-action="select"/);assert.match(html,/&lt;兔子&gt;/);assert.doesNotMatch(html,/<兔子>/);assert.match(html,/thumbnail/);
+ assert.match(C.renderReferences(doc,video,[]),/用于镜头 2/);
+ video.shot_ids=['flight','opening'];assert.equal(C.shotCards(doc,video)[0].index,1);
+ video.references[0].shot_ids=['deleted'];assert.equal(C.shotCards(doc,video).length,0);
+ assert.ok(C.revisionSuggestions({purpose:'shot_reference'}).some(s=>s.label==='加强身份一致性'));
+});
+
+
+test('shot placeholders say pending generation instead of pending review', () => {
+    const doc={plan:{nodes:[{id:'frame',kind:'image',purpose:'shot_reference',title:'待生成分镜'}]},states:{}};
+    const video={kind:'video',shot_ids:['start'],storyboard:{shots:[{start_seconds:0}]},duration_seconds:5,references:[{node_id:'frame',shot_ids:['start']}]};
+    const html=C.renderShotStrip(doc,video,id=>'/media/'+id+'/content');
+    assert.match(html,/待生成/);assert.doesNotMatch(html,/待审阅|<img/);
+});

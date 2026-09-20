@@ -14,6 +14,10 @@ def node_schema(schema, kind, *, patch=False, ident=None, asset_ids=None):
     props['kind'] = {'type': 'string', 'enum': [kind]}
     if ident is not None:
         props['id']['enum'] = [ident]
+    if kind in ('text', 'video'):
+        props['purpose']['enum'] = ['brief', 'script', 'output'] if kind == 'text' else ['output']
+    if kind != 'video':
+        props['shot_ids']['maxItems'] = 0
     if kind == 'text':
         props['content']['minLength'] = 1
         props['references']['maxItems'] = 0
@@ -30,6 +34,12 @@ def node_schema(schema, kind, *, patch=False, ident=None, asset_ids=None):
                 if source == 'asset_id' and asset_ids:
                     p[source]['enum'] = list(asset_ids)
                 p['asset_id' if source == 'node_id' else 'node_id'] = {'type': 'string', 'enum': ['']}
+                if kind != 'video' or source != 'node_id':
+                    p['shot_ids']['maxItems'] = 0
+                if kind == 'image':
+                    p['role']['enum'] = ['identity','style','reference','environment','composition']
+                else:
+                    p['role']['enum'] = ['identity','style','reference','first_frame']
                 if timed:
                     p['role'] = {'type': 'string', 'enum': ['reference']}
                 else:
@@ -38,7 +48,7 @@ def node_schema(schema, kind, *, patch=False, ident=None, asset_ids=None):
                 branches.append(ref)
         props['references']['items'] = {'anyOf': branches}
         if kind == 'image':
-            props['references']['maxItems'] = 1
+            props['references']['maxItems'] = 3
             props['storyboard'] = {'type': 'null'}
         else:
             props['asset_id'] = props['character_style'] = {'type': 'string', 'enum': ['']}
@@ -63,8 +73,11 @@ def planning_schema(model, request):
             continue  # Repair may add scene prerequisites, never new deliverables.
         variant = node_schema(schema, kind, patch=patch, asset_ids=assets)
         variant['required'] = list(dict.fromkeys(variant.get('required', []) + ['id', 'kind', 'title']))
+        if kind == 'video' and request.require_shot_references:
+            variant['properties']['shot_ids']['minItems'] = 1
+            variant['required'].append('shot_ids')
         if request.repair:
-            variant['properties']['purpose'] = {'type': 'string', 'enum': ['scene']}
+            variant['properties']['purpose'] = {'type': 'string', 'enum': ['scene','shot_reference','character']}
             variant['properties']['count'] = {'type': 'integer', 'enum': [1]}
             variant['required'].append('purpose')
         variants.append(variant)

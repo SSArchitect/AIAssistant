@@ -241,14 +241,14 @@ class SparkImageClient(SparkTaskClient):
         if (not 256 <= width <= 4096 or not 256 <= height <= 4096 or
                 width % 16 or height % 16 or not 262144 <= width * height <= 4194304):
             raise ValueError("Spark dimensions must be 256–4096, multiples of 16, with 262144–4194304 total pixels")
-        if request.mode == "character_stylization":
+        if request.mode in ("character_stylization", "reference_to_image"):
             if request.width is None:
                 # Keep the selected ratio with a conservative one-megapixel preset.
                 width, height = {"1:1": (1024,1024), "16:9": (1024,576), "9:16": (576,1024),
                     "4:3": (1024,768), "3:4": (768,1024), "3:2": (1152,768),
                     "2:3": (768,1152), "21:9": (1344,576)}[request.aspect_ratio]
             if width * height > 1048576:
-                raise ValueError("Character stylization supports at most 1048576 output pixels")
+                raise ValueError("Character/reference image generation supports at most 1048576 output pixels")
         return width, height
 
     @staticmethod
@@ -263,6 +263,7 @@ class SparkImageClient(SparkTaskClient):
         template = {
             None: "image.text.v1",
             "text_to_image": "image.text.v1",
+            "reference_to_image": "image.reference.v1",
             "image_to_image": "image.edit.v1",
             "character_stylization": f"image.character.{request.character_style}.v1",
         }[request.mode]
@@ -279,7 +280,40 @@ class SparkImageClient(SparkTaskClient):
                 payload["input"]["denoise"] = request.denoise if request.denoise is not None else .45
             if request.image_asset_id:
                 payload["input"]["image_asset_id"] = request.image_asset_id
+        if request.mode == 'reference_to_image':
+            payload['mode'] = request.mode
+            if request.reference_image_asset_ids:
+                payload['input']['reference_image_asset_ids'] = request.reference_image_asset_ids
         return payload
+
+    async def _prepare_reference_inputs(self, client, request, payload, key):
+        if request.mode != 'reference_to_image':
+            return
+        try:
+            catalogue = (await self._request(client, 'GET', '/v1/templates')).json()
+            available = any(item.get('id') == 'image.reference.v1' and item.get('enabled') is True for item in catalogue['templates'])
+        except (ValueError, KeyError, TypeError, AttributeError):
+            raise SparkProviderError('Invalid reference image template catalogue', code='invalid_response') from None
+        if not available:
+            raise SparkProviderError('Spark reference image template is not enabled', code='unsupported_task_type')
+        if payload['input'].get('reference_image_asset_ids'):
+            return
+        ids = []
+        self._report(payload, key, 'uploading')
+        for index, value in enumerate(request.reference_image_data_urls or []):
+            content, media_type = decode_image_data_url(value)
+            upload_key = 'image-reference-' + hashlib.sha256(f'{key}:{index}'.encode()).hexdigest()
+            response = await self._request(client, 'POST', '/v1/assets', content=content,
+                headers={'Content-Type': media_type, 'Idempotency-Key': upload_key})
+            try:
+                asset = response.json()
+                ident = asset['id']
+                if str(uuid.UUID(ident)) != ident or asset.get('status') not in {'ready', 'expired'}:
+                    raise ValueError()
+            except (ValueError, KeyError, TypeError, AttributeError):
+                raise SparkProviderError('Invalid reference image asset', code='invalid_response') from None
+            ids.append(ident)
+        payload['input']['reference_image_asset_ids'] = ids
 
     async def _generate(self, request: ImageGenerationRequest, payload: dict, key: str) -> ImageGenerationResponse:
         async with httpx.AsyncClient(base_url=self.base_url, headers={"Authorization": f"Bearer {self.api_key}"},
@@ -287,6 +321,7 @@ class SparkImageClient(SparkTaskClient):
                                      transport=self.transport) as client:
             if not self._task_ids.get(key):
                 await self._prepare_image_input(client, request, payload, key)
+                await self._prepare_reference_inputs(client, request, payload, key)
             task = await self._wait_for_task(client, payload, key)
             task_id = task["id"]
             task_path = "/v1/tasks/" + quote(task_id, safe="")
@@ -316,7 +351,7 @@ class SparkImageClient(SparkTaskClient):
                 finally:
                     temporary.unlink(missing_ok=True)
                 image = GeneratedImage(index=0, url="/static/generated/aigc/" + filename)
-            return ImageGenerationResponse(id=task_id, provider="spark", model="qwen-image-edit-2511" if request.mode == "character_stylization" else "z-image-base",
+            return ImageGenerationResponse(id=task_id, provider="spark", model="qwen-image-edit-2511" if request.mode in ("character_stylization", "reference_to_image") else "z-image-base",
                 prompt=request.prompt, aspect_ratio=f"{width // gcd(width, height)}:{height // gcd(width, height)}",
                 response_format=request.response_format,
                 images=[image], metadata={"seed": task.get("seed"), "idempotency_key": key,

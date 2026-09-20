@@ -52,10 +52,11 @@ func validateAutomaticRepair(doc creativeDocument, plan bridge.CreativePlan, req
 		}
 	}
 	linked := map[string]bool{}
-	for _, node := range plan.Nodes {
-		if node.Kind == "video" && affected[node.ID] && !locked[node.ID] {
+	for i := len(plan.Nodes) - 1; i >= 0; i-- {
+		node := plan.Nodes[i]
+		if (affected[node.ID] && !locked[node.ID]) || linked[node.ID] {
 			for _, ref := range node.References {
-				if ref.Role == "reference" {
+				if ref.NodeID != "" {
 					linked[ref.NodeID] = true
 				}
 			}
@@ -68,8 +69,8 @@ func validateAutomaticRepair(doc creativeDocument, plan bridge.CreativePlan, req
 				return errors.New("自动返工不能重排原有节点或改变产物类型")
 			}
 			index++
-		} else if node.Kind != "image" || node.Purpose != "scene" || node.Count != 1 || !linked[node.ID] {
-			return errors.New("自动返工只能补充受影响视频实际引用的场景图片，不能新增交付或无关节点")
+		} else if node.Kind != "image" || (node.Purpose != "scene" && node.Purpose != "shot_reference" && node.Purpose != "character") || node.Count != 1 || !linked[node.ID] {
+			return errors.New("自动返工只能补充受影响视频实际引用的角色/场景/分镜图片，不能新增交付或无关节点")
 		}
 	}
 	if index != len(doc.Plan.Nodes) {

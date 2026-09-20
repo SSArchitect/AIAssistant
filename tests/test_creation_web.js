@@ -23,7 +23,9 @@ test('node effects retain input bindings and reject incompatible kinds', () => {
 test('graph validation covers image to image, many images to video, forward links and input limits', () => {
     const graph = C.instantiate(C.builtin[0]);
     assert.equal(C.validateGraph(graph), '');
-    graph.nodes[1].kind = 'image'; assert.match(C.validateGraph(graph), /输入图片过多/);
+    graph.nodes[1].kind = 'image'; assert.equal(C.validateGraph(graph), '');
+    graph.nodes[1].asset_ids = ['extra']; assert.match(C.validateGraph(graph), /输入图片过多/);
+    graph.nodes[1].asset_ids = [];
     graph.nodes[0].count = 1; assert.equal(C.validateGraph(graph), '');
     graph.nodes[0].inputs = [graph.nodes[1].id]; assert.match(C.validateGraph(graph), /前面/);
     graph.nodes[0].inputs = []; graph.nodes[0].prompt = ' '; assert.match(C.validateGraph(graph), /提示词/);

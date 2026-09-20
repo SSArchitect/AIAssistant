@@ -48,6 +48,9 @@ func planningAssetContext(doc creativeDocument, focus string, explicit, candidat
 		}
 		add(doc.States[id].SelectedAssetID, true)
 		add(node.AssetID, true)
+		if id != focus && node.Kind == "image" && (node.AssetID != "" || doc.States[id].SelectedAssetID != "") {
+			return
+		}
 		for _, ref := range node.References {
 			add(ref.AssetID, true)
 			if ref.NodeID != "" {
@@ -62,7 +65,7 @@ func planningAssetContext(doc creativeDocument, focus string, explicit, candidat
 		visit(focus)
 	}
 	for _, id := range doc.AssetIDs {
-		add(id, true)
+		add(id, focus == "")
 	}
 	for _, node := range doc.Plan.Nodes {
 		add(doc.States[node.ID].SelectedAssetID, focus == "")

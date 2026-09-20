@@ -50,7 +50,7 @@ func TestCreationPlanningCatalogueSupportsDozensAndPrioritizesCurrentNode(t *tes
 			previews[a.ID] = true
 		}
 	}
-	if len(previews) != 2 || !previews[ids[49]] || !previews[ids[0]] {
+	if len(previews) != 1 || !previews[ids[49]] {
 		t.Fatal("focused previews", previews)
 	}
 	close(f.wait)
@@ -90,7 +90,7 @@ func TestPlanningPreviewsBoundedAndAutomaticCandidatesComeFirst(t *testing.T) {
 			count++
 		}
 	}
-	if len(req.Assets) != 41 || count != 12 || req.Assets[0].ID != candidate.ID || req.Assets[0].DataURL == "" {
+	if len(req.Assets) != 41 || count != 1 || req.Assets[0].ID != candidate.ID || req.Assets[0].DataURL == "" {
 		t.Fatal("candidate preview missing or unbounded", count, len(req.Assets))
 	}
 	_, err = h.planningAssets("alice", append(doc.AssetIDs, "foreign"), nil)
@@ -117,5 +117,24 @@ func TestCreativeNodeCapacityAllowsMultiEpisodeScenesButRemainsBounded(t *testin
 	g.Nodes = append(g.Nodes, creationTestNode("extra", "image"))
 	if validateCreativePlan(p, nil) == nil || validateCreationGraph(g, true) == nil {
 		t.Fatal("node cap lost")
+	}
+}
+
+func TestShotReviewPixelsAreLimitedToSelectedInputsAndCandidates(t *testing.T) {
+	doc := emptyCreativeDocument()
+	doc.AssetIDs = []string{"unrelated-rabbit", "old-sheet"}
+	doc.Plan = bridge.CreativePlan{Nodes: []bridge.CreativeNode{
+		{ID: "person", Kind: "image", AssetID: "target-person", References: []bridge.CreativeReference{{AssetID: "old-sheet", Role: "style"}}},
+		{ID: "scene", Kind: "image", Purpose: "scene", AssetID: "target-scene"},
+		{ID: "shot", Kind: "image", Purpose: "shot_reference", DependsOn: []string{"person", "scene"}, References: []bridge.CreativeReference{{NodeID: "person", Role: "identity"}, {NodeID: "scene", Role: "environment"}}},
+	}}
+	ids, previews := planningAssetContext(doc, "shot", nil, []string{"candidate"})
+	if len(ids) != 5 || len(previews) != 3 {
+		t.Fatal(ids, previews)
+	}
+	for _, id := range previews {
+		if id == "unrelated-rabbit" || id == "old-sheet" {
+			t.Fatal("unrelated identity leaked into review", previews)
+		}
 	}
 }

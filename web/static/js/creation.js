@@ -47,7 +47,7 @@
             let count = n.asset_ids.length;
             if (new Set(n.asset_ids).size !== n.asset_ids.length || new Set(n.inputs).size !== n.inputs.length) return '输入引用重复';
             for (const id of n.inputs) { const source = seen.get(id); if (!source || source.kind !== 'image') return '输入只能引用前面图片节点的结果'; count += source.count; }
-            if (count > (n.kind === 'image' ? 1 : 9)) return `${n.name}：输入图片过多，生图最多 1 张，视频最多 9 张`;
+            if (count > (n.kind === 'image' ? 3 : 9)) return `${n.name}：输入图片过多，生图最多 3 张，视频最多 9 张`;
             if (n.character_style && count !== 1) return `${n.name}：人物风格模板需要一张参考图片`;
             seen.set(n.id, n);
         }
@@ -60,7 +60,7 @@
         <div class="creation-node-body"><label>效果模板<select data-node-template><option value="">选择模板，填入效果与参数</option>${templates.filter(t => t.kind === `${node.kind}_template`).map(t => `<option value="${esc(t.id)}">${esc(t.name)}</option>`).join('')}</select></label>
         <label>提示词<textarea data-field="prompt" rows="3" maxlength="4000" placeholder="描述这个节点需要产出的画面…">${esc(node.prompt)}</textarea></label>
         <div class="creation-options"><label>画幅<select data-field="aspect_ratio">${['16:9', '9:16', '1:1'].map(r => `<option ${r === node.aspect_ratio ? 'selected' : ''}>${r}</option>`).join('')}</select></label>${node.kind === 'image' ? `<label>图片数量<input data-field="count" type="number" min="1" max="9" value="${node.count}"></label><label>人物效果<select data-field="character_style">${[['', '常规'], ['anime', '动漫'], ['chibi', 'Q 版']].map(([v, label]) => `<option value="${v}" ${node.character_style === v ? 'selected' : ''}>${label}</option>`).join('')}</select></label>` : `<label>时长（秒）<input data-field="duration_seconds" type="number" min="1" max="15" value="${node.duration_seconds}"></label>`}</div>
-        <details class="creation-inputs" ${node.inputs.length || node.asset_ids.length ? 'open' : ''}><summary>参考图片 · ${node.inputs.length} 个上游节点 / ${node.asset_ids.length} 个资产</summary><p>生图最多 1 张；视频最多 9 张。多张图片将作为视频的视觉参考。</p>${options.map(n => `<label class="creation-check"><input type="checkbox" data-input="inputs" value="${esc(n.id)}" ${node.inputs.includes(n.id) ? 'checked' : ''}>节点 ${graph.nodes.indexOf(n) + 1} · ${esc(n.name)}（${n.count} 张）</label>`).join('')}${imageAssets.map(a => `<label class="creation-check"><input type="checkbox" data-input="asset_ids" value="${esc(a.id)}" ${node.asset_ids.includes(a.id) ? 'checked' : ''}>资产 · ${esc(a.name)}</label>`).join('')}${!options.length && !imageAssets.length ? '<p>可在「资产」上传图片，或先添加一个图片节点。</p>' : ''}</details>
+        <details class="creation-inputs" ${node.inputs.length || node.asset_ids.length ? 'open' : ''}><summary>参考图片 · ${node.inputs.length} 个上游节点 / ${node.asset_ids.length} 个资产</summary><p>生图最多 3 张；视频最多 9 张。多张图片将按选择顺序作为视觉参考。</p>${options.map(n => `<label class="creation-check"><input type="checkbox" data-input="inputs" value="${esc(n.id)}" ${node.inputs.includes(n.id) ? 'checked' : ''}>节点 ${graph.nodes.indexOf(n) + 1} · ${esc(n.name)}（${n.count} 张）</label>`).join('')}${imageAssets.map(a => `<label class="creation-check"><input type="checkbox" data-input="asset_ids" value="${esc(a.id)}" ${node.asset_ids.includes(a.id) ? 'checked' : ''}>资产 · ${esc(a.name)}</label>`).join('')}${!options.length && !imageAssets.length ? '<p>可在「资产」上传图片，或先添加一个图片节点。</p>' : ''}</details>
         <button class="creation-text-button" type="button" data-action="save-node-template" data-id="${esc(node.id)}">将此节点存为效果模板</button></div></article>`;
     }
     function renderAsset(asset, mediaURL) {

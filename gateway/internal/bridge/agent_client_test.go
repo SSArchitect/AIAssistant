@@ -13,7 +13,7 @@ import (
 )
 
 func TestAgentClientCreationPreservesImageReferenceResponsibility(t *testing.T) {
-	for _, role := range []string{"style", "identity", "reference", ""} {
+	for _, role := range []string{"style", "identity", "reference", "environment", "composition", ""} {
 		t.Run(role, func(t *testing.T) {
 			note := "只参考画风，不继承原图人物或构图"
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -948,5 +948,27 @@ func TestCreationMediaForwardsAcceptedTaskIdentity(t *testing.T) {
 	result, err := client.CreateMedia(context.Background(), CreationNodeRequest{Kind: "image", Prompt: "valley", IdempotencyKey: "original-key", ResumeTaskID: "original-task"})
 	if err != nil || result.ProviderTaskID != "original-task" {
 		t.Fatal(result, err)
+	}
+}
+
+func TestCreativeShotBindingsRoundTripAndLegacyEmptySlices(t *testing.T) {
+	var old CreativeNode
+	if err := json.Unmarshal([]byte(`{"id":"legacy","kind":"image","shot_ids":[],"references":[{"asset_id":"a","role":"identity","shot_ids":[]}]}`), &old); err != nil {
+		t.Fatal(err)
+	}
+	if old.ShotIDs != nil || old.References[0].ShotIDs != nil {
+		t.Fatal("empty new fields would invalidate legacy approvals")
+	}
+	node := CreativeNode{ID: "film", Kind: "video", ShotIDs: []string{"arrival", "turn"}, References: []CreativeReference{{NodeID: "frame", Role: "reference", ShotIDs: []string{"turn"}}}}
+	data, err := json.Marshal(node)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var read CreativeNode
+	if err = json.Unmarshal(data, &read); err != nil {
+		t.Fatal(err)
+	}
+	if len(read.ShotIDs) != 2 || read.References[0].ShotIDs[0] != "turn" {
+		t.Fatal("shot binding lost")
 	}
 }

@@ -8,7 +8,7 @@
     const parse = (value, fallback) => { try { return typeof value === 'string' ? JSON.parse(value) : value || fallback; } catch (_) { return fallback; } };
     const uid = () => globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`;
     const statusNames = { queued: '等待生成', running: '生成中', stopping: '正在停止', completed: '已完成', failed: '生成失败', cancelled: '已停止', interrupted: '已中断' };
-    const roleNames = { identity: '人物身份', style: '画面风格', first_frame: '视频首帧', reference: '视觉参考' };
+    const roleNames = { identity: '人物身份', style: '画面风格', first_frame: '视频首帧', reference: '视觉参考', environment: '场景环境', composition: '镜头构图' };
     function documentOf(project) { return parse(project?.document, { plan: { nodes: [], questions: [] }, states: {}, messages: [], asset_ids: [] }); }
     const automaticActive = project => ['running', 'stopping'].includes(project?.automatic_status);
     function automaticBlock(project, runs = []) {
@@ -78,6 +78,13 @@
             ['更有戏剧张力', '增强目标与阻碍之间的张力，保持角色身份和已确认设定。'],
             ['明确素材分工', '明确每份素材贡献的身份、场景或画风，指出缺口，排除无关角色。'],
             ['结尾更有余韵', '完善结尾的情绪落点或呼应，让主题自然呈现。'],
+        ] : node.purpose === 'shot_reference' ? [
+            ['站位更清楚', '明确本镜头各人物的站位与视线，保持空间轴线和身份。'],
+            ['构图更开阔', '拉开景别，展示指定场景的空间层次，保留关键人物和动作。'],
+            ['动作更有张力', '强化本镜头关键姿态和动作可读性，不改变前后因果。'],
+            ['加强身份一致性', '逐一对照本镜头人物参考，修正物种、服装与道具，不混入其他角色。'],
+            ['环境更贴合', '对照所选场景，修正地形、空间、光线和环境状态。'],
+            ['保持前后衔接', '保持相邻镜头的视线、道具持有者和动作结束状态。'],
         ] : node.purpose === 'script' || node.kind === 'video' ? [
             ['节奏更紧凑', '调整各段时间分配，减少铺垫，把时间留给关键动作和结尾。'],
             ['运镜更流畅', '优化景别、摄影机方向与转场接口，保持空间轴线，减少无意义切镜。'],
@@ -116,8 +123,32 @@
         return (node.references || []).map(ref => {
             const source = ref.node_id ? doc.plan.nodes.find(n => n.id === ref.node_id) : assets.find(a => a.id === ref.asset_id);
             const intervals = (ref.scene_intervals || []).map(span => `${span.start_seconds}–${span.end_seconds} 秒`).join('、');
-            return `<li><span>${esc(source?.title || source?.name || '参考素材')}</span><b>${esc(roleNames[ref.role])}</b><small>${esc(intervals ? `场景时段：${intervals} · ${ref.note || ''}` : ref.note)}</small></li>`;
+            const shots = (ref.shot_ids || []).map(id => { const i = (node.shot_ids || []).indexOf(id); return i < 0 ? '待修复的镜头绑定' : `镜头 ${i + 1}`; }).join('、');
+            const note = [shots && `用于${shots}`, intervals && `场景时段：${intervals}`, ref.note].filter(Boolean).join(' · ');
+            return `<li><span>${esc(source?.title || source?.name || '参考素材')}</span><b>${esc(roleNames[ref.role])}</b><small>${esc(note)}</small></li>`;
         }).join('');
+    }
+    function shotCards(doc, node) {
+        if (node.kind !== 'video') return [];
+        return (node.references || []).flatMap(ref => {
+            const source = doc.plan.nodes.find(n => n.id === ref.node_id && n.purpose === 'shot_reference');
+            if (!source) return [];
+            const state = doc.states[source.id] || {}, assetID = state.selected_asset_id || source.asset_id || '';
+            return (ref.shot_ids || []).map(id => {
+                const index = (node.shot_ids || []).indexOf(id), shots = node.storyboard?.shots || [];
+                if (index < 0 || !shots[index]) return null;
+                return { nodeID: source.id, title: source.title, index: index + 1, start: shots[index].start_seconds,
+                    end: shots[index+1]?.start_seconds ?? node.duration_seconds, assetID, approved: approved(state) };
+            }).filter(Boolean);
+        }).sort((a,b) => a.index - b.index);
+    }
+    function renderShotStrip(doc, node, mediaURL) {
+        const cards = shotCards(doc,node);
+        if (!cards.length) return '';
+        return `<section class="cp-shot-board"><h4>关键分镜图</h4><div>${cards.map(card => `<article>
+            ${card.assetID ? Library.media(card.assetID,card.title,false,mediaURL) : '<div class="cp-shot-empty">待准备画面</div>'}
+            <button type="button" data-cp-action="select" data-id="${esc(card.nodeID)}"><strong>镜头 ${card.index} · ${esc(card.title)}</strong><small>${esc(card.start)}–${esc(card.end)} 秒 · ${!card.assetID ? '待生成' : card.approved ? '已确认' : '待审阅'}</small></button>
+        </article>`).join('')}</div></section>`;
     }
     // Restore positions immediately; smooth scrolling would replay on every DOM refresh.
     function captureReadingPosition(root) {
@@ -382,6 +413,7 @@
             return `<header><div><h3>${esc(node.title)}</h3><span>版本 ${state.revision || 1} · ${esc(nodeStatus(doc, node, runs))}</span></div>${button('edit', editing ? '收起编辑' : '手动编辑', { id: node.id })}</header>
             ${renderRefinements(node)}
             ${renderMediaProgress(run)}
+            ${renderShotStrip(doc, node, mediaURL)}
             ${editing ? `<label class="cp-edit-label">修改后交给创作助手同步相关节点<textarea data-cp-edit rows="8" maxlength="7000">${esc(editText)}</textarea></label>${button('save-edit', '更新此节点及相关方案', { id: node.id, primary: true })}` : `<div class="cp-review-text">${esc(node.content)}</div>`}
             ${candidates.length ? `<div class="cp-candidates">${candidates.map((id, i) => node.kind === 'video' ? `<article>${Library.media(id,node.title,true,mediaURL)}<a href="${esc(mediaURL(id))}" target="_blank" rel="noopener">打开视频</a></article>` : `<article class="${state.selected_asset_id === id && approved(state) ? 'is-chosen' : ''}">${Library.media(id,`${node.title} · 候选 ${i + 1}`,false,mediaURL)}${button('choose', state.selected_asset_id === id && approved(state) ? '已选用 · 再次确认' : `选用候选 ${i + 1} 并确认`, { id: node.id, asset: id, disabled: !upstreamReady })}</article>`).join('')}</div>` : ''}
             ${node.references?.length ? `<div class="cp-reference-review"><h4>参考素材的用途</h4><ul>${renderReferences(doc, node, assets)}</ul></div>` : ''}
@@ -416,7 +448,7 @@
                 const assetID = isAsset ? n.id : state.selected_asset_id || state.candidates?.[0] || n.asset_id;
                 const title = isAsset ? n.name : n.title, video = isAsset ? n.mime_type.startsWith('video/') : n.kind === 'video';
                 const image = assetID && !video ? Library.media(assetID,title,false,mediaURL) : `<div class="cp-node-copy">${esc(isAsset ? '视频素材' : n.kind === 'text' ? n.content : n.content || (video ? '确认方案后生成视频' : '生成候选后在此审阅'))}</div>`;
-                return `<button type="button" class="cp-artifact ${selected === item.id ? 'is-selected' : ''} ${isAsset ? 'cp-source' : ''}" data-cp-action="select" data-id="${esc(item.id)}" aria-pressed="${selected === item.id}" title="拖动调整位置；点击查看；Alt + 方向键移动" style="left:${item.x}px;top:${item.y}px;width:${item.width}px;height:${item.height}px"><header><strong>${esc(title)}</strong><span>${esc(isAsset ? '已提供' : nodeStatus(doc, n, runs))}</span></header>${image}<footer>${esc(isAsset ? '原始资产' : ({ text: '文本', image: '图片', video: '视频' })[n.kind])}${!isAsset && state.candidates?.length ? ` · ${state.candidates.length} 个产出` : ''}${!isAsset && n.purpose === 'script' ? ' · 动作 / 运镜 / 声音' : ''}</footer></button>`;
+                return `<button type="button" class="cp-artifact ${selected === item.id ? 'is-selected' : ''} ${isAsset ? 'cp-source' : ''}" data-cp-action="select" data-id="${esc(item.id)}" aria-pressed="${selected === item.id}" title="拖动调整位置；点击查看；Alt + 方向键移动" style="left:${item.x}px;top:${item.y}px;width:${item.width}px;height:${item.height}px"><header><strong>${esc(title)}</strong><span>${esc(isAsset ? '已提供' : nodeStatus(doc, n, runs))}</span></header>${image}<footer>${esc(isAsset ? '原始资产' : ({ character:'角色人设',scene:'场景参考',shot_reference:'分镜图',key_visual:'主视觉' })[n.purpose] || ({ text: '文本', image: '图片', video: '视频' })[n.kind])}${!isAsset && state.candidates?.length ? ` · ${state.candidates.length} 个产出` : ''}${!isAsset && n.purpose === 'script' ? ' · 动作 / 运镜 / 声音' : ''}</footer></button>`;
             }).join('')}`;
             const space = element.querySelector('[data-cp-space]'); space.style.width = `${layout.width * zoom}px`; space.style.height = `${layout.height * zoom}px`;
             const label = element.querySelector('[data-cp-zoom]'); if (label) label.textContent = `${Math.round(zoom * 100)}%`;
@@ -659,5 +691,5 @@
         }
         return { mount, reset, setVisible, newProject: template => perform(() => newProject(template)), refresh };
     }
-    return { normalizePreferences, preferenceSummary, renderDecisions, automaticActive, automaticBlock, renderAutomatic, conversationRounds, captureReadingPosition, restoreReadingPosition, renderPlanning, renderMediaProgress, documentOf, approved, dependenciesReady, generationBlock, layoutGraph, movedPosition, revisionSuggestions, refinementMessage, renderReferences, nodeStatus, createController };
+    return { shotCards, renderShotStrip, normalizePreferences, preferenceSummary, renderDecisions, automaticActive, automaticBlock, renderAutomatic, conversationRounds, captureReadingPosition, restoreReadingPosition, renderPlanning, renderMediaProgress, documentOf, approved, dependenciesReady, generationBlock, layoutGraph, movedPosition, revisionSuggestions, refinementMessage, renderReferences, nodeStatus, createController };
 });

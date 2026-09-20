@@ -199,6 +199,8 @@ def test_image_workflows_and_clarifying_questions_are_supported():
         dict(id='b', kind='image', title='水彩', prompt='转为水彩', depends_on=['a'], references=[dict(node_id='a', role='reference')])])
     assert len(planning.CreativePlan.model_validate(value).nodes) == 2
     value['nodes'][1]['references'].append(dict(asset_id='rabbit', role='identity'))
+    assert len(planning.CreativePlan.model_validate(value).nodes[1].references) == 2
+    value['nodes'][1]['references'] += [dict(asset_id='other',role='identity'),dict(asset_id='fourth',role='identity')]
     with pytest.raises(ValidationError): planning.CreativePlan.model_validate(value)
     question = planning.CreativePlan(title='创作方向', summary='确定结尾', questions=[dict(question='结尾？', options=['反转', '悬疑'])])
     assert not question.nodes

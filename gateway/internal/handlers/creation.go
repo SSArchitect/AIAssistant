@@ -190,10 +190,10 @@ func validateCreationGraph(graph creationGraph, runnable bool) error {
 			unique[id] = true
 			inputCount += source.Count
 		}
-		if inputCount > 9 || (n.Kind == "image" && inputCount > 1) {
-			return errors.New("生图节点最多输入 1 张图片；视频节点最多输入 9 张图片")
+		if inputCount > 9 || (n.Kind == "image" && inputCount > 3) {
+			return errors.New("生图节点最多输入 3 张图片；视频节点最多输入 9 张图片")
 		}
-		if n.ImagePurpose != "" && (n.Kind != "image" || (n.ImagePurpose != "key_visual" && n.ImagePurpose != "scene" && n.ImagePurpose != "shot_reference" && n.ImagePurpose != "output")) {
+		if n.ImagePurpose != "" && (n.Kind != "image" || (n.ImagePurpose != "key_visual" && n.ImagePurpose != "scene" && n.ImagePurpose != "shot_reference" && n.ImagePurpose != "output" && n.ImagePurpose != "character")) {
 			return errors.New("invalid image purpose")
 		}
 		if len(n.ImageReferences) > 0 {
@@ -201,12 +201,12 @@ func validateCreationGraph(graph creationGraph, runnable bool) error {
 				return errors.New("图片参考职责与输入不匹配")
 			}
 			for _, ref := range n.ImageReferences {
-				if (ref.Role != "identity" && ref.Role != "style" && ref.Role != "reference") || len([]rune(ref.Note)) > 500 {
+				if (ref.Role != "identity" && ref.Role != "style" && ref.Role != "reference" && ref.Role != "environment" && ref.Role != "composition") || len([]rune(ref.Note)) > 500 {
 					return errors.New("图片参考职责无效")
 				}
 			}
 		}
-		if n.CharacterStyle != "" && (n.Kind != "image" || (runnable && inputCount != 1)) {
+		if n.CharacterStyle != "" && (n.Kind != "image" || n.ImagePurpose == "shot_reference" || (runnable && inputCount != 1)) {
 			return errors.New("人物风格模板需要一张输入图片")
 		}
 		seen[n.ID] = n

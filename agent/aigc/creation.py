@@ -32,8 +32,8 @@ class CreationNodeRequest(BaseModel):
     aspect_ratio: Literal['1:1', '16:9', '9:16'] = '1:1'
     duration_seconds: int = Field(default=5, ge=1, le=15)
     character_style: Literal['', 'anime', 'chibi'] = ''
-    image_purpose: Literal['', 'key_visual', 'scene', 'shot_reference', 'output'] = ''
-    image_references: list[ImageReferenceContext] = Field(default_factory=list, max_length=1)
+    image_purpose: Literal['', 'key_visual', 'scene', 'shot_reference', 'character', 'output'] = ''
+    image_references: list[ImageReferenceContext] = Field(default_factory=list, max_length=3)
     input_images: list[str] = Field(default_factory=list, max_length=9)
     idempotency_key: str = Field(min_length=1, max_length=128)
     resume_task_id: str = Field(default='', max_length=128, pattern=r'^[A-Za-z0-9_-]*$')
@@ -44,14 +44,16 @@ class CreationNodeRequest(BaseModel):
     def validate_inputs(self):
         if not self.prompt.strip():
             raise ValueError('请输入提示词')
-        if self.kind == 'image' and len(self.input_images) > 1:
-            raise ValueError('生图节点最多引用一张图片')
-        if self.character_style and (self.kind != 'image' or not self.input_images):
+        if self.kind == 'image' and len(self.input_images) > 3:
+            raise ValueError('生图节点最多引用三张图片')
+        if self.character_style and (self.kind != 'image' or len(self.input_images) != 1 or self.image_purpose == 'shot_reference'):
             raise ValueError('人物风格模板需要一张参考图片')
         if self.image_references and (self.kind != 'image' or len(self.image_references) != len(self.input_images)):
             raise ValueError('图片参考职责必须与图片输入逐一对应')
         if self.image_purpose and self.kind != 'image':
             raise ValueError('图片用途仅适用于生图节点')
+        if len(set(self.input_images)) != len(self.input_images):
+            raise ValueError('不能重复引用同一张图片')
         for value in self.input_images:
             decode_image_data_url(value)
         if self.kind == 'image' and (self.video_mode or self.storyboard):
@@ -96,7 +98,10 @@ async def _execute_node(request: CreationNodeRequest, *, resume_task_id=None, pr
         options = dict(provider='spark', prompt=request.prompt, aspect_ratio=request.aspect_ratio,
                        idempotency_key=request.idempotency_key)
         reference = request.image_references[0] if request.image_references else None
-        if reference and reference.role == 'style':
+        if len(request.input_images) > 1 or (request.input_images and (request.image_purpose == 'shot_reference' or (reference and reference.role in {'environment','composition'}))):
+            from agent.aigc.creation_reference_images import prepare_reference_image
+            options.update(await prepare_reference_image(request, resume=bool(resume_task_id)))
+        elif reference and reference.role == 'style':
             # Style guides never become img2img source pixels or identity templates.
             options['prompt'] = request.prompt if resume_task_id else await style_only_prompt(request.prompt, request.input_images[0], reference, request.idempotency_key)
             options['mode'] = 'text_to_image'

@@ -158,11 +158,28 @@ func validateCreativePlan(plan bridge.CreativePlan, allowed map[string]bool) err
 				return errors.New("重复参考图")
 			}
 			refs[key] = true
-			if ref.Role != "identity" && ref.Role != "style" && ref.Role != "first_frame" && ref.Role != "reference" {
+			if ref.Role != "identity" && ref.Role != "style" && ref.Role != "first_frame" && ref.Role != "reference" && !(node.Kind == "image" && (ref.Role == "environment" || ref.Role == "composition")) {
 				return errors.New("未知参考用途")
+			}
+			if len(ref.ShotIDs) > 0 && (node.Kind != "video" || ref.Role != "reference" || ref.NodeID == "") {
+				return errors.New("分镜图绑定仅用于视频引用")
+			}
+			if node.Kind == "image" && ref.Role == "environment" && ref.NodeID != "" && seen[ref.NodeID].Purpose != "scene" {
+				return errors.New("环境引用必须指向场景节点")
 			}
 			if ref.Role == "first_frame" && (node.Kind != "video" || len(node.References) != 1) {
 				return errors.New("首帧必须单独使用")
+			}
+		}
+		if (node.Purpose == "character" || node.Purpose == "shot_reference") && node.Kind != "image" {
+			return errors.New("人设和分镜图必须是图片节点")
+		}
+		if node.Kind != "video" && len(node.ShotIDs) > 0 {
+			return errors.New("镜头ID仅用于视频节点")
+		}
+		if node.Kind == "video" {
+			if err := validateShotBindings(node, seen); err != nil {
+				return err
 			}
 		}
 		switch node.Kind {
@@ -411,7 +428,7 @@ func (h *CreationHandler) ProjectMessage(c *gin.Context) {
 		creationError(c, 409, err)
 		return
 	}
-	planningReq := bridge.CreationPlanningRequest{RequireVideoScenes: true, LockedNodeIDs: lockedCreativeNodes(doc), Preferences: doc.Preferences, ProjectID: row.ID, UserID: row.UserID, Messages: append([]bridge.CreativeMessage{}, doc.Messages...), CurrentPlan: doc.Plan, Assets: assets, Templates: templates, PreferredTemplateID: doc.TemplateID}
+	planningReq := bridge.CreationPlanningRequest{RequireShotReferences: true, RequireVideoScenes: true, LockedNodeIDs: lockedCreativeNodes(doc), Preferences: doc.Preferences, ProjectID: row.ID, UserID: row.UserID, Messages: append([]bridge.CreativeMessage{}, doc.Messages...), CurrentPlan: doc.Plan, Assets: assets, Templates: templates, PreferredTemplateID: doc.TemplateID}
 	for i := range planningReq.Messages {
 		planningReq.Messages[i].Planning = nil
 	}

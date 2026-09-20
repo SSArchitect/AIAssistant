@@ -1,5 +1,6 @@
 """Scene timelines connect reference nodes to clip time, including continuous shots."""
 from fractions import Fraction
+from agent.aigc.creation_shots import SHOT_PREFIX,shot_reference_rule
 
 SCENE_PREFIX = "Environment timeline (creation): "
 
@@ -29,14 +30,15 @@ def validate_scene_intervals(node, nodes):
 def scene_timeline_rule(node):
     intervals = sorted((span.start_seconds, span.end_seconds, i)
         for i, ref in enumerate(node.references, 1) for span in ref.scene_intervals)
+    shot_rule = shot_reference_rule(node)
     if not intervals:
-        return ''
+        return shot_rule
     times = '; '.join(f'{start:g}-{end:g}s <Picture {i}>' for start, end, i in intervals)
-    return SCENE_PREFIX + times + '. Use each environment only in its interval; preserve character identity across transitions.'
+    return SCENE_PREFIX + times + '. Use each environment only in its interval; preserve character identity across transitions.' + ('\n' + shot_rule if shot_rule else '')
 
 
 def clean_scene_storyboard(storyboard):
-    style = '\n'.join(line for line in storyboard.style.split('\n') if not line.startswith(SCENE_PREFIX))
+    style = '\n'.join(line for line in storyboard.style.split('\n') if not line.startswith((SCENE_PREFIX,SHOT_PREFIX)))
     return storyboard.model_copy(update={'style': style})
 
 

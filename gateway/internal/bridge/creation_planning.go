@@ -15,6 +15,7 @@ type CreativeSceneInterval struct {
 	EndSeconds   float64 `json:"end_seconds"`
 }
 type CreativeReference struct {
+	ShotIDs        []string                `json:"shot_ids,omitempty"`
 	SceneIntervals []CreativeSceneInterval `json:"scene_intervals,omitempty"`
 	NodeID         string                  `json:"node_id"`
 	AssetID        string                  `json:"asset_id"`
@@ -33,6 +34,9 @@ func (r *CreativeReference) UnmarshalJSON(data []byte) error {
 	if len(value.SceneIntervals) == 0 {
 		value.SceneIntervals = nil
 	}
+	if len(value.ShotIDs) == 0 {
+		value.ShotIDs = nil
+	}
 	*r = CreativeReference(value)
 	return nil
 }
@@ -42,6 +46,7 @@ type CreativeRevisionSuggestion struct {
 	Instruction string `json:"instruction"`
 }
 type CreativeNode struct {
+	ShotIDs             []string                     `json:"shot_ids,omitempty"`
 	ID                  string                       `json:"id"`
 	Kind                string                       `json:"kind"`
 	Title               string                       `json:"title"`
@@ -59,6 +64,20 @@ type CreativeNode struct {
 	TemplateID          string                       `json:"template_id"`
 	RevisionSuggestions []CreativeRevisionSuggestion `json:"revision_suggestions,omitempty"`
 }
+
+func (n *CreativeNode) UnmarshalJSON(data []byte) error {
+	type wire CreativeNode
+	var value wire
+	if err := json.Unmarshal(data, &value); err != nil {
+		return err
+	}
+	if len(value.ShotIDs) == 0 {
+		value.ShotIDs = nil
+	}
+	*n = CreativeNode(value)
+	return nil
+}
+
 type CreativeQuestion struct {
 	Question string   `json:"question"`
 	Options  []string `json:"options"`
@@ -96,19 +115,20 @@ type CreationRepairFeedback struct {
 	PreviousFeedback []string `json:"previous_feedback"`
 }
 type CreationPlanningRequest struct {
-	RequireVideoScenes  bool                              `json:"require_video_scenes,omitempty"`
-	Repair              *CreationRepairFeedback           `json:"repair,omitempty"`
-	Preferences         *CreativePreferences              `json:"preferences,omitempty"`
-	AutomaticMode       bool                              `json:"automatic_mode,omitempty"`
-	LockedNodeIDs       []string                          `json:"locked_node_ids,omitempty"`
-	ProjectID           string                            `json:"project_id"`
-	UserID              string                            `json:"user_id"`
-	Messages            []CreativeMessage                 `json:"messages"`
-	CurrentPlan         CreativePlan                      `json:"current_plan"`
-	Assets              []PlanningAsset                   `json:"assets"`
-	Templates           []map[string]interface{}          `json:"templates"`
-	PreferredTemplateID string                            `json:"preferred_template_id"`
-	NodeContext         map[string]map[string]interface{} `json:"node_context"`
+	RequireShotReferences bool                              `json:"require_shot_references,omitempty"`
+	RequireVideoScenes    bool                              `json:"require_video_scenes,omitempty"`
+	Repair                *CreationRepairFeedback           `json:"repair,omitempty"`
+	Preferences           *CreativePreferences              `json:"preferences,omitempty"`
+	AutomaticMode         bool                              `json:"automatic_mode,omitempty"`
+	LockedNodeIDs         []string                          `json:"locked_node_ids,omitempty"`
+	ProjectID             string                            `json:"project_id"`
+	UserID                string                            `json:"user_id"`
+	Messages              []CreativeMessage                 `json:"messages"`
+	CurrentPlan           CreativePlan                      `json:"current_plan"`
+	Assets                []PlanningAsset                   `json:"assets"`
+	Templates             []map[string]interface{}          `json:"templates"`
+	PreferredTemplateID   string                            `json:"preferred_template_id"`
+	NodeContext           map[string]map[string]interface{} `json:"node_context"`
 }
 type CreationPlanningResponse struct {
 	Reply      string         `json:"reply"`
