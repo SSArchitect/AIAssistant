@@ -82,18 +82,20 @@ type CreationMediaError struct {
 func (e *CreationMediaError) Error() string { return e.Message }
 func newCreationMediaError(code, taskID string) *CreationMediaError {
 	messages := map[string]string{
-		"media_status_unknown":        "生成服务响应中断，原任务状态尚未确认；继续时会先查询原任务",
-		"media_wait_timeout":          "等待生成结果超时，原任务可能仍在运行；继续时会接回原任务，不重复提交",
-		"media_connection_failed":     "生成服务连接中断，原任务状态尚未确认；继续时会先查询原任务",
-		"media_download_failed":       "生成结果下载中断，继续时会重取原任务结果",
-		"media_artifact_expired":      "原任务产物已过期，需重新生成",
-		"media_generation_failed":     "生成服务明确返回任务失败，请调整该节点后重新生成",
-		"media_unauthorized":          "生成服务鉴权失败，请检查服务配置",
-		"media_idempotency_conflict":  "生成请求与原任务不一致，已停止提交，请重新审阅该节点",
-		"media_unsupported_task_type": "生成服务暂不支持此任务类型",
-		"media_provider_busy":         "生成服务繁忙，请稍后继续原任务",
-		"media_invalid_output":        "生成服务返回的媒体文件无效，请检查该节点",
-		"media_storage_failed":        "视频已生成但保存失败，请检查存储后继续原任务",
+		"media_status_unknown":                 "生成服务响应中断，原任务状态尚未确认；继续时会先查询原任务",
+		"media_wait_timeout":                   "等待生成结果超时，原任务可能仍在运行；继续时会接回原任务，不重复提交",
+		"media_connection_failed":              "生成服务连接中断，原任务状态尚未确认；继续时会先查询原任务",
+		"media_download_failed":                "生成结果下载中断，继续时会重取原任务结果",
+		"media_artifact_expired":               "原任务产物已过期，需重新生成",
+		"media_generation_failed":              "生成服务明确返回任务失败，请调整该节点后重新生成",
+		"media_unauthorized":                   "生成服务鉴权失败，请检查服务配置",
+		"media_idempotency_conflict":           "生成请求与原任务不一致，已停止提交，请重新审阅该节点",
+		"media_unsupported_task_type":          "生成服务暂不支持此任务类型",
+		"media_provider_busy":                  "生成服务繁忙，请稍后继续原任务",
+		"media_invalid_output":                 "生成服务返回的媒体文件无效，请检查该节点",
+		"media_storage_failed":                 "视频已生成但保存失败，请检查存储后继续原任务",
+		"media_image_prompt_capacity":          "图片必须保留的原文与参考职责超出生成容量，请精简该节点；尚未提交生成",
+		"media_image_prompt_compaction_failed": "图片执行稿自动整理未完成，原有方案与资产保留；尚未提交生成，可稍后继续",
 	}
 	message, ok := messages[code]
 	if !ok {

@@ -16,6 +16,7 @@ from agent.aigc.creation_image_context import ImageReferenceContext, style_only_
 from agent.aigc.video_service import generate_video, video_task_status
 from agent.aigc.spark_client import SparkProviderError, SparkTaskClient
 from agent.aigc.creation_media_state import CreationMediaState
+from agent.aigc.creation_image_prompt import ImagePromptError
 from agent.aigc.progress import progress_scope
 from agent.aigc.video_prompting import VideoStoryboard, compile_storyboard
 from agent.schemas.aigc import ImageGenerationRequest, VideoGenerationRequest
@@ -147,6 +148,9 @@ async def _execute_node(request: CreationNodeRequest, *, resume_task_id=None, pr
 async def creation_node(request: CreationNodeRequest):
     try:
         return await execute_node(request)
+    except ImagePromptError as exc:
+        logging.getLogger(__name__).warning('Creation image preparation error: code=%s',exc.code)
+        raise HTTPException(status_code=400,detail={'code':exc.code,'provider_task_id':''}) from exc
     except SparkProviderError as exc:
         # Codes and task identities cross the boundary; provider text never does.
         known = {'wait_timeout', 'connection_failed', 'download_failed', 'artifact_expired',

@@ -2,6 +2,7 @@
 import re
 from agent.aigc.creation_image_context import ImageReferenceContext, style_only_prompt
 from agent.aigc.creation_pose_context import pose_only_guide
+from agent.aigc.creation_image_prompt import fit_image_prompt
 
 RULES = {
     'identity': 'Preserve only this subject identity, proportions, clothing and owned props. Do not copy sheet layout, labels, background or unrelated people.',
@@ -35,12 +36,16 @@ async def prepare_reference_image(request, *, resume=False):
         rules.append(f'Picture {len(images)}: {RULES[ref.role]} {ref.note}')
     # Provider image labels differ from the video protocol's <Picture N>.
     prompt = re.sub(r'<?Picture\s+([1-9]\d*)>?', lambda m: mapping.get(int(m[1]), m[0]), prompt)
+    if resume:
+        # This is a lookup of an accepted task, not a new provider submission.
+        # Do not let later prompt assembly prevent retrieving its saved output.
+        return dict(prompt=request.prompt,mode='reference_to_image',reference_image_data_urls=images) if images else dict(prompt=request.prompt,mode='text_to_image')
     if not images:
         return dict(prompt=prompt, mode='text_to_image')
     guide = 'Create one single continuous scene on a new canvas, not a collage, grid or reference sheet. The target brief controls the action and explicit changes.\n'
     if request.image_purpose == 'scene':
         guide += 'Unpopulated environment establishing shot. Use only the referenced environment and spatial structure; do not import or add characters.\n'
-    compiled = guide + prompt + '\n' + '\n'.join(rules)
-    if len(compiled) > 4000:
-        raise ValueError('分镜图提示词与参考职责超过4000字，请精简描述；尚未提交生成')
+    suffix='\n'+'\n'.join(rules)
+    prompt=await fit_image_prompt(prompt,4000-len(guide)-len(suffix),request.idempotency_key)
+    compiled = guide + prompt + suffix
     return dict(prompt=compiled, mode='reference_to_image', reference_image_data_urls=images)

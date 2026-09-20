@@ -101,3 +101,39 @@ async def test_standalone_composition_reference_remains_a_native_image_input(mon
     dict(input_images=[PNG,SECOND],image_references=[dict(role='identity')])])
 def test_bad_combinations_rejected_before_provider(options):
     with pytest.raises(ValidationError):request(**options)
+
+
+@pytest.mark.asyncio
+async def test_reference_overhead_is_budgeted_before_image_submission(monkeypatch):
+    from agent.aigc import creation_reference_images as refs
+    compact=AsyncMock(return_value='白兔背侧仰望，双脚站在胡萝卜剑上。')
+    monkeypatch.setattr(refs,'fit_image_prompt',compact,raising=False)
+    generate=AsyncMock(return_value=SimpleNamespace(id='shot',images=[SimpleNamespace(base64=PNG.split(',')[1],mime_type='image/png')]))
+    monkeypatch.setattr(creation,'generate_image',generate)
+    req=request(image_purpose='shot_reference',input_images=[PNG,SECOND],
+        image_references=[dict(role='environment',note='环境职责。'*70),dict(role='identity',note='身份职责。'*70)])
+    req.prompt='远景场景。'*700
+    await creation.execute_node(req)
+    sent=generate.call_args.args[0]
+    assert len(sent.prompt)<=4000 and compact.await_count==1
+    assert '环境职责。'*70 in sent.prompt and '身份职责。'*70 in sent.prompt
+    assert sent.reference_image_data_urls==[PNG,SECOND]
+    assert compact.call_args.args[1]<len(req.prompt)
+    assert req.prompt=='远景场景。'*700
+
+
+@pytest.mark.asyncio
+async def test_accepted_task_resume_skips_prompt_compilation_and_never_reextracts(monkeypatch):
+    from agent.aigc import creation_reference_images as refs
+    compact=AsyncMock(side_effect=AssertionError('resume must not rewrite the accepted task'))
+    pose=AsyncMock(side_effect=AssertionError('resume must not extract again'))
+    monkeypatch.setattr(refs,'fit_image_prompt',compact,raising=False)
+    monkeypatch.setattr(refs,'pose_only_guide',pose)
+    generate=AsyncMock(return_value=SimpleNamespace(id='accepted',images=[SimpleNamespace(base64=PNG.split(',')[1],mime_type='image/png')]))
+    monkeypatch.setattr(creation,'generate_image',generate)
+    req=request(resume_task_id='accepted',image_purpose='shot_reference',input_images=[PNG,SECOND,THIRD],
+        image_references=[dict(role='environment',note='env'*100),dict(role='composition'),dict(role='identity',note='identity'*40)])
+    req.prompt='x'*3900
+    await creation.execute_node(req)
+    assert generate.call_args.kwargs=={'resume_task_id':'accepted'}
+    assert not compact.called and not pose.called

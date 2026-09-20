@@ -28,3 +28,18 @@ func TestCreationMediaErrorsKeepSafeDiagnosisAndRecoveryIdentity(t *testing.T) {
 		}
 	}
 }
+
+func TestImagePreparationErrorsDoNotPretendProviderSubmissionFailed(t *testing.T) {
+	for _, code := range []string{"media_image_prompt_capacity", "media_image_prompt_compaction_failed"} {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(400)
+			w.Write([]byte(`{"detail":{"code":"` + code + `","provider_task_id":"","message":"SECRET"}}`))
+		}))
+		_, err := NewAgentClient(server.URL, time.Second).CreateMedia(context.Background(), CreationNodeRequest{})
+		server.Close()
+		var detail *CreationMediaError
+		if !errors.As(err, &detail) || detail.Code != code || detail.Retryable || detail.ProviderTaskID != "" || !strings.Contains(detail.Message, "尚未提交生成") || strings.Contains(detail.Message, "SECRET") {
+			t.Fatal("image preparation error lost its safe classification", err)
+		}
+	}
+}
