@@ -133,7 +133,7 @@ func validateAutomaticRepair(doc creativeDocument, plan bridge.CreativePlan, req
 
 // Caller holds h.mu; this method always releases it. Planning runs outside the
 // mutex so stop requests remain responsive and late responses can be discarded.
-func (h *CreationHandler) repairAutomatic(ctx context.Context, row models.CreationProject, doc creativeDocument, node bridge.CreativeNode, candidates []string, reason, request string) (bool, error) {
+func (h *CreationHandler) repairAutomatic(ctx context.Context, row models.CreationProject, doc creativeDocument, node bridge.CreativeNode, candidates []string, reason, request string, findings []bridge.CreationReviewFinding) (bool, error) {
 	planner, ok := h.generator.(creationPlanner)
 	if !ok {
 		h.mu.Unlock()
@@ -156,6 +156,7 @@ func (h *CreationHandler) repairAutomatic(ctx context.Context, row models.Creati
 		doc.Automation.RepairCounts = map[string]int{}
 	}
 	feedback := bridge.CreationRepairFeedback{NodeID: node.ID, Reason: reason, CandidateIDs: append([]string{}, candidates...), Attempt: doc.Automation.RepairCounts[node.ID] + 1, PreviousFeedback: []string{}}
+	feedback.Findings = findings
 	for _, earlier := range doc.Automation.Repairs {
 		if earlier.NodeID == node.ID {
 			feedback.PreviousFeedback = append(feedback.PreviousFeedback, earlier.Reason)
@@ -228,7 +229,7 @@ func (h *CreationHandler) repairAutomatic(ctx context.Context, row models.Creati
 	// A targeted repair cannot rename the project or rewrite its overall brief.
 	plan := doc.Plan
 	plan.Nodes = response.Plan.Nodes
-	doc = applyCreativePlan(doc, plan)
+	doc = applyAutomaticRepair(doc, plan)
 	if doc.States[node.ID].Revision == before.Revision {
 		// Even unchanged design text requires fresh candidates after rejection. A new
 		// revision also supplies a fresh submission key, without deleting old assets.

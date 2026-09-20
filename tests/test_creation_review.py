@@ -17,6 +17,39 @@ def request(**kw):
     return review.ReviewRequest(project_id='p',user_id='alice',messages=[{'role':'user','content':'生成短片'}],current_plan=plan(),node_id='script',**kw)
 
 
+def test_image_review_uses_stable_contract_not_self_written_repair_requirements():
+    req = request(node_context={'image': {'review_contract': {
+        'content': '兔大侠侧面御剑，披风向后', 'prompt': '执行技巧：露出两只脚'}}})
+    req.current_plan['nodes'].append(dict(id='image', kind='image', title='御剑分镜',
+        content='AI新增：两只脚必须可见', prompt='AI新增：禁止护手'))
+    req.node_id = 'image'
+    plan = review.CreativePlan.model_validate(req.current_plan)
+    before = req.model_dump()
+    payload = json.loads(review.review_context(req, plan, plan.nodes[-1])[0]['text'])
+    assert payload['review_target']['content'] == '兔大侠侧面御剑，披风向后'
+    assert 'AI新增' not in json.dumps(payload, ensure_ascii=False)
+    assert '执行技巧' not in json.dumps(payload, ensure_ascii=False)
+    assert req.model_dump() == before
+
+
+@pytest.mark.asyncio
+async def test_invented_image_requirement_is_repaired_before_returning_a_decision(monkeypatch):
+    content=BytesIO();Image.new('RGB',(8,8),'red').save(content,format='PNG')
+    data='data:image/png;base64,'+base64.b64encode(content.getvalue()).decode()
+    req=request(assets=[dict(id='candidate',name='候选',mime_type='image/png',data_url=data)],candidate_ids=['candidate'])
+    req.current_plan['nodes'].append(dict(id='image',kind='image',title='御剑',content='侧面御剑',prompt='露出两只脚'))
+    req.node_id='image'
+    provider=SimpleNamespace(max_tokens=None,chat=AsyncMock(side_effect=[
+        LLMResponse(content=json.dumps(dict(decision='revise',asset_id='',reason='脚少了',findings=[
+            dict(candidate_id='candidate',category='action',source_id='target',requirement_quote='两只脚必须可见',observation='只看见一只脚')]))),
+        LLMResponse(content=json.dumps(dict(decision='select',asset_id='candidate',reason='侧面遮挡合理',findings=[])))]))
+    monkeypatch.setattr(review,'create_provider',lambda:provider)
+    result=await review.review_creation(req)
+    assert result.decision=='select' and provider.chat.await_count==2
+    assert provider.max_tokens==4096
+    assert '原文不匹配' in provider.chat.call_args.args[0][-1].content
+
+
 @pytest.mark.asyncio
 async def test_review_only_returns_a_decision_and_preserves_user_plan(monkeypatch):
     provider=SimpleNamespace(chat=AsyncMock(return_value=LLMResponse(content=json.dumps({'decision':'approve','reason':'分镜清楚','asset_id':''}),model='test')))
@@ -106,9 +139,13 @@ async def test_image_rejection_is_checked_against_original_pixels_before_expensi
     req.current_plan['nodes'].append(dict(id='image',kind='image',title='飞行分镜',purpose='shot_reference',prompt='保持参考中的护手'))
     req.node_id='image';before=req.model_dump()
     provider=SimpleNamespace(chat=AsyncMock(side_effect=[
-        LLMResponse(content=json.dumps({'decision':'revise','asset_id':'','reason':'多出了护手，需要删除'}),usage={'total_tokens':10}),
+        LLMResponse(content=json.dumps({'decision':'revise','asset_id':'','reason':'多出了护手，需要删除',
+            'findings':[dict(candidate_id='candidate', category='identity', source_id='target',
+                requirement_quote='保持参考中的护手', observation='候选护手形状与参考不一致')]}),usage={'total_tokens':10}),
         LLMResponse(content=json.dumps({'decision':second,'asset_id':'candidate' if second=='select' else '',
-            'reason':'与参考一致' if second=='select' else '确有身份错误'}),usage={'total_tokens':20})]))
+            'reason':'与参考一致' if second=='select' else '确有身份错误',
+            'findings':[] if second=='select' else [dict(candidate_id='candidate',category='identity',source_id='target',
+                requirement_quote='保持参考中的护手',observation='候选护手形状与参考不一致')]}),usage={'total_tokens':20})]))
     monkeypatch.setattr(review,'create_provider',lambda:provider)
     result=await review.review_creation(req)
     assert result.decision==expected and provider.chat.await_count==2

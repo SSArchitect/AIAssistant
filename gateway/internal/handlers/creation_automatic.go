@@ -329,6 +329,9 @@ func (h *CreationHandler) automaticRequest(row models.CreationProject, doc creat
 	context := map[string]map[string]interface{}{}
 	for id, state := range doc.States {
 		context[id] = map[string]interface{}{"approved": creativeApproved(state), "selected_asset_id": state.SelectedAssetID}
+		if contract, ok := doc.ReviewContracts[id]; ok {
+			context[id]["review_contract"] = map[string]interface{}{"revision": contract.Revision, "content": contract.Content, "prompt": contract.Prompt}
+		}
 	}
 	return bridge.CreationPlanningRequest{RequireShotReferences: true, Preferences: doc.Preferences, ProjectID: row.ID, UserID: row.UserID, Messages: messages, CurrentPlan: doc.Plan, Assets: assets, Templates: templates, NodeContext: context, AutomaticMode: true, LockedNodeIDs: doc.Automation.LockedNodeIDs}, nil
 }
@@ -489,6 +492,7 @@ func (h *CreationHandler) advanceAutomatic(ctx context.Context, id, request stri
 		}
 		return h.runAutomaticMedia(ctx, submission)
 	}
+	captureReviewContract(&doc, node)
 	req, err := h.automaticRequest(row, doc, node, candidates)
 	if err != nil {
 		h.mu.Unlock()
@@ -530,7 +534,7 @@ func (h *CreationHandler) advanceAutomatic(ctx context.Context, id, request stri
 	}
 	_ = persistTokenUsageRecordDB(h.db, row.ID, row.UserID, 0, "creation_director", time.Now(), &bridge.ChatResponse{ModelUsed: response.ModelUsed, TokensUsed: response.TokensUsed, RunID: response.RunID, Runtime: "self"})
 	if response.Decision == "revise" && response.Reason != "" && response.AssetID == "" {
-		return h.repairAutomatic(ctx, row, doc, node, candidates, response.Reason, request)
+		return h.repairAutomatic(ctx, row, doc, node, candidates, response.Reason, request, response.Findings)
 	}
 	if response.Decision == "blocked" {
 		h.mu.Unlock()

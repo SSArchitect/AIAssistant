@@ -39,7 +39,7 @@ def request(**kwargs):
 @pytest.mark.asyncio
 async def test_automatic_repair_feedback_and_locked_scope_reach_planner(monkeypatch):
     value=plan();value['nodes'].insert(1,dict(id='mushroom',kind='image',title='小伞',prompt='mushroom',depends_on=['script']))
-    feedback=dict(node_id='mushroom',reason='候选错误继承兔大侠服饰',candidate_ids=[],attempt=2,previous_feedback=['角色串形'])
+    feedback=dict(node_id='mushroom',reason='候选错误继承兔大侠服饰',candidate_ids=[],attempt=2,previous_feedback=['角色串形'],findings=[])
     provider=SimpleNamespace(chat=AsyncMock(return_value=LLMResponse(content=json.dumps(dict(reply='修正角色身份',patch=dict(nodes=[dict(id='mushroom',prompt='round red mushroom creature without human clothes')],questions=[]))))))
     monkeypatch.setattr(planning,'create_provider',lambda:provider)
     result=await planning.propose_creation(request(current_plan=value,automatic_mode=True,locked_node_ids=['script','video'],repair=feedback))

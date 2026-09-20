@@ -14,12 +14,21 @@ type CreationReviewRequest struct {
 	CandidateIDs []string `json:"candidate_ids"`
 }
 type CreationReviewResponse struct {
-	Decision   string         `json:"decision"`
-	AssetID    string         `json:"asset_id"`
-	Reason     string         `json:"reason"`
-	ModelUsed  string         `json:"model_used"`
-	TokensUsed map[string]int `json:"tokens_used"`
-	RunID      string         `json:"run_id"`
+	Findings   []CreationReviewFinding `json:"findings,omitempty"`
+	Decision   string                  `json:"decision"`
+	AssetID    string                  `json:"asset_id"`
+	Reason     string                  `json:"reason"`
+	ModelUsed  string                  `json:"model_used"`
+	TokensUsed map[string]int          `json:"tokens_used"`
+	RunID      string                  `json:"run_id"`
+}
+
+type CreationReviewFinding struct {
+	CandidateID      string `json:"candidate_id"`
+	Category         string `json:"category"`
+	SourceID         string `json:"source_id"`
+	RequirementQuote string `json:"requirement_quote"`
+	Observation      string `json:"observation"`
 }
 
 func (c *AgentClient) ReviewCreation(ctx context.Context, req CreationReviewRequest) (*CreationReviewResponse, error) {

@@ -27,6 +27,7 @@ from agent.aigc.creation_references import reference_error, repair_reference_sto
 from agent.aigc.creation_completion import PlanningCompletion
 from agent.aigc.creation_contract import planning_schema
 from agent.aigc.creation_repair_scope import validate_repair_scope
+from agent.aigc.creation_review_evidence import ReviewFinding
 from agent.aigc.creation_node_repair import repair_draft_nodes
 from agent.aigc.creation_partition import partition_proposal, incomplete_json
 from agent.aigc.creation_scenes import validate_scene_intervals, scene_storyboard, scene_timeline_rule, clean_scene_storyboard
@@ -213,6 +214,7 @@ class RepairFeedback(StrictModel):
     candidate_ids: list[str] = Field(default_factory=list, max_length=9)
     attempt: int = Field(ge=1)
     previous_feedback: list[str] = Field(default_factory=list, max_length=10)
+    findings: list[ReviewFinding] = Field(default_factory=list, max_length=27)
 
 
 class PlanningRequest(StrictModel):
@@ -663,6 +665,9 @@ async def propose_creation(request: PlanningRequest, trace_store=None, on_progre
             auto_prompt += '\n场景准备是本轮必需工作：每个未锁定视频必须按剧情中的实际地点与环境变化准备一个或多个 purpose=scene 图片节点，依赖对应脚本，以相同画幅生成一个具体地点的环境建立镜头，count=1，明确空间结构、前中后景、光线、色彩与关键环境物件，默认无人；禁止把人设图、角色特写、三视图作为场景。场景节点 character_style 为空，可引用已确认主视觉的 style；也可用environment或composition引用其他scene图片节点的真实环境与空间结构，声明depends_on，默认无人。不能引用角色identity或未分类资产的主体像素。视频依赖并以 reference 引用自己的场景节点，保留其余角色 identity 与画风 style 的职责和编号；场景不自动成为精确首帧。每段发生换场时按需要增加场景。相同地点要延续建筑、地形、光线规则，可跨视频复用同一已确认场景节点。现有视频补场景时 patch.nodes 可新增节点并更新对应 depends_on/references/storyboard，系统按新增依赖插入；不要仅因补场景改动无关的已确认内容或原台词；非自动模式仍执行用户本轮明确要求的修改。不要仅在文字里说已有场景，必须创建真实图片节点并连线。'
         if request.repair:
             auto_prompt += '\n当前是自动返工：repair 是自动审阅工具对指定节点的反馈，非用户新增要求。只修改 repair.node_id 和受影响的未确认下游；保持原有节点ID、相对顺序、类型、交付目标，其他节点及 locked_node_ids 保持完全不变。允许新增受影响的未确认视频或分镜实际引用的必要scene、shot_reference、character图片节点，count=1，放在消费节点前，补全依赖、场景时段与镜头绑定；不能新增视频、删除原节点或增加无关产物。同一原因多轮失败应重新检查引用/模板并更换修复策略，不能只重复追加否定词。结合失败候选的真实预览、reason 和 previous_feedback 找根因，调整提示词、参考图职责或模板，避免重复同一种失败。候选图是反例，严禁用它们作节点asset_id或生成参考。角色串形时，检查是否错误使用了人物动漫化/chibi身份保留模板；新角色借鉴另一个角色的画风，不等于转换原角色，必要时清空character_style、移除会污染身份的参考，直接文字描述统一画风。清除字段必须明确返回character_style=""、template_id=""、references=[]，不能用null（null表示保持原值）。修正图像生成节点时保持asset_id为空，后续由执行器重新生图。常规修正由你决定，不再问用户选方向；只有确实缺少不可替代的外部条件才提问。不要宣称已经生成或审阅通过。'
+
+        if request.repair:
+            auto_prompt += '\nnode_context中的review_contract是返工前冻结的验收要求，图片节点content由执行器保留，不可通过改写content新增限制或降低标准。仅调整执行prompt、参考分工、模板及必要的辅助图片。repair.findings包含已校验来源的要求原文与候选的可见问题；观察结论仍须对照真实图片，不得将返工猜测写成新的人物设定。'
 
         completion = PlanningCompletion(provider, report, streaming=bool(on_progress))
         usage = completion.usage

@@ -113,11 +113,12 @@ type PlanningAsset struct {
 	DataURL  string `json:"data_url,omitempty"`
 }
 type CreationRepairFeedback struct {
-	NodeID           string   `json:"node_id"`
-	Reason           string   `json:"reason"`
-	CandidateIDs     []string `json:"candidate_ids"`
-	Attempt          int      `json:"attempt"`
-	PreviousFeedback []string `json:"previous_feedback"`
+	Findings         []CreationReviewFinding `json:"findings,omitempty"`
+	NodeID           string                  `json:"node_id"`
+	Reason           string                  `json:"reason"`
+	CandidateIDs     []string                `json:"candidate_ids"`
+	Attempt          int                     `json:"attempt"`
+	PreviousFeedback []string                `json:"previous_feedback"`
 }
 type CreationPlanningRequest struct {
 	RequireShotReferences bool                              `json:"require_shot_references,omitempty"`

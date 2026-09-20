@@ -460,6 +460,7 @@ func TestAutomaticCreationRevisesRejectedImagesUntilAcceptedThenGeneratesVideo(t
 	f.planHook = func(_ context.Context, req bridge.CreationPlanningRequest) (*bridge.CreationPlanningResponse, error) {
 		repairs = append(repairs, req)
 		p := copyAutomaticPlan(req.CurrentPlan)
+		p.Nodes[1].Content = "AI返工新增：两只脚必须同时可见，剑不能有护手"
 		p.Nodes[1].Prompt = fmt.Sprintf("圆滚滚红白蘑菇生物，无兔耳无人类身体，第%d次修正", len(repairs))
 		return &bridge.CreationPlanningResponse{Plan: p, Reply: "已强化蘑菇身份"}, nil
 	}
@@ -470,6 +471,10 @@ func TestAutomaticCreationRevisesRejectedImagesUntilAcceptedThenGeneratesVideo(t
 		t.Fatal(row.AutomaticStatus, doc.Automation.Steps, len(f.requests))
 	}
 	for i, req := range repairs {
+		contract, ok := req.NodeContext["visual"]["review_contract"].(map[string]interface{})
+		if !ok || contract["content"] != before.Plan.Nodes[1].Content || contract["prompt"] != before.Plan.Nodes[1].Prompt {
+			t.Fatal("repair changed its own acceptance criteria", req.NodeContext["visual"])
+		}
 		if req.Repair == nil || req.Repair.NodeID != "visual" || req.Repair.Attempt != i+1 || !reflect.DeepEqual(req.Repair.CandidateIDs, rejected[i]) || len(req.Repair.PreviousFeedback) != i {
 			t.Fatal("missing repair feedback", req.Repair)
 		}
@@ -482,6 +487,9 @@ func TestAutomaticCreationRevisesRejectedImagesUntilAcceptedThenGeneratesVideo(t
 				t.Fatal("rejected previews missing")
 			}
 		}
+	}
+	if doc.Plan.Nodes[1].Content != before.Plan.Nodes[1].Content {
+		t.Fatal("automatic image repair rewrote the creative requirement")
 	}
 	for _, id := range []string{"brief", "script"} {
 		if !reflect.DeepEqual(before.States[id], doc.States[id]) {

@@ -35,14 +35,15 @@ type creativeNodeState struct {
 	ApprovedInputs   map[string]string `json:"approved_inputs"`
 }
 type creativeDocument struct {
-	Preferences *bridge.CreativePreferences      `json:"preferences,omitempty"`
-	Automation  *creativeAutomation              `json:"automation,omitempty"`
-	Planning    *bridge.CreativePlanningActivity `json:"planning,omitempty"`
-	Plan        bridge.CreativePlan              `json:"plan"`
-	States      map[string]creativeNodeState     `json:"states"`
-	Messages    []bridge.CreativeMessage         `json:"messages"`
-	AssetIDs    []string                         `json:"asset_ids"`
-	TemplateID  string                           `json:"template_id"`
+	ReviewContracts map[string]creativeReviewContract `json:"review_contracts,omitempty"`
+	Preferences     *bridge.CreativePreferences       `json:"preferences,omitempty"`
+	Automation      *creativeAutomation               `json:"automation,omitempty"`
+	Planning        *bridge.CreativePlanningActivity  `json:"planning,omitempty"`
+	Plan            bridge.CreativePlan               `json:"plan"`
+	States          map[string]creativeNodeState      `json:"states"`
+	Messages        []bridge.CreativeMessage          `json:"messages"`
+	AssetIDs        []string                          `json:"asset_ids"`
+	TemplateID      string                            `json:"template_id"`
 }
 
 func projectDocument(row models.CreationProject) (creativeDocument, error) {
@@ -99,6 +100,7 @@ func applyCreativePlan(doc creativeDocument, plan bridge.CreativePlan) creativeD
 	old := doc
 	doc.Plan = plan
 	doc.States = map[string]creativeNodeState{}
+	doc.ReviewContracts = map[string]creativeReviewContract{}
 	changed := map[string]bool{}
 	for _, node := range plan.Nodes {
 		before, exists := creativeNode(old, node.ID)
@@ -113,6 +115,8 @@ func applyCreativePlan(doc creativeDocument, plan bridge.CreativePlan) creativeD
 		}
 		if changed[node.ID] {
 			state = creativeNodeState{Revision: state.Revision + 1, Candidates: []string{}, SelectedAssetID: node.AssetID}
+		} else if contract, ok := old.ReviewContracts[node.ID]; ok {
+			doc.ReviewContracts[node.ID] = contract
 		}
 		doc.States[node.ID] = state
 	}
