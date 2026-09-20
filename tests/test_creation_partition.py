@@ -51,6 +51,36 @@ async def test_partition_repairs_shot_id_count_within_the_current_node(monkeypat
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('fix_binding', [True, False])
+async def test_partition_graph_error_repairs_only_affected_node_without_full_graph_retry(monkeypatch, fix_binding):
+    from tests.test_creation_shot_references import with_shot
+    from agent.aigc.creation_models import PlanningConstraintError
+    original=with_shot();before=copy.deepcopy(original)
+    video=original['nodes'][-1]
+    invalid=copy.deepcopy(video['references'])
+    invalid[1]['shot_ids']=['fly_in']  # A scene image is not a storyboard image.
+    refs=video['references'] if fix_binding else invalid
+    correction=dict(reply='修正引用',patch=dict(nodes=[dict(id='video',references=refs)]))
+    provider=SimpleNamespace(chat=AsyncMock(side_effect=[LLMResponse(finish_reason='length'),
+        answer(manifest([original['nodes'][0],video])),
+        answer(dict(node=dict(id='script',content='本轮待提交的脚本改动'))),
+        answer(dict(node=dict(id='video',references=invalid))),
+        *[answer(correction) for _ in range(1 if fix_binding else 3)]]))
+    monkeypatch.setattr(planning,'create_provider',lambda:provider)
+    if fix_binding:
+        result=await planning.propose_creation(request(current_plan=original))
+        assert result.plan.nodes[0].content=='本轮待提交的脚本改动'
+        assert not result.plan.nodes[-1].references[1].shot_ids
+    else:
+        with pytest.raises(PlanningConstraintError,match='自动修复后仍未通过'):
+            await planning.propose_creation(request(current_plan=original))
+    assert original==before
+    assert provider.chat.await_count==(5 if fix_binding else 7)
+    for call in provider.chat.call_args_list[4:]:
+        assert any('进入单节点修复协议' in str(m.content) for m in call.args[0])
+
+
+@pytest.mark.asyncio
 async def test_runaway_stream_is_closed_at_output_budget_without_waiting_for_terminal_chunk():
     closed=[]
     async def stream(*args,**kwargs):

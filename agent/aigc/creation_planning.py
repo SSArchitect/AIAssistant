@@ -734,6 +734,14 @@ async def propose_creation(request: PlanningRequest, trace_store=None, on_progre
                 if trace_store:
                     trace_store.append_event(run.run_id, type='creation.validation_failed', status='failed',
                         payload=dict(attempt=repairs + 1, errors=details))
+                if partitioned:
+                    # A complete partitioned draft is already available. Repair
+                    # the invalid node directly; a full-graph correction can
+                    # repeat tens of thousands of characters and lose this work.
+                    if '引用了未提供的图片资产' in str(exc):
+                        raise PlanningConstraintError(str(exc) + '；原有内容保留，请选择项目中可用的图片') from exc
+                    candidate, proposal = await repair_draft_nodes(candidate, request, messages, completion, report, check_candidate, exc)
+                    break
                 if repairs:
                     if '引用了未提供的图片资产' in str(exc):
                         raise PlanningConstraintError(str(exc) + '；原有内容保留，请选择项目中可用的图片') from exc
