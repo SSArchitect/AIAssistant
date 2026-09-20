@@ -103,7 +103,7 @@ class SparkTaskClient:
         except (ValueError, TypeError):
             raise SparkProviderError("Spark returned an invalid task response", code="invalid_response") from None
 
-    def submission_timeout(self):
+    def submission_timeout(self, request=None):
         return SUBMISSION_TIMEOUT
 
     async def generate(self, request, *, resume_task_id=None):
@@ -121,7 +121,7 @@ class SparkTaskClient:
                 # The long background budget belongs to acknowledged provider tasks.
                 # A dead endpoint must not keep replaying an unacknowledged submission.
                 if background and not self._task_ids.get(key):
-                    attempt_timeout = min(attempt_timeout, self.submission_timeout())
+                    attempt_timeout = min(attempt_timeout, self.submission_timeout(request))
                 try:
                     result = await asyncio.wait_for(self._generate(request, payload, key), attempt_timeout)
                     self._report(payload, key, "completed")
@@ -233,6 +233,12 @@ class SparkTaskClient:
 
 
 class SparkImageClient(SparkTaskClient):
+    def submission_timeout(self, request=None):
+        # Reference assets are uploaded sequentially before the task is accepted.
+        # Give each upload a bounded transport window, plus one for submission.
+        uploads = len(request.reference_image_data_urls or []) if request is not None and request.mode == 'reference_to_image' else 0
+        return SUBMISSION_TIMEOUT * (1 + uploads)
+
     @staticmethod
     def dimensions(request: ImageGenerationRequest) -> tuple[int, int]:
         # Explicit dimensions win over aspect_ratio; never resize a caller's requested dimensions.

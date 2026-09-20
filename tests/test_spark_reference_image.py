@@ -1,4 +1,5 @@
 import base64
+import asyncio
 import json
 from unittest.mock import AsyncMock, patch
 
@@ -94,3 +95,42 @@ async def test_uncertain_submission_retries_same_order_bytes_and_seed(tmp_path):
     assert len(uploads)==3 and len(submitted)==2
     assert submitted[0].content==submitted[1].content and submitted[0].headers['idempotency-key']==submitted[1].headers['idempotency-key']
     assert json.loads(submitted[0].content)['input']['seed'] is None
+
+
+@pytest.mark.asyncio
+async def test_three_reference_uploads_have_budget_before_task_acknowledgement(tmp_path, monkeypatch):
+    from agent.aigc.progress import progress_scope
+    monkeypatch.setattr('agent.aigc.spark_client.SUBMISSION_TIMEOUT', .3)
+    uploads, tasks = [], []
+    async def handler(req):
+        if req.url.path=='/v1/templates':
+            return httpx.Response(200,json={'templates':[{'id':'image.reference.v1','enabled':True}]})
+        if req.url.path=='/v1/assets':
+            uploads.append(req)
+            await asyncio.sleep(.12)
+            return httpx.Response(201,json={'id':f'00000000-0000-4000-8000-{len(uploads):012d}','status':'ready'})
+        if req.method=='POST':
+            tasks.append(req)
+            return httpx.Response(202,json=task())
+        return httpx.Response(200,content=png(),headers={'Content-Type':'image/png'})
+    client=make_client(tmp_path,handler)
+    with progress_scope(lambda event:None, background=True):
+        result=await client.generate(request(3))
+    assert result.id=='task-123' and len(uploads)==3 and len(tasks)==1
+
+
+@pytest.mark.asyncio
+async def test_reference_upload_deadline_is_bounded_without_acknowledged_task(tmp_path, monkeypatch):
+    from agent.aigc.progress import progress_scope
+    monkeypatch.setattr('agent.aigc.spark_client.SUBMISSION_TIMEOUT', .01)
+    calls=[]
+    async def handler(req):
+        calls.append(req)
+        await asyncio.sleep(1)
+        raise AssertionError('Missing submission deadline')
+    client=make_client(tmp_path,handler)
+    with progress_scope(lambda event:None, background=True):
+        with pytest.raises(SparkProviderError) as caught:
+            await asyncio.wait_for(client.generate(request(3)),.3)
+    assert caught.value.code=='wait_timeout' and caught.value.task_id is None
+    assert len(calls)==1

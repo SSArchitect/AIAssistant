@@ -25,7 +25,7 @@ class SparkVideoClient(SparkTaskClient):
         super().__init__(base_url, api_key, output_dir=output_dir, timeout=timeout,
                          poll_interval=poll_interval, transport=transport)
 
-    def submission_timeout(self):
+    def submission_timeout(self, request=None):
         return VIDEO_SUBMISSION_TIMEOUT
 
     @staticmethod
