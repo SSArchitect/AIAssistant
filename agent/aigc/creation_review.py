@@ -17,6 +17,7 @@ from agent.aigc.creation_review_geometry import approximate_scale_contract, loca
 from agent.aigc.creation_review_criteria import check_rejection_criteria
 from agent.aigc.creation_json import parse_complete_object
 from agent.aigc.creation_review_details import detail_previews
+from agent.aigc.creation_region_review import region_previews, check_region_surface
 
 router = APIRouter()
 
@@ -189,6 +190,16 @@ async def review_creation(request: ReviewRequest, trace_store=None):
     try:
         parts = review_context(request, plan, node)
         payload = json.loads(parts[0]['text'])
+        comparisons, surface_checks = [], {}
+        if node.image_layout and request.candidate_ids:
+            environment = next(r for r in payload['review_references'] if r['role'] == 'environment')
+            comparisons, metadata = region_previews(request.assets, request.candidate_ids,
+                environment['asset_id'], node.image_layout[0], node.aspect_ratio)
+            parts.extend(comparisons)
+            payload['region_comparisons'] = metadata
+            if trace_store:
+                trace_store.append_event(run.run_id, type='creation.review.region_comparison', status='completed',
+                    title='对照局部合成与原场景', payload={'comparisons': metadata})
         target = payload['review_target']
         scale_contract=approximate_scale_contract(target.get('content','') or target.get('prompt',''))
         geometry=[]
@@ -240,6 +251,21 @@ async def review_creation(request: ReviewRequest, trace_store=None):
                     if request.candidate_ids and decision.decision == 'approve': raise ValueError('请通过 select 选中具体候选')
                     if decision.decision == 'select' and decision.asset_id not in request.candidate_ids: raise ValueError('只能选择提供的候选图片')
                     if decision.decision != 'select' and decision.asset_id: raise ValueError('非选图决策不应设置资产')
+                    if comparisons and decision.decision == 'select':
+                        ident = decision.asset_id
+                        if ident not in surface_checks:
+                            index = request.candidate_ids.index(ident)
+                            surface_checks[ident] = await check_region_surface(provider, comparisons[index*4:index*4+4], usage)
+                            if trace_store:
+                                trace_store.append_event(run.run_id, type='creation.review.region_surface', status='completed',
+                                    title='核对局部合成边界', payload={'candidate_id': ident, **surface_checks[ident].model_dump()})
+                        surface = surface_checks[ident]
+                        if surface.visible_artifact:
+                            if len(request.candidate_ids) > 1:
+                                raise ReviewEvidenceError('selected_region_artifact', '该候选有独立像素对照确认的合成缺陷：' + surface.observation + '。请检查其他候选，不能默认全部重画。')
+                            decision = ReviewDecision(decision='revise', reason=surface.observation, findings=[ReviewFinding(
+                                candidate_id=ident, category='artifact', source_id='quality',
+                                requirement_quote=sources['quality'], observation=surface.observation)])
                     if len(request.candidate_ids)>1 and decision.decision=='select' and measured_scale_rejection(scale_contract,geometry,decision.asset_id):
                         raise ReviewEvidenceError('selected_scale_out_of_range','所选候选的独立比例测量超出原约数要求区间；请检查其他候选，不能因一个候选不符而拒绝尚未评估的其他候选')
                     validate_image_findings(decision, request.candidate_ids, sources,scale_contract=scale_contract,geometry=geometry)
