@@ -16,6 +16,7 @@ from agent.aigc.creation_review_evidence import ReviewFinding, ReviewEvidenceErr
 from agent.aigc.creation_review_geometry import approximate_scale_contract, locate_subjects, review_preview, measured_scale_rejection
 from agent.aigc.creation_review_criteria import check_rejection_criteria
 from agent.aigc.creation_json import parse_complete_object
+from agent.aigc.creation_review_details import detail_previews
 
 router = APIRouter()
 
@@ -205,6 +206,13 @@ async def review_creation(request: ReviewRequest, trace_store=None):
                 payload['visual_measurements_unavailable'] = True
                 if trace_store:
                     trace_store.append_event(run.run_id,type='creation.review.geometry',status='failed',title='比例定位暂不可用',payload={})
+        details, crops = detail_previews(request.assets, request.candidate_ids, geometry)
+        if details:
+            parts.extend(details)
+            payload['detail_previews'] = crops
+            if trace_store:
+                trace_store.append_event(run.run_id, type='creation.review.details', status='completed',
+                    title='查看候选原图局部细节', payload={'crops':crops})
         parts[0]['text'] = json.dumps(payload, ensure_ascii=False)
         sources = requirement_sources(json.loads(parts[0]['text']))
         schema = ReviewDecision.model_json_schema()
