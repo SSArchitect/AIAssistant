@@ -27,6 +27,7 @@ from agent.aigc.creation_references import reference_error, repair_reference_sto
 from agent.aigc.creation_completion import PlanningCompletion
 from agent.aigc.creation_contract import planning_schema
 from agent.aigc.creation_repair_scope import validate_repair_scope
+from agent.aigc.creation_region_repair import validate_region_repair
 from agent.aigc.creation_repair_strategy import reference_preparation_guidance, bind_prepared_identity
 from agent.aigc.creation_active_task import active_planning_task
 from agent.aigc.creation_image_layout import ImagePlacement, validate_layout, LAYOUT_GUIDANCE
@@ -643,6 +644,7 @@ def parse_proposal(content: str, request: PlanningRequest) -> PlanningResponse:
     validate_edit_sources(proposal.plan, request)
     if request.repair:
         bind_prepared_identity(proposal.plan, request)
+        validate_region_repair(proposal.plan, request)
         validate_repair_scope(proposal.plan, request)
     if request.automatic_mode:
         prior = {n.id: n for n in CreativePlan.model_validate(omit_null_fields(request.current_plan)).nodes}

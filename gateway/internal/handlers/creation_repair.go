@@ -37,6 +37,9 @@ func automaticRepairLocks(doc creativeDocument, nodeID string) []string {
 }
 
 func validateAutomaticRepair(doc creativeDocument, plan bridge.CreativePlan, req bridge.CreationPlanningRequest) error {
+	if err := validateRegionRepair(doc.Plan, plan, req.Repair); err != nil {
+		return err
+	}
 	if err := validateEditSources(doc, plan, req); err != nil {
 		return err
 	}
