@@ -19,6 +19,7 @@ def node_schema(schema, kind, *, patch=False, ident=None, asset_ids=None):
     if kind != 'video':
         props['shot_ids']['maxItems'] = 0
     if kind != 'image':
+        props['image_layout']['maxItems'] = 0
         props['edit_source_asset_id'] = {'type': 'string', 'enum': ['']}
     if kind == 'text':
         props['content']['minLength'] = 1

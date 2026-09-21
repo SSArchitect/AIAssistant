@@ -177,6 +177,13 @@ func validateCreativePlan(plan bridge.CreativePlan, allowed map[string]bool) err
 		if node.EditSourceAssetID != "" && (node.Kind != "image" || node.AssetID != "" || node.CharacterStyle != "" || !allowed[node.EditSourceAssetID] || strings.TrimSpace(node.Prompt) == "" || strings.TrimSpace(node.Content) == "") {
 			return errors.New("无效的待修草稿，编辑不能绑定成品或人物转换模板")
 		}
+		layoutRefs := []bridge.ImageReferenceContext{}
+		for _, ref := range node.References {
+			layoutRefs = append(layoutRefs, bridge.ImageReferenceContext{Role: ref.Role})
+		}
+		if err := bridge.ValidateImageLayout(node.ImageLayout, node.AspectRatio, node.Kind, node.Purpose, layoutRefs, node.CharacterStyle, node.AssetID != "" || node.EditSourceAssetID != ""); err != nil {
+			return err
+		}
 		refs := map[string]bool{}
 		for _, ref := range node.References {
 			if (ref.AssetID == "") == (ref.NodeID == "") {
@@ -783,7 +790,7 @@ func (h *CreationHandler) prepareProjectRun(row models.CreationProject, doc crea
 			imageReferences = append(imageReferences, bridge.ImageReferenceContext{Role: ref.Role, Note: ref.Note})
 		}
 	}
-	graph := creationGraph{Nodes: []creationNode{{ImagePurpose: imagePurpose, ID: node.ID, Kind: node.Kind, Name: node.Title, Prompt: node.Prompt, Count: node.Count, AspectRatio: node.AspectRatio, DurationSeconds: node.DurationSeconds, CharacterStyle: node.CharacterStyle, Inputs: []string{}, AssetIDs: ids, ImageReferences: imageReferences, InputHashes: hashes, VideoMode: mode, Storyboard: node.Storyboard}}}
+	graph := creationGraph{Nodes: []creationNode{{ImageLayout: node.ImageLayout, ImagePurpose: imagePurpose, ID: node.ID, Kind: node.Kind, Name: node.Title, Prompt: node.Prompt, Count: node.Count, AspectRatio: node.AspectRatio, DurationSeconds: node.DurationSeconds, CharacterStyle: node.CharacterStyle, Inputs: []string{}, AssetIDs: ids, ImageReferences: imageReferences, InputHashes: hashes, VideoMode: mode, Storyboard: node.Storyboard}}}
 	if node.EditSourceAssetID != "" {
 		graph.Nodes[0].ImageOperation = "edit"
 		graph.Nodes[0].ImageReferences = nil

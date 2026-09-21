@@ -46,6 +46,7 @@ type CreativeRevisionSuggestion struct {
 	Instruction string `json:"instruction"`
 }
 type CreativeNode struct {
+	ImageLayout         []ImagePlacement             `json:"image_layout,omitempty"`
 	EditSourceAssetID   string                       `json:"edit_source_asset_id,omitempty"`
 	ShotIDs             []string                     `json:"shot_ids,omitempty"`
 	ID                  string                       `json:"id"`
@@ -71,6 +72,9 @@ func (n *CreativeNode) UnmarshalJSON(data []byte) error {
 	var value wire
 	if err := json.Unmarshal(data, &value); err != nil {
 		return err
+	}
+	if len(value.ImageLayout) == 0 {
+		value.ImageLayout = nil
 	}
 	if len(value.ShotIDs) == 0 {
 		value.ShotIDs = nil

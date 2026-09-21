@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from agent.aigc.image_inputs import decode_image_data_url, load_image_url
 from agent.aigc.image_service import generate_image
+from agent.aigc.creation_image_layout import ImagePlacement, validate_layout, prepare_region, compose_region
 from agent.aigc.creation_image_context import ImageReferenceContext, style_only_prompt, composition_only_prompt
 from agent.aigc.video_service import generate_video, video_task_status
 from agent.aigc.spark_client import SparkProviderError, SparkTaskClient
@@ -42,9 +43,11 @@ class CreationNodeRequest(BaseModel):
     video_mode: Literal['', 'text_to_video', 'image_to_video', 'reference_to_video'] = ''
     storyboard: VideoStoryboard | None = None
     image_operation: Literal['', 'edit'] = ''
+    image_layout: list[ImagePlacement] = Field(default_factory=list, max_length=1)
 
     @model_validator(mode='after')
     def validate_inputs(self):
+        validate_layout(self.image_layout, self.aspect_ratio, self.kind, self.image_purpose, self.image_references, self.character_style, bool(self.image_operation))
         if not self.prompt.strip():
             raise ValueError('请输入提示词')
         if self.image_operation and (self.kind != 'image' or len(self.input_images) != 1 or self.image_references or self.character_style):
@@ -103,7 +106,11 @@ async def _execute_node(request: CreationNodeRequest, *, resume_task_id=None, pr
         options = dict(provider='spark', prompt=request.prompt, aspect_ratio=request.aspect_ratio,
                        idempotency_key=request.idempotency_key)
         reference = request.image_references[0] if request.image_references else None
-        if request.image_operation == 'edit':
+        region = None
+        if request.image_layout:
+            region, prepared = await prepare_region(request, resume=bool(resume_task_id))
+            options.update(prepared)
+        elif request.image_operation == 'edit':
             # The draft is a working canvas, not an identity/pose reference.
             # Preserve its pixels and the explicit edit instruction verbatim.
             options.update(mode='reference_to_image', reference_image_data_urls=request.input_images)
@@ -134,6 +141,11 @@ async def _execute_node(request: CreationNodeRequest, *, resume_task_id=None, pr
         item = result.images[0]
         data = f'data:{item.mime_type};base64,{item.base64}' if item.base64 else await load_image_url(item.url or '')
         content, mime = decode_image_data_url(data)
+        if region is not None:
+            import asyncio
+            # CPU composition must not stall other users' polling or chat streams.
+            content = await asyncio.to_thread(compose_region, region, content)
+            mime = 'image/png'
     else:
         video_request = prepared_video or prepare_video_request(request)
         result = await generate_video(video_request, **({'resume_task_id': resume_task_id} if resume_task_id else {}))

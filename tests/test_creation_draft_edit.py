@@ -200,7 +200,7 @@ def test_media_edit_requires_one_draft_and_no_reference_or_stylization(options):
 def test_new_operation_field_does_not_invalidate_accepted_legacy_task(monkeypatch, tmp_path):
     monkeypatch.setattr(creation_media_state, 'STATE_DIR', tmp_path)
     req = media_request(input_images=[PNG])
-    old = req.model_dump_json(exclude={'resume_task_id', 'image_operation'})
+    old = req.model_dump_json(exclude={'resume_task_id', 'image_operation', 'image_layout'})
     fingerprint = hashlib.sha256((old+'\n'+runtime_config.get('aigc.spark.base_url')).encode()).hexdigest()
     path = tmp_path / (hashlib.sha256(req.idempotency_key.encode()).hexdigest()+'.json')
     path.write_text(json.dumps(dict(fingerprint=fingerprint, task_id='old-job', stage='running')))
