@@ -87,6 +87,38 @@ def test_edit_cannot_silently_retain_pixels_when_upstream_requirements_change():
         validate_edit_sources(proposed, req)
 
 
+@pytest.mark.parametrize('case', ['localized', 'composition', 'scene_composition', 'first_try', 'identity', 'environment', 'artifact', 'mixed', 'unseen', 'already_editing', 'locked', 'manual'])
+def test_repeated_local_failures_change_operation_without_forcing_global_repairs(case):
+    from agent.aigc.creation_draft_edit import localized_repair_guidance
+    req = editing_request()
+    req.assets[-1].data_url = PNG
+    req.repair.findings.append(req.repair.findings[0].model_copy(update={'category':'action'}))
+    if case in {'composition', 'scene_composition'}: req.repair.findings[1].category = 'composition'
+    if case == 'scene_composition': req.repair.findings[1].source_id = 'reference:scene:environment'
+    if case == 'first_try': req.repair.attempt = 1
+    if case in {'identity', 'environment', 'artifact'}: req.repair.findings[1].category = case
+    if case == 'mixed': req.repair.candidate_ids.append('unreviewed')
+    if case == 'unseen': req.assets[-1].data_url = ''
+    if case == 'already_editing': req.current_plan['nodes'][1]['edit_source_asset_id'] = 'draft'
+    if case == 'locked': req.locked_node_ids.append('frame')
+    if case == 'manual': req.automatic_mode = False
+    assert bool(localized_repair_guidance(req)) == (case in {'localized', 'composition'})
+
+
+@pytest.mark.asyncio
+async def test_local_edit_strategy_does_not_compete_with_pose_reference_preparation(monkeypatch):
+    req = editing_request(); req.assets[-1].data_url = PNG
+    req.repair.findings[0].category = 'action'
+    provider = SimpleNamespace(chat=AsyncMock(return_value=LLMResponse(content=patch(
+        edit_source_asset_id='draft', prompt='Turn and shrink only the rider'))))
+    monkeypatch.setattr(planning, 'create_provider', lambda: provider)
+    monkeypatch.setattr(planning, 'image_preview', lambda value: value)
+    await planning.propose_creation(req)
+    instructions = provider.chat.call_args.args[0][0].content
+    assert '本轮返工策略：切换为编辑现有草稿' in instructions
+    assert '需要分步准备参考' not in instructions
+
+
 @pytest.mark.parametrize('case', ['video', 'text', 'adopt', 'stylize', 'no_requirements'])
 def test_invalid_edit_combinations_are_rejected(case):
     node = dict(id='n', kind='image', title='n', content='Original creative requirement', prompt='Edit', edit_source_asset_id='draft')

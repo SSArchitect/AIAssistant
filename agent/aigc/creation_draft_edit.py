@@ -6,6 +6,34 @@ DRAFT_EDIT_GUIDANCE = '''
 '''
 
 
+def localized_repair_guidance(request):
+    """Choose a different operation after repeated, localized output failures.
+
+    Do not compete with the staged identity strategy when the review reports
+    global defects, the source is unavailable, or an edit is already underway.
+    """
+    repair = request.repair
+    if not request.automatic_mode or not repair or repair.attempt < 3 or not repair.findings:
+        return ''
+    node = next((n for n in request.current_plan.get('nodes', []) if n['id'] == repair.node_id), None)
+    if (not node or node.get('kind') != 'image' or node.get('purpose') != 'shot_reference'
+            or node['id'] in request.locked_node_ids or node.get('edit_source_asset_id')):
+        return ''
+    candidates = set(repair.candidate_ids)
+    visible = {a.id for a in request.assets if a.data_url}
+    if (not candidates or not candidates <= visible
+            or {f.candidate_id for f in repair.findings} != candidates
+            or any(f.category not in {'scale', 'action', 'composition'} for f in repair.findings)
+            or any(f.category == 'composition' and f.source_id.endswith(':environment') for f in repair.findings)):
+        return ''
+    return ('\n本轮返工策略：切换为编辑现有草稿。此前已多次返工，本次有可见成图，审阅指出的问题仅是主体比例、动作或构图关系，没有身份或环境错误；'
+        '不要再次仅给整图生成prompt增加CRITICAL/EXACTLY或否定词。先选本节点一张candidate作为edit_source_asset_id，'
+        '通过Picture 1编辑主体的大小、朝向、头部姿态、视线、站位或脚与道具关系，同时明确保留正确场景、身份和其余内容。'
+        '比例修正同时写目标占比与相对当前尺寸的缩放关系；不要改画幅或移动摄影机来伪造尺寸达标。'
+        '本轮不新增或重做已经确认的姿态前置图，不重接原始人设像素；content与原references/dependencies保持。'
+        '编辑完成后仍按全部原要求复审；这只是改变返工操作，不代表草稿已经合格或保证编辑一定成功。')
+
+
 def validate_edit_sources(plan, request):
     from agent.aigc.creation_planning import CreativePlan
     from agent.aigc.creation_output import omit_null_fields
