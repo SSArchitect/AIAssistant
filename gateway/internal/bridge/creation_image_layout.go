@@ -10,6 +10,7 @@ import (
 // ImagePlacement is an execution recipe. Independent review uses the frozen
 // creative content and references, never this local generation instruction.
 type ImagePlacement struct {
+	CompositeMode        string  `json:"composite_mode,omitempty"`
 	CenterXPercent       float64 `json:"center_x_percent"`
 	CenterYPercent       float64 `json:"center_y_percent"`
 	SubjectHeightPercent float64 `json:"subject_height_percent"`
@@ -32,6 +33,9 @@ func ValidateImageLayout(layout []ImagePlacement, aspect, kind, purpose string, 
 		return invalid
 	}
 	p := layout[0]
+	if p.CompositeMode != "" && p.CompositeMode != "foreground_v1" {
+		return invalid
+	}
 	for _, n := range []float64{p.CenterXPercent, p.CenterYPercent, p.SubjectHeightPercent} {
 		if math.IsNaN(n) || math.IsInf(n, 0) {
 			return invalid

@@ -10,13 +10,14 @@ from io import BytesIO
 import math
 
 from PIL import Image, ImageOps
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_serializer
+from typing import Literal
 
 from agent.aigc.image_inputs import decode_image_data_url
 from agent.aigc.creation_identity_context import isolated_identity_view
 
 CANVASES = {'1:1': (1024, 1024), '16:9': (1024, 576), '9:16': (576, 1024)}
-LAYOUT_GUIDANCE = '''分镜图中小主体反复被画成大特写时，可使用image_layout局部构图能力，而非继续堆叠整图提示词。当前支持一个主体：仅shot_reference、恰好一个environment与一个identity参考；不能同时用edit_source_asset_id、asset_id或人物风格模板。image_layout=[{center_x_percent,center_y_percent,subject_height_percent,subject_prompt}]。中心坐标为最终画幅百分比，subject_height_percent为主体连同坐骑/道具的总高度（3–25），四周要留够区域，不能出画。系统从已确认环境截取小区域，让生图模型在局部清晰描绘主体，再合回原位置；区域外像素保持不变。subject_prompt仅描述这个角色的身份、姿态、动作、服装、道具与光线，不复述全景、不写全画幅小比例；视线只写方向（如向上或前下方），不在局部描述中重述画外树冠、蝴蝶等环境目标，环境已在原图中；局部占比由工具编译。构图参数由你按冻结创作要求与实际场景判断，不交给用户填写；不能改变原内容、验收标准或将失败候选冒充已确认参考。空数组image_layout=[]恢复普通整图生成。该能力不保证视觉通过，新候选仍须整图审阅。'''
+LAYOUT_GUIDANCE = '''分镜图中小主体反复被画成大特写时，可使用image_layout局部构图能力，而非继续堆叠整图提示词。当前支持一个主体：仅shot_reference、恰好一个environment与一个identity参考；不能同时用edit_source_asset_id、asset_id或人物风格模板。image_layout=[{center_x_percent,center_y_percent,subject_height_percent,subject_prompt}]。中心坐标为最终画幅百分比，subject_height_percent为主体连同坐骑/道具的总高度（3–25），四周要留够区域，不能出画。系统从已确认环境截取小区域，让生图模型在局部清晰描绘主体，再合回原位置；区域外像素保持不变。subject_prompt仅描述这个角色的身份、姿态、动作、服装、道具与光线，不复述全景、不写全画幅小比例；视线只写方向（如向上或前下方），不在局部描述中重述画外树冠、蝴蝶等环境目标，环境已在原图中；局部占比由工具编译。构图参数由你按冻结创作要求与实际场景判断，不交给用户填写；不能改变原内容、验收标准或将失败候选冒充已确认参考。空数组image_layout=[]恢复普通整图生成。该能力不保证视觉通过，新候选仍须整图审阅。若局部图反复带入底纸/矩形背景，可显式选择composite_mode=foreground_v1：先生成可分离底色的人物层，再加留白补全人物和道具，透明合入原场景，仅改变前景像素。此模式通常有两次生图调用，各阶段可断点恢复。subject_prompt只写主体身份/动作/服装/道具/光线，不写抠色、去背景、裁切、边距或柔化指令；底色和补全由工具处理。不得改变原冻结目标。旧模式省略composite_mode或设空字符串。'''
 
 
 class ImagePlacement(BaseModel):
@@ -25,6 +26,14 @@ class ImagePlacement(BaseModel):
     center_y_percent: float = Field(ge=0, le=100, allow_inf_nan=False)
     subject_height_percent: float = Field(ge=3, le=25, allow_inf_nan=False)
     subject_prompt: str = Field(min_length=1, max_length=1800, pattern=r'\S')
+    composite_mode: Literal['', 'foreground_v1'] = ''
+
+    @model_serializer(mode='wrap')
+    def serialize_legacy(self, handler):
+        result = handler(self)
+        if not self.composite_mode:
+            result.pop('composite_mode', None)
+        return result
 
 
 def region_box(placement, aspect_ratio):
@@ -71,6 +80,9 @@ async def prepare_region(request, *, resume=False):
     original = original.resize((width, height), Image.Resampling.LANCZOS)
     crop = original.crop(box).resize((512, 512), Image.Resampling.LANCZOS)
     index, identity, ref = sources['identity']
+    if layout.composite_mode == 'foreground_v1':
+        from agent.aigc.creation_foreground import prepare_foreground
+        return await prepare_foreground(request, original, crop, identity, ref, index, resume=resume)
     if not resume:
         identity = await isolated_identity_view(identity, ref, layout.subject_prompt, request.idempotency_key + ':' + str(index))
     # Resume only looks up an already accepted task. It never resubmits or invokes
@@ -94,6 +106,9 @@ async def prepare_region(request, *, resume=False):
 
 def compose_region(region, generated):
     """Poisson boundary blend. Bounded CPU work; untouched pixels stay identical."""
+    from agent.aigc.creation_foreground import ForegroundRegion, composite_foreground
+    if isinstance(region, ForegroundRegion):
+        return composite_foreground(region, generated)
     import numpy as np
     original, box = region
     size = (box[2] - box[0], box[3] - box[1])

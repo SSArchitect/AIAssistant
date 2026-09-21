@@ -639,6 +639,11 @@ func (h *CreationHandler) runAutomaticMedia(ctx context.Context, submission *cre
 		if ctx.Err() != nil || run.Status == "cancelled" {
 			return true, nil
 		}
+		if len(progress) == 1 && progress[0].ErrorCode == "media_invalid_output" {
+			if handled, stop, err := h.repairInvalidForeground(ctx, run, request); handled {
+				return stop, err
+			}
+		}
 		if !retryable || attempt >= 2 {
 			if run.Error != "" {
 				return false, errors.New(run.Error)

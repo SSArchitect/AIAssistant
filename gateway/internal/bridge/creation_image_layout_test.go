@@ -12,12 +12,12 @@ import (
 )
 
 func TestImageLayoutBoundaryAndForwarding(t *testing.T) {
-	layout := []ImagePlacement{{CenterXPercent: 25.5, CenterYPercent: 82.6, SubjectHeightPercent: 10, SubjectPrompt: "rear rider"}}
+	layout := []ImagePlacement{{CenterXPercent: 25.5, CenterYPercent: 82.6, SubjectHeightPercent: 10, SubjectPrompt: "rear rider", CompositeMode: "foreground_v1"}}
 	refs := []ImageReferenceContext{{Role: "environment"}, {Role: "identity"}}
 	if err := ValidateImageLayout(layout, "9:16", "image", "shot_reference", refs, "", false); err != nil {
 		t.Fatal(err)
 	}
-	for _, change := range []func(*ImagePlacement){func(p *ImagePlacement) { p.CenterXPercent = 0 }, func(p *ImagePlacement) { p.SubjectHeightPercent = math.NaN() }, func(p *ImagePlacement) { p.SubjectPrompt = " " }, func(p *ImagePlacement) { p.SubjectHeightPercent = 26 }} {
+	for _, change := range []func(*ImagePlacement){func(p *ImagePlacement) { p.CompositeMode = "unknown" }, func(p *ImagePlacement) { p.CenterXPercent = 0 }, func(p *ImagePlacement) { p.SubjectHeightPercent = math.NaN() }, func(p *ImagePlacement) { p.SubjectPrompt = " " }, func(p *ImagePlacement) { p.SubjectHeightPercent = 26 }} {
 		bad := append([]ImagePlacement(nil), layout...)
 		change(&bad[0])
 		if ValidateImageLayout(bad, "9:16", "image", "shot_reference", refs, "", false) == nil {
