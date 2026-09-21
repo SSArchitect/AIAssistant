@@ -49,6 +49,13 @@ def validate_edit_sources(plan, request):
         before = previous.get(node.id)
         if not before or before.kind != 'image':
             raise ValueError('编辑草稿必须来自当前已有图片节点：' + node.id)
+        # The planner often paraphrases reference notes for the current edit.
+        # Notes are not editor-owned: retain exact baseline notes when all real
+        # bindings/roles are unchanged, instead of asking the model to copy prose.
+        if (request.automatic_mode and request.repair and
+                [r.model_dump(exclude={'note'}) for r in before.references] ==
+                [r.model_dump(exclude={'note'}) for r in node.references]):
+            node.references = [r.model_copy(deep=True) for r in before.references]
         for field in ('references', 'depends_on', 'aspect_ratio'):
             if getattr(before, field) != getattr(node, field):
                 raise ValueError('节点 ' + node.id + ' 的局部编辑改变了只读字段 ' + field +

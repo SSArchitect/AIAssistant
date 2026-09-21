@@ -98,6 +98,20 @@ def test_edit_validation_names_exact_immutable_field_for_bounded_repair(field, v
     assert 'frame' in message and field in message and 'current_plan' in message
 
 
+def test_automatic_edit_preserves_baseline_notes_without_recopy_retry():
+    req=editing_request()
+    req.current_plan['nodes'][1]['references'][0]['note']='原身份验收依据'
+    original=copy.deepcopy(req.model_dump())
+    refs=copy.deepcopy(req.current_plan['nodes'][1]['references'])
+    refs[0]['note']='本轮只缩放人物，不处理姿态'
+    proposed=planning.parse_proposal(patch(edit_source_asset_id='draft', references=refs), req)
+    assert proposed.plan.nodes[1].references[0].note=='原身份验收依据'
+    assert req.model_dump()==original
+    refs[0]['role']='composition'
+    with pytest.raises(ValueError, match='references'):
+        planning.parse_proposal(patch(edit_source_asset_id='draft', references=refs), req)
+
+
 @pytest.mark.parametrize('case', ['localized', 'composition', 'scene_composition', 'first_try', 'identity', 'environment', 'artifact', 'mixed', 'unseen', 'already_editing', 'locked', 'manual'])
 def test_repeated_local_failures_change_operation_without_forcing_global_repairs(case):
     from agent.aigc.creation_draft_edit import localized_repair_guidance
