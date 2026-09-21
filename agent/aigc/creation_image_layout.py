@@ -16,7 +16,7 @@ from agent.aigc.image_inputs import decode_image_data_url
 from agent.aigc.creation_identity_context import isolated_identity_view
 
 CANVASES = {'1:1': (1024, 1024), '16:9': (1024, 576), '9:16': (576, 1024)}
-LAYOUT_GUIDANCE = '''分镜图中小主体反复被画成大特写时，可使用image_layout局部构图能力，而非继续堆叠整图提示词。当前支持一个主体：仅shot_reference、恰好一个environment与一个identity参考；不能同时用edit_source_asset_id、asset_id或人物风格模板。image_layout=[{center_x_percent,center_y_percent,subject_height_percent,subject_prompt}]。中心坐标为最终画幅百分比，subject_height_percent为主体连同坐骑/道具的总高度（3–25），四周要留够区域，不能出画。系统从已确认环境截取小区域，让生图模型在局部清晰描绘主体，再合回原位置；区域外像素保持不变。subject_prompt仅描述这个角色的身份、姿态、动作、服装、道具与光线，不复述全景、不写全画幅小比例；局部占比由工具编译。构图参数由你按冻结创作要求与实际场景判断，不交给用户填写；不能改变原内容、验收标准或将失败候选冒充已确认参考。空数组image_layout=[]恢复普通整图生成。该能力不保证视觉通过，新候选仍须整图审阅。'''
+LAYOUT_GUIDANCE = '''分镜图中小主体反复被画成大特写时，可使用image_layout局部构图能力，而非继续堆叠整图提示词。当前支持一个主体：仅shot_reference、恰好一个environment与一个identity参考；不能同时用edit_source_asset_id、asset_id或人物风格模板。image_layout=[{center_x_percent,center_y_percent,subject_height_percent,subject_prompt}]。中心坐标为最终画幅百分比，subject_height_percent为主体连同坐骑/道具的总高度（3–25），四周要留够区域，不能出画。系统从已确认环境截取小区域，让生图模型在局部清晰描绘主体，再合回原位置；区域外像素保持不变。subject_prompt仅描述这个角色的身份、姿态、动作、服装、道具与光线，不复述全景、不写全画幅小比例；视线只写方向（如向上或前下方），不在局部描述中重述画外树冠、蝴蝶等环境目标，环境已在原图中；局部占比由工具编译。构图参数由你按冻结创作要求与实际场景判断，不交给用户填写；不能改变原内容、验收标准或将失败候选冒充已确认参考。空数组image_layout=[]恢复普通整图生成。该能力不保证视觉通过，新候选仍须整图审阅。'''
 
 
 class ImagePlacement(BaseModel):
@@ -77,8 +77,13 @@ async def prepare_region(request, *, resume=False):
     # reference extraction; final composition still uses the frozen original scene.
     prompt = ('Picture 1 is a close-up EMPTY REGION of an existing scene, not a whole landscape. '
         'Preserve its background, lighting and visible environment edges. Add ONE subject using only '
-        'the identity and owned props from Picture 2. Do not recreate a whole landscape inside this crop. '
+        'the identity, proportions, clothing and owned props from Picture 2. Use its pose only where it '
+        'matches the target action and explicit reference responsibility below. '
+        'Do not recreate a whole landscape inside this crop. '
+        'Picture 2 responsibility (never its background or sheet layout): ' + ref.note + '\n'
         'Target subject and action: ' + layout.subject_prompt + '\n'
+        'Gaze targets are outside this local crop. Convey the requested gaze DIRECTION only; '
+        'do not draw extra scenery, creatures or objects to illustrate what the subject is looking at. '
         'The complete subject including its ridden/held prop occupies approximately 74 percent of this '
         'cropped image height, centered in the region. Keep the full subject and props inside the crop. '
         'Copy no studio background, sheet layout or text from Picture 2. Match the rendering and light '

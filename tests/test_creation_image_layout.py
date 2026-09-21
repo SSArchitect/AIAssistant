@@ -165,3 +165,24 @@ def test_largest_supported_region_has_bounded_seam_free_composition():
     result=layout.compose_region((original,box),layout.png_bytes(Image.new('RGB',(512,512),'white')))
     # A uniform generated offset must disappear at convergence, with no rectangle.
     assert np.array_equal(np.asarray(original),np.asarray(Image.open(BytesIO(result))))
+
+
+@pytest.mark.asyncio
+async def test_local_compiler_preserves_explicit_pose_responsibility_without_importing_gaze_targets(monkeypatch):
+    monkeypatch.setattr(layout,'isolated_identity_view',AsyncMock(side_effect=lambda image,*args:image))
+    note='Confirmed rear-three-quarter upward-looking pose; preserve back and tail, both feet on the same sword.'
+    req=request(image_references=[dict(role='environment',note='Giant tree and butterfly above'),dict(role='identity',note=note)])
+    _,options=await layout.prepare_region(req)
+    assert note in options['prompt']
+    assert 'Gaze targets are outside this local crop' in options['prompt']
+    assert 'Giant tree and butterfly above' not in options['prompt']
+
+
+@pytest.mark.asyncio
+async def test_maximum_local_prompt_and_reference_note_fit_provider_contract(monkeypatch):
+    from agent.schemas.aigc import ImageGenerationRequest
+    monkeypatch.setattr(layout,'isolated_identity_view',AsyncMock(side_effect=lambda image,*args:image))
+    req=request(image_layout=[{**PLACEMENT,'subject_prompt':'兔'*1800}],image_references=[dict(role='environment'),dict(role='identity',note='姿'*500)])
+    _,options=await layout.prepare_region(req)
+    prepared=ImageGenerationRequest(provider='spark',idempotency_key=req.idempotency_key,**options)
+    assert '姿'*500 in prepared.prompt and '兔'*1800 in prepared.prompt
