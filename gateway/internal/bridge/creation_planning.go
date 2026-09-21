@@ -46,6 +46,7 @@ type CreativeRevisionSuggestion struct {
 	Instruction string `json:"instruction"`
 }
 type CreativeNode struct {
+	EditSourceAssetID   string                       `json:"edit_source_asset_id,omitempty"`
 	ShotIDs             []string                     `json:"shot_ids,omitempty"`
 	ID                  string                       `json:"id"`
 	Kind                string                       `json:"kind"`

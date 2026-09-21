@@ -14,6 +14,7 @@ type ImageReferenceContext struct {
 	Note string `json:"note"`
 }
 type CreationNodeRequest struct {
+	ImageOperation  string                  `json:"image_operation,omitempty"`
 	ResumeTaskID    string                  `json:"resume_task_id,omitempty"`
 	ImagePurpose    string                  `json:"image_purpose,omitempty"`
 	ImageReferences []ImageReferenceContext `json:"image_references,omitempty"`

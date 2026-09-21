@@ -70,6 +70,8 @@ func planningAssetContext(doc creativeDocument, focus string, explicit, candidat
 	for _, node := range doc.Plan.Nodes {
 		add(doc.States[node.ID].SelectedAssetID, focus == "")
 		add(node.AssetID, focus == "")
+		// A rejected edit source is provenance metadata, never an extra review authority.
+		add(node.EditSourceAssetID, false)
 		for _, ref := range node.References {
 			add(ref.AssetID, focus == "")
 		}

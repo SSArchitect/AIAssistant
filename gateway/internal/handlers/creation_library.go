@@ -291,7 +291,7 @@ func documentUsesAsset(doc creativeDocument, ids map[string]bool) bool {
 		}
 	}
 	for _, n := range doc.Plan.Nodes {
-		if ids[n.AssetID] {
+		if ids[n.AssetID] || ids[n.EditSourceAssetID] {
 			return true
 		}
 		for _, r := range n.References {

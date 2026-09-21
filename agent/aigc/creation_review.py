@@ -122,6 +122,8 @@ def review_context(request, plan, node):
     # Never present an automatic repair's new negative prompt as new creative
     # requirements. Use the persisted baseline, keeping current reference wiring.
     for item in payload['current_plan']['nodes']:
+        # Editing instructions and the rejected draft are not acceptance criteria.
+        item.pop('edit_source_asset_id', None)
         contract = request.node_context.get(item['id'], {}).get('review_contract')
         if item['kind'] == 'image' and isinstance(contract, dict):
             for field in ('content', 'prompt'):

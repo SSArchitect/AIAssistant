@@ -24,6 +24,7 @@ import (
 const creationMaxBytes = 64 << 20
 
 type creationNode struct {
+	ImageOperation  string                         `json:"image_operation,omitempty"`
 	ImagePurpose    string                         `json:"image_purpose,omitempty"`
 	ImageReferences []bridge.ImageReferenceContext `json:"image_references,omitempty"`
 	ID              string                         `json:"id"`
@@ -192,6 +193,9 @@ func validateCreationGraph(graph creationGraph, runnable bool) error {
 		}
 		if inputCount > 9 || (n.Kind == "image" && inputCount > 3) {
 			return errors.New("生图节点最多输入 3 张图片；视频节点最多输入 9 张图片")
+		}
+		if n.ImageOperation != "" && (n.ImageOperation != "edit" || n.Kind != "image" || inputCount != 1 || len(n.ImageReferences) != 0 || n.CharacterStyle != "") {
+			return errors.New("局部编辑需要一张待修草稿，不能混用参考职责或人物模板")
 		}
 		if n.ImagePurpose != "" && (n.Kind != "image" || (n.ImagePurpose != "key_visual" && n.ImagePurpose != "scene" && n.ImagePurpose != "shot_reference" && n.ImagePurpose != "output" && n.ImagePurpose != "character")) {
 			return errors.New("invalid image purpose")
@@ -712,7 +716,7 @@ func (h *CreationHandler) execute(run models.CreationRun, graph creationGraph, p
 				return
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 6*time.Hour+2*time.Minute)
-			media, err := h.generator.CreateMedia(ctx, bridge.CreationNodeRequest{ResumeTaskID: progress[i].ProviderTaskID, ImagePurpose: node.ImagePurpose, Kind: node.Kind, Prompt: node.Prompt, AspectRatio: node.AspectRatio, DurationSeconds: node.DurationSeconds, CharacterStyle: node.CharacterStyle, InputImages: inputs, ImageReferences: node.ImageReferences, IdempotencyKey: fmt.Sprintf("creation-%s-%d-%d", run.ID, i, j), VideoMode: node.VideoMode, Storyboard: node.Storyboard})
+			media, err := h.generator.CreateMedia(ctx, bridge.CreationNodeRequest{ImageOperation: node.ImageOperation, ResumeTaskID: progress[i].ProviderTaskID, ImagePurpose: node.ImagePurpose, Kind: node.Kind, Prompt: node.Prompt, AspectRatio: node.AspectRatio, DurationSeconds: node.DurationSeconds, CharacterStyle: node.CharacterStyle, InputImages: inputs, ImageReferences: node.ImageReferences, IdempotencyKey: fmt.Sprintf("creation-%s-%d-%d", run.ID, i, j), VideoMode: node.VideoMode, Storyboard: node.Storyboard})
 			cancel()
 			if err != nil {
 				status = "failed"

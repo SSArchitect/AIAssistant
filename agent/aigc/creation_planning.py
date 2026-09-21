@@ -29,6 +29,7 @@ from agent.aigc.creation_contract import planning_schema
 from agent.aigc.creation_repair_scope import validate_repair_scope
 from agent.aigc.creation_repair_strategy import reference_preparation_guidance, bind_prepared_identity
 from agent.aigc.creation_active_task import active_planning_task
+from agent.aigc.creation_draft_edit import validate_edit_sources, DRAFT_EDIT_GUIDANCE
 from agent.aigc.creation_review_evidence import ReviewFinding
 from agent.aigc.creation_node_repair import repair_draft_nodes
 from agent.aigc.creation_partition import partition_proposal, incomplete_json
@@ -81,6 +82,7 @@ class CreativeNode(StrictModel):
     prompt: str = Field(default='', max_length=4000)
     storyboard: VideoStoryboard | None = None
     asset_id: str = ''
+    edit_source_asset_id: str = Field(default='', max_length=100, description='仅编辑当前图片节点自己的候选时指定待修草稿；不是成品或身份参考。prompt为具体编辑指令，references与depends_on保持原验收关系；重新生成须显式清空此字段。')
     depends_on: list[str] = Field(default_factory=list, max_length=20)
     references: list[CreativeReference] = Field(default_factory=list, max_length=9)
     aspect_ratio: Literal['1:1', '16:9', '9:16'] = '16:9'
@@ -93,6 +95,10 @@ class CreativeNode(StrictModel):
 
     @model_validator(mode='after')
     def video_fields(self):
+        if self.edit_source_asset_id and (self.kind != 'image' or self.asset_id or self.character_style or not self.prompt.strip()):
+            raise ValueError('待修草稿仅用于图片编辑，不能同时绑定成品或人物转换模板')
+        if self.edit_source_asset_id and not self.content.strip():
+            raise ValueError('局部编辑需要独立的创作说明content作为复审要求，不能只用编辑指令验收')
         if self.purpose in {'character', 'shot_reference'} and self.kind != 'image':
             raise ValueError('人设和分镜图必须是图片节点')
         if self.shot_ids and self.kind != 'video':
@@ -610,12 +616,13 @@ def parse_proposal(content: str, request: PlanningRequest) -> PlanningResponse:
     for node in proposal.plan.nodes:
         if node.template_id and node.template_id not in templates:
             raise ValueError('未知效果模板')
-        for asset_id in [node.asset_id, *(ref.asset_id for ref in node.references)]:
+        for asset_id in [node.asset_id, node.edit_source_asset_id, *(ref.asset_id for ref in node.references)]:
             if asset_id and (asset_id not in assets or not assets[asset_id].mime_type.startswith('image/')):
                 raise ValueError('节点 ' + node.id + ' 引用了未提供的图片资产')
         if node.kind == 'video':
             node.storyboard = scene_storyboard(node)
             node.prompt = compile_creative_video(node)
+    validate_edit_sources(proposal.plan, request)
     if request.repair:
         bind_prepared_identity(proposal.plan, request)
         validate_repair_scope(proposal.plan, request)
@@ -676,6 +683,7 @@ async def propose_creation(request: PlanningRequest, trace_store=None, on_progre
         if request.repair:
             auto_prompt += '\nnode_context中的review_contract是返工前冻结的验收要求，图片节点content由执行器保留，不可通过改写content新增限制或降低标准。仅调整执行prompt、参考分工、模板及必要的辅助图片。repair.findings包含已校验来源的要求原文与候选的可见问题；观察结论仍须对照真实图片，不得将返工猜测写成新的人物设定。'
             auto_prompt += reference_preparation_guidance(request)
+            auto_prompt += DRAFT_EDIT_GUIDANCE
 
         completion = PlanningCompletion(provider, report, streaming=bool(on_progress))
         usage = completion.usage

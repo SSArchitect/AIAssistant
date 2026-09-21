@@ -37,6 +37,9 @@ func automaticRepairLocks(doc creativeDocument, nodeID string) []string {
 }
 
 func validateAutomaticRepair(doc creativeDocument, plan bridge.CreativePlan, req bridge.CreationPlanningRequest) error {
+	if err := validateEditSources(doc, plan, req); err != nil {
+		return err
+	}
 	// New scene prerequisites are needed when review detects a missing location.
 	// Keep the original delivery nodes in order and prohibit unrelated additions.
 	original := map[string]bridge.CreativeNode{}

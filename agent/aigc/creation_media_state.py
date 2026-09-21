@@ -14,7 +14,11 @@ STATE_DIR = Path(__file__).resolve().parents[2] / 'data/creation-media-tasks'
 
 class CreationMediaState:
     def __init__(self, request):
-        fingerprint = hashlib.sha256((request.model_dump_json(exclude={'resume_task_id'}) + '\n' + runtime_config.get('aigc.spark.base_url')).encode()).hexdigest()
+        excluded = {'resume_task_id'}
+        # Preserve pre-edit fingerprints so accepted jobs still resume after upgrade.
+        if not getattr(request, 'image_operation', ''):
+            excluded.add('image_operation')
+        fingerprint = hashlib.sha256((request.model_dump_json(exclude=excluded) + '\n' + runtime_config.get('aigc.spark.base_url')).encode()).hexdigest()
         self.path = STATE_DIR / (hashlib.sha256(request.idempotency_key.encode()).hexdigest() + '.json')
         self.record = dict(fingerprint=fingerprint, task_id='', stage='submitting')
         STATE_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)

@@ -41,11 +41,14 @@ class CreationNodeRequest(BaseModel):
     resume_task_id: str = Field(default='', max_length=128, pattern=r'^[A-Za-z0-9_-]*$')
     video_mode: Literal['', 'text_to_video', 'image_to_video', 'reference_to_video'] = ''
     storyboard: VideoStoryboard | None = None
+    image_operation: Literal['', 'edit'] = ''
 
     @model_validator(mode='after')
     def validate_inputs(self):
         if not self.prompt.strip():
             raise ValueError('请输入提示词')
+        if self.image_operation and (self.kind != 'image' or len(self.input_images) != 1 or self.image_references or self.character_style):
+            raise ValueError('局部编辑仅使用一张待修草稿，不混用参考职责或人物模板')
         if self.kind == 'image' and len(self.input_images) > 3:
             raise ValueError('生图节点最多引用三张图片')
         if self.character_style and (self.kind != 'image' or len(self.input_images) != 1 or self.image_purpose == 'shot_reference'):
@@ -100,7 +103,11 @@ async def _execute_node(request: CreationNodeRequest, *, resume_task_id=None, pr
         options = dict(provider='spark', prompt=request.prompt, aspect_ratio=request.aspect_ratio,
                        idempotency_key=request.idempotency_key)
         reference = request.image_references[0] if request.image_references else None
-        if len(request.input_images) > 1 or (request.input_images and (request.image_purpose == 'shot_reference' or (reference and reference.role in {'environment','composition'})
+        if request.image_operation == 'edit':
+            # The draft is a working canvas, not an identity/pose reference.
+            # Preserve its pixels and the explicit edit instruction verbatim.
+            options.update(mode='reference_to_image', reference_image_data_urls=request.input_images)
+        elif len(request.input_images) > 1 or (request.input_images and (request.image_purpose == 'shot_reference' or (reference and reference.role in {'environment','composition'})
                 or (request.image_purpose=='character' and reference and reference.role=='identity' and not request.character_style))):
             from agent.aigc.creation_reference_images import prepare_reference_image
             options.update(await prepare_reference_image(request, resume=bool(resume_task_id)))

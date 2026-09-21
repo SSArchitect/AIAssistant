@@ -28,6 +28,10 @@ func TestCreationBridgeContract(t *testing.T) {
 	if err != nil || result.ProviderTaskID != "job" || got.IdempotencyKey != "run-node" || len(got.InputImages) != 1 {
 		t.Fatalf("bad boundary: %+v %+v %v", got, result, err)
 	}
+	result, err = client.CreateMedia(context.Background(), CreationNodeRequest{Kind: "image", ImageOperation: "edit", Prompt: "shrink only rider", InputImages: []string{"data:image/png;base64,YQ=="}, IdempotencyKey: "edit-node", ResumeTaskID: "accepted-edit"})
+	if err != nil || result.ProviderTaskID != "job" || got.ImageOperation != "edit" || got.ResumeTaskID != "accepted-edit" || got.Prompt != "shrink only rider" {
+		t.Fatal("lost draft edit operation or resume identity", got, err)
+	}
 }
 func TestCreationBridgeFailureAndCancellation(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(502); w.Write([]byte("secret")) }))

@@ -174,6 +174,9 @@ func validateCreativePlan(plan bridge.CreativePlan, allowed map[string]bool) err
 		if node.AssetID != "" && !allowed[node.AssetID] {
 			return errors.New("方案引用了未提供的资产")
 		}
+		if node.EditSourceAssetID != "" && (node.Kind != "image" || node.AssetID != "" || node.CharacterStyle != "" || !allowed[node.EditSourceAssetID] || strings.TrimSpace(node.Prompt) == "" || strings.TrimSpace(node.Content) == "") {
+			return errors.New("无效的待修草稿，编辑不能绑定成品或人物转换模板")
+		}
 		refs := map[string]bool{}
 		for _, ref := range node.References {
 			if (ref.AssetID == "") == (ref.NodeID == "") {
@@ -466,7 +469,7 @@ func (h *CreationHandler) ProjectMessage(c *gin.Context) {
 	}
 	planningReq.NodeContext = map[string]map[string]interface{}{}
 	for id, state := range doc.States {
-		planningReq.NodeContext[id] = map[string]interface{}{"revision": state.Revision, "approved": creativeApproved(state), "selected_asset_id": state.SelectedAssetID, "candidate_count": len(state.Candidates)}
+		planningReq.NodeContext[id] = map[string]interface{}{"revision": state.Revision, "approved": creativeApproved(state), "selected_asset_id": state.SelectedAssetID, "candidate_count": len(state.Candidates), "candidate_asset_ids": state.Candidates}
 	}
 	go h.planProject(planner, row, planningReq)
 	c.JSON(202, gin.H{"project": row})
@@ -501,6 +504,9 @@ func (h *CreationHandler) planProject(planner creationPlanner, submitted models.
 	}
 	if err == nil && response != nil {
 		err = validateCreativePlan(response.Plan, allowed)
+		if err == nil {
+			err = validateEditSources(doc, response.Plan, request)
+		}
 		if err == nil && request.RequireVideoScenes {
 			err = validateVideoScenes(response.Plan, request.LockedNodeIDs)
 		}
@@ -543,6 +549,8 @@ func (h *CreationHandler) creativeInputs(user string, doc creativeDocument, node
 		ids = append(ids, node.AssetID)
 	} else if node.Kind == "image" && doc.States[node.ID].SelectedAssetID != "" {
 		ids = append(ids, doc.States[node.ID].SelectedAssetID)
+	} else if node.Kind == "image" && node.EditSourceAssetID != "" {
+		ids = append(ids, node.EditSourceAssetID)
 	}
 	if node.Kind == "video" || node.Kind == "image" && len(ids) == 0 {
 		for _, ref := range node.References {
@@ -706,6 +714,9 @@ func (h *CreationHandler) prepareProjectRun(row models.CreationProject, doc crea
 	if !ok || node.Kind == "text" || node.AssetID != "" {
 		return nil, &creationSubmissionError{400, fmt.Sprint("此节点不能生成媒体")}
 	}
+	if err := h.validateDraftContext(row, doc, node); err != nil {
+		return nil, &creationSubmissionError{400, err.Error()}
+	}
 	if len(doc.Plan.Questions) > 0 {
 		return nil, &creationSubmissionError{409, fmt.Sprint("请先回答创作助手的问题，确定方案后再生成")}
 	}
@@ -773,6 +784,10 @@ func (h *CreationHandler) prepareProjectRun(row models.CreationProject, doc crea
 		}
 	}
 	graph := creationGraph{Nodes: []creationNode{{ImagePurpose: imagePurpose, ID: node.ID, Kind: node.Kind, Name: node.Title, Prompt: node.Prompt, Count: node.Count, AspectRatio: node.AspectRatio, DurationSeconds: node.DurationSeconds, CharacterStyle: node.CharacterStyle, Inputs: []string{}, AssetIDs: ids, ImageReferences: imageReferences, InputHashes: hashes, VideoMode: mode, Storyboard: node.Storyboard}}}
+	if node.EditSourceAssetID != "" {
+		graph.Nodes[0].ImageOperation = "edit"
+		graph.Nodes[0].ImageReferences = nil
+	}
 	if err = validateCreationGraph(graph, true); err != nil {
 		return nil, &creationSubmissionError{400, fmt.Sprint(err)}
 	}
