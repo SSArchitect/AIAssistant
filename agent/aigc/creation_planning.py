@@ -28,6 +28,7 @@ from agent.aigc.creation_completion import PlanningCompletion
 from agent.aigc.creation_contract import planning_schema
 from agent.aigc.creation_repair_scope import validate_repair_scope
 from agent.aigc.creation_repair_strategy import reference_preparation_guidance, bind_prepared_identity
+from agent.aigc.creation_active_task import active_planning_task
 from agent.aigc.creation_review_evidence import ReviewFinding
 from agent.aigc.creation_node_repair import repair_draft_nodes
 from agent.aigc.creation_partition import partition_proposal, incomplete_json
@@ -663,6 +664,9 @@ async def propose_creation(request: PlanningRequest, trace_store=None, on_progre
             if asset.data_url and asset.mime_type.startswith('image/'):
                 parts.extend([{'type': 'text', 'text': f'资产 {asset.id}: {asset.name}'},
                               {'type': 'image_url', 'image_url': {'url': image_preview(asset.data_url)}}])
+        # Keep the active instruction last, outside the serialized long history
+        # and after reference previews. First two messages survive node repair.
+        parts.append(active_planning_task(request))
         auto_prompt = ('\n用户已授权一键生成：未确认的常规选项由你判断并确定，清空已解决的 questions；不得改变 locked_node_ids 中任何节点及其依赖。不要生成审批字段或直接生成媒体。必需信息缺失或能力不支持时保留具体问题。' if request.automatic_mode else '')
         if request.require_video_scenes:
             auto_prompt += '\n场景准备是本轮必需工作：每个未锁定视频必须按剧情中的实际地点与环境变化准备一个或多个 purpose=scene 图片节点，依赖对应脚本，以相同画幅生成一个具体地点的环境建立镜头，count=1，明确空间结构、前中后景、光线、色彩与关键环境物件，默认无人；禁止把人设图、角色特写、三视图作为场景。场景节点 character_style 为空，可引用已确认主视觉的 style；也可用environment或composition引用其他scene图片节点的真实环境与空间结构，声明depends_on，默认无人。不能引用角色identity或未分类资产的主体像素。视频依赖并以 reference 引用自己的场景节点，保留其余角色 identity 与画风 style 的职责和编号；场景不自动成为精确首帧。每段发生换场时按需要增加场景。相同地点要延续建筑、地形、光线规则，可跨视频复用同一已确认场景节点。现有视频补场景时 patch.nodes 可新增节点并更新对应 depends_on/references/storyboard，系统按新增依赖插入；不要仅因补场景改动无关的已确认内容或原台词；非自动模式仍执行用户本轮明确要求的修改。不要仅在文字里说已有场景，必须创建真实图片节点并连线。'
