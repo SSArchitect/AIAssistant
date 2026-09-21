@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from agent.aigc.creation_output import structured_options, thinking_options, unsupported_schema
 from agent.aigc.creation_review_evidence import ReviewEvidenceError
 from agent.llm.base import LLMMessage
+from agent.aigc.creation_json import parse_complete_object
 
 
 class CriterionCheck(BaseModel):
@@ -59,7 +60,7 @@ async def check_rejection_criteria(provider, findings, sources, usage):
         try:
             if response.finish_reason == 'length':
                 raise ValueError('incomplete')
-            checks = CriteriaChecks.model_validate_json(response.content).checks
+            checks = CriteriaChecks.model_validate(parse_complete_object(response.content)[0]).checks
             if sorted(c.finding_index for c in checks) != list(range(len(findings))):
                 raise ValueError('coverage')
         except ValueError:

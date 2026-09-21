@@ -15,6 +15,7 @@ from agent.llm.factory import create_provider
 from agent.aigc.creation_review_evidence import ReviewFinding, ReviewEvidenceError, requirement_sources, validate_image_findings
 from agent.aigc.creation_review_geometry import approximate_scale_contract, locate_subjects, review_preview, measured_scale_rejection
 from agent.aigc.creation_review_criteria import check_rejection_criteria
+from agent.aigc.creation_json import parse_complete_object
 
 router = APIRouter()
 
@@ -221,7 +222,12 @@ async def review_creation(request: ReviewRequest, trace_store=None):
                 for key,value in response.usage.items():usage[key]=usage.get(key,0)+value
                 try:
                     if response.finish_reason == 'length': raise ValueError('审阅结果未完整返回')
-                    decision = ReviewDecision.model_validate_json(response.content)
+                    value, repaired = parse_complete_object(response.content)
+                    decision = ReviewDecision.model_validate(value)
+                    if repaired and trace_store:
+                        trace_store.append_event(run.run_id, type='creation.review.syntax_repaired',
+                            status='completed', title='恢复审阅回复格式',
+                            payload={'stage':stage, 'inserted_colons':repaired})
                     if request.candidate_ids and decision.decision == 'approve': raise ValueError('请通过 select 选中具体候选')
                     if decision.decision == 'select' and decision.asset_id not in request.candidate_ids: raise ValueError('只能选择提供的候选图片')
                     if decision.decision != 'select' and decision.asset_id: raise ValueError('非选图决策不应设置资产')
