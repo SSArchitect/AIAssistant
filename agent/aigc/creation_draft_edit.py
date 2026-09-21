@@ -1,4 +1,5 @@
 """Working drafts retain provenance without becoming approved references."""
+from agent.aigc.creation_edit_attempts import exhausted_edit_task
 
 DRAFT_EDIT_GUIDANCE = '''
 图片返工有两种操作：重新生成，或编辑当前节点的待修草稿。候选已基本符合身份、环境与构图、仅有可局部修正的问题（如人物占比）时，优先考虑局部编辑，避免整张重画丢失正确内容。
@@ -13,6 +14,8 @@ def localized_repair_guidance(request):
     Do not compete with the staged identity strategy when the review reports
     global defects, the source is unavailable, or an edit is already underway.
     """
+    if exhausted_edit_task(request):
+        return ''
     repair = request.repair
     if not request.automatic_mode or not repair or repair.attempt < 3 or not repair.findings:
         return ''
@@ -42,10 +45,13 @@ def validate_edit_sources(plan, request):
         return
     previous = {n.id: n for n in CreativePlan.model_validate(omit_null_fields(request.current_plan)).nodes}
     proposed = {n.id: n for n in plan.nodes}
+    exhausted = exhausted_edit_task(request)
     for node in plan.nodes:
         source = node.edit_source_asset_id
         if not source:
             continue
+        if exhausted and node.id == request.repair.node_id:
+            raise ValueError('节点 ' + node.id + ' 连续三次编辑仍未通过同一要求，请清空edit_source_asset_id并重新规划生成。')
         before = previous.get(node.id)
         if not before or before.kind != 'image':
             raise ValueError('编辑草稿必须来自当前已有图片节点：' + node.id)
@@ -85,6 +91,8 @@ def validate_edit_sources(plan, request):
 
 def draft_edit_task(request):
     """Separate this edit operation from all remaining acceptance findings."""
+    if exhausted_edit_task(request):
+        return None
     repair = request.repair
     if not request.automatic_mode or not repair or not repair.findings:
         return None

@@ -45,7 +45,7 @@ async def test_automatic_repair_feedback_and_locked_scope_reach_planner(monkeypa
     result=await planning.propose_creation(request(current_plan=value,automatic_mode=True,locked_node_ids=['script','video'],repair=feedback))
     system,user=provider.chat.call_args.args[0]
     payload=json.loads(user.content[0]['text'])
-    assert payload['repair']==feedback and '身份保留模板' in system.content
+    assert payload['repair']=={**feedback,'execution':None,'previous_attempts':[]} and '身份保留模板' in system.content
     assert result.plan.nodes[1].prompt.startswith('round red')
 
 

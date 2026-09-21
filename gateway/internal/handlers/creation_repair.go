@@ -160,6 +160,8 @@ func (h *CreationHandler) repairAutomatic(ctx context.Context, row models.Creati
 	}
 	feedback := bridge.CreationRepairFeedback{NodeID: node.ID, Reason: reason, CandidateIDs: append([]string{}, candidates...), Attempt: doc.Automation.RepairCounts[node.ID] + 1, PreviousFeedback: []string{}}
 	feedback.Findings = findings
+	feedback.Execution = h.repairExecution(row, node.ID, candidates)
+	feedback.PreviousAttempts = h.repairAttempts(row, node.ID, doc.Automation.Repairs)
 	for _, earlier := range doc.Automation.Repairs {
 		if earlier.NodeID == node.ID {
 			feedback.PreviousFeedback = append(feedback.PreviousFeedback, earlier.Reason)
@@ -173,6 +175,7 @@ func (h *CreationHandler) repairAutomatic(ctx context.Context, row models.Creati
 	// The request includes recent feedback; persisted history does not nest it.
 	history := feedback
 	history.PreviousFeedback = nil
+	history.PreviousAttempts = nil
 	doc.Automation.Repairs = append(doc.Automation.Repairs, history)
 	if len(doc.Automation.Repairs) > 20 {
 		doc.Automation.Repairs = doc.Automation.Repairs[len(doc.Automation.Repairs)-20:]

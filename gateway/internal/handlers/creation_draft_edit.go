@@ -20,6 +20,9 @@ func validateEditSources(doc creativeDocument, plan bridge.CreativePlan, req bri
 		if node.EditSourceAssetID == "" {
 			continue
 		}
+		if req.Repair != nil && req.Repair.NodeID == node.ID && exhaustedEdits(req) {
+			return errors.New("连续三次编辑仍未通过同一要求，请清空编辑来源并重新规划生成")
+		}
 		before, exists := creativeNode(doc, node.ID)
 		if !exists || before.Kind != "image" || node.Kind != "image" {
 			return errors.New("编辑草稿必须来自当前已有图片节点")

@@ -114,12 +114,24 @@ type PlanningAsset struct {
 	DataURL  string `json:"data_url,omitempty"`
 }
 type CreationRepairFeedback struct {
-	Findings         []CreationReviewFinding `json:"findings,omitempty"`
-	NodeID           string                  `json:"node_id"`
-	Reason           string                  `json:"reason"`
-	CandidateIDs     []string                `json:"candidate_ids"`
-	Attempt          int                     `json:"attempt"`
-	PreviousFeedback []string                `json:"previous_feedback"`
+	Execution        *CreationRepairExecution `json:"execution,omitempty"`
+	PreviousAttempts []CreationRepairAttempt  `json:"previous_attempts,omitempty"`
+	Findings         []CreationReviewFinding  `json:"findings,omitempty"`
+	NodeID           string                   `json:"node_id"`
+	Reason           string                   `json:"reason"`
+	CandidateIDs     []string                 `json:"candidate_ids"`
+	Attempt          int                      `json:"attempt"`
+	PreviousFeedback []string                 `json:"previous_feedback"`
+}
+type CreationRepairExecution struct {
+	Operation         string `json:"operation"`
+	EditSourceAssetID string `json:"edit_source_asset_id,omitempty"`
+}
+type CreationRepairAttempt struct {
+	Attempt      int                      `json:"attempt"`
+	CandidateIDs []string                 `json:"candidate_ids"`
+	Findings     []CreationReviewFinding  `json:"findings,omitempty"`
+	Execution    *CreationRepairExecution `json:"execution,omitempty"`
 }
 type CreationPlanningRequest struct {
 	RequireShotReferences bool                              `json:"require_shot_references,omitempty"`
