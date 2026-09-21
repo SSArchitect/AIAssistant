@@ -184,10 +184,11 @@ async def test_reference_role_citations_do_not_repeat_review_or_promote_executio
     response=LLMResponse(content=json.dumps(dict(decision='revise',reason='身份不符',asset_id='',findings=[dict(
         candidate_id='candidate',category='identity',source_id='reference:identity:identity',
         requirement_quote='自动生成的参考备注：额外禁止手持剑',observation='角色耳朵与实际人设不同')]),ensure_ascii=False))
-    provider=SimpleNamespace(chat=AsyncMock(return_value=response))
+    provider=SimpleNamespace(chat=AsyncMock(side_effect=[response,response,LLMResponse(content=json.dumps(
+        dict(checks=[dict(finding_index=0,supported=True,reason='身份参考要求保持角色耳朵特征')])))]))
     monkeypatch.setattr(review,'create_provider',lambda:provider)
     result=await review.review_creation(req)
-    assert result.decision=='revise' and provider.chat.await_count==2
+    assert result.decision=='revise' and provider.chat.await_count==3
     assert result.findings[0].requirement_quote=='保持参考中的角色身份、服装和道具特征，不复制其排版或背景。'
     assert '额外禁止' not in result.reason
 
@@ -298,12 +299,13 @@ async def test_image_rejection_is_checked_against_original_pixels_before_expensi
         LLMResponse(content=json.dumps({'decision':second,'asset_id':'candidate' if second=='select' else '',
             'reason':'与参考一致' if second=='select' else '确有身份错误',
             'findings':[] if second=='select' else [dict(candidate_id='candidate',category='identity',source_id='target',
-                requirement_quote='保持参考中的护手',observation='候选护手形状与参考不一致')]}),usage={'total_tokens':20})]))
+                requirement_quote='保持参考中的护手',observation='候选护手形状与参考不一致')]}),usage={'total_tokens':20}),
+        LLMResponse(content=json.dumps(dict(checks=[dict(finding_index=0,supported=True,reason='护手是明确要求')])))]))
     monkeypatch.setattr(review,'create_provider',lambda:provider)
     result=await review.review_creation(req)
-    assert result.decision==expected and provider.chat.await_count==2
+    assert result.decision==expected and provider.chat.await_count==(3 if second=='revise' else 2)
     assert result.tokens_used['total_tokens']==30 and req.model_dump()==before
-    messages=provider.chat.call_args.args[0]
+    messages=provider.chat.call_args_list[1].args[0]
     assert all(m.role!='assistant' for m in messages), 'fresh verification must not inherit the first answer as fact'
     assert any(p['type']=='image_url' for p in messages[1].content)
     assert '不是已确认事实' in messages[-1].content

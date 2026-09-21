@@ -63,6 +63,8 @@ def validate_image_findings(decision, candidates, sources, *, scale_contract=Non
         if not source:
             raise ReviewEvidenceError('unknown_source', '未知source_id：' + finding.source_id[:100] + '；只能使用review_requirements的键')
         if finding.source_id.startswith('reference:'):
+            if finding.source_id.endswith(':identity') and finding.category not in {'identity', 'artifact'}:
+                raise ReviewEvidenceError('reference_role', '身份参考不能作为动作、位置、比例或环境要求；若原目标或脚本明确要求该姿态，请改为引用对应原文，不能复制参考姿势作为新条件')
             # A visible reference has one program-owned role rule. Asking the
             # model to copy it invites confusion with mutable execution notes.
             # Never promote those notes into new acceptance requirements.

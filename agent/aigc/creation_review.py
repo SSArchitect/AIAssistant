@@ -14,6 +14,7 @@ from agent.llm.base import LLMMessage
 from agent.llm.factory import create_provider
 from agent.aigc.creation_review_evidence import ReviewFinding, ReviewEvidenceError, requirement_sources, validate_image_findings
 from agent.aigc.creation_review_geometry import approximate_scale_contract, locate_subjects, review_preview, measured_scale_rejection
+from agent.aigc.creation_review_criteria import check_rejection_criteria
 
 router = APIRouter()
 
@@ -227,6 +228,8 @@ async def review_creation(request: ReviewRequest, trace_store=None):
                     if len(request.candidate_ids)>1 and decision.decision=='select' and measured_scale_rejection(scale_contract,geometry,decision.asset_id):
                         raise ReviewEvidenceError('selected_scale_out_of_range','所选候选的独立比例测量超出原约数要求区间；请检查其他候选，不能因一个候选不符而拒绝尚未评估的其他候选')
                     validate_image_findings(decision, request.candidate_ids, sources,scale_contract=scale_contract,geometry=geometry)
+                    if stage == 'verify' and request.candidate_ids and decision.decision == 'revise':
+                        await check_rejection_criteria(provider, decision.findings, sources, usage)
                     return decision, response.model
                 except ValueError as exc:
                     if trace_store:
