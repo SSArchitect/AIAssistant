@@ -130,6 +130,25 @@ async def test_local_edit_strategy_does_not_compete_with_pose_reference_preparat
     assert '需要分步准备参考' not in instructions
 
 
+@pytest.mark.parametrize('existing', [False, True])
+def test_active_edit_task_separates_one_operation_from_full_acceptance(existing):
+    from agent.aigc.creation_active_task import active_planning_task
+    req=editing_request(); req.assets[-1].data_url=PNG
+    req.repair.findings.append(req.repair.findings[0].model_copy(update={'category':'composition'}))
+    if existing:
+        req.current_plan['nodes'][1]['edit_source_asset_id']='old-draft'
+        req.repair.attempt=1
+    before=copy.deepcopy(req.model_dump())
+    value=json.loads(active_planning_task(req)['text'].split('\n',1)[1])
+    operation=value['current_operation']
+    assert operation['focus']=='scale'
+    assert [f['category'] for f in operation['active_findings']]==['scale']
+    assert [f['category'] for f in operation['deferred_findings']]==['composition']
+    assert len(value['repair']['findings'])==2 and req.model_dump()==before
+    req.repair.findings[1].category='identity'
+    assert 'current_operation' not in json.loads(active_planning_task(req)['text'].split('\n',1)[1])
+
+
 @pytest.mark.parametrize('case', ['video', 'text', 'adopt', 'stylize', 'no_requirements'])
 def test_invalid_edit_combinations_are_rejected(case):
     node = dict(id='n', kind='image', title='n', content='Original creative requirement', prompt='Edit', edit_source_asset_id='draft')

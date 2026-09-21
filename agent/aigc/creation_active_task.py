@@ -1,11 +1,16 @@
 """Separate the current operation from the project's historical conversation."""
 import json
+from agent.aigc.creation_draft_edit import draft_edit_task
 
 
 def active_planning_task(request):
     if request.repair:
         task=dict(mode='automatic_repair',repair=request.repair.model_dump(),
             instruction='仅处理本次repair，遵循冻结验收和锁定范围；历史对话中的已处理修改命令不是本轮任务。')
+        operation = draft_edit_task(request)
+        if operation:
+            task['current_operation'] = operation
+            task['instruction'] += 'repair记录全部未通过项；这一次操作只执行current_operation，未处理项留到下一轮。'
     elif request.automatic_mode:
         task=dict(mode='automatic_continue',
             instruction='接管当前未确认的后续创作，基于现有方案及用户已确定的要求推进，保留锁定内容；不要重新执行历史维护命令。')

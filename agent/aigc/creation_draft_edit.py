@@ -74,3 +74,27 @@ def validate_edit_sources(plan, request):
             allowed = [state.get('selected_asset_id', '')] + state.get('candidate_asset_ids', [])
         if source not in allowed:
             raise ValueError('待修草稿必须是当前节点自己的候选：' + node.id)
+
+
+def draft_edit_task(request):
+    """Separate this edit operation from all remaining acceptance findings."""
+    repair = request.repair
+    if not request.automatic_mode or not repair or not repair.findings:
+        return None
+    node = next((n for n in request.current_plan.get('nodes', []) if n['id'] == repair.node_id), None)
+    if not node or node['id'] in request.locked_node_ids or node.get('kind') != 'image':
+        return None
+    if not node.get('edit_source_asset_id') and not localized_repair_guidance(request):
+        return None
+    candidates = set(repair.candidate_ids)
+    if (not candidates or not candidates <= {a.id for a in request.assets if a.data_url}
+            or {f.candidate_id for f in repair.findings} != candidates
+            or any(f.category not in {'scale', 'action', 'composition'} or f.source_id.endswith(':environment') for f in repair.findings)):
+        return None
+    focus = next(category for category in ('scale', 'action', 'composition') if any(f.category == category for f in repair.findings))
+    return dict(operation='edit_draft', focus=focus, candidate_ids=repair.candidate_ids,
+        active_findings=[f.model_dump() for f in repair.findings if f.category == focus],
+        deferred_findings=[f.model_dump() for f in repair.findings if f.category != focus],
+        instruction='本轮prompt只处理active_findings；deferred_findings保留给下一轮，不能混入本轮编辑指令。'
+        'focus=scale时仅等比缩放主体与道具整体，写当前尺寸的缩放比例和目标画高占比，明确保留现有姿态、朝向、表情、身份与场景。'
+        '不要因deferred_findings要求旋转或重塑角色，不复述完整人设。不改变原验收内容、参考或画幅。每轮仍复审全部要求。')
