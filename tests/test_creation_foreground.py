@@ -158,3 +158,36 @@ async def test_maximum_subject_and_reference_notes_fit_both_generation_requests(
     monkeypatch.setattr(fg,'foreground_client',lambda:SimpleNamespace(generate=child))
     req=request(image_layout=[{**PLACEMENT,'composite_mode':'foreground_v1','subject_prompt':'兔'*1800}],image_references=[dict(role='environment'),dict(role='identity',note='姿'*500)],idempotency_key='x'*128)
     _,prepared=await layout.prepare_region(req);assert len(prepared['prompt'])<=4000
+
+
+@pytest.mark.asyncio
+async def test_foreground_v2_isolates_environment_and_uses_one_recoverable_job(monkeypatch,tmp_path):
+    from agent.aigc import creation_foreground as fg
+    monkeypatch.setattr(state,'STATE_DIR',tmp_path)
+    inspector=AsyncMock(side_effect=lambda image,*args:image)
+    monkeypatch.setattr(fg,'isolated_identity_view',inspector)
+    monkeypatch.setattr(fg,'foreground_client',lambda:pytest.fail('v2 must not launch an intermediate job'))
+    calls=[]
+    async def final(req,**kw):
+        calls.append(req)
+        assert len(req.reference_image_data_urls)==1
+        if len(calls)==1:
+            canvas=layout.read_image(req.reference_image_data_urls[0])
+            assert canvas.size==(512,512) and canvas.getpixel((0,0))==(255,0,255)
+            assert canvas.getpixel((256,256))==(255,255,255)
+            assert not np.any(np.all(np.asarray(canvas)==(114,102,82),axis=2))
+            assert 'SCENE_NOTE_DO_NOT_CONDITION' not in req.prompt
+            assert 'warm golden light' in req.prompt
+            emit_progress(task_id='single-real',stage='running')
+            raise SparkProviderError('disconnected',code='connection_failed',task_id='single-real')
+        assert kw=={'resume_task_id':'single-real'}
+        return SimpleNamespace(id='single-real',images=[SimpleNamespace(base64=base64.b64encode(layout.png_bytes(keyed())).decode(),mime_type='image/png')])
+    monkeypatch.setattr(creation,'generate_image',final)
+    req=request(image_layout=[{**PLACEMENT,'composite_mode':'foreground_v2','subject_prompt':'rear rider with warm golden light'}],image_references=[dict(role='environment'),dict(role='identity',note='SCENE_NOTE_DO_NOT_CONDITION')])
+    with pytest.raises(SparkProviderError):await creation.execute_node(req)
+    assert state.CreationMediaState(req).task_id=='single-real'
+    result=await creation.execute_node(req)
+    assert result['provider_task_id']=='single-real'
+    assert len(calls)==2 and inspector.await_count==1
+    assert not list(tmp_path.glob('*.foreground.png'))
+    assert Image.open(BytesIO(base64.b64decode(result['content']))).size==(576,1024)

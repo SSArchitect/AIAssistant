@@ -21,7 +21,7 @@ func (h *CreationHandler) repairInvalidForeground(ctx context.Context, run model
 		return true, false, err
 	}
 	node, exists := creativeNode(doc, run.ProjectNodeID)
-	if !exists || len(node.ImageLayout) != 1 || node.ImageLayout[0].CompositeMode != "foreground_v1" {
+	if !exists || len(node.ImageLayout) != 1 || (node.ImageLayout[0].CompositeMode != "foreground_v1" && node.ImageLayout[0].CompositeMode != "foreground_v2") {
 		h.mu.Unlock()
 		return false, false, nil
 	}

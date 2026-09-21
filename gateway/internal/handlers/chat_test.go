@@ -209,6 +209,10 @@ func TestChatSyncsSettingsBeforeAgentRequest(t *testing.T) {
 					}
 				]
 			}`))
+		case "/agent/followups":
+			// Super Chat schedules this independently after its main answer.
+			// It is a valid request regardless of whether it races server close.
+			_, _ = w.Write([]byte(`{"questions":[]}`))
 		default:
 			t.Fatalf("unexpected path: %s", r.URL.Path)
 		}

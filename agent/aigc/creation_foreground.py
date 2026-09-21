@@ -74,6 +74,7 @@ def save_private(path, raw):
 
 async def prepare_foreground(request, original, crop, identity, ref, index, *, resume):
     placement=request.image_layout[0]
+    version=placement.composite_mode.replace('_','-')
     key_name=choose_key(read_image(identity),placement.subject_prompt)
     region=ForegroundRegion(original,placement,key_name)
     options=dict(mode='reference_to_image',aspect_ratio='1:1',width=512,height=512)
@@ -82,7 +83,27 @@ async def prepare_foreground(request, original, crop, identity, ref, index, *, r
         # with the Provider; never regenerate/reinspect the intermediate here.
         return region,dict(options,prompt='Resume accepted foreground completion',reference_image_data_urls=[identity])
     emit_progress(stage='preparing_foreground')
-    identity=await isolated_identity_view(identity,ref,placement.subject_prompt,request.idempotency_key+':foreground-v1:'+str(index))
+    identity=await isolated_identity_view(identity,ref,placement.subject_prompt,request.idempotency_key+':'+version+':'+str(index))
+    if placement.composite_mode=='foreground_v2':
+        # Environment pixels never enter foreground generation. Give the model
+        # a pre-padded identity canvas rather than asking it to infer margins.
+        source=read_image(identity)
+        source.thumbnail((300,300),Image.Resampling.LANCZOS)
+        padded=Image.new('RGB',(512,512),KEYS[key_name][0])
+        padded.paste(source,((512-source.width)//2,(512-source.height)//2))
+        prompt=('Edit this exact padded canvas. Keep the existing subject and its owned props at their current small centered scale, '
+            'surrounded by wide '+key_name+' margins. Turn the subject to the target pose below. Do not enlarge or zoom in. '
+            'Remove the source background rectangle behind the subject and replace it with the same solid '+key_name+' as the outer canvas. '
+            'Preserve the entire subject and owned props, including all tips and ends, with their complete natural shapes. '
+            'Preserve the reference identity and costume as specified by this target action: '+placement.subject_prompt+'\n'
+            'Entire subject and props contained, approximately 55 percent of square image height. '
+            'Apply the requested lighting on the subject and props only. Replace the entire source background with perfectly flat uniform bright '
+            +key_name.upper()+' chroma key RGB'+str(KEYS[key_name][0])+', including the spaces between limbs and props. '
+            'No environment, landscape, floor, shadow or fog on the backdrop, no sheet layout, no border or text. '
+            'Only the subject and its owned props are foreground. Entire subject and props should fit well within the square with empty '
+            +key_name+' margins.')
+        emit_progress(stage='generating_foreground')
+        return region,dict(options,prompt=prompt,reference_image_data_urls=[data(padded)])
     rgb=KEYS[key_name][0]
     prompt=('Create one isolated subject for compositing. Picture 1 provides ONLY lighting and rendering style, never its landscape. '
         'Picture 2 provides identity, costume and owned props, never its studio background or sheet layout. '
@@ -94,7 +115,7 @@ async def prepare_foreground(request, original, crop, identity, ref, index, *, r
     # Hashing keeps the derived key below the Provider limit even for a 128-char
     # parent key; it is a distinct stable namespace, never a fabricated task ID.
     import hashlib
-    child_key='foreground-v1-'+hashlib.sha256(request.idempotency_key.encode()).hexdigest()
+    child_key=version+'-'+hashlib.sha256(request.idempotency_key.encode()).hexdigest()
     child=ImageGenerationRequest(provider='spark',prompt=prompt,idempotency_key=child_key,
         reference_image_data_urls=[data(crop),identity],**options)
     checkpoint=CreationMediaState(SimpleNamespace(model_dump_json=child.model_dump_json,idempotency_key=child_key,resume_task_id=''))

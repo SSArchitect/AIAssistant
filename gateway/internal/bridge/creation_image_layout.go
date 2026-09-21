@@ -33,7 +33,7 @@ func ValidateImageLayout(layout []ImagePlacement, aspect, kind, purpose string, 
 		return invalid
 	}
 	p := layout[0]
-	if p.CompositeMode != "" && p.CompositeMode != "foreground_v1" {
+	if p.CompositeMode != "" && p.CompositeMode != "foreground_v1" && p.CompositeMode != "foreground_v2" {
 		return invalid
 	}
 	for _, n := range []float64{p.CenterXPercent, p.CenterYPercent, p.SubjectHeightPercent} {

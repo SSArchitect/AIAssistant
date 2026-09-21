@@ -7,6 +7,12 @@ import (
 )
 
 func TestInvalidForegroundReturnsToPlannerInsteadOfReplayingSameFailedTask(t *testing.T) {
+	for _, mode := range []string{"foreground_v1", "foreground_v2"} {
+		t.Run(mode, func(t *testing.T) { testInvalidForegroundRepair(t, mode) })
+	}
+}
+
+func testInvalidForegroundRepair(t *testing.T, mode string) {
 	r, h, base, token, row := setupAutomatic(t)
 	scene, err := h.saveAsset(row.UserID, "scene.png", creationPNG, "image/png", "upload", "", "", "")
 	if err != nil {
@@ -22,7 +28,7 @@ func TestInvalidForegroundReturnsToPlannerInsteadOfReplayingSameFailedTask(t *te
 	n.Purpose = "shot_reference"
 	n.Count = 1
 	n.References = []bridge.CreativeReference{{AssetID: scene.ID, Role: "environment"}, {AssetID: identity.ID, Role: "identity"}}
-	n.ImageLayout = []bridge.ImagePlacement{{CenterXPercent: 32, CenterYPercent: 18, SubjectHeightPercent: 4, SubjectPrompt: "rear rider", CompositeMode: "foreground_v1"}}
+	n.ImageLayout = []bridge.ImagePlacement{{CenterXPercent: 32, CenterYPercent: 18, SubjectHeightPercent: 4, SubjectPrompt: "rear rider", CompositeMode: mode}}
 	doc.AssetIDs = []string{scene.ID, identity.ID}
 	if err = h.updateProject(&row, doc, false); err != nil {
 		t.Fatal(err)

@@ -12,7 +12,13 @@ import (
 )
 
 func TestImageLayoutBoundaryAndForwarding(t *testing.T) {
-	layout := []ImagePlacement{{CenterXPercent: 25.5, CenterYPercent: 82.6, SubjectHeightPercent: 10, SubjectPrompt: "rear rider", CompositeMode: "foreground_v1"}}
+	for _, mode := range []string{"foreground_v1", "foreground_v2"} {
+		t.Run(mode, func(t *testing.T) { testImageLayoutForwarding(t, mode) })
+	}
+}
+
+func testImageLayoutForwarding(t *testing.T, mode string) {
+	layout := []ImagePlacement{{CenterXPercent: 25.5, CenterYPercent: 82.6, SubjectHeightPercent: 10, SubjectPrompt: "rear rider", CompositeMode: mode}}
 	refs := []ImageReferenceContext{{Role: "environment"}, {Role: "identity"}}
 	if err := ValidateImageLayout(layout, "9:16", "image", "shot_reference", refs, "", false); err != nil {
 		t.Fatal(err)
