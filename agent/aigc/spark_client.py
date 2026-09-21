@@ -46,7 +46,8 @@ class SparkTaskClient:
 
     def __init__(self, base_url: str, api_key: str, *, output_dir: Path = OUTPUT_DIR,
                  timeout: float = 240, poll_interval: float = 2,
-                 transport: httpx.AsyncBaseTransport | None = None):
+                 transport: httpx.AsyncBaseTransport | None = None,
+                 upload_cache_dir: Path | None = None):
         if not base_url.strip():
             raise ValueError("Spark base URL not configured")
         parsed = urlsplit(base_url)
@@ -63,6 +64,8 @@ class SparkTaskClient:
         self.poll_interval = poll_interval
         self.transport = transport
         self._task_ids: dict[str, str] = {}
+        from agent.aigc.spark_uploads import UploadCache
+        self.upload_cache = UploadCache(upload_cache_dir, self.base_url, api_key) if upload_cache_dir else None
 
     async def _request(self, client: httpx.AsyncClient, method: str, path: str, **kwargs) -> httpx.Response:
         for attempt in range(3):
@@ -219,8 +222,22 @@ class SparkTaskClient:
         # Stable across process restarts; changed bytes with the same task key conflict.
         upload_key = "input-" + hashlib.sha256(key.encode()).hexdigest()
         self._report(payload, key, "uploading")
+        payload["input"][asset_field] = await self._upload_asset(client, content, media_type, upload_key)
+
+    async def _upload_asset(self, client, content, media_type, upload_key):
+        from agent.aigc.spark_uploads import UploadConflict
+        if self.upload_cache:
+            try:
+                cached = self.upload_cache.load(upload_key, content, media_type)
+            except UploadConflict:
+                raise SparkProviderError("Upload input changed under its original key", code="idempotency_conflict") from None
+            if cached:
+                return cached
+        # A 1.8 MB production upload took 63 seconds. Upload transport and the
+        # overall submission budget must agree; a longer outer wait alone fails.
         response = await self._request(client, "POST", "/v1/assets", content=content,
-            headers={"Content-Type": media_type, "Idempotency-Key": upload_key})
+            headers={"Content-Type": media_type, "Idempotency-Key": upload_key},
+            timeout=httpx.Timeout(2 * SUBMISSION_TIMEOUT, connect=10))
         try:
             asset = response.json()
             asset_id = asset["id"]
@@ -228,16 +245,21 @@ class SparkTaskClient:
                 raise ValueError()
         except (ValueError, KeyError, TypeError, AttributeError):
             raise SparkProviderError("Spark returned an invalid image asset", code="invalid_response") from None
-        # Expired upload replays are valid: the following task POST may resume an existing task.
-        payload["input"][asset_field] = asset_id
+        # Expired receipts are still valid for replaying an already accepted task.
+        if self.upload_cache:
+            self.upload_cache.save(upload_key, content, media_type, asset_id)
+        return asset_id
 
 
 class SparkImageClient(SparkTaskClient):
     def submission_timeout(self, request=None):
-        # Reference assets are uploaded sequentially before the task is accepted.
-        # Give each upload a bounded transport window, plus one for submission.
-        uploads = len(request.reference_image_data_urls or []) if request is not None and request.mode == 'reference_to_image' else 0
-        return SUBMISSION_TIMEOUT * (1 + uploads)
+        uploads = 0
+        if request is not None:
+            if request.mode == 'reference_to_image' and not request.reference_image_asset_ids:
+                uploads = len(request.reference_image_data_urls or [])
+            elif request.mode in {'image_to_image', 'character_stylization'} and not request.image_asset_id:
+                uploads = int(bool(request.image_data_url))
+        return SUBMISSION_TIMEOUT * (1 + 2 * uploads)
 
     @staticmethod
     def dimensions(request: ImageGenerationRequest) -> tuple[int, int]:
@@ -309,16 +331,7 @@ class SparkImageClient(SparkTaskClient):
         for index, value in enumerate(request.reference_image_data_urls or []):
             content, media_type = decode_image_data_url(value)
             upload_key = 'image-reference-' + hashlib.sha256(f'{key}:{index}'.encode()).hexdigest()
-            response = await self._request(client, 'POST', '/v1/assets', content=content,
-                headers={'Content-Type': media_type, 'Idempotency-Key': upload_key})
-            try:
-                asset = response.json()
-                ident = asset['id']
-                if str(uuid.UUID(ident)) != ident or asset.get('status') not in {'ready', 'expired'}:
-                    raise ValueError()
-            except (ValueError, KeyError, TypeError, AttributeError):
-                raise SparkProviderError('Invalid reference image asset', code='invalid_response') from None
-            ids.append(ident)
+            ids.append(await self._upload_asset(client, content, media_type, upload_key))
         payload['input']['reference_image_asset_ids'] = ids
 
     async def _generate(self, request: ImageGenerationRequest, payload: dict, key: str) -> ImageGenerationResponse:

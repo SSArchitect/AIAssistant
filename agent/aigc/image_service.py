@@ -1,6 +1,7 @@
 """Shared image generation boundary for HTTP, agent workflows and direct tools."""
 from agent.aigc.minimax_client import MiniMaxAIGCClient
 from agent.aigc.spark_client import SparkImageClient
+from agent.aigc.spark_uploads import UPLOAD_CACHE_DIR
 from agent.config import runtime_config
 from agent.schemas.aigc import ImageGenerationRequest, ImageGenerationResponse
 
@@ -8,7 +9,7 @@ from agent.schemas.aigc import ImageGenerationRequest, ImageGenerationResponse
 async def generate_image(request: ImageGenerationRequest, *, resume_task_id=None) -> ImageGenerationResponse:
     provider = request.provider or runtime_config.get("aigc.image_provider", "minimax")
     if provider == "spark":
-        client = SparkImageClient(runtime_config.get("aigc.spark.base_url"), runtime_config.get("aigc.spark.api_key"))
+        client = SparkImageClient(runtime_config.get("aigc.spark.base_url"), runtime_config.get("aigc.spark.api_key"), upload_cache_dir=UPLOAD_CACHE_DIR)
         return await client.generate(request, **({'resume_task_id': resume_task_id} if resume_task_id else {}))
     if provider != "minimax":
         raise ValueError(f"Unknown image provider: {provider}")
