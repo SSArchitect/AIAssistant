@@ -88,6 +88,16 @@ def test_edit_cannot_silently_retain_pixels_when_upstream_requirements_change():
         validate_edit_sources(proposed, req)
 
 
+@pytest.mark.parametrize('field,value', [('references', []), ('aspect_ratio', '1:1')])
+def test_edit_validation_names_exact_immutable_field_for_bounded_repair(field, value):
+    from agent.aigc.creation_output import validation_details
+    req = editing_request()
+    with pytest.raises(ValueError) as caught:
+        planning.parse_proposal(patch(edit_source_asset_id='draft', **{field:value}), req)
+    message = validation_details(caught.value)[0]['msg']
+    assert 'frame' in message and field in message and 'current_plan' in message
+
+
 @pytest.mark.parametrize('case', ['localized', 'composition', 'scene_composition', 'first_try', 'identity', 'environment', 'artifact', 'mixed', 'unseen', 'already_editing', 'locked', 'manual'])
 def test_repeated_local_failures_change_operation_without_forcing_global_repairs(case):
     from agent.aigc.creation_draft_edit import localized_repair_guidance

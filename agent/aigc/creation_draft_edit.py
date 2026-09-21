@@ -51,7 +51,8 @@ def validate_edit_sources(plan, request):
             raise ValueError('编辑草稿必须来自当前已有图片节点：' + node.id)
         for field in ('references', 'depends_on', 'aspect_ratio'):
             if getattr(before, field) != getattr(node, field):
-                raise ValueError('局部编辑不能同时改变原参考关系或画幅，请清空edit_source_asset_id后重新生成：' + node.id)
+                raise ValueError('节点 ' + node.id + ' 的局部编辑改变了只读字段 ' + field +
+                    '；请在patch中将该字段完整恢复为current_plan同节点的原值（包括原note），或清空edit_source_asset_id后重新生成。')
         pending, seen = list(node.depends_on), set()
         while pending:
             dep = pending.pop()
