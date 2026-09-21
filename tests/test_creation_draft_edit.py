@@ -45,6 +45,7 @@ async def test_repair_can_edit_own_candidate_without_promoting_it_to_reference(m
     assert node.content == req.current_plan['nodes'][1]['content']
     assert req.model_dump() == before
     assert 'edit_source_asset_id' in provider.chat.call_args.args[0][0].content
+    assert '一次编辑集中修正一个主要问题' in provider.chat.call_args.args[0][0].content
 
 
 @pytest.mark.parametrize('case', ['foreign', 'other_node', 'new_node', 'unseen', 'locked', 'identity_change'])
