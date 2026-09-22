@@ -82,6 +82,20 @@ def review_validation_details(exc):
         for e in exc.errors(include_input=False, include_context=False)][:10]
 
 
+def review_citation_feedback(exc, decision, sources):
+    """Supply the existing source on a citation repair, without loosening it."""
+    if not isinstance(exc, ReviewEvidenceError) or exc.code != 'quote_mismatch' or decision is None:
+        return ''
+    excerpts, remaining = {}, 8000
+    for finding in decision.findings:
+        source = sources.get(finding.source_id)
+        if source and finding.source_id not in excerpts and remaining:
+            excerpt = source[:min(4000, remaining)]
+            excerpts[finding.source_id] = excerpt
+            remaining -= len(excerpt)
+    return '\n以下仅为已有验收来源的原文摘录，逐字引用其中实际支持问题的片段；不能将引用格式错误当作图片缺陷或新增要求：' + json.dumps(excerpts, ensure_ascii=False)
+
+
 def review_context(request, plan, node):
     """Keep sibling repair drafts out of review and bind pixels to their source."""
     nodes = {n.id: n for n in plan.nodes}
@@ -240,6 +254,7 @@ async def review_creation(request: ReviewRequest, trace_store=None):
                     if not json_only and unsupported_schema(exc): json_only=True;continue
                     raise
                 for key,value in response.usage.items():usage[key]=usage.get(key,0)+value
+                decision = None
                 try:
                     if response.finish_reason == 'length': raise ValueError('审阅结果未完整返回')
                     value, repaired = parse_complete_object(response.content)
@@ -279,7 +294,7 @@ async def review_creation(request: ReviewRequest, trace_store=None):
                             payload={'stage':stage,'attempt':attempt+1,'error_code':review_error(exc)[0],
                                 'validation':review_validation_details(exc)})
                     if attempt==2: raise
-                    dialogue.extend([LLMMessage(role='assistant',content=response.content),LLMMessage(role='user',content='请按 schema 返回有效决策；选择图片时只能使用 candidate_ids 中的 ID，不要修改方案。校验问题：' + str(exc)[:600])])
+                    dialogue.extend([LLMMessage(role='assistant',content=response.content),LLMMessage(role='user',content='请按 schema 返回有效决策；选择图片时只能使用 candidate_ids 中的 ID，不要修改方案。校验问题：' + str(exc)[:600] + review_citation_feedback(exc, decision, sources))])
             raise ValueError('审阅未完成')
 
         stage = 'judge'

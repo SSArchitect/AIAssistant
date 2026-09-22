@@ -47,9 +47,16 @@ func (c *AgentClient) ReviewCreation(ctx context.Context, req CreationReviewRequ
 	}
 	defer response.Body.Close()
 	if response.StatusCode != 200 {
-		return nil, creationResponseError(response.Body, "自动审阅未完成，请稍后继续；已确认内容与生成结果保留")
+		err := creationResponseError(response.Body, "自动审阅未完成，请稍后继续；已确认内容与生成结果保留")
+		if failure, ok := err.(*CreationPlanningError); ok && failure.Code == "" && (response.StatusCode == 502 || response.StatusCode == 503 || response.StatusCode == 504) {
+			failure.Code = "provider_unavailable"
+		}
+		return nil, err
 	}
 	var result CreationReviewResponse
 	err = json.NewDecoder(io.LimitReader(response.Body, 64<<10)).Decode(&result)
-	return &result, err
+	if err != nil {
+		return nil, &CreationPlanningError{Code: "review_invalid_result", Message: creationSafeMessage("review_invalid_result", "", "")}
+	}
+	return &result, nil
 }

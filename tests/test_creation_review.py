@@ -13,6 +13,19 @@ from agent.trace.store import TraceStore
 from tests.test_creation_planning import plan
 
 
+def test_quote_repair_receives_only_existing_bounded_source_text():
+    from agent.aigc.creation_review_evidence import ReviewEvidenceError
+    decision = review.ReviewDecision(decision='revise', reason='需检查', findings=[dict(
+        candidate_id='candidate', category='environment', source_id='target',
+        requirement_quote='模型改写的句子', observation='画面有具体差异')])
+    sources = {'target': '两侧是菌塔，远处有光柱。', 'other': '无关来源'}
+    hint = review.review_citation_feedback(ReviewEvidenceError('quote_mismatch', '引用不符'), decision, sources)
+    assert '两侧是菌塔，远处有光柱。' in hint and '无关来源' not in hint and '模型改写的句子' not in hint
+    assert sources['target'] == '两侧是菌塔，远处有光柱。'
+    assert review.review_citation_feedback(ValueError('format'), decision, sources) == ''
+    assert len(review.review_citation_feedback(ReviewEvidenceError('quote_mismatch', ''), decision, {'target':'字'*100000})) < 4200
+
+
 def request(**kw):
     return review.ReviewRequest(project_id='p',user_id='alice',messages=[{'role':'user','content':'生成短片'}],current_plan=plan(),node_id='script',**kw)
 

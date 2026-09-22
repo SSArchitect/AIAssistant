@@ -152,7 +152,7 @@ class CreativePlan(StrictModel):
             if node.id in seen or len(node.depends_on) != len(set(node.depends_on)):
                 raise ValueError('节点或依赖重复')
             if any(dep not in seen for dep in node.depends_on):
-                raise ValueError('依赖必须指向前面的节点')
+                raise ValueError(f'节点 {node.id} 的依赖必须指向前面的节点：' + '、'.join(dep for dep in node.depends_on if dep not in seen))
             for ref in node.references:
                 if ref.node_id and (ref.node_id not in node.depends_on or seen[ref.node_id].kind != 'image'):
                     raise ValueError(f'节点 {node.id} 的图片参考 {ref.node_id} 必须是已声明依赖的图片节点')

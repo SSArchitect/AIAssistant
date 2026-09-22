@@ -232,7 +232,7 @@ func (c *AgentClient) PlanCreationWithProgress(ctx context.Context, req Creation
 			}
 			return event.Result, nil
 		case "error":
-			return nil, &CreationPlanningError{Message: creationSafeMessage(event.Code, event.Message, "创作助手暂时无法完成规划，原有内容已保留，请重试")}
+			return nil, &CreationPlanningError{Code: event.Code, Message: creationSafeMessage(event.Code, event.Message, "创作助手暂时无法完成规划，原有内容已保留，请重试")}
 		}
 	}
 }
@@ -240,19 +240,21 @@ func (c *AgentClient) PlanCreationWithProgress(ctx context.Context, req Creation
 func creationSafeMessage(code, legacy, fallback string) string {
 	// Codes select fixed public text; upstream payloads never become UI errors.
 	safeMessages := map[string]string{
-		"provider_config_missing":     "创作模型配置未就绪，请检查模型配置或稍后重试；原有内容已保留",
-		"model_image_unsupported":     "当前规划模型不支持图片输入，请配置支持图片理解的模型后重试；素材已保留",
-		"provider_auth_failed":        "规划模型鉴权或访问权限异常，请检查模型服务配置；原有内容已保留",
-		"provider_rate_limited":       "规划模型调用额度不足或请求过于频繁，请检查额度或稍后重试；原有内容已保留",
-		"provider_request_rejected":   "规划模型拒绝了本次请求，请检查所选模型的输入能力与配置；原有内容已保留",
-		"provider_unavailable":        "暂时无法连接规划模型服务，请稍后重试；原有内容已保留",
-		"planning_timeout":            "创作规划等待超时，原有内容已保留，请重试",
-		"planning_output_truncated":   "模型未完整返回创作方案，原有内容已保留；请分段规划后继续",
-		"invalid_plan":                "创作方案格式校验失败，原有内容已保留，请补充要求或重试",
-		"plan_constraint_failed":      "分镜时间或执行提示词不符合生成要求，原有内容已保留，请调整相应节点",
-		"execution_capacity_exceeded": "这段视频必须保留的原文超出单次生成容量，需要缩短或拆分；你的选择与原方案已保留",
-		"execution_compaction_failed": "视频执行稿自动整理未完成，已保留你的选择与原方案。请重试这次规划，无需重新选择创作方向",
-		"video_reference_failed":      "视频参考图绑定自动整理未完成，已保留你的选择与原方案。请重试这次规划，无需重新选择创作方向",
+		"provider_config_missing":        "创作模型配置未就绪，请检查模型配置或稍后重试；原有内容已保留",
+		"model_image_unsupported":        "当前规划模型不支持图片输入，请配置支持图片理解的模型后重试；素材已保留",
+		"provider_auth_failed":           "规划模型鉴权或访问权限异常，请检查模型服务配置；原有内容已保留",
+		"provider_rate_limited":          "规划模型调用额度不足或请求过于频繁，请检查额度或稍后重试；原有内容已保留",
+		"provider_request_rejected":      "规划模型拒绝了本次请求，请检查所选模型的输入能力与配置；原有内容已保留",
+		"provider_unavailable":           "暂时无法连接规划模型服务，请稍后重试；原有内容已保留",
+		"planning_timeout":               "创作规划等待超时，原有内容已保留，请重试",
+		"planning_output_truncated":      "模型未完整返回创作方案，原有内容已保留；请分段规划后继续",
+		"invalid_plan":                   "创作方案格式校验失败，原有内容已保留，请补充要求或重试",
+		"review_invalid_result":          "审阅回复格式未通过校验，原有内容与候选保留，可继续审阅",
+		"review_evidence_quote_mismatch": "审阅引用与原要求不一致，原有内容与候选保留，可继续审阅",
+		"plan_constraint_failed":         "节点内容、依赖或引用未通过校验，原有内容已保留，请调整相应节点",
+		"execution_capacity_exceeded":    "这段视频必须保留的原文超出单次生成容量，需要缩短或拆分；你的选择与原方案已保留",
+		"execution_compaction_failed":    "视频执行稿自动整理未完成，已保留你的选择与原方案。请重试这次规划，无需重新选择创作方向",
+		"video_reference_failed":         "视频参考图绑定自动整理未完成，已保留你的选择与原方案。请重试这次规划，无需重新选择创作方向",
 	}
 	if message, ok := safeMessages[code]; ok {
 		return message
@@ -272,10 +274,10 @@ func creationResponseError(body io.Reader, fallback string) error {
 	if json.NewDecoder(io.LimitReader(body, 64<<10)).Decode(&response) != nil {
 		return &CreationPlanningError{Message: fallback}
 	}
-	return &CreationPlanningError{Message: creationSafeMessage(response.Detail.Code, "", fallback)}
+	return &CreationPlanningError{Code: response.Detail.Code, Message: creationSafeMessage(response.Detail.Code, "", fallback)}
 }
 
-type CreationPlanningError struct{ Message string }
+type CreationPlanningError struct{ Code, Message string }
 
 func (e *CreationPlanningError) Error() string { return e.Message }
 

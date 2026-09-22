@@ -3,12 +3,38 @@ package bridge
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestCreationReviewPreservesRetryCodeAndSanitizesBody(t *testing.T) {
+	for _, tc := range []struct {
+		status     int
+		body, code string
+	}{
+		{502, `{"detail":{"code":"planning_timeout","message":"SECRET"}}`, "planning_timeout"},
+		{503, "SECRET proxy HTML", "provider_unavailable"},
+		{502, `{"detail":{"code":"provider_auth_failed","message":"SECRET"}}`, "provider_auth_failed"},
+		{200, `{"decision":`, "review_invalid_result"},
+	} {
+		t.Run(tc.code, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(tc.status); w.Write([]byte(tc.body)) }))
+			defer server.Close()
+			_, err := NewAgentClient(server.URL, time.Second).ReviewCreation(context.Background(), CreationReviewRequest{})
+			var failure *CreationPlanningError
+			if !errors.As(err, &failure) || failure.Code != tc.code || strings.Contains(err.Error(), "SECRET") {
+				t.Fatal(err)
+			}
+		})
+	}
+	if strings.Contains(creationSafeMessage("plan_constraint_failed", "", ""), "分镜时间") {
+		t.Fatal("generic node constraints misreported as video timing")
+	}
+}
 
 func TestCreationBridgeContract(t *testing.T) {
 	var got CreationNodeRequest

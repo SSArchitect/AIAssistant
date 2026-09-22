@@ -501,10 +501,8 @@ func (h *CreationHandler) advanceAutomatic(ctx context.Context, id, request stri
 	if err != nil {
 		return false, err
 	}
-	callCtx, cancel := context.WithTimeout(ctx, 195*time.Second)
-	defer cancel()
+	response, err := h.reviewAutomaticWithRetry(ctx, &row, request, bridge.CreationReviewRequest{CreationPlanningRequest: req, NodeID: node.ID, CandidateIDs: candidates})
 	expectedRevision := row.Revision
-	response, err := h.generator.(creationReviewer).ReviewCreation(callCtx, bridge.CreationReviewRequest{CreationPlanningRequest: req, NodeID: node.ID, CandidateIDs: candidates})
 	h.mu.Lock()
 	if !h.automaticCurrent(&row, request) {
 		h.mu.Unlock()

@@ -8,6 +8,7 @@ import httpx
 import openai
 
 from agent.llm.doubao_provider import is_agent_plan_url
+from agent.aigc.creation_retry import transient_model_error
 
 VISION_PLAN_MODEL = 'doubao-seed-2.1-turbo'
 CREATION_OUTPUT_TOKENS = 16384
@@ -86,7 +87,7 @@ def planning_error(exc):
         return 'provider_rate_limited', '规划模型调用额度不足或请求过于频繁，请检查额度或稍后重试；原有内容已保留'
     if status == 400:
         return 'provider_request_rejected', '规划模型拒绝了本次请求，请检查所选模型的输入能力与配置；原有内容已保留'
-    if isinstance(exc, openai.APIConnectionError) or isinstance(status, int) and status >= 500:
+    if transient_model_error(exc) or isinstance(status, int) and status >= 500:
         return 'provider_unavailable', '暂时无法连接规划模型服务，请稍后重试；原有内容已保留'
     if isinstance(exc, ValueError):
         return 'invalid_plan', '创作方案格式校验失败，原有内容已保留，请补充要求或重试'
