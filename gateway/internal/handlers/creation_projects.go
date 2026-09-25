@@ -485,13 +485,9 @@ func (h *CreationHandler) planProject(planner creationPlanner, submitted models.
 	// The Agent enforces an idle timeout and a 15-minute absolute ceiling.
 	ctx, cancel := context.WithTimeout(context.Background(), 915*time.Second)
 	defer cancel()
-	var response *bridge.CreationPlanningResponse
-	var err error
-	if streaming, ok := planner.(creationProgressPlanner); ok {
-		response, err = streaming.PlanCreationWithProgress(ctx, request, func(event bridge.CreationPlanningProgress) { h.recordPlanningProgress(submitted, event) })
-	} else {
-		response, err = planner.PlanCreation(ctx, request)
-	}
+	response, err := h.planCreationWithRetry(ctx, planner, request,
+		func(event bridge.CreationPlanningProgress) { h.recordPlanningProgress(submitted, event) },
+		func() bool { return h.planningRequestCurrent(submitted) }, nil)
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	var row models.CreationProject
@@ -991,6 +987,15 @@ func (h *CreationHandler) recordPlanningProgress(submitted models.CreationProjec
 	}
 	activity := doc.Planning
 	elapsed := time.Since(activity.StartedAt).Milliseconds()
+	if event.Stage == "planning_retry" {
+		if len(activity.Steps) >= 24 {
+			activity.Steps = append(activity.Steps[:1:1], activity.Steps[len(activity.Steps)-22:]...)
+		}
+		activity.Steps = append(activity.Steps, bridge.CreativePlanningStep{Stage: event.Stage, Message: event.Message, ElapsedMS: elapsed})
+		activity.ElapsedMS = elapsed
+		_ = h.updateProject(&row, doc, false)
+		return
+	}
 	if len(activity.Steps) > 0 && activity.Steps[len(activity.Steps)-1].Stage == event.Stage {
 		if elapsed-activity.ElapsedMS < 900 {
 			return

@@ -138,6 +138,7 @@ type CreationRepairAttempt struct {
 	Execution    *CreationRepairExecution `json:"execution,omitempty"`
 }
 type CreationPlanningRequest struct {
+	Recovery              *CreativePlanningRecovery         `json:"recovery,omitempty"`
 	RequireShotReferences bool                              `json:"require_shot_references,omitempty"`
 	RequireVideoScenes    bool                              `json:"require_video_scenes,omitempty"`
 	Repair                *CreationRepairFeedback           `json:"repair,omitempty"`
@@ -152,6 +153,12 @@ type CreationPlanningRequest struct {
 	Templates             []map[string]interface{}          `json:"templates"`
 	PreferredTemplateID   string                            `json:"preferred_template_id"`
 	NodeContext           map[string]map[string]interface{} `json:"node_context"`
+}
+
+type CreativePlanningRecovery struct {
+	Attempt    int    `json:"attempt"`
+	ErrorCode  string `json:"error_code"`
+	MaxSeconds int    `json:"max_seconds"`
 }
 type CreationPlanningResponse struct {
 	Reply      string         `json:"reply"`
@@ -178,7 +185,7 @@ func (c *AgentClient) PlanCreation(ctx context.Context, req CreationPlanningRequ
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		return nil, creationResponseError(response.Body, "创作助手暂时无法完成规划，原有内容已保留，请重试")
+		return nil, creationPlanningHTTPError(response.Body, response.StatusCode, "创作助手暂时无法完成规划，原有内容已保留，请重试")
 	}
 	var result CreationPlanningResponse
 	err = json.NewDecoder(io.LimitReader(response.Body, 512<<10)).Decode(&result)
@@ -208,7 +215,7 @@ func (c *AgentClient) PlanCreationWithProgress(ctx context.Context, req Creation
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("创作规划服务返回 %d", response.StatusCode)
+		return nil, creationPlanningHTTPError(response.Body, response.StatusCode, "创作规划服务暂未完成，原有内容已保留")
 	}
 	decoder := json.NewDecoder(io.LimitReader(response.Body, 4<<20))
 	for {
@@ -228,7 +235,7 @@ func (c *AgentClient) PlanCreationWithProgress(ctx context.Context, req Creation
 			}
 		case "result":
 			if event.Result == nil {
-				return nil, fmt.Errorf("创作规划结果为空")
+				return nil, &CreationPlanningError{Code: "invalid_plan", Message: "创作规划结果为空"}
 			}
 			return event.Result, nil
 		case "error":
@@ -255,6 +262,7 @@ func creationSafeMessage(code, legacy, fallback string) string {
 		"execution_capacity_exceeded":    "这段视频必须保留的原文超出单次生成容量，需要缩短或拆分；你的选择与原方案已保留",
 		"execution_compaction_failed":    "视频执行稿自动整理未完成，已保留你的选择与原方案。请重试这次规划，无需重新选择创作方向",
 		"video_reference_failed":         "视频参考图绑定自动整理未完成，已保留你的选择与原方案。请重试这次规划，无需重新选择创作方向",
+		"planning_no_progress":           "创作助手尚未完成资料读取，原方案已保留；本轮未提交空规划",
 	}
 	if message, ok := safeMessages[code]; ok {
 		return message
@@ -266,15 +274,30 @@ func creationSafeMessage(code, legacy, fallback string) string {
 }
 
 func creationResponseError(body io.Reader, fallback string) error {
+	return creationPlanningHTTPError(body, 0, fallback)
+}
+
+func creationPlanningHTTPError(body io.Reader, status int, fallback string) error {
 	var response struct {
 		Detail struct {
 			Code string `json:"code"`
 		} `json:"detail"`
 	}
-	if json.NewDecoder(io.LimitReader(body, 64<<10)).Decode(&response) != nil {
-		return &CreationPlanningError{Message: fallback}
+	_ = json.NewDecoder(io.LimitReader(body, 64<<10)).Decode(&response)
+	code := response.Detail.Code
+	if code == "" {
+		switch status {
+		case 401, 403:
+			code = "provider_auth_failed"
+		case 429:
+			code = "provider_rate_limited"
+		case 408, 504:
+			code = "planning_timeout"
+		case 500, 502, 503:
+			code = "provider_unavailable"
+		}
 	}
-	return &CreationPlanningError{Code: response.Detail.Code, Message: creationSafeMessage(response.Detail.Code, "", fallback)}
+	return &CreationPlanningError{Code: code, Message: creationSafeMessage(code, "", fallback)}
 }
 
 type CreationPlanningError struct{ Code, Message string }

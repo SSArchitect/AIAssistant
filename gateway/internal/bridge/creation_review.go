@@ -10,8 +10,9 @@ import (
 
 type CreationReviewRequest struct {
 	CreationPlanningRequest
-	NodeID       string   `json:"node_id"`
-	CandidateIDs []string `json:"candidate_ids"`
+	NodeID        string   `json:"node_id"`
+	CandidateIDs  []string `json:"candidate_ids"`
+	SelectionMode string   `json:"selection_mode,omitempty"`
 }
 type CreationReviewResponse struct {
 	Findings   []CreationReviewFinding `json:"findings,omitempty"`

@@ -54,6 +54,9 @@ func setupCreation(t *testing.T) (*gin.Engine, *CreationHandler, *fakeCreationGe
 	setupDriveTest(t)
 	f := &fakeCreationGenerator{}
 	h := NewCreationHandler(f)
+	// Unit tests use a virtual backoff; individual cancellation/delay tests
+	// override this hook rather than spending wall time between fake responses.
+	h.retryWait = func(ctx context.Context, _ time.Duration) error { return ctx.Err() }
 	r := gin.New()
 	h.Register(r.Group("/api"))
 	token, err := createAccountSession("alice")

@@ -379,3 +379,52 @@ async def test_review_marks_unavailable_reference_as_unseen_and_keeps_video_depe
     assert payload['review_references'][0]['preview_available'] is False
     assert payload['assets'][0]['preview_available'] is False
     assert not any(p['type']=='image_url' for p in parts)
+
+
+@pytest.mark.asyncio
+async def test_best_available_selects_real_earlier_candidate_without_changing_requirements(monkeypatch):
+    content = BytesIO(); Image.new('RGB', (8, 8), 'red').save(content, format='PNG')
+    data = 'data:image/png;base64,' + base64.b64encode(content.getvalue()).decode()
+    req = request(selection_mode='best_available', candidate_ids=['earlier', 'latest'],
+        assets=[dict(id=i, name=i, mime_type='image/png', data_url=data) for i in ['earlier', 'latest']])
+    req.current_plan['nodes'].insert(0, dict(id='image', kind='image', title='主视觉', prompt='红色主视觉'))
+    req.node_id = 'image'; before = req.model_dump()
+    provider = SimpleNamespace(chat=AsyncMock(side_effect=[
+        LLMResponse(content=json.dumps({'decision': 'revise', 'reason': '还不完美'})),
+        LLMResponse(content=json.dumps({'decision': 'select', 'asset_id': 'foreign', 'reason': '这张好'})),
+        LLMResponse(content=json.dumps({'decision': 'select', 'asset_id': 'earlier', 'reason': '较早的图更接近目标，仍有少量细节问题'})),
+    ]))
+    monkeypatch.setattr(review, 'create_provider', lambda: provider)
+    result = await review.review_creation(req)
+    assert result.asset_id == 'earlier' and provider.chat.await_count == 3
+    assert req.model_dump() == before
+    payload = json.loads(provider.chat.call_args.args[0][1].content[0]['text'])
+    assert payload['selection_mode'] == 'best_available'
+    assert {a['id'] for a in payload['assets']} == {'earlier', 'latest'}
+
+
+@pytest.mark.asyncio
+async def test_best_available_cannot_approve_text_or_missing_images(monkeypatch):
+    provider = SimpleNamespace(chat=AsyncMock())
+    monkeypatch.setattr(review, 'create_provider', lambda: provider)
+    with pytest.raises(ValueError, match='仅适用'):
+        await review.review_creation(request(selection_mode='best_available'))
+    assert provider.chat.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_best_available_keeps_measured_scale_defect_as_residual_instead_of_repainting(monkeypatch):
+    from tests.test_creation_region_review import fixture
+    assets, _ = fixture()
+    req = request(selection_mode='best_available', candidate_ids=['candidate'],
+        assets=[dict(id=a.id, name=a.id, mime_type='image/png', data_url=a.data_url) for a in assets])
+    req.current_plan['nodes'].append(dict(id='image', kind='image', title='主视觉', prompt='draw'))
+    req.node_id = 'image'
+    provider = SimpleNamespace(chat=AsyncMock(return_value=LLMResponse(content=json.dumps(
+        dict(decision='select', asset_id='candidate', reason='现有候选中最接近目标')))))
+    monkeypatch.setattr(review, 'create_provider', lambda: provider)
+    monkeypatch.setattr(review, 'measured_scale_rejection', lambda *args: {'observation': '人物占比偏大'})
+    result = await review.review_creation(req)
+    assert result.decision == 'select' and result.asset_id == 'candidate'
+    assert '残余比例问题：人物占比偏大' in result.reason
+    assert not result.findings and provider.chat.await_count == 1

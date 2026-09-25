@@ -140,6 +140,18 @@ func validateAutomaticRepair(doc creativeDocument, plan bridge.CreativePlan, req
 // Caller holds h.mu; this method always releases it. Planning runs outside the
 // mutex so stop requests remain responsive and late responses can be discarded.
 func (h *CreationHandler) repairAutomatic(ctx context.Context, row models.CreationProject, doc creativeDocument, node bridge.CreativeNode, candidates []string, reason, request string, findings []bridge.CreationReviewFinding) (bool, error) {
+	if node.Kind == "image" {
+		history := imageReviewHistory(&doc, node.ID, candidates)
+		if history.Retries >= maxAutomaticImageRetries {
+			// The final generation can fail foreground validation before producing
+			// candidates. Finish that pending round and select from earlier output.
+			history.PendingGeneration = false
+			err := h.updateProject(&row, doc, false)
+			h.mu.Unlock()
+			return false, err
+		}
+		history.Retries++
+	}
 	planner, ok := h.generator.(creationPlanner)
 	if !ok {
 		h.mu.Unlock()
@@ -192,7 +204,15 @@ func (h *CreationHandler) repairAutomatic(ctx context.Context, row models.Creati
 	}
 	callCtx, cancel := context.WithTimeout(ctx, 915*time.Second)
 	defer cancel()
-	response, err := planner.PlanCreation(callCtx, req)
+	response, err := h.planCreationWithRetry(callCtx, planner, req,
+		func(event bridge.CreationPlanningProgress) {
+			h.recordAutomaticPlanningProgress(&row, request, node.ID, event)
+		},
+		func() bool { return h.automaticPlanningCurrent(row, request) },
+		func(response *bridge.CreationPlanningResponse) error {
+			return validateAutomaticRepair(doc, response.Plan, req)
+		})
+	expectedRevision = row.Revision
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if !h.automaticCurrent(&row, request) || ctx.Err() != nil {
@@ -245,6 +265,11 @@ func (h *CreationHandler) repairAutomatic(ctx context.Context, row models.Creati
 		doc.States[node.ID] = creativeNodeState{Revision: before.Revision + 1, Candidates: []string{}}
 		invalidateCreativeChildren(&doc, node.ID)
 	}
+	if node.Kind == "image" {
+		// This revision is our own repair, not a new user request.
+		doc.Automation.ImageReviews[node.ID].PendingGeneration = true
+	}
+	syncAutomaticImageReviewRevisions(&doc)
 	// Locked selections must survive both direct edits and dependency invalidation.
 	for _, id := range req.LockedNodeIDs {
 		if !reflect.DeepEqual(doc.States[id], originalStates[id]) {

@@ -26,7 +26,7 @@ func (a *configuredCreationAgent) syncConfig(ctx context.Context) error {
 		err = a.UpdateConfigContext(ctx, settings)
 	}
 	if err != nil {
-		return &bridge.CreationPlanningError{Message: "创作服务配置同步失败，原有内容已保留，请稍后重试"}
+		return &bridge.CreationPlanningError{Code: planningRetryCode(err), Message: "创作服务配置同步失败，原有内容已保留，请稍后重试"}
 	}
 	return nil
 }

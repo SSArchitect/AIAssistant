@@ -3,9 +3,21 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 
 from agent.llm.base import ToolDefinition
 from agent.skills.builtin.drive import DriveListSkill, DriveReadSkill, DriveSearchSkill
+
+
+def deferred_research(wire):
+    """Catch an empty proposal that merely promises the next read-only action."""
+    body = wire.get('patch', wire.get('plan', {}))
+    if body.get('nodes') or body.get('questions'):
+        return False
+    reply = str(wire.get('reply', ''))
+    return bool(re.search(r'(?:我先|先去|接下来|稍后|拿到后|读取后|找到后|I(?:[’\']ll| will))', reply, re.I)
+        and re.search(r'(?:网盘|脚本|资料|search_drive|read_drive|\bdrive\b|\bscript\b)', reply, re.I)
+        and re.search(r'(?:检索|读取|查找|搜索|重拿|重新拿|重读|\bsearch\b|\bread\b|\bfetch\b)', reply, re.I))
 
 
 def director_tools():

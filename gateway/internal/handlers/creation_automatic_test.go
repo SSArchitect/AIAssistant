@@ -576,8 +576,8 @@ func TestAutomaticResumeKeepsRepairHistoryAndDoesNotStarveUntouchedNodes(t *test
 			doc.Automation = &creativeAutomation{
 				CreativePlanningActivity: bridge.CreativePlanningActivity{ID: "partial-pass", Status: status},
 				TargetNodeIDs:            []string{"brief"},
-				RepairCounts:             map[string]int{"visual": 5, "deleted": 8, "brief": 2},
-				Repairs:                  []bridge.CreationRepairFeedback{{NodeID: "visual", Reason: "之前的构图问题", Attempt: 5}, {NodeID: "deleted", Reason: "不再存在"}, {NodeID: "brief", Reason: "已经确认的旧问题"}},
+				RepairCounts:             map[string]int{"visual": 4, "deleted": 8, "brief": 2},
+				Repairs:                  []bridge.CreationRepairFeedback{{NodeID: "visual", Reason: "之前的构图问题", Attempt: 4}, {NodeID: "deleted", Reason: "不再存在"}, {NodeID: "brief", Reason: "已经确认的旧问题"}},
 			}
 			row.AutomaticStatus = status
 			if err := h.updateProject(&row, doc, true); err != nil {
@@ -595,7 +595,7 @@ func TestAutomaticResumeKeepsRepairHistoryAndDoesNotStarveUntouchedNodes(t *test
 			if row.AutomaticStatus != "completed" || len(f.reviews) != 2 || f.reviews[0].NodeID != "untouched" {
 				t.Fatal("resume restarted the same early node", row.AutomaticStatus, f.reviews)
 			}
-			if doc.Automation.RepairCounts["visual"] != 5 || doc.Automation.RepairCounts["deleted"] != 0 || doc.Automation.RepairCounts["brief"] != 0 || len(doc.Automation.Repairs) != 1 {
+			if doc.Automation.RepairCounts["visual"] != 4 || doc.Automation.RepairCounts["deleted"] != 0 || doc.Automation.RepairCounts["brief"] != 0 || len(doc.Automation.Repairs) != 1 {
 				t.Fatal("lost useful repair history or retained removed nodes", doc.Automation)
 			}
 		})

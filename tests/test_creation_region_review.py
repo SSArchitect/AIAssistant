@@ -48,7 +48,8 @@ def test_missing_comparison_pixels_cannot_silently_be_approved(failure):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('artifact', [False, True])
-async def test_regional_review_receives_paired_context_but_keeps_frozen_intent(monkeypatch, artifact):
+@pytest.mark.parametrize('best_available', [False, True])
+async def test_regional_review_receives_paired_context_but_keeps_frozen_intent(monkeypatch, artifact, best_available):
     from agent.aigc import creation_review as review
     from agent.llm.base import LLMResponse
     from tests.test_creation_review import request
@@ -58,6 +59,7 @@ async def test_regional_review_receives_paired_context_but_keeps_frozen_intent(m
         prompt='draw', aspect_ratio='9:16', image_layout=[layout.model_dump()], references=[dict(asset_id='scene', role='environment')]))
     req.current_plan['nodes'][-1]['references'].append(dict(asset_id='identity', role='identity'))
     req.node_id = 'image'
+    req.selection_mode = 'best_available' if best_available else ''
     provider = SimpleNamespace(chat=AsyncMock(return_value=LLMResponse(content=json.dumps(dict(decision='select', asset_id='candidate', reason='ok')))))
     monkeypatch.setattr(review, 'create_provider', lambda: provider)
     from agent.aigc.creation_region_review import RegionSurfaceCheck
@@ -71,9 +73,12 @@ async def test_regional_review_receives_paired_context_but_keeps_frozen_intent(m
     assert sum(p['type'] == 'image_url' for p in parts) == 4
     assert 'image_layout' not in payload['review_target']
     assert payload['review_target']['content'] == '背侧小人物融入场景'
-    assert result.decision == ('revise' if artifact else 'select')
+    assert result.decision == ('revise' if artifact and not best_available else 'select')
     assert checker.await_count == 1  # verification cannot erase it or repeat paid inspection
-    if artifact:
+    if artifact and best_available:
+        assert '残余合成问题' in result.reason and '矩形底色' in result.reason
+        assert result.asset_id == 'candidate' and not result.findings
+    if artifact and not best_available:
         assert result.findings[0].category == 'artifact'
         assert result.findings[0].source_id == 'quality'
 

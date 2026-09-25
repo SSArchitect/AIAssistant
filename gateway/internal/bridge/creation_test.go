@@ -92,8 +92,11 @@ func TestCreationReviewBridgeContractAndSafeFailure(t *testing.T) {
 	}))
 	defer server.Close()
 	client := NewAgentClient(server.URL, time.Second)
-	req := CreationReviewRequest{CreationPlanningRequest: CreationPlanningRequest{UserID: "alice", AutomaticMode: true, LockedNodeIDs: []string{"script"}}, NodeID: "visual", CandidateIDs: []string{"candidate"}}
+	req := CreationReviewRequest{CreationPlanningRequest: CreationPlanningRequest{UserID: "alice", AutomaticMode: true, LockedNodeIDs: []string{"script"}}, NodeID: "visual", CandidateIDs: []string{"candidate"}, SelectionMode: "best_available"}
 	result, err := client.ReviewCreation(context.Background(), req)
+	if got.SelectionMode != "best_available" {
+		t.Fatal("selection mode lost across bridge")
+	}
 	if err != nil || result.AssetID != "candidate" || got.UserID != "alice" || !got.AutomaticMode || got.LockedNodeIDs[0] != "script" || result.TokensUsed["input_tokens"] != 2 {
 		t.Fatalf("bad review boundary: %+v %v", got, err)
 	}
@@ -175,7 +178,7 @@ func TestCreationPlanningStreamRejectsTruncationAndSanitizesErrors(t *testing.T)
 }
 
 func TestCreationPlanningStreamKeepsActionableSafeErrorCode(t *testing.T) {
-	for code, expected := range map[string]string{"provider_config_missing": "配置未就绪", "model_image_unsupported": "不支持图片", "provider_auth_failed": "鉴权", "provider_rate_limited": "额度", "provider_unavailable": "连接", "invalid_plan": "格式校验", "planning_output_truncated": "未完整返回", "execution_capacity_exceeded": "缩短或拆分", "execution_compaction_failed": "无需重新选择", "video_reference_failed": "参考图绑定", "unknown": "暂时无法"} {
+	for code, expected := range map[string]string{"provider_config_missing": "配置未就绪", "model_image_unsupported": "不支持图片", "provider_auth_failed": "鉴权", "provider_rate_limited": "额度", "provider_unavailable": "连接", "invalid_plan": "格式校验", "planning_no_progress": "尚未完成资料读取", "planning_output_truncated": "未完整返回", "execution_capacity_exceeded": "缩短或拆分", "execution_compaction_failed": "无需重新选择", "video_reference_failed": "参考图绑定", "unknown": "暂时无法"} {
 		t.Run(code, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				json.NewEncoder(w).Encode(map[string]string{"type": "error", "code": code, "message": "SECRET-KEY"})
@@ -185,7 +188,53 @@ func TestCreationPlanningStreamKeepsActionableSafeErrorCode(t *testing.T) {
 			if err == nil || !strings.Contains(err.Error(), expected) || strings.Contains(err.Error(), "SECRET") {
 				t.Fatalf("unsafe or unhelpful error: %v", err)
 			}
+			if typed, ok := err.(*CreationPlanningError); !ok || typed.Code != code {
+				t.Fatal("retry classification code lost", err)
+			}
 		})
+	}
+}
+
+func TestPlanningBridgeRetainsRetryCodesAcrossHTTPAndStreamFailures(t *testing.T) {
+	for _, streaming := range []bool{false, true} {
+		for _, status := range []int{401, 429, 503, 504} {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(status)
+				w.Write([]byte("SECRET-UPSTREAM"))
+			}))
+			client := NewAgentClient(server.URL, time.Second)
+			var err error
+			if streaming {
+				_, err = client.PlanCreationWithProgress(context.Background(), CreationPlanningRequest{}, nil)
+			} else {
+				_, err = client.PlanCreation(context.Background(), CreationPlanningRequest{})
+			}
+			server.Close()
+			want := map[int]string{401: "provider_auth_failed", 429: "provider_rate_limited", 503: "provider_unavailable", 504: "planning_timeout"}[status]
+			typed, ok := err.(*CreationPlanningError)
+			if !ok || typed.Code != want || strings.Contains(err.Error(), "SECRET") {
+				t.Fatal(streaming, status, err)
+			}
+		}
+	}
+}
+
+func TestPlanningBridgePassesRecoveryBudgetAndRetainsAgentErrorCode(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req CreationPlanningRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Error(err)
+		}
+		if req.Recovery == nil || req.Recovery.Attempt != 2 || req.Recovery.ErrorCode != "planning_output_truncated" || req.Recovery.MaxSeconds != 480 {
+			t.Error("recovery budget lost", req.Recovery)
+		}
+		w.WriteHeader(400)
+		w.Write([]byte(`{"detail":{"code":"invalid_plan","message":"SECRET"}}`))
+	}))
+	defer server.Close()
+	_, err := NewAgentClient(server.URL, time.Second).PlanCreation(context.Background(), CreationPlanningRequest{Recovery: &CreativePlanningRecovery{Attempt: 2, ErrorCode: "planning_output_truncated", MaxSeconds: 480}})
+	if typed, ok := err.(*CreationPlanningError); !ok || typed.Code != "invalid_plan" || strings.Contains(err.Error(), "SECRET") {
+		t.Fatal(err)
 	}
 }
 

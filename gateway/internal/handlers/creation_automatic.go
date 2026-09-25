@@ -24,6 +24,7 @@ type creativeAutomation struct {
 	LockedNodeIDs []string                        `json:"locked_node_ids"`
 	RepairCounts  map[string]int                  `json:"repair_counts,omitempty"`
 	Repairs       []bridge.CreationRepairFeedback `json:"repairs,omitempty"`
+	ImageReviews  map[string]*creativeImageReview `json:"image_reviews,omitempty"`
 	TargetNodeIDs []string                        `json:"target_node_ids,omitempty"`
 }
 
@@ -197,6 +198,7 @@ func (h *CreationHandler) StartAutomaticCreation(c *gin.Context) {
 	// ahead of untouched branches or hide past failures from the repair planner.
 	// "Completed" can mean a single requested target, not the whole project.
 	if previous != nil {
+		doc.Automation.ImageReviews = previous.ImageReviews
 		history := filterCreativeRepairHistory(previous, func(id string) bool {
 			state, exists := doc.States[id]
 			_, nodeExists := creativeNode(doc, id)
@@ -204,6 +206,13 @@ func (h *CreationHandler) StartAutomaticCreation(c *gin.Context) {
 		})
 		doc.Automation.RepairCounts = history.RepairCounts
 		doc.Automation.Repairs = history.Repairs
+	}
+	// Reset user-edited revisions before any automatic prerequisite update can
+	// carry history forward. Stop/resume with unchanged nodes retains its budget.
+	for _, node := range doc.Plan.Nodes {
+		if node.Kind == "image" {
+			imageReviewHistory(&doc, node.ID, nil)
+		}
 	}
 	message := "一键生成：保留已确认内容，由创作助手确定其余节点并继续生成。"
 	if len(req.TargetNodeIDs) > 0 {
@@ -378,13 +387,22 @@ func (h *CreationHandler) advanceAutomatic(ctx context.Context, id, request stri
 		}
 		callCtx, cancel := context.WithTimeout(ctx, 915*time.Second)
 		defer cancel()
-		response, err := planner.PlanCreation(callCtx, req)
+		response, err := h.planCreationWithRetry(callCtx, planner, req,
+			func(event bridge.CreationPlanningProgress) {
+				h.recordAutomaticPlanningProgress(&row, request, "", event)
+			},
+			func() bool { return h.automaticPlanningCurrent(row, request) },
+			func(response *bridge.CreationPlanningResponse) error { return protectAutomaticPlan(doc, response.Plan) })
+		expectedRevision := row.Revision
 		h.mu.Lock()
 		defer h.mu.Unlock()
 		if !h.automaticCurrent(&row, request) {
 			return true, nil
 		}
 		doc, _ = projectDocument(row)
+		if row.Revision != expectedRevision {
+			return false, errors.New("规划期间方案发生变化，已保留最新内容")
+		}
 		if err != nil || response == nil {
 			return false, errors.New(creationFailureMessage(err, "未能确定剩余方向，原有内容保留，可稍后继续"))
 		}
@@ -407,6 +425,7 @@ func (h *CreationHandler) advanceAutomatic(ctx context.Context, id, request stri
 			return false, fmt.Errorf("需要补充信息：%s", response.Plan.Questions[0].Question)
 		}
 		doc = applyCreativePlan(doc, response.Plan)
+		syncAutomaticImageReviewRevisions(&doc)
 		if !row.NameLocked {
 			row.Name = response.Plan.Title
 		}
@@ -480,6 +499,22 @@ func (h *CreationHandler) advanceAutomatic(ctx context.Context, id, request stri
 			candidates = append(candidates, state.Candidates...)
 		}
 	}
+	selectionMode, compared := "", 0
+	if node.Kind == "image" {
+		history := imageReviewHistory(&doc, node.ID, candidates)
+		if history.Retries >= maxAutomaticImageRetries && !history.PendingGeneration {
+			selectionMode = "best_available"
+			if err := h.availableImageReviewHistory(row.UserID, history); err != nil {
+				h.mu.Unlock()
+				return false, err
+			}
+			candidates, compared = bestImageReviewBatch(history)
+			if len(candidates) == 0 {
+				h.mu.Unlock()
+				return false, errors.New("图片自动重试已达5次，但没有可选图片；已保留原任务")
+			}
+		}
+	}
 	// There is no output to review yet. Generate first; review only real candidates.
 	if node.Kind == "image" && len(candidates) == 0 {
 		submission, err := h.prepareAutomaticRun(row, doc, node, request)
@@ -496,12 +531,15 @@ func (h *CreationHandler) advanceAutomatic(ctx context.Context, id, request stri
 		return false, err
 	}
 	automaticStep(&doc, "review", "正在自动审阅「"+node.Title+"」", node.ID)
+	if selectionMode != "" {
+		automaticStep(&doc, "select_best", "「"+node.Title+"」已达5次自动重试上限，正在比较历轮候选并选择最佳图片", node.ID)
+	}
 	err = h.updateProject(&row, doc, false)
 	h.mu.Unlock()
 	if err != nil {
 		return false, err
 	}
-	response, err := h.reviewAutomaticWithRetry(ctx, &row, request, bridge.CreationReviewRequest{CreationPlanningRequest: req, NodeID: node.ID, CandidateIDs: candidates})
+	response, err := h.reviewAutomaticWithRetry(ctx, &row, request, bridge.CreationReviewRequest{CreationPlanningRequest: req, NodeID: node.ID, CandidateIDs: candidates, SelectionMode: selectionMode})
 	expectedRevision := row.Revision
 	h.mu.Lock()
 	if !h.automaticCurrent(&row, request) {
@@ -528,6 +566,10 @@ func (h *CreationHandler) advanceAutomatic(ctx context.Context, id, request stri
 		return false, errors.New(creationFailureMessage(err, "自动审阅未完成，已确认内容与生成结果保留，可稍后继续"))
 	}
 	_ = persistTokenUsageRecordDB(h.db, row.ID, row.UserID, 0, "creation_director", time.Now(), &bridge.ChatResponse{ModelUsed: response.ModelUsed, TokensUsed: response.TokensUsed, RunID: response.RunID, Runtime: "self"})
+	if selectionMode != "" && response.Decision != "select" {
+		h.mu.Unlock()
+		return false, errors.New("最佳图片比较未完成，候选与重试次数已保留，可继续选图")
+	}
 	if response.Decision == "revise" && response.Reason != "" && response.AssetID == "" {
 		return h.repairAutomatic(ctx, row, doc, node, candidates, response.Reason, request, response.Findings)
 	}
@@ -552,6 +594,19 @@ func (h *CreationHandler) advanceAutomatic(ctx context.Context, id, request stri
 		h.mu.Unlock()
 		return false, errors.New("自动审阅不能引用其他资产")
 	}
+	if selectionMode != "" {
+		history := doc.Automation.ImageReviews[node.ID]
+		history.Compared, history.BestAssetID = compared, response.AssetID
+		if compared < len(history.CandidateIDs) {
+			err = h.updateProject(&row, doc, false)
+			h.mu.Unlock()
+			return false, err
+		}
+		state = doc.States[node.ID]
+		state.Candidates = append([]string{}, history.CandidateIDs...)
+		doc.States[node.ID] = state
+		response.Reason = "已从历轮候选中自动确认最佳图片：" + response.Reason
+	}
 	automaticStep(&doc, "decision", "「"+node.Title+"」："+response.Reason, node.ID)
 
 	state = doc.States[node.ID]
@@ -560,6 +615,7 @@ func (h *CreationHandler) advanceAutomatic(ctx context.Context, id, request stri
 		state.Revision++
 		invalidateCreativeChildren(&doc, node.ID)
 		doc.States[node.ID] = state
+		syncAutomaticImageReviewRevisions(&doc)
 	}
 	_, hashes, err := h.creativeInputs(row.UserID, doc, node)
 	if err != nil {
