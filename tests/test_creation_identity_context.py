@@ -115,3 +115,39 @@ async def test_invalid_pixels_do_not_open_a_provider_client(monkeypatch):
     with pytest.raises(Exception):
         await identity.inspect_identity_sheet('data:image/png;base64,bm90LWltYWdl',ImageReferenceContext(role='identity'),'side')
     assert not factory.called
+
+
+@pytest.mark.asyncio
+async def test_reference_validation_feedback_contains_failed_fields_and_previous_reply(monkeypatch):
+    bad = sheet().model_dump(exclude={'selected_index'})
+    bad['views'][0]['orientation'] = 'facing-forward'
+    good = sheet().model_dump(exclude={'selected_index'})
+    provider = SimpleNamespace(chat=AsyncMock(side_effect=[
+        LLMResponse(content=json.dumps(bad)), LLMResponse(content=json.dumps(good))]))
+    monkeypatch.setattr(identity, 'create_provider', lambda: provider)
+    result = await identity.inspect_identity_sheet(pixels(), ImageReferenceContext(role='identity'), 'front')
+    dialogue = provider.chat.call_args.args[0]
+    assert 'orientation' in dialogue[-1].content and 'literal_error' in dialogue[-1].content
+    assert dialogue[-2].role == 'assistant' and 'facing-forward' in dialogue[-2].content
+    assert result.layout == 'multiple_views_of_one_subject'
+
+
+@pytest.mark.asyncio
+async def test_reference_json_wrapper_does_not_fail_preparation(monkeypatch):
+    data = sheet().model_dump(exclude={'selected_index'})
+    provider = SimpleNamespace(chat=AsyncMock(return_value=LLMResponse(content='```json\n'+json.dumps(data)+'\n```')))
+    monkeypatch.setattr(identity, 'create_provider', lambda: provider)
+    result = await identity.inspect_identity_sheet(pixels(), ImageReferenceContext(role='identity'), 'front')
+    assert result.selected_index == 0 and provider.chat.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_invalid_reference_layout_logs_safe_field_location(monkeypatch, caplog):
+    bad=sheet().model_dump(exclude={'selected_index'})
+    bad['views'][0]['orientation']='SECRET-UNKNOWN-ANGLE'
+    provider=SimpleNamespace(chat=AsyncMock(return_value=LLMResponse(content=json.dumps(bad))))
+    monkeypatch.setattr(identity,'create_provider',lambda:provider)
+    with pytest.raises(identity.ReferenceViewError):
+        await identity.inspect_identity_sheet(pixels(), ImageReferenceContext(role='identity'), 'front')
+    assert 'orientation' in caplog.text and 'literal_error' in caplog.text
+    assert 'SECRET-UNKNOWN-ANGLE' not in caplog.text and 'data:image' not in caplog.text

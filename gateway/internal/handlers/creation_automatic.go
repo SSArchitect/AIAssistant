@@ -672,7 +672,8 @@ func waitCreationRetry(ctx context.Context, delay time.Duration) error {
 }
 func (h *CreationHandler) runAutomaticMedia(ctx context.Context, submission *creationSubmission) (bool, error) {
 	request := submission.project.AutomaticRequestID
-	for attempt := 0; ; attempt++ {
+	preparationRetries, transportRetries := 0, 0
+	for {
 		if ctx.Err() != nil {
 			return true, nil
 		}
@@ -698,7 +699,12 @@ func (h *CreationHandler) runAutomaticMedia(ctx context.Context, submission *cre
 				return stop, err
 			}
 		}
-		if !retryable || attempt >= 2 {
+		preparing := len(progress) == 1 && (progress[0].ErrorCode == "media_reference_view_failed" || progress[0].ErrorCode == "media_image_prompt_compaction_failed")
+		attempt, limit := transportRetries, 2
+		if preparing {
+			attempt, limit = preparationRetries, 5
+		}
+		if !retryable || attempt >= limit {
 			if run.Error != "" {
 				return false, errors.New(run.Error)
 			}
@@ -712,7 +718,13 @@ func (h *CreationHandler) runAutomaticMedia(ctx context.Context, submission *cre
 		}
 		doc, err := projectDocument(row)
 		if err == nil {
-			automaticStep(&doc, "reconnect", fmt.Sprintf("正在恢复原生成任务（%d/2），取回结果后继续：%s", attempt+1, run.Error), run.ProjectNodeID)
+			if preparing {
+				preparationRetries++
+				automaticStep(&doc, "prepare_retry", fmt.Sprintf("正在自动重新准备人物参考与图片执行稿（%d/5）；尚未提交生成，保留原任务", preparationRetries), run.ProjectNodeID)
+			} else {
+				transportRetries++
+				automaticStep(&doc, "reconnect", fmt.Sprintf("正在恢复原生成任务（%d/2），取回结果后继续：%s", transportRetries, run.Error), run.ProjectNodeID)
+			}
 			err = h.updateProject(&row, doc, false)
 		}
 		h.mu.Unlock()

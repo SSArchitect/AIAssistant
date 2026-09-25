@@ -16,9 +16,10 @@ from typing import Literal
 from PIL import Image, ImageOps
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from agent.aigc.creation_models import create_creation_provider, can_use_plan_vision, use_plan_vision
-from agent.aigc.creation_output import structured_options, thinking_options, unsupported_schema
+from agent.aigc.creation_models import create_creation_provider, can_use_plan_vision, use_plan_vision, planning_error
+from agent.aigc.creation_output import structured_options, thinking_options, unsupported_schema, validation_details
 from agent.aigc.image_inputs import decode_image_data_url
+from agent.aigc.creation_json import parse_complete_object
 from agent.llm.base import LLMMessage
 from agent.llm.factory import create_provider
 
@@ -29,7 +30,8 @@ logger=logging.getLogger(__name__)
 class ReferenceViewError(ValueError):
     code='media_reference_view_failed'
 
-    def __init__(self):
+    def __init__(self, code='media_reference_view_failed'):
+        self.code = code
         super().__init__('人物参考视图准备未完成，原资产保留，尚未提交生成')
 
 
@@ -107,16 +109,23 @@ async def inspect_identity_sheet(data_url,reference,target):
                 raise
             try:
                 if response.finish_reason=='length':raise ValueError('incomplete')
-                detected=SheetLayout.model_validate_json(response.content)
+                content=response.content.strip()
+                wrapper=re.fullmatch(r'```(?:json)?\s*\n([\s\S]*?)\n```',content)
+                value,_=parse_complete_object(wrapper[1] if wrapper else content)
+                detected=SheetLayout.model_validate(value)
                 if detected.layout!='multiple_views_of_one_subject':
                     # No transformation: optional view details cannot turn a
                     # valid single-person reference into a preparation failure.
                     return IdentitySheet(layout=detected.layout,views=[],selected_index=-1)
                 return IdentitySheet(**detected.model_dump(),selected_index=select_identity_view(detected.views,target))
             except ValueError as exc:
-                logger.warning('Creation identity view validation rejected: attempt=%s type=%s',attempt+1,type(exc).__name__)
+                details=validation_details(exc)
+                logger.warning('Creation identity view validation rejected: attempt=%s fields=%s',attempt+1,
+                    [{'loc':d.get('loc',[]),'type':d['type']} for d in details])
                 if attempt==2:raise ReferenceViewError() from None
-                messages.append(LLMMessage(role='user',content='检查schema：仅同一人物多视图稿列出至少两幅独立、不重叠的视图区域；其他layout返回空views。不要额外输出选中索引，不声称不存在的角度。'))
+                messages.extend([LLMMessage(role='assistant',content=response.content[:12000]),
+                    LLMMessage(role='user',content='上次字段校验失败：'+json.dumps(details,ensure_ascii=False)[:2500]+
+                        '。重新返回完整schema JSON。仅同一人物多视图稿列出至少两幅独立、不重叠的视图区域；其他layout返回空views。不要额外输出选中索引，不声称不存在的角度。')])
         raise ReferenceViewError()
     finally:
         client=getattr(provider,'client',None)
@@ -142,7 +151,7 @@ async def isolated_identity_view(data_url,reference,target,key):
     cache=CONTEXT_DIR/(hashlib.sha256((key+':identity-view').encode()).hexdigest()+'.json')
     def read():
         record=json.loads(cache.read_text())
-        if record['fingerprint']!=fingerprint:raise ReferenceViewError()
+        if record['fingerprint']!=fingerprint:raise ReferenceViewError('media_idempotency_conflict')
         return IdentitySheet.model_validate(record['sheet'])
     if cache.exists():sheet=read()
     else:
@@ -150,7 +159,8 @@ async def isolated_identity_view(data_url,reference,target,key):
         except asyncio.CancelledError:raise
         except Exception as exc:
             logger.warning('Creation identity view preparation failed: type=%s',type(exc).__name__)
-            raise ReferenceViewError() from None
+            code,_=planning_error(exc)
+            raise ReferenceViewError('media_unauthorized' if code=='provider_auth_failed' else 'media_reference_view_failed') from None
         CONTEXT_DIR.mkdir(parents=True,exist_ok=True,mode=0o700)
         fd,temporary=tempfile.mkstemp(dir=CONTEXT_DIR,suffix='.pending')
         try:

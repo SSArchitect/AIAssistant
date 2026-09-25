@@ -38,7 +38,7 @@ func TestImagePreparationErrorsDoNotPretendProviderSubmissionFailed(t *testing.T
 		_, err := NewAgentClient(server.URL, time.Second).CreateMedia(context.Background(), CreationNodeRequest{})
 		server.Close()
 		var detail *CreationMediaError
-		if !errors.As(err, &detail) || detail.Code != code || detail.Retryable || detail.ProviderTaskID != "" || !strings.Contains(detail.Message, "尚未提交生成") || strings.Contains(detail.Message, "SECRET") {
+		if !errors.As(err, &detail) || detail.Code != code || detail.Retryable != (code != "media_image_prompt_capacity") || detail.ProviderTaskID != "" || !strings.Contains(detail.Message, "尚未提交生成") || strings.Contains(detail.Message, "SECRET") {
 			t.Fatal("image preparation error lost its safe classification", err)
 		}
 	}

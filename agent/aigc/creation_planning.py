@@ -25,6 +25,7 @@ from agent.aigc.creation_models import (can_use_plan_vision, use_plan_vision, un
 from agent.aigc.creation_compaction import compact_storyboard
 from agent.aigc.creation_references import reference_error, repair_reference_storyboard
 from agent.aigc.creation_completion import PlanningCompletion
+from agent.aigc import creation_checkpoint
 from agent.aigc.creation_contract import planning_schema
 from agent.aigc.creation_repair_scope import validate_repair_scope
 from agent.aigc.creation_region_repair import validate_region_repair
@@ -679,6 +680,7 @@ async def propose_creation(request: PlanningRequest, trace_store=None, on_progre
     repair_draft = ''
     partitioned = False
     completion = None
+    checkpoint = creation_checkpoint.load(request)
     try:
         provider = create_creation_provider(create_provider)
         has_images = any(asset.data_url and asset.mime_type.startswith('image/') for asset in request.assets)
@@ -730,6 +732,15 @@ async def propose_creation(request: PlanningRequest, trace_store=None, on_progre
         usage = completion.usage
         messages = [LLMMessage(role='system', content=DIRECTOR_PROMPT + auto_prompt + (REVISION_PROMPT if revising else '') + '\nJSON schema:\n' + json.dumps(schema, ensure_ascii=False)),
                     LLMMessage(role='user', content=parts)]
+        if checkpoint.get('manifest'):
+            messages.extend(LLMMessage.model_validate(item) for item in checkpoint.get('observations', []))
+
+        async def partition():
+            content = await partition_proposal(request, messages, completion, report,
+                checkpoint=checkpoint, save_checkpoint=lambda: creation_checkpoint.save(request, checkpoint))
+            creation_checkpoint.discard(request)
+            return content
+
         async def check_candidate(content):
             content, consumed = await compact_proposal(content, request, provider, report)
             for key, count in consumed.items():
@@ -743,9 +754,9 @@ async def propose_creation(request: PlanningRequest, trace_store=None, on_progre
                 # Large project-wide edits already need bounded node patches;
                 # do not first spend minutes generating an oversized full reply.
                 targeted = request.repair or (request.messages and request.messages[-1].get('node_id'))
-                if not partition_pending and not step and revising and not targeted and len(request.current_plan.get('nodes', [])) >= 16:
+                if checkpoint.get('manifest') or (not partition_pending and not step and revising and not targeted and len(request.current_plan.get('nodes', [])) >= 16):
                     partitioned = True
-                    content = await partition_proposal(request, messages, completion, report)
+                    content = await partition()
                     response = LLMResponse(content=content, model=completion.model)
                 else:
                     call_messages, call_schema = messages, schema
@@ -758,7 +769,7 @@ async def propose_creation(request: PlanningRequest, trace_store=None, on_progre
                     response = await completion(call_messages, call_schema, call_name, tools=available)
                     if partition_pending and not response.tool_calls:
                         partition_pending, partitioned = False, True
-                        content = await partition_proposal(request, messages, completion, report)
+                        content = await partition()
                         response = LLMResponse(content=content, model=completion.model)
                 if not response.tool_calls and incomplete_json(response.content):
                     raise PlanningOutputTruncated()
@@ -767,7 +778,7 @@ async def propose_creation(request: PlanningRequest, trace_store=None, on_progre
                     raise
                 partition_pending = False
                 partitioned = True
-                content = await partition_proposal(request, messages, completion, report)
+                content = await partition()
                 response = LLMResponse(content=content, model=completion.model)
             except Exception as exc:
                 if has_images and unsupported_image_input(exc) and can_use_plan_vision(provider):
@@ -858,6 +869,7 @@ async def propose_creation(request: PlanningRequest, trace_store=None, on_progre
         proposal.run_id = run.run_id if run else ''
         if trace_store:
             trace_store.complete_run(run.run_id, output=proposal.reply, model_used=model, tokens_used=usage, skills_used=used_tools)
+        creation_checkpoint.discard(request)
         return proposal
     except (Exception, asyncio.CancelledError) as exc:
         cause = asyncio.TimeoutError() if isinstance(exc, asyncio.CancelledError) and exc.args == ('planning_timeout',) else exc

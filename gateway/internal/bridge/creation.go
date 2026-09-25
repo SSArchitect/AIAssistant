@@ -108,6 +108,6 @@ func newCreationMediaError(code, taskID string) *CreationMediaError {
 	if !regexp.MustCompile(`^[a-zA-Z0-9_-]{1,128}$`).MatchString(taskID) {
 		taskID = ""
 	}
-	retryable := code == "media_status_unknown" || code == "media_wait_timeout" || code == "media_connection_failed" || code == "media_download_failed" || code == "media_storage_failed" || code == "media_provider_busy"
+	retryable := code == "media_reference_view_failed" || code == "media_image_prompt_compaction_failed" || code == "media_status_unknown" || code == "media_wait_timeout" || code == "media_connection_failed" || code == "media_download_failed" || code == "media_storage_failed" || code == "media_provider_busy"
 	return &CreationMediaError{Code: code, Message: message, ProviderTaskID: taskID, Retryable: retryable}
 }

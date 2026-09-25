@@ -60,6 +60,9 @@ func (a *configuredCreationAgent) CreateMedia(ctx context.Context, req bridge.Cr
 }
 
 func creationFailureMessage(err error, fallback string) string {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "创作规划达到本轮总时限；已确认内容保留，部分节点仍未完成"
+	}
 	var safe *bridge.CreationPlanningError
 	if errors.As(err, &safe) {
 		return safe.Message

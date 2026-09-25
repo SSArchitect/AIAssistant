@@ -45,7 +45,7 @@ def incomplete_json(text):
     return bool(stack or quoted)
 
 
-async def partition_proposal(request, messages, complete, report):
+async def partition_proposal(request, messages, complete, report, *, checkpoint=None, save_checkpoint=None):
     # Local import keeps wire contracts in one place without a module cycle.
     from agent.aigc.creation_planning import (StrictModel, CreativeQuestion, CreativeNode,
         CreativeNodePatch, decode_proposal)
@@ -66,6 +66,8 @@ async def partition_proposal(request, messages, complete, report):
     class NodeResponse(StrictModel):
         node: CreativeNodePatch
 
+    checkpoint = checkpoint if checkpoint is not None else {}
+    save_checkpoint = save_checkpoint or (lambda: None)
     existing = {n['id']: n for n in request.current_plan.get('nodes', [])}
     revising = bool(existing)
     calls = 0
@@ -117,8 +119,15 @@ async def partition_proposal(request, messages, complete, report):
                 raise ValueError('自动返工只能补充必要的场景图片节点')
 
     await report('partition', '方案较长，已自动改为分段规划：先确定修改范围，再逐个补齐节点')
-    manifest = await piece(Manifest, 'creation_manifest',
-        '只输出本轮修改清单与简短回复，不输出任何节点正文、脚本或storyboard。nodes每项仅id、kind、instruction，列全本轮确实需要新增或修改的节点，按依赖顺序排列；已有无关节点、已锁定节点不要列入。不能为了缩短输出省略本轮需要的片段、角色或场景。title/summary/questions仅需修改时提供，新建画布必须有title和summary；已有画布workflow_template_id填null。questions保留尚未解决的新问题，已解决返回[]。', validate_manifest)
+    if checkpoint.get('manifest'):
+        manifest = Manifest.model_validate(checkpoint['manifest'])
+        validate_manifest(manifest)
+        await report('partition_resume', f'从中断节点继续规划，保留已完成的{len(checkpoint.get("nodes", []))}个节点和已读取资料')
+    else:
+        manifest = await piece(Manifest, 'creation_manifest',
+            '只输出本轮修改清单与简短回复，不输出任何节点正文、脚本或storyboard。nodes每项仅id、kind、instruction，列全本轮确实需要新增或修改的节点，按依赖顺序排列；已有无关节点、已锁定节点不要列入。不能为了缩短输出省略本轮需要的片段、角色或场景。title/summary/questions仅需修改时提供，新建画布必须有title和summary；已有画布workflow_template_id填null。questions保留尚未解决的新问题，已解决返回[]。', validate_manifest)
+        checkpoint.update(manifest=manifest.model_dump(), nodes=[], observations=[m.model_dump() for m in messages[2:] if m.role == 'tool' or m.tool_calls])
+        save_checkpoint()
     header = manifest.model_dump(exclude_none=True, exclude={'nodes', 'reply'})
     nodes = []
     for index, task in enumerate(manifest.nodes):
@@ -135,6 +144,12 @@ async def partition_proposal(request, messages, complete, report):
                 raise ValueError('文本节点必须包含完整审阅正文')
             if node.kind == 'image' and not node.asset_id and not node.prompt.strip():
                 raise ValueError('图片节点必须提供生成提示词或已有资产')
+        saved = checkpoint.get('nodes', [])
+        if index < len(saved):
+            value = NodeResponse.model_validate({'node': saved[index]})
+            validate_node(value)
+            nodes.append(value.node.model_dump(exclude_unset=True))
+            continue
         schema = NodeResponse.model_json_schema()
         from agent.aigc.creation_contract import node_schema
         schema['$defs']['CreativeNodePatch'] = node_schema(schema, task.kind, patch=True, ident=task.id)
@@ -142,4 +157,7 @@ async def partition_proposal(request, messages, complete, report):
             '只返回{"node":当前一个节点的变更字段}；已有节点保持原id、kind，只写需要修改的字段（其余null）；新增节点必须完整。content和storyboard一旦修改就提供完整字段，不能省略尾部。禁止跨节点输出。视频只写本段storyboard，不重复prompt；简短中文content指向脚本，不复制完整分镜。保持时间线、对白和参考职责，执行文本尽量少于3000字符。文本脚本使用紧凑中文审阅稿，保留明确要求，不逐段重复制作简报。revision_suggestions填null，界面已有修改方向，不在恢复时重复生成。',
             validate_node, context=dict(manifest=manifest.model_dump(exclude_none=True), current_task=task.model_dump(), completed_nodes=nodes), schema=schema)
         nodes.append(value.node.model_dump(exclude_unset=True))
+        checkpoint['nodes'] = copy.deepcopy(nodes)
+        save_checkpoint()
+    checkpoint.clear()
     return json.dumps(dict(reply=manifest.reply, **{('patch' if revising else 'plan'): dict(**header, nodes=nodes)}), ensure_ascii=False)
