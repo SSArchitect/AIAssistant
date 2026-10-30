@@ -79,7 +79,7 @@ class SearchRequest(BaseModel):
     limit: int = 5
     lightweight: bool = False
     open_results: bool = False
-    include_images: bool = True
+    include_images: bool = False
     image_limit: int = 3
     open_limit: int = 3
     page_chars: int = 6000

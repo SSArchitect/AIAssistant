@@ -68,11 +68,12 @@ class SearchSkill(Skill):
                     name="include_images",
                     type="boolean",
                     description=(
-                        "是否为缺少图片的搜索结果补充网页预览图。默认 true；仅提取页面图片 metadata，"
+                        "是否为搜索结果补充网页预览图。默认 false；仅在用户明确要求图片、配图或查看图片时设为 true。"
+                        "仅提取页面图片 metadata，"
                         "不会把网页正文计入 opened_results。"
                     ),
                     required=False,
-                    default=True,
+                    default=False,
                 ),
                 SkillParameter(
                     name="image_limit",
@@ -123,7 +124,7 @@ class SearchSkill(Skill):
             limit = 5
         limit = max(1, min(limit, 20))
         open_results = _coerce_bool(kwargs.get("open_results"), default=False)
-        include_images = _coerce_bool(kwargs.get("include_images"), default=True)
+        include_images = _coerce_bool(kwargs.get("include_images"), default=False)
         try:
             image_limit = int(kwargs.get("image_limit", 3))
         except (TypeError, ValueError):

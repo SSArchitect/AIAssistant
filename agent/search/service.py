@@ -1961,7 +1961,7 @@ class SearchService:
                     duration_ms=int((perf_counter() - open_started) * 1000),
                 )
             )
-        if open_results or include_images:
+        if include_images:
             image_started = perf_counter()
             image_stats = await self.attach_page_media(
                 limited_results,

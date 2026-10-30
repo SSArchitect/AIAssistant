@@ -304,7 +304,7 @@ class TestSearchSkill:
             "page_chars",
         }
         parameters = {parameter.name: parameter for parameter in meta.parameters}
-        assert parameters["include_images"].default is True
+        assert parameters["include_images"].default is False
         assert parameters["image_limit"].default == 3
 
     @pytest.mark.asyncio
@@ -1862,7 +1862,7 @@ class TestSearchSkill:
             classmethod(lambda cls: FakeService()),
         )
 
-        result = await self.skill.execute(query="agent memory", limit=99)
+        result = await self.skill.execute(query="agent memory", limit=99, include_images=True)
 
         assert result.success is True
         assert result.data["results"][0]["title"] == "Result"
@@ -1907,6 +1907,7 @@ class TestSearchSkill:
         result = await self.skill.execute(
             query="【https://news.guitarschina.com/?p=7569】",
             page_chars=6000,
+            include_images=True,
         )
 
         assert result.success is True
@@ -1948,7 +1949,7 @@ class TestSearchSkill:
         monkeypatch.setattr(SearchService, "open_url", fake_open_url)
         monkeypatch.setattr(WebPageReader, "validate_image", reject_image)
 
-        result = await self.skill.execute(query="https://example.com/direct")
+        result = await self.skill.execute(query="https://example.com/direct", include_images=True)
 
         assert result.success is True
         assert result.data["image_count"] == 0
@@ -2392,7 +2393,7 @@ class TestSearchSkill:
             page_reader=WebPageReader(transport=httpx.MockTransport(handler)),
         )
 
-        results = await service.search("details", limit=1, open_results=True)
+        results = await service.search("details", limit=1, open_results=True, include_images=True)
 
         assert results[0].metadata["page"]["title"] == "Opened"
         assert "Opened page body." in results[0].metadata["page"]["content"]
@@ -2815,7 +2816,7 @@ class TestSearchSkill:
             "open image validation",
             limit=1,
             open_results=True,
-            include_images=False,
+            include_images=True,
         )
 
         result = results[0]

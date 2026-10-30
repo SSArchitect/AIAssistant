@@ -150,7 +150,7 @@ async def test_direct_url_search_removes_rejected_page_image(client, monkeypatch
 
     response = await client.post(
         "/agent/search",
-        json={"query": "https://example.com/direct"},
+        json={"query": "https://example.com/direct", "include_images": True},
     )
 
     assert response.status_code == 200
